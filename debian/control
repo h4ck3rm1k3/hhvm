@@ -2,17 +2,17 @@ Source: hiphop-php
 Section: unknown
 Priority: extra
 Maintainer: James Michael DuPont <JamesMikeDuPont@googlemail.com>
-Build-Depends: debhelper (>= 7), cmake
+Build-Depends: debhelper (>= 7), cmake, libevent-dev,libcurl-dev
 Standards-Version: 3.8.1
-Homepage: <insert the upstream URL, if relevant>
+Homepage: http://github.com/h4ck3rm1k3/hiphop-php
 
 Package: hiphop-php
 Architecture: any
-Depends: ${shlibs:Depends}, ${misc:Depends}
-Description: <insert up to 60 chars description>
- <insert long description, indented with spaces>
+Depends: ${shlibs:Depends}, ${misc:Depends}, libevent, libcurl
+Description: the php to c++ compiler
+ experimental debian packaging
 
 Package: hiphop-php-doc
 Architecture: all
 Description: documentation for hiphop-php
- <insert long description, indented with spaces>
+  experimental debian packaging

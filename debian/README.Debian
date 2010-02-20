@@ -3,4 +3,8 @@ hiphop-php for Debian
 
 This is the start of the packaging
 
+test with :
+dpkg-buildpackage   -b
+
+
  -- James Michael DuPont <JamesMikeDuPont@googlemail.com>  Sat, 20 Feb 2010 11:27:49 +0100
