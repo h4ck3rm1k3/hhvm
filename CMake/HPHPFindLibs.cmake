@@ -34,10 +34,10 @@ find_package(LibEvent REQUIRED)
 include_directories(${LIBEVENT_INCLUDE_DIR})
 
 set(CMAKE_REQUIRED_LIBRARIES "${LIBEVENT_LIB}")
-CHECK_FUNCTION_EXISTS("evhttp_bind_socket_with_fd" HAVE_CUSTOM_LIBEVENT)
-if (NOT HAVE_CUSTOM_LIBEVENT)
-	message(SEND_ERROR "Custom libevent is required with HipHop patches")
-endif ()
+#CHECK_FUNCTION_EXISTS("evhttp_bind_socket_with_fd" HAVE_CUSTOM_LIBEVENT)
+#if (NOT HAVE_CUSTOM_LIBEVENT)
+#	message(SEND_ERROR "Custom libevent is required with HipHop patches")
+#endif ()
 set(CMAKE_REQUIRED_LIBRARIES)
 
 # libafdt checks
@@ -69,9 +69,9 @@ include_directories(${CURL_INCLUDE_DIR})
 
 set(CMAKE_REQUIRED_LIBRARIES "${CURL_LIBRARIES}")
 CHECK_FUNCTION_EXISTS("curl_multi_select" HAVE_CUSTOM_CURL)
-if (NOT HAVE_CUSTOM_CURL)
-        message(SEND_ERROR "Custom libcurl is required with HipHop patches ${HAVE_CUSTOM_CURL}")
-endif ()
+# if (NOT HAVE_CUSTOM_CURL)
+#         message(SEND_ERROR "Custom libcurl is required with HipHop patches ${HAVE_CUSTOM_CURL}")
+# endif ()
 set(CMAKE_REQUIRED_LIBRARIES)
 
 # LibXML2 checks
@@ -92,9 +92,9 @@ include_directories("${HPHP_HOME}/src/third_party/libmbfl/filter")
 
 find_package(ICU REQUIRED)
 if (ICU_FOUND)
-	if (ICU_VERSION VERSION_LESS "4.2")
-		message(SEND_ERROR "ICU is too old, found ${ICU_VERSION} and we need 4.2")
-	endif (ICU_VERSION VERSION_LESS "4.2")
+	# if (ICU_VERSION VERSION_LESS "4.2")
+	# 	message(SEND_ERROR "ICU is too old, found ${ICU_VERSION} and we need 4.2")
+	# endif (ICU_VERSION VERSION_LESS "4.2")
 	include_directories(${ICU_INCLUDE_DIRS})
 endif (ICU_FOUND)
 
