@@ -264,7 +264,13 @@ void LibEventServer::onResponse(int worker, evhttp_request *request,
   int nwritten = 0;
   if (RuntimeOption::LibEventSyncSend) {
     const char *reason = HttpProtocol::GetReasonString(code);
+#ifdef USE_LIBEVENTPATCH
     nwritten = evhttp_send_reply_sync_begin(request, code, reason, NULL);
+#else
+  #pragma warning "no patched libevent, wont work" 
+#endif
+
+
   }
   m_responseQueue.enqueue(worker, request, code, nwritten);
 }
@@ -382,7 +388,15 @@ void PendingResponseQueue::process() {
         evhttp_send_reply_end(request);
       }
     } else if (RuntimeOption::LibEventSyncSend) {
+
+
+#ifdef USE_LIBEVENTPATCH
       evhttp_send_reply_sync_end(res.nwritten, request);
+#else
+  #pragma warning "no patched libevent, wont work" 
+#endif
+
+
     } else {
       const char *reason = HttpProtocol::GetReasonString(code);
       evhttp_send_reply(request, code, reason, NULL);

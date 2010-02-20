@@ -101,7 +101,11 @@ int LibEventServerWithTakeover::afdtRequest(String request, String* response) {
     // shutdown request so that we can still serve AFDT requests (if the new
     // server crashes or something).  The downside is that it will take the LB
     // longer to figure out that we are broken.
+#ifdef USE_LIBEVENTPATCH
     ret = evhttp_del_accept_socket(m_server, m_accept_sock);
+#else
+  #pragma warning "no patched libevent, wont work" 
+#endif
     if (ret < 0) {
       // This will fail if we get a second AFDT request, but the spurious
       // log message is not too harmful.
@@ -178,7 +182,14 @@ int LibEventServerWithTakeover::getAcceptSocket() {
     m_accept_sock = -1;
   }
 
+#ifdef USE_LIBEVENTPATCH
   ret = evhttp_bind_socket_with_fd(m_server, m_address.c_str(), m_port);
+
+#else
+  #pragma warning "no patched libevent, wont work" 
+#endif
+
+
   if (ret >= 0) {
     Logger::Info("takeover: bound directly to port");
     m_accept_sock = ret;
