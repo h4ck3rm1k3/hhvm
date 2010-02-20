@@ -107,3 +107,16 @@ cd
 /media/sdd2/home/mdupont/2010/02/hiphop/hiphop-php-0.1/builddir/src/hphp
 /media/NewFoundSpace/usr/local/bin/c++   -fPIC -fno-omit-frame-pointer -ftemplate-depth-60 -Wall -Woverloaded-virtual -Wno-deprecated -Wno-parentheses -Wno-strict-aliasing -Wno-write-strings   -Wl,-Bsymbolic-functions CMakeFiles/hphp.dir/externals.cpp.o CMakeFiles/hphp.dir/main.cpp.o  -o hphp -rdynamic -ldl ../../../bin/libhphp_analysis.a ../../../bin/libhphp_runtime.a -L/usr/local/lib -lboost_system -lboost_program_options -lboost_filesystem -lmysqlclient -lpcre -licuuc -licui18n -lcurl -lcap -lbfd /usr/local/lib/libiberty.a -ldl -lpthread -ltbb -lssl -lcrypto -lz ../../../bin/libtimelib.a -lexpat -lrt -lcrypto -lresolv -lcrypt ../../../bin/libsqlite3.a ../../../bin/libxhp.a ../../../bin/libafdt.a -levent -lmbfl -lxml2 -lonig -lmcrypt -lgd
 
+bug #8
+
+Building hphpi
+cd /media/sdd2/home/mdupont/2010/02/hiphop/hiphop-php-0.1/src/hphpi && /media/sdd2/home/mdupont/2010/02/hiphop/hiphop-php-0.1/builddir/src/hphp/hphp -t cpp -f exe --input-dir . -i hphpi.php -o gen --config hphpi_build.hdf --log=1
+Exception: ParseError: [<string>:1] Unable to parse line hphpi_build.hdf
+make[3]: *** [src/hphp/hphp] Error 255
+make[3]: Leaving directory `/media/sdd2/home/mdupont/2010/02/hiphop/hiphop-php-0.1/builddir'
+make[2]: *** [src/hphp/CMakeFiles/hphp.dir/all] Error 2
+make[2]: Leaving directory `/media/sdd2/home/mdupont/2010/02/hiphop/hiphop-php-0.1/builddir'
+make[1]: *** [all] Error 2
+make[1]: Leaving directory `/media/sdd2/home/mdupont/2010/02/hiphop/hiphop-php-0.1/builddir'
+make: *** [install-arch] Error 2
+dpkg-buildpackage: error: fakeroot debian/rules binary gave error exit status 2
