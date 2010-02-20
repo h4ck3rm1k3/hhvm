@@ -45,3 +45,12 @@ make[3]: *** [src/CMakeFiles/hphp_runtime_static.dir/cpp/base/program_functions.
 Solution : 
 use the ifndef ssize_t_NOT_INT
 
+Changed ssize_t to "long int"
+I think we should make some definitions for ssize_t. 
+
+ bug #3
+
+p_runtime_static.dir/cpp/base/server/libevent_transport.cpp.o -c /media/sdd2/home/mdupont/2010/02/hiphop/hiphop-php-0.1/src/cpp/base/server/libevent_transport.cpp
+/media/sdd2/home/mdupont/2010/02/hiphop/hiphop-php-0.1/src/cpp/base/server/libevent_transport.cpp: In constructor ‘HPHP::LibEventTransport::LibEventTransport(HPHP::LibEventServer*, evhttp_request*, int)’:
+/media/sdd2/home/mdupont/2010/02/hiphop/hiphop-php-0.1/src/cpp/base/server/libevent_transport.cpp:69:34: error: ‘struct evhttp_request’ has no member named ‘ext_method’
+

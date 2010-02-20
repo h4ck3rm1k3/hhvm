@@ -66,7 +66,13 @@ LibEventTransport::LibEventTransport(LibEventServer *server,
     m_method = Transport::UnknownMethod;
     break;
   }
+
+#ifdef USE_LIBEVENTPATCH
+  // h4ck3rm1k3 -- hacked this
   m_extended_method = m_request->ext_method;
+#else
+  #pragma warn "no patched libevent, wont work" 
+#endif
 
   ASSERT(m_request->input_headers);
   for (evkeyval *p = ((m_evkeyvalq*)m_request->input_headers)->tqh_first; p;
