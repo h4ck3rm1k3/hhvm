@@ -89,10 +89,10 @@ public:
   Variant(bool    v) : m_type(KindOfBoolean)  { m_data.num = (v?1:0);}
   Variant(char    v) : m_type(KindOfByte  )   { m_data.num = v;}
   Variant(short   v) : m_type(KindOfInt16 )   { m_data.num = v;}
-  Variant(int     v) : m_type(KindOfInt32 )   { m_data.num = v;}
+  Variant(int     v) : m_type(KindOfInt32 )   { m_data.num = v;} //is the same as ssize_t
   Variant(int64   v) : m_type(KindOfInt64 )   { m_data.num = v;}
   Variant(uint64  v) : m_type(KindOfInt64 )   { m_data.num = v;}
-  Variant(ssize_t v) : m_type(KindOfInt64 )   { m_data.num = v;}
+  //  Variant(ssize_t v) : m_type(KindOfInt64 )   { m_data.num = v;} see BUG #1 in debian/README.Debian
   Variant(double  v) : m_type(KindOfDouble )  { m_data.dbl = v;}
   Variant(litstr  v) : m_type(LiteralString)  { m_data.str = v;}
 
