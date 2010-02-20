@@ -1,4 +1,4 @@
-This package was debianized by James Michael DuPont <mdupont@introspector-mail> on
+This package was debianized by James Michael DuPont <JamesMikeDuPont@googlemail.com> on
 Sat, 20 Feb 2010 11:27:49 +0100.
 
 It was downloaded from <url://example.com>
@@ -19,7 +19,7 @@ License:
 
 The Debian packaging is:
 
-    Copyright (C) 2010 James Michael DuPont <mdupont@introspector-mail>
+    Copyright (C) 2010 James Michael DuPont <JamesMikeDuPont@googlemail.com>
 
 and is licensed under the GPL version 3, 
 see `/usr/share/common-licenses/GPL-3'.

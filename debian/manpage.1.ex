@@ -55,5 +55,5 @@ available via the Info system.
 .SH AUTHOR
 hiphop-php was written by <upstream author>.
 .PP
-This manual page was written by James Michael DuPont <mdupont@introspector-mail>,
+This manual page was written by James Michael DuPont <JamesMikeDuPont@googlemail.com>,
 for the Debian project (and may be used by others).
