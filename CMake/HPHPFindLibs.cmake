@@ -159,6 +159,12 @@ macro(hphp_link target)
 	target_link_libraries(${target} ${ZLIB_LIBRARIES})
 
 	target_link_libraries(${target} timelib)
+ target_link_libraries(${target} expat)
+ target_link_libraries(${target} rt)
+ target_link_libraries(${target} crypto)
+ target_link_libraries(${target} resolv)
+ target_link_libraries(${target} crypt)
+
 	target_link_libraries(${target} sqlite3)
 	target_link_libraries(${target} xhp)
 	target_link_libraries(${target} afdt)
