@@ -917,7 +917,13 @@ int f_curl_multi_select(CObjRef mh, double timeout /* = 1.0 */) {
 
   int ret;
   unsigned long timeout_ms = (unsigned long)(timeout * 1000.0);
+
+#ifdef USE_CURLPATCH
   curl_multi_select(curlm->get(), timeout_ms, &ret);
+#else
+  #pragma warning "no patched libcurl, wont work" 
+#endif
+
   return ret;
 }
 
