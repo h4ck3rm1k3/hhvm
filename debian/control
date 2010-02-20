@@ -2,13 +2,13 @@ Source: hiphop-php
 Section: unknown
 Priority: extra
 Maintainer: James Michael DuPont <JamesMikeDuPont@googlemail.com>
-Build-Depends: debhelper (>= 7), cmake, libevent-dev,libcurl4-gnutls-dev (>= 7.19.1),,libtbb-dev, libmcrypt-dev, re2c, binutils-dev, libonig-dev, libmysqlclient15-dev, php5-dev, libgd-dev, libboost-system-dev, libboost-filesystem-dev,  libboost-program-options-dev
+Build-Depends: debhelper (>= 7), cmake, libtbb-dev, libmcrypt-dev, re2c, binutils-dev, libonig-dev, libmysqlclient15-dev, php5-dev, libgd-dev, libboost-system-dev, libboost-filesystem-dev,  libboost-program-options-dev
 Standards-Version: 3.8.1
 Homepage: http://github.com/h4ck3rm1k3/hiphop-php
 
 Package: hiphop-php
 Architecture: any
-Depends: ${shlibs:Depends}, ${misc:Depends}, libevent, libcurl, libtbb2, libmcrypt4, mcrypt, libonig2
+Depends: ${shlibs:Depends}, ${misc:Depends},  libtbb2, libmcrypt4, mcrypt, libonig2
 Description: the php to c++ compiler
  experimental debian packaging
 
