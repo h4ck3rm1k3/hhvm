@@ -84,3 +84,26 @@ cd /media/sdd2/home/mdupont/2010/02/hiphop/hiphop-php-0.1/builddir/src && /media
 /media/sdd2/home/mdupont/2010/02/hiphop/hiphop-php-0.1/src/cpp/ext/ext_icu.cpp:82:9: error: ‘class icu_4_0::UnicodeString’ has no member named ‘toUTF8’
 /media/sdd2/home/mdupont/2010/02/hiphop/hiphop-php-0.1/src/cpp/ext/ext_icu.cpp:82:16: error: ‘bs’ was not declared in this scope
 make[3]: *** [src/CMakeFiles/hphp_runtime_static.dir/cpp/ext/ext_icu.cpp.o] Error 1
+
+
+#7 
+Linking CXX executable hphp
+cd /media/sdd2/home/mdupont/2010/02/hiphop/hiphop-php-0.1/builddir/src/hphp && /usr/bin/cmake -E cmake_link_script CMakeFiles/hphp.dir/link.txt --verbose=1
+/media/NewFoundSpace/usr/local/bin/c++   -fPIC -fno-omit-frame-pointer -ftemplate-depth-60 -Wall -Woverloaded-virtual -Wno-deprecated -Wno-parentheses -Wno-strict-aliasing -Wno-write-strings   -Wl,-Bsymbolic-functions CMakeFiles/hphp.dir/externals.cpp.o CMakeFiles/hphp.dir/main.cpp.o  -o hphp -rdynamic -ldl ../../../bin/libhphp_analysis.a ../../../bin/libhphp_runtime.a -lboost_system-mt -lboost_program_options-mt -lboost_filesystem-mt -lmysqlclient -lpcre -licuuc -licui18n -lcurl -lcap -lbfd /usr/local/lib/libiberty.a -ldl -lpthread -ltbb -lssl -lcrypto -lz ../../../bin/libtimelib.a -lexpat -lrt -lcrypto -lresolv -lcrypt ../../../bin/libsqlite3.a ../../../bin/libxhp.a ../../../bin/libafdt.a -levent -lmbfl -lxml2 -lonig -lmcrypt -lgd 
+CMakeFiles/hphp.dir/main.cpp.o: In function `prepareOptions(ProgramOptions&, int, char**)':
+main.cpp:(.text+0x3c4): undefined reference to `boost::program_options::options_description::options_description(std::basic_string<char, std::char_traits<char>, std::allocator<char> > const&, unsigned int, unsigned int)'
+CMakeFiles/hphp.dir/main.cpp.o: In function `std::basic_string<char, std::char_traits<char>, std::allocator<char> > const& boost::program_options::validators::get_single_string<char>(std::vector<std::basic_string<char, std::char_traits<char>, std::allocator<char> >, std::allocator<std::basic_string<char, std::char_traits<char>, std::allocator<char> > > > const&, bool)':
+main.cpp:(.text._ZN5boost15program_options10validators17get_single_stringIcEERKSbIT_St11char_traitsIS3_ESaIS3_EERKSt6vectorIS7_SaIS7_EEb[std::basic_string<char, std::char_traits<char>, std::allocator<char> > const& boost::program_options::validators::get_single_string<char>(std::vector<std::basic_string<char, std::char_traits<char>, std::allocator<char> >, std::allocator<std::basic_string<char, std::char_traits<char>, std::allocator<char> > > > const&, bool)]+0x101): undefined reference to `boost::program_options::validation_error::validation_error(boost::program_options::validation_error::kind_t, std::basic_string<char, std::char_traits<char>, std::allocator<char> > const&, std::basic_string<char, std::char_traits<char>, std::allocator<char> > const&)'
+main.cpp:(.text._ZN5boost15program_options10validators17get_single_stringIcEERKSbIT_St11char_traitsIS3_ESaIS3_EERKSt6vectorIS7_SaIS7_EEb[std::basic_string<char, std::char_traits<char>, std::allocator<char> > const& boost::program_options::validators::get_single_string<char>(std::vector<std::basic_string<char, std::char_traits<char>, std::allocator<char> >, std::allocator<std::basic_string<char, std::char_traits<char>, std::allocator<char> > > > const&, bool)]+0x1ab): undefined reference to `boost::program_options::validation_error::validation_error(boost::program_options::validation_error::kind_t, std::basic_string<char, std::char_traits<char>, std::allocator<char> > const&, std::basic_string<char, std::char_traits<char>, std::allocator<char> > const&)'
+../../../bin/libhphp_runtime.a(program_functions.cpp.o): In function `HPHP::execute_program(int, char**)':
+program_functions.cpp:(.text+0x1ef8): undefined reference to `boost::program_options::options_description::options_description(std::basic_string<char, std::char_traits<char>, std::allocator<char> > const&, unsigned int, unsigned int)'
+collect2: ld returned 1 exit status
+make[3]: *** [src/hphp/hphp] Error 1
+
+
+now we just need to link boost
+I am compiling locally :
+cd
+/media/sdd2/home/mdupont/2010/02/hiphop/hiphop-php-0.1/builddir/src/hphp
+/media/NewFoundSpace/usr/local/bin/c++   -fPIC -fno-omit-frame-pointer -ftemplate-depth-60 -Wall -Woverloaded-virtual -Wno-deprecated -Wno-parentheses -Wno-strict-aliasing -Wno-write-strings   -Wl,-Bsymbolic-functions CMakeFiles/hphp.dir/externals.cpp.o CMakeFiles/hphp.dir/main.cpp.o  -o hphp -rdynamic -ldl ../../../bin/libhphp_analysis.a ../../../bin/libhphp_runtime.a -L/usr/local/lib -lboost_system -lboost_program_options -lboost_filesystem -lmysqlclient -lpcre -licuuc -licui18n -lcurl -lcap -lbfd /usr/local/lib/libiberty.a -ldl -lpthread -ltbb -lssl -lcrypto -lz ../../../bin/libtimelib.a -lexpat -lrt -lcrypto -lresolv -lcrypt ../../../bin/libsqlite3.a ../../../bin/libxhp.a ../../../bin/libafdt.a -levent -lmbfl -lxml2 -lonig -lmcrypt -lgd
+

@@ -2,7 +2,7 @@ Source: hiphop-php
 Section: unknown
 Priority: extra
 Maintainer: James Michael DuPont <JamesMikeDuPont@googlemail.com>
-Build-Depends: debhelper (>= 7), cmake, libtbb-dev, libmcrypt-dev, re2c, binutils-dev, libonig-dev, libmysqlclient15-dev, libgd-dev, libboost-system-dev, libboost-filesystem-dev,  libboost-program-options-dev
+Build-Depends: debhelper (>= 7), cmake, libtbb-dev, libmcrypt-dev, re2c, binutils-dev, libonig-dev, libmysqlclient15-dev, libgd-dev
 Standards-Version: 3.8.1
 Homepage: http://github.com/h4ck3rm1k3/hiphop-php
 
