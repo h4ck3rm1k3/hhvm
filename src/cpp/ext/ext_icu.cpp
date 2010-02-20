@@ -68,7 +68,11 @@ private:
 ThreadLocal<TransliteratorWrapper> s_transliterator;
 
 String f_icu_transliterate(CStrRef str, bool remove_accents) {
+#ifdef HAVE_ICU_42
   UnicodeString u_str = UnicodeString::fromUTF8(str.data());
+#else
+  UnicodeString u_str (str.data());
+#endif
   if (remove_accents) {
     s_transliterator->transliterate(u_str);
   } else {
@@ -78,8 +82,13 @@ String f_icu_transliterate(CStrRef str, bool remove_accents) {
   // Convert the UnicodeString back into a UTF8 String.
   int32_t capacity = u_str.countChar32() * sizeof(UChar) + 1;
   char* out = (char *)malloc(capacity);
+
+#ifdef HAVE_ICU_42
   CheckedArrayByteSink bs(out, capacity);
   u_str.toUTF8(bs);
+#else
+  //TODO  u_str.toUTF8(bs);
+#endif
 
   return String(out, AttachString);
 }
