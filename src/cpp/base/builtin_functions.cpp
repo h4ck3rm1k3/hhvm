@@ -371,8 +371,16 @@ static Variant include_impl(CStrRef file, bool once,
       return invoke_file(path, once, variables, currentDir);
     } catch (PhpFileDoesNotExistException &e) {}
 
+
+
     // use include paths to resolve the file
-    ASSERT(RuntimeOption::IncludeSearchPaths[0] == "."); // skipping it
+    //    ASSERT(RuntimeOption::IncludeSearchPaths[0] == "."); // skipping it
+    unsigned int i0 = 0;
+    if (!RuntimeOption::IncludeSearchPaths.empty() &&
+	RuntimeOption::IncludeSearchPaths[0] == ".") {
+      i0 = 1; // skipping it
+    }
+    
     for (unsigned int i = 1; i < RuntimeOption::IncludeSearchPaths.size();
          i++) {
       String path(RuntimeOption::IncludeSearchPaths[i]);

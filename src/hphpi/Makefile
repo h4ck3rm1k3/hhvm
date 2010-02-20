@@ -6,10 +6,13 @@ PHP_FILES = hphpi.php
 
 all: hphpi
 
+#this breaks 
+#--config hphpi_build.hdf
+
 hphpi: $(HPHP) $(PHP_FILES) hphpi_build.hdf
 	@echo "Compiling hphpi..."
 	$(V)$(HPHP) -t cpp -f exe --input-dir . -i $(PHP_FILES) -o gen \
-		--config hphpi_build.hdf --log=1
+		 --log=1
 	$(V)mv gen/program hphpi
 
 clobber:
