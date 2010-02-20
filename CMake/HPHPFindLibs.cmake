@@ -124,7 +124,7 @@ include_directories(${ZLIB_INCLUDE_DIR})
 
 #oniguruma
 FIND_LIBRARY(ONIG_LIB onig)
-FIND_LIBRARY(MBFL_LIB mbfl)
+#FIND_LIBRARY(MBFL_LIB mbfl)
 
 #LINK_LIBS = -lpthread $(BFD_LIBS) -lrt -lstdc++ -lresolv
 #-lcrypto -lcrypt
