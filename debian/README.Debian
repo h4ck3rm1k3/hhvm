@@ -23,3 +23,25 @@ Problem:
 
 Fix :
     remove the definition.
+
+
+bug #2
+
+cd /media/sdd2/home/mdupont/2010/02/hiphop/hiphop-php-0.1/builddir/src && /media/NewFoundSpace/usr/local/bin/c++   -D_GNU_SOURCE -D_REENTRANT=1 -D_PTHREADS=1 -fPIC -fno-omit-frame-pointer -ftemplate-depth-60 -Wall -Woverloaded-virtual -Wno-deprecated -Wno-parentheses -Wno-strict-aliasing -Wno-write-strings  -I/usr/local/include -I/usr/include/mysql -I/usr/include/libxml2 -I/media/sdd2/home/mdupont/2010/02/hiphop/hiphop-php-0.1/src/third_party/libsqlite3 -I/media/sdd2/home/mdupont/2010/02/hiphop/hiphop-php-0.1/src/third_party/timelib -I/media/sdd2/home/mdupont/2010/02/hiphop/hiphop-php-0.1/src/third_party/xhp/xhp -I/media/sdd2/home/mdupont/2010/02/hiphop/hiphop-php-0.1/src/third_party/libafdt/src -I/media/sdd2/home/mdupont/2010/02/hiphop/hiphop-php-0.1/src/third_party/libmbfl -I/media/sdd2/home/mdupont/2010/02/hiphop/hiphop-php-0.1/src/third_party/libmbfl/mbfl -I/media/sdd2/home/mdupont/2010/02/hiphop/hiphop-php-0.1/src/third_party/libmbfl/filter -I/media/sdd2/home/mdupont/2010/02/hiphop/hiphop-php-0.1/src -I/media/sdd2/home/mdupont/2010/02/hiphop/hiphop-php-0.1/src/lib/system/gen   -o CMakeFiles/hphp_runtime_static.dir/cpp/base/program_functions.cpp.o -c /media/sdd2/home/mdupont/2010/02/hiphop/hiphop-php-0.1/src/cpp/base/program_functions.cpp
+In file included from /media/sdd2/home/mdupont/2010/02/hiphop/hiphop-php-0.1/src/cpp/base/server/transport.h:23:0,
+                 from /media/sdd2/home/mdupont/2010/02/hiphop/hiphop-php-0.1/src/cpp/base/execution_context.h:20,
+                 from /media/sdd2/home/mdupont/2010/02/hiphop/hiphop-php-0.1/src/cpp/base/builtin_functions.h:20,
+                 from /media/sdd2/home/mdupont/2010/02/hiphop/hiphop-php-0.1/src/cpp/base/program_functions.cpp:18:
+/media/sdd2/home/mdupont/2010/02/hiphop/hiphop-php-0.1/src/cpp/base/type_array.h:314:11: error: ‘HPHP::Variant HPHP::Array::rvalAt(ssize_t, HPHP::int64) const’ cannot be overloaded
+/media/sdd2/home/mdupont/2010/02/hiphop/hiphop-php-0.1/src/cpp/base/type_array.h:306:11: error: with ‘HPHP::Variant HPHP::Array::rvalAt(int, HPHP::int64) const’
+/media/sdd2/home/mdupont/2010/02/hiphop/hiphop-php-0.1/src/cpp/base/type_array.h:337:17: error: ‘const HPHP::Variant HPHP::Array::operator[](ssize_t) const’ cannot be overloaded
+/media/sdd2/home/mdupont/2010/02/hiphop/hiphop-php-0.1/src/cpp/base/type_array.h:335:17: error: with ‘const HPHP::Variant HPHP::Array::operator[](int) const’
+In file included from /media/sdd2/home/mdupont/2010/02/hiphop/hiphop-php-0.1/src/cpp/base/program_functions.cpp:18:0:
+/media/sdd2/home/mdupont/2010/02/hiphop/hiphop-php-0.1/src/cpp/base/builtin_functions.h: In function ‘ssize_t HPHP::id(ssize_t)’:
+/media/sdd2/home/mdupont/2010/02/hiphop/hiphop-php-0.1/src/cpp/base/builtin_functions.h:569:16: error: redefinition of ‘ssize_t HPHP::id(ssize_t)’
+/media/sdd2/home/mdupont/2010/02/hiphop/hiphop-php-0.1/src/cpp/base/builtin_functions.h:566:16: error: ‘int HPHP::id(int)’ previously defined here
+make[3]: *** [src/CMakeFiles/hphp_runtime_static.dir/cpp/base/program_functions.cpp.o] Error 1
+
+Solution : 
+use the ifndef ssize_t_NOT_INT
+

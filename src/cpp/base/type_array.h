@@ -311,10 +311,12 @@ class Array : public SmartPtr<ArrayData> {
     if (m_px) return m_px->get(key, prehash);
     return null;
   }
-  Variant rvalAt(ssize_t key, int64 prehash = -1) const {
+#ifdef ssize_t_NOT_INT
+   Variant rvalAt(ssize_t key, int64 prehash = -1) const {
     if (m_px) return m_px->get((int64)key);
     return null;
   }
+#endif
   Variant rvalAt(double key, int64 prehash = -1) const {
     if (m_px) return m_px->get((int64)key, prehash);
     return null;
@@ -334,7 +336,9 @@ class Array : public SmartPtr<ArrayData> {
   const Variant operator[](short   key) const { return rvalAt(key);}
   const Variant operator[](int     key) const { return rvalAt(key);}
   const Variant operator[](int64   key) const { return rvalAt(key);}
+#ifdef ssize_t_NOT_INT
   const Variant operator[](ssize_t key) const { return rvalAt(key);}
+#endif
   const Variant operator[](double  key) const { return rvalAt(key);}
   const Variant operator[](litstr  key) const { return rvalAt(key);}
   const Variant operator[](CStrRef key) const { return rvalAt(key);}
