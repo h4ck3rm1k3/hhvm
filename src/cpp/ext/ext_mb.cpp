@@ -25,8 +25,14 @@
 #include <cpp/base/zend/zend_string.h>
 
 extern "C" {
+#ifndef NORMALBUILD
+#include <php5/ext/mbstring/libmbfl/mbfl/mbfl_convert.h>
+#include <php5/ext/mbstring/libmbfl/mbfl/mbfilter.h>
+#else
 #include <mbfl/mbfl_convert.h>
 #include <mbfl/mbfilter.h>
+#endif 
+
 #include <oniguruma.h>
 }
 
