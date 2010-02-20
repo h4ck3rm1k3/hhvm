@@ -1,0 +1,18 @@
+Source: hiphop-php
+Section: unknown
+Priority: extra
+Maintainer: James Michael DuPont <mdupont@introspector-mail>
+Build-Depends: debhelper (>= 7), cmake
+Standards-Version: 3.8.1
+Homepage: <insert the upstream URL, if relevant>
+
+Package: hiphop-php
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: <insert up to 60 chars description>
+ <insert long description, indented with spaces>
+
+Package: hiphop-php-doc
+Architecture: all
+Description: documentation for hiphop-php
+ <insert long description, indented with spaces>
