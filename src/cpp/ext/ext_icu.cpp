@@ -71,6 +71,7 @@ String f_icu_transliterate(CStrRef str, bool remove_accents) {
 #ifdef HAVE_ICU_42
   UnicodeString u_str = UnicodeString::fromUTF8(str.data());
 #else
+  std::cerr << "Hacked ICU IN " << str << std::endl;
   UnicodeString u_str (str.data());
 #endif
   if (remove_accents) {
@@ -86,11 +87,14 @@ String f_icu_transliterate(CStrRef str, bool remove_accents) {
 #ifdef HAVE_ICU_42
   CheckedArrayByteSink bs(out, capacity);
   u_str.toUTF8(bs);
+  return String(out, AttachString);
 #else
+  std::cerr << "Hacked ICU " << str << std::endl;
+  return str;
   //TODO  u_str.toUTF8(bs);
 #endif
 
-  return String(out, AttachString);
+
 }
 
 ///////////////////////////////////////////////////////////////////////////////
