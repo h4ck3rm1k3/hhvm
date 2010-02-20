@@ -8,3 +8,13 @@ dpkg-buildpackage   -b
 
 
  -- James Michael DuPont <JamesMikeDuPont@googlemail.com>  Sat, 20 Feb 2010 11:27:49 +0100
+
+
+First Bug :
+cd /media/sdd2/home/mdupont/2010/02/hiphop/hiphop-php-0.1/builddir/src && /media/NewFoundSpace/usr/local/bin/c++   -D_GNU_SOURCE -D_REENTRANT=1 -D_PTHREADS=1 -fPIC -fno-omit-frame-pointer -ftemplate-depth-60 -Wall -Woverloaded-virtual -Wno-deprecated -Wno-parentheses -Wno-strict-aliasing -Wno-write-strings  -I/usr/local/include -I/usr/include/mysql -I/usr/include/libxml2 -I/media/sdd2/home/mdupont/2010/02/hiphop/hiphop-php-0.1/src/third_party/libsqlite3 -I/media/sdd2/home/mdupont/2010/02/hiphop/hiphop-php-0.1/src/third_party/timelib -I/media/sdd2/home/mdupont/2010/02/hiphop/hiphop-php-0.1/src/third_party/xhp/xhp -I/media/sdd2/home/mdupont/2010/02/hiphop/hiphop-php-0.1/src/third_party/libafdt/src -I/media/sdd2/home/mdupont/2010/02/hiphop/hiphop-php-0.1/src/third_party/libmbfl -I/media/sdd2/home/mdupont/2010/02/hiphop/hiphop-php-0.1/src/third_party/libmbfl/mbfl -I/media/sdd2/home/mdupont/2010/02/hiphop/hiphop-php-0.1/src/third_party/libmbfl/filter -I/media/sdd2/home/mdupont/2010/02/hiphop/hiphop-php-0.1/src -I/media/sdd2/home/mdupont/2010/02/hiphop/hiphop-php-0.1/src/lib/system/gen   -o CMakeFiles/hphp_runtime_static.dir/cpp/base/string_offset.cpp.o -c /media/sdd2/home/mdupont/2010/02/hiphop/hiphop-php-0.1/src/cpp/base/string_offset.cpp
+In file included from /media/sdd2/home/mdupont/2010/02/hiphop/hiphop-php-0.1/src/cpp/base/zend/zend_string.h:22:0,
+                 from /media/sdd2/home/mdupont/2010/02/hiphop/hiphop-php-0.1/src/cpp/base/type_string.h:24,
+                 from /media/sdd2/home/mdupont/2010/02/hiphop/hiphop-php-0.1/src/cpp/base/string_offset.cpp:18:
+/media/sdd2/home/mdupont/2010/02/hiphop/hiphop-php-0.1/src/cpp/base/type_variant.h:95:3: error: ‘HPHP::Variant::Variant(ssize_t)’ cannot be overloaded
+/media/sdd2/home/mdupont/2010/02/hiphop/hiphop-php-0.1/src/cpp/base/type_variant.h:92:3: error: with ‘HPHP::Variant::Variant(int)’
+
