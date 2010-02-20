@@ -566,7 +566,7 @@ inline short   id(short   v) { return v; }
 inline int     id(int     v) { return v; }
 inline int64   id(int64   v) { return v; }
 inline uint64  id(uint64  v) { return v; }
-#ifndef ssize_t_NOT_INT
+#ifdef ssize_t_NOT_INT
 inline ssize_t id(ssize_t v) { return v; }
 #endif
 inline double  id(double  v) { return v; }

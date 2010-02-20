@@ -92,8 +92,8 @@ public:
   Variant(int     v) : m_type(KindOfInt32 )   { m_data.num = v;} //is the same as ssize_t
   Variant(int64   v) : m_type(KindOfInt64 )   { m_data.num = v;}
   Variant(uint64  v) : m_type(KindOfInt64 )   { m_data.num = v;}
-#ifndef ssize_t_NOT_INT
-  Variant(ssize_t v) : m_type(KindOfInt64 )   { m_data.num = v;} see BUG #1 in debian/README.Debian
+#ifdef ssize_t_NOT_INT
+  Variant(ssize_t v) : m_type(KindOfInt64 )   { m_data.num = v;} //see BUG #1 in debian/README.Debian
 #endif
   Variant(double  v) : m_type(KindOfDouble )  { m_data.dbl = v;}
   Variant(litstr  v) : m_type(LiteralString)  { m_data.str = v;}
