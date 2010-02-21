@@ -121,7 +121,7 @@ vector<string> Option::DynamicMethodPostfixes;
 vector<string> Option::DynamicClassPrefixes;
 vector<string> Option::DynamicClassPostfixes;
 set<string> Option::DynamicInvokeFunctions;
-string Option::IdPrefix = "$$";
+string Option::IdPrefix = "_DupId";
 string Option::LambdaPrefix = "df_";
 string Option::Tab = "  ";
 
