@@ -22,6 +22,10 @@
 
 #include <cpp/base/base_includes.h>
 
+#ifndef LHASH
+#define LHASH LHASH_OF(CONF_VALUE)
+#endif
+
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
 
