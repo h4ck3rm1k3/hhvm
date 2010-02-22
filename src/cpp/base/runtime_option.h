@@ -159,6 +159,8 @@ public:
   static std::string CoreDumpEmail;
   static bool CoreDumpReport;
 
+  static bool EnableMagicQuotesGpc;
+
   static bool EnableStats;
   static bool EnableWebStats;
   static bool EnableMemoryStats;

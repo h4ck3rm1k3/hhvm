@@ -16,6 +16,7 @@
 
 #include <cpp/base/server/http_protocol.h>
 #include <cpp/base/zend/zend_url.h>
+#include <cpp/base/zend/zend_string.h>
 #include <cpp/base/program_functions.h>
 #include <cpp/base/runtime_option.h>
 #include <cpp/base/server/source_root_info.h>
@@ -289,6 +290,12 @@ void HttpProtocol::DecodeParameters(Variant &variables, const char *data,
       val++;
       len = p - val;
       char *value = url_decode(val, len);
+      if (RuntimeOption::EnableMagicQuotesGpc)
+      {
+        char *slashedvalue = string_addslashes(value, len);
+        free(value);
+        value = slashedvalue;
+      }
       String svalue(value, len, AttachString);
 
       register_variable(variables, (char*)sname.data(), svalue);
@@ -329,6 +336,12 @@ void HttpProtocol::DecodeCookies(Variant &variables, const char *data) {
         ++val;
         len = strlen(val);
         char *value = url_decode(val, len);
+        if (RuntimeOption::EnableMagicQuotesGpc)
+        {
+          char *slashedvalue = string_addslashes(value, len);
+          free(value);
+          value = slashedvalue;
+        }
         String svalue(value, len, AttachString);
 
         register_variable(variables, (char*)sname.data(), svalue, false);

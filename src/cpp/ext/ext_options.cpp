@@ -161,7 +161,7 @@ Array f_get_included_files() {
 }
 
 int f_get_magic_quotes_gpc() {
-  return 0;
+  return RuntimeOption::EnableMagicQuotesGpc ? 1 : 0;
 }
 
 int f_get_magic_quotes_runtime() {

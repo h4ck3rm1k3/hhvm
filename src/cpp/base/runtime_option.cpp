@@ -161,6 +161,8 @@ std::string RuntimeOption::ProfilerOutputDir;
 std::string RuntimeOption::CoreDumpEmail;
 bool RuntimeOption::CoreDumpReport = true;
 
+bool RuntimeOption::EnableMagicQuotesGpc = false;
+
 bool RuntimeOption::EnableStats = false;
 bool RuntimeOption::EnableWebStats = false;
 bool RuntimeOption::EnableMemoryStats = false;
@@ -385,6 +387,7 @@ void RuntimeOption::Load(Hdf &config) {
       ServerGracefulShutdownWait = ServerDanglingWait;
     }
     GzipCompressionLevel = server["GzipCompressionLevel"].getInt16(3);
+    EnableMagicQuotesGpc = server["EnableMagicQuotesGpc"].getBool(false);
     EnableKeepAlive = server["EnableKeepAlive"].getBool(true);
     EnableEarlyFlush = server["EnableEarlyFlush"].getBool(true);
     ForceChunkedEncoding = server["ForceChunkedEncoding"].getBool();
