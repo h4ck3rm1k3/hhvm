@@ -448,7 +448,11 @@ bool TestExtArray::test_array_merge() {
        ")\n");
   }
   {
+#ifndef __i386__    
     int64 id = 100000000000022;
+#else
+    int64 id = 100000000000022ll;
+#endif
     Array a = CREATE_MAP1(id, 1);
     Array b = CREATE_MAP1(id, 2);
     Array r = f_array_merge(2, a, CREATE_VECTOR1(b));

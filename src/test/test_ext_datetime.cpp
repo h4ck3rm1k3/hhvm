@@ -264,9 +264,11 @@ bool TestExtDatetime::test_date() {
 
  d = f_strtotime("1955-03-10 05:16:18");
  VS(f_date("Ymd", d), "19550310");
-
+#ifndef __i386__
  VS(f_date("r", -5000000000), "Tue, 23 Jul 1811 07:06:40 -0800");
-
+#else
+ VS(f_date("r", -5000000000ll), "Tue, 23 Jul 1811 07:06:40 -0800");
+#endif
   return Count(true);
 }
 
