@@ -28,7 +28,7 @@ include("${HPHP_HOME}/CMake/HPHPFunctions.cmake")
 include(CheckFunctionExists)
 
 IF(NOT EXISTS "src/third_party/libmbfl/mbfl/mbfilter.h")
-	message(FATAL_ERROR "Please setup the git submodule to pull dependencies")
+#	message(FATAL_ERROR "Please setup the git submodule to pull dependencies")
 ENDIF()
 
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/src)
