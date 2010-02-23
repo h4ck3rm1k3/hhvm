@@ -207,3 +207,25 @@ Had to change :
  `RuntimeOption::IncludeSearchPaths[0] == "."' failed.
  Core dumped: Aborted
  Aborted
+
+bug #12
+Check the debian packaging , it is missing important files.
+
+dpkg -c hiphop-php_0.1-1_i386.deb
+drwxr-xr-x root/root         0 2010-02-21 00:09 ./
+drwxr-xr-x root/root         0 2010-02-21 00:09 ./usr/
+drwxr-xr-x root/root         0 2010-02-21 00:09 ./usr/include/
+-rw-r--r-- root/root     16319 2010-02-20 11:25 ./usr/include/afdt.h
+drwxr-xr-x root/root         0 2010-02-21 00:04 ./usr/bin/
+drwxr-xr-x root/root         0 2010-02-21 00:04 ./usr/sbin/
+drwxr-xr-x root/root         0 2010-02-21 00:09 ./usr/share/
+drwxr-xr-x root/root         0 2010-02-21 00:09 ./usr/share/doc/
+drwxr-xr-x root/root         0 2010-02-21 00:09 ./usr/share/doc/hiphop-php/
+-rw-r--r-- root/root      3900 2010-02-20 23:21 ./usr/share/doc/hiphop-php/README.Debian.gz
+-rw-r--r-- root/root      1778 2010-02-20 11:25 ./usr/share/doc/hiphop-php/README.md
+-rw-r--r-- root/root       186 2010-02-20 11:27 ./usr/share/doc/hiphop-php/changelog.Debian.gz
+-rw-r--r-- root/root       425 2010-02-20 11:25 ./usr/share/doc/hiphop-php/CMakeLists.txt
+-rw-r--r-- root/root       733 2010-02-20 11:30 ./usr/share/doc/hiphop-php/copyright
+drwxr-xr-x root/root         0 2010-02-21 00:09 ./usr/lib/
+-rw-r--r-- root/root    719940 2010-02-21 00:09 ./usr/lib/libxhp.a
+-rw-r--r-- root/root     15552 2010-02-21 00:09 ./usr/lib/libafdt.a

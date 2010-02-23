@@ -17,8 +17,9 @@
 #include <cpp/base/util/request_local.h>
 #include <util/lock.h>
 #include <pcre.h>
-#include <regex.h>
-
+//#include <regex.h>
+#include <boost/cregex.hpp>
+//using namespace boost::;
 #define PREG_PATTERN_ORDER          1
 #define PREG_SET_ORDER              2
 #define PREG_OFFSET_CAPTURE         (1<<8)
@@ -1266,24 +1267,24 @@ int preg_last_error() {
 ///////////////////////////////////////////////////////////////////////////////
 // regexec
 
-static void php_reg_eprint(int err, regex_t *re) {
+  static void php_reg_eprint(int err, boost::regex_t *re) {
   char *buf = NULL, *message = NULL;
   size_t len;
   size_t buf_len;
 
 #ifdef REG_ITOA
   /* get the length of the message */
-  buf_len = regerror(REG_ITOA | err, re, NULL, 0);
+  buf_len = boost::regerror(REG_ITOA | err, re, NULL, 0);
   if (buf_len) {
     buf = (char *)malloc(buf_len);
     if (!buf) return; /* fail silently */
     /* finally, get the error message */
-    regerror(REG_ITOA | err, re, buf, buf_len);
+    boost::regerror(REG_ITOA | err, re, buf, buf_len);
   }
 #else
   buf_len = 0;
 #endif
-  len = regerror(err, re, NULL, 0);
+  len = boost::regerror(err, re, NULL, 0);
   if (len) {
     message = (char *)malloc(buf_len + len + 2);
     if (!message) {
@@ -1294,7 +1295,7 @@ static void php_reg_eprint(int err, regex_t *re) {
       buf_len += 1; /* so pointer math below works */
     }
     /* drop the message into place */
-    regerror(err, re, message + buf_len, len);
+    boost::regerror(err, re, message + buf_len, len);
     Logger::Warning("%s", message);
   }
   if (buf) free(buf);
@@ -1305,20 +1306,20 @@ Variant php_split(CStrRef spliton, CStrRef str, int count, bool icase) {
   const char *strp = str.data();
   const char *endp = strp + str.size();
 
-  regex_t re;
-  int copts = icase ? REG_ICASE : 0;
-  int err = regcomp(&re, spliton.data(), REG_EXTENDED | copts);
+  boost::regex_t re;
+  int copts = icase ? boost::REG_ICASE : 0;
+  int err = regcomp(&re, spliton.data(), boost::REG_EXTENDED | copts);
   if (err) {
     php_reg_eprint(err, &re);
     return false;
   }
 
   Array return_value = Array::Create();
-  regmatch_t subs[1];
+  boost::regmatch_t subs[1];
 
   /* churn through str, generating array entries as we go */
   while ((count == -1 || count > 1) &&
-         !(err = regexec(&re, strp, 1, subs, 0))) {
+         !(err = boost::regexec(&re, strp, 1, subs, 0))) {
     if (subs[0].rm_so == 0 && subs[0].rm_eo) {
       /* match is at start of string, return empty string */
       return_value.append("");
@@ -1326,7 +1327,7 @@ Variant php_split(CStrRef spliton, CStrRef str, int count, bool icase) {
       strp += subs[0].rm_eo;
     } else if (subs[0].rm_so == 0 && subs[0].rm_eo == 0) {
       /* No more matches */
-      regfree(&re);
+      boost::regfree(&re);
       Logger::Warning("Invalid Regular Expression to split()");
       return false;
     } else {
@@ -1350,9 +1351,9 @@ Variant php_split(CStrRef spliton, CStrRef str, int count, bool icase) {
   }
 
   /* see if we encountered an error */
-  if (err && err != REG_NOMATCH) {
+  if (err && err != boost::REG_NOMATCH) {
     php_reg_eprint(err, &re);
-    regfree(&re);
+    boost::regfree(&re);
     return false;
   }
 
@@ -1360,7 +1361,7 @@ Variant php_split(CStrRef spliton, CStrRef str, int count, bool icase) {
   int size = endp - strp;
   return_value.append(String(strp, size, CopyString));
 
-  regfree(&re);
+  boost::regfree(&re);
   return return_value;
 }
 

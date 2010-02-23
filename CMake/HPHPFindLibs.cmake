@@ -17,7 +17,7 @@
 
 # boost checks
 
-find_package(Boost 1.37.0 COMPONENTS system;program_options;filesystem REQUIRED)
+find_package(Boost 1.37.0 COMPONENTS system;program_options;filesystem;regex REQUIRED)
 include_directories(${Boost_INCLUDE_DIRS})
 link_directories(${Boost_LIBRARY_DIRS})
 

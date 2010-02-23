@@ -17,7 +17,9 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdarg.h>
-#include <regex.h>
+//#include <regex.h>
+#include <boost/cregex.hpp>
+
 #include "neo_misc.h"
 #include "neo_err.h"
 #include "neo_str.h"
@@ -387,7 +389,10 @@ BOOL reg_search (const char *re, const char *str)
   int errcode;
   char buf[256];
 
-  if ((errcode = regcomp(&search_re, re, REG_ICASE | REG_EXTENDED | REG_NOSUB)))
+  if ((errcode = regcomp(&search_re, re, 
+				REG_ICASE | 
+				REG_EXTENDED | 
+				REG_NOSUB)))
   {
     regerror (errcode, &search_re, buf, sizeof(buf));
     ne_warn ("Unable to compile regex %s: %s", re, buf);
