@@ -16,6 +16,13 @@ find_package(Boost 1.37.0 COMPONENTS system;program_options;filesystem REQUIRED)
 include_directories(${Boost_INCLUDE_DIRS})
 link_directories(${Boost_LIBRARY_DIRS})
 
+if (BOOST_VERSION EQUAL 104200)
+  #http://github.com/facebook/hiphop-php/commit/dd209e5e429b6039e27d72a764807eac950d4dfe
+  # Boost bug #3942 prevents us using 1.42
+  message("Warning:Boost 1.42 is not compatible with HipHop")
+endif()
+
+
 
 IF("$ENV{HPHP_HOME}" STREQUAL "")
 	message(FATAL_ERROR "You should set the HPHP_HOME environmental")
