@@ -32,11 +32,20 @@ include(HPHPSetup)
 
 include_directories(${CMAKE_CURRENT_SOURCE_DIR})
 
+
+## gets the HPHP_PROGRAM_NAME env variable for the program name 
+IF("$ENV{HPHP_PROGRAM_NAME}" STREQUAL "")
+    SET(HPHP_PROGRAM_NAME "program")
+ELSE("$ENV{HPHP_PROGRAM_NAME}" STREQUAL "")
+    SET(HPHP_PROGRAM_NAME $ENV{HPHP_PROGRAM_NAME})
+ENDIF("$ENV{HPHP_PROGRAM_NAME}" STREQUAL "")
+
 auto_sources(SOURCES "*.cpp" "RECURSE" "${CMAKE_CURRENT_SOURCE_DIR}/php")
 auto_sources(SOURCES2 "*.cpp" "RECURSE" "${CMAKE_CURRENT_SOURCE_DIR}/sys")
 auto_sources(SOURCES3 "*.cpp" "RECURSE" "${CMAKE_CURRENT_SOURCE_DIR}/cls")
 auto_sources(SOURCES4 "*.cpp" "RECURSE" "${CMAKE_CURRENT_SOURCE_DIR}/cpp")
-add_executable(program ${SOURCES} ${SOURCES2} ${SOURCES3} ${SOURCES4})
+#add_executable(program ${SOURCES} ${SOURCES2} ${SOURCES3} ${SOURCES4})
+add_executable(${HPHP_PROGRAM_NAME} ${SOURCES} ${SOURCES2} ${SOURCES3} ${SOURCES4})
 
 add_library(libhphp_runtime STATIC IMPORTED)
 SET_PROPERTY(TARGET libhphp_runtime PROPERTY IMPORTED_LOCATION "${HPHP_HOME}/bin/libhphp_runtime.a")

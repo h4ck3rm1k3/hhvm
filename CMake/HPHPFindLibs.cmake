@@ -128,6 +128,11 @@ include_directories(${ZLIB_INCLUDE_DIR})
 #oniguruma
 FIND_LIBRARY(ONIG_LIB onig)
 
+#http://github.com/facebook/hiphop-php/commit/4aab7a7d1350b3e4d4611c668250ce24529c8917
+if (ONIG_LIB STREQUAL "ONIG_LIB-NOTFOUND")
+  message(FATAL_ERROR "You need to install libonig")
+endif()
+
 #this uses my build : git@github.com:h4ck3rm1k3/libmbfl.git
 FIND_LIBRARY(MBFL_LIB mbfl)
 
