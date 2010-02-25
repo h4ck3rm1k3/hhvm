@@ -93,7 +93,12 @@ public:
   Variant(int64   v) : m_type(KindOfInt64 )   { m_data.num = v;}
   Variant(uint64  v) : m_type(KindOfInt64 )   { m_data.num = v;}
 
+#ifdef __X86_64__
+  Variant(ssize_t v) : m_type(KindOfInt64 )   { m_data.num = v;}
+#else
   Variant(long int v) : m_type(KindOfInt64 )   { m_data.num = v;} //see BUG #1 in debian/README.Debian
+#endif
+
 
   Variant(double  v) : m_type(KindOfDouble )  { m_data.dbl = v;}
   Variant(litstr  v) : m_type(LiteralString)  { m_data.str = v;}
