@@ -15,6 +15,13 @@
 #   +----------------------------------------------------------------------+
 #
 
+# no I dont use this functionality, yet -h4ck3rm1k3
+# these are my hacks :
+set( NEED_CUSTOM_LIBEVENT 0)
+set( NEED_CUSTOM_CURL 0)
+set( NEED_ICU_VERSION VERSION_42)
+
+
 # boost checks
 
 find_package(Boost 1.37.0 COMPONENTS system;program_options;filesystem;regex REQUIRED)
@@ -34,10 +41,20 @@ find_package(LibEvent REQUIRED)
 include_directories(${LIBEVENT_INCLUDE_DIR})
 
 set(CMAKE_REQUIRED_LIBRARIES "${LIBEVENT_LIB}")
-#CHECK_FUNCTION_EXISTS("evhttp_bind_socket_with_fd" HAVE_CUSTOM_LIBEVENT)
-#if (NOT HAVE_CUSTOM_LIBEVENT)
-#	message(SEND_ERROR "Custom libevent is required with HipHop patches")
-#endif ()
+
+
+if (NEED_CUSTOM_LIBEVENT)
+CHECK_FUNCTION_EXISTS("evhttp_bind_socket_with_fd" HAVE_CUSTOM_LIBEVENT)
+if (NOT HAVE_CUSTOM_LIBEVENT)
+	message(SEND_ERROR "Custom libevent is required with HipHop patches")
+#applied patch http://github.com/facebook/hiphop-php/commit/3d9c41ecdfed0fa1d9a332f8a9ae137e4b77bc93
+  unset(HAVE_CUSTOM_LIBEVENT CACHE)
+  unset(LIBEVENT_INCLUDE_DIR CACHE)
+  unset(LIBEVENT_LIB CACHE)
+  unset(LibEvent_FOUND CACHE)
+endif ()
+
+
 set(CMAKE_REQUIRED_LIBRARIES)
 
 # libafdt checks
@@ -67,11 +84,20 @@ endif()
 find_package(CURL REQUIRED)
 include_directories(${CURL_INCLUDE_DIR})
 
+
 set(CMAKE_REQUIRED_LIBRARIES "${CURL_LIBRARIES}")
+
+if (NEED_CUSTOM_CURL)
+
 CHECK_FUNCTION_EXISTS("curl_multi_select" HAVE_CUSTOM_CURL)
-# if (NOT HAVE_CUSTOM_CURL)
-#         message(SEND_ERROR "Custom libcurl is required with HipHop patches ${HAVE_CUSTOM_CURL}")
-# endif ()
+ if (NOT HAVE_CUSTOM_CURL)
+         message(SEND_ERROR "Custom libcurl is required with HipHop patches ${HAVE_CUSTOM_CURL}")
+    unset(HAVE_CUSTOM_CURL CACHE)
+    unset(CURL_INCLUDE_DIR CACHE)
+    unset(CURL_LIBRARIES CACHE)
+    unset(CURL_FOUND CACHE)
+endif ()
+endif ()
 set(CMAKE_REQUIRED_LIBRARIES)
 
 # LibXML2 checks
@@ -95,10 +121,19 @@ include_directories("${HPHP_HOME}/src/third_party/libmbfl/filter")
 
 find_package(ICU REQUIRED)
 if (ICU_FOUND)
-	# if (ICU_VERSION VERSION_LESS "4.2")
-	# 	message(SEND_ERROR "ICU is too old, found ${ICU_VERSION} and we need 4.2")
-	# endif (ICU_VERSION VERSION_LESS "4.2")
-	include_directories(${ICU_INCLUDE_DIRS})
+
+  if (NEED_ICU_VERSION VERSION_42)
+  if (ICU_VERSION VERSION_LESS "4.2")
+     	message(SEND_ERROR "ICU is too old, found ${ICU_VERSION} and we need 4.2")
+	unset(ICU_FOUND CACHE)
+	unset(ICU_INCLUDE_DIRS CACHE)
+	unset(ICU_LIBRARIES CACHE)
+
+  endif (ICU_VERSION VERSION_LESS "4.2")
+  endif (NEED_ICU_VERSION VERSION_42)
+   
+  include_directories(${ICU_INCLUDE_DIRS})
+
 endif (ICU_FOUND)
 
 # (google heap OR cpu profiler) AND libunwind 
