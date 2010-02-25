@@ -1,4 +1,5 @@
-CMAKE_MINIMUM_REQUIRED(VERSION 2.6 FATAL_ERROR)
+#http://github.com/facebook/hiphop-php/commit/f88c396124e5a5a789ed9b358b5e9b35eeacf586
+CMAKE_MINIMUM_REQUIRED(VERSION 2.6.4 FATAL_ERROR)
 PROJECT(hphp C CXX)
 
 SET( INCLUDE_DIR "/media/NewFoundSpace/usr/local/include/")
