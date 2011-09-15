@@ -68,7 +68,7 @@ LibEventTransport::LibEventTransport(LibEventServer *server,
     m_method = Transport::UnknownMethod;
     break;
   }
-  m_extended_method = m_request->ext_method;
+  m_extended_method = "TODO"; //m_request->ext_method; TODO:HACK
 
   ASSERT(m_request->input_headers);
   for (evkeyval *p = ((m_evkeyvalq*)m_request->input_headers)->tqh_first; p;
