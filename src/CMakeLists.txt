@@ -119,3 +119,28 @@ add_subdirectory(compiler)
 add_subdirectory(hphp)
 
 add_subdirectory(test)
+
+
+# # here are the files that the runtime used
+# system/classes/stdclass.php
+# system/classes/exception.php
+# system/classes/arrayaccess.php
+# system/classes/iterator.php
+# system/classes/reflection.php
+# system/classes/splobjectstorage.php
+# system/classes/directory.php
+# system/classes/splfile.php
+# system/classes/debugger.php
+# system/classes/xhprof.php
+# system/classes/directoryiterator.php
+# system/classes/soapfault.php
+# system/classes/fbmysqllexer.php
+# system/globals/symbols.php
+# system/globals/constants.php
+
+FILE(GLOB systemfiles "${CMAKE_CURRENT_SOURCE_DIR}/system/classes/*.php")
+INSTALL(FILES ${systemfiles} DESTINATION share/hphphome/src/system/classes/)
+
+FILE(GLOB systemfilesg "${CMAKE_CURRENT_SOURCE_DIR}/system/globals/*.php")
+INSTALL(FILES ${systemfilesg} DESTINATION share/hphphome/src/system/globals/)
+

@@ -811,6 +811,12 @@ void VariableTable::checkSystemGVOrder(SymbolSet &variants,
   };
   if (variants.size() < max ||
       sizeof(sgvNames)/sizeof(sgvNames[0]) != max) {
+
+    cerr << "size of variants:" << variants.size() << endl;
+    cerr << "max:"<< max << endl;
+    cerr << "Size of names" <<  sizeof(sgvNames) << endl;
+    cerr << "Size of element " << sizeof(sgvNames[0]) << endl;
+
     assert(false);
   }
   unsigned int i = 0;
