@@ -27,3 +27,5 @@ IF(CMAKE_SIZEOF_VOID_P EQUAL 4)
 	message(STATUS "32-bit support is experimental, things may be broken")
 	message(STATUS "------------")
 ENDIF()
+
+include("${CMAKE_CURRENT_SOURCE_DIR}/CMake/HPHPInstall.cmake")
