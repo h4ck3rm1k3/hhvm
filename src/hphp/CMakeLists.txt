@@ -23,3 +23,4 @@ add_custom_command(TARGET hphp
         COMMENT "Building hphpi"
 )
 
+INSTALL(PROGRAMS ${HPHP_HOME}/builddir/src/hphp/hphp  DESTINATION bin)
