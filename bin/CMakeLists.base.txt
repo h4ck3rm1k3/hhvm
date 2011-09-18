@@ -36,6 +36,11 @@ SET(CMAKE_MODULE_PATH "${HPHP_HOME}/CMake" ${CMAKE_MODULE_PATH})
 
 include_directories(${CMAKE_CURRENT_SOURCE_DIR})
 
+# the hphp includes from the debian packaging
+include_directories("/usr/include/hphp")
+include_directories("/usr/include/hphp/system/gen")
+
+
 include(HPHPFunctions)
 include(CheckFunctionExists)
 include(HPHPSetup)
