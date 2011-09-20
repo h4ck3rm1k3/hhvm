@@ -41,7 +41,7 @@ class TestExtCurl : public TestCppExt {
   bool test_curl_multi_add_handle();
   bool test_curl_multi_remove_handle();
   bool test_curl_multi_exec();
-  bool test_curl_multi_select();
+
   bool test_curl_multi_getcontent();
   bool test_curl_multi_info_read();
   bool test_curl_multi_close();

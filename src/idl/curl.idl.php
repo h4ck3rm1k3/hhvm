@@ -379,30 +379,6 @@ DefineFunction(
     ),
   ));
 
-DefineFunction(
-  array(
-    'name'   => "curl_multi_select",
-    'desc'   => "Blocks until there is activity on any of the curl_multi connections.",
-    'flags'  =>  HasDocComment,
-    'return' => array(
-      'type'   => Variant,
-      'desc'   => "On success, returns the number of descriptors contained in, the descriptor sets. On failure, this function will return -1 on a select failure or timeout (from the underlying select system call).",
-    ),
-    'args'   => array(
-      array(
-        'name'   => "mh",
-        'type'   => Resource,
-        'desc'   => "A cURL multi handle returned by curl_multi_init().",
-      ),
-      array(
-        'name'   => "timeout",
-        'type'   => Double,
-        'value'  => "1.0",
-        'desc'   => "Time, in seconds, to wait for a response.",
-      ),
-    ),
-    'taint_observer' => false,
-  ));
 
 DefineFunction(
   array(

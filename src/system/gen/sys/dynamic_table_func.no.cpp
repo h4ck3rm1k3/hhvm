@@ -18609,25 +18609,6 @@ Variant ifa_ldap_first_entry(void *extra, int count, INVOKE_FEW_ARGS_IMPL_ARGS) 
   CVarRef arg1(a1);
   return (x_ldap_first_entry(arg0, arg1));
 }
-Variant i_curl_multi_select(void *extra, CArrRef params) {
-  int count ATTRIBUTE_UNUSED = params.size();
-  if (UNLIKELY(count < 1 || count > 2)) return throw_wrong_arguments("curl_multi_select", count, 1, 2, 1);
-  {
-    ArrayData *ad(params.get());
-    ssize_t pos = ad ? ad->iter_begin() : ArrayData::invalid_index;
-    CVarRef arg0((ad->getValue(pos)));
-    if (count <= 1) return (x_curl_multi_select(arg0));
-    CVarRef arg1((ad->getValue(pos = ad->iter_advance(pos))));
-    return (x_curl_multi_select(arg0, arg1));
-  }
-}
-Variant ifa_curl_multi_select(void *extra, int count, INVOKE_FEW_ARGS_IMPL_ARGS) {
-  if (UNLIKELY(count < 1 || count > 2)) return throw_wrong_arguments("curl_multi_select", count, 1, 2, 1);
-  CVarRef arg0(a0);
-  if (count <= 1) return (x_curl_multi_select(arg0));
-  CVarRef arg1(a1);
-  return (x_curl_multi_select(arg0, arg1));
-}
 Variant i_magickswirlimage(void *extra, CArrRef params) {
   int count ATTRIBUTE_UNUSED = params.size();
   if (UNLIKELY(count != 2)) return throw_wrong_arguments("magickswirlimage", count, 2, 2, 1);
@@ -38984,7 +38965,7 @@ CallInfo ci_ob_get_clean((void*)&i_ob_get_clean, (void*)&ifa_ob_get_clean, 0, 0,
 CallInfo ci_expm1((void*)&i_expm1, (void*)&ifa_expm1, 1, 0, 0x0000000000000000LL);
 CallInfo ci_openssl_decrypt((void*)&i_openssl_decrypt, (void*)&ifa_openssl_decrypt, 5, 0, 0x0000000000000000LL);
 CallInfo ci_ldap_first_entry((void*)&i_ldap_first_entry, (void*)&ifa_ldap_first_entry, 2, 0, 0x0000000000000000LL);
-CallInfo ci_curl_multi_select((void*)&i_curl_multi_select, (void*)&ifa_curl_multi_select, 2, 0, 0x0000000000000000LL);
+
 CallInfo ci_magickswirlimage((void*)&i_magickswirlimage, (void*)&ifa_magickswirlimage, 2, 0, 0x0000000000000000LL);
 CallInfo ci_mb_ereg_search_regs((void*)&i_mb_ereg_search_regs, (void*)&ifa_mb_ereg_search_regs, 2, 0, 0x0000000000000000LL);
 CallInfo ci_ldap_errno((void*)&i_ldap_errno, (void*)&ifa_ldap_errno, 1, 0, 0x0000000000000000LL);
@@ -42227,12 +42208,6 @@ bool get_call_info_builtin(const CallInfo *&ci, void *&extra, const char *s, int
     case 1489:
       HASH_GUARD(0x054503DBBF5CA5D1LL, imagecopy) {
         ci = &ci_imagecopy;
-        return true;
-      }
-      break;
-    case 1493:
-      HASH_GUARD(0x43901543EA8625D5LL, curl_multi_select) {
-        ci = &ci_curl_multi_select;
         return true;
       }
       break;

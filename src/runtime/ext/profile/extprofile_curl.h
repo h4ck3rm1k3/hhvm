@@ -103,10 +103,6 @@ inline Variant x_curl_multi_exec(CObjRef mh, VRefParam still_running) {
   return f_curl_multi_exec(mh, still_running);
 }
 
-inline Variant x_curl_multi_select(CObjRef mh, double timeout = 1.0) {
-  FUNCTION_INJECTION_BUILTIN(curl_multi_select);
-  return f_curl_multi_select(mh, timeout);
-}
 
 inline Variant x_fb_curl_multi_fdset(CObjRef mh, VRefParam read_fd_set, VRefParam write_fd_set, VRefParam exc_fd_set, VRefParam max_fd = null_object) {
   FUNCTION_INJECTION_BUILTIN(fb_curl_multi_fdset);

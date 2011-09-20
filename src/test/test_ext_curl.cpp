@@ -88,7 +88,7 @@ bool TestExtCurl::RunTests(const std::string &which) {
   RUN_TEST(test_curl_multi_add_handle);
   RUN_TEST(test_curl_multi_remove_handle);
   RUN_TEST(test_curl_multi_exec);
-  RUN_TEST(test_curl_multi_select);
+
   RUN_TEST(test_curl_multi_getcontent);
   RUN_TEST(test_curl_multi_info_read);
   RUN_TEST(test_curl_multi_close);
@@ -250,15 +250,6 @@ bool TestExtCurl::test_curl_multi_exec() {
   return Count(true);
 }
 
-bool TestExtCurl::test_curl_multi_select() {
-  Object mh = f_curl_multi_init();
-  Variant c1 = f_curl_init(String(get_request_uri()));
-  Variant c2 = f_curl_init(String(get_request_uri()));
-  f_curl_multi_add_handle(mh, c1);
-  f_curl_multi_add_handle(mh, c2);
-  VS(f_curl_multi_select(mh), 0);
-  return Count(true);
-}
 
 bool TestExtCurl::test_curl_multi_getcontent() {
   Object mh = f_curl_multi_init();
