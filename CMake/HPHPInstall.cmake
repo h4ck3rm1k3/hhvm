@@ -4,6 +4,10 @@ cmake_minimum_required(VERSION 2.8)
 FILE(GLOB binfiles "${CMAKE_CURRENT_SOURCE_DIR}/bin/*")
 INSTALL(FILES ${binfiles} DESTINATION share/hphphome/bin/)
 
+# hphi 
+FILE(GLOB binfiles_hphpi "${CMAKE_CURRENT_SOURCE_DIR}/src/hphpi/hphpi*")
+INSTALL(FILES ${binfiles_hphpi} DESTINATION share/hphphome/bin/)
+
 
 # copy the cmake files
 FILE(GLOB cmakefiles "${CMAKE_CURRENT_SOURCE_DIR}/CMake/*")
