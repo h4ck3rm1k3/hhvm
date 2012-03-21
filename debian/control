@@ -8,7 +8,7 @@ Homepage: http://github.com/h4ck3rm1k3/hiphop-php
 
 Package: hiphop-php
 Architecture: any
-Depends: ${shlibs:Depends}, ${misc:Depends},  libtbb2, libmcrypt4, mcrypt, libonig2, bison, cmake, curl, flex, libcurl3, libgnutls-dev, libevent-1.4-2, libcurl4-openssl-dev, libevent-dev, php5-dev, libpcre3-dev
+Depends: ${shlibs:Depends}, ${misc:Depends},  libtbb2, libmcrypt4, mcrypt, libonig2, bison, cmake, curl, flex, libcurl3, libgnutls-dev, libevent-1.4-2,  libevent-dev, php5-dev, libpcre3-dev
 Description: the php to c++ compiler
  experimental debian packaging
 
