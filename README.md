@@ -71,3 +71,34 @@ Before changes can be accepted a [Contributors Licensing Agreement](http://devel
 ## Running HipHop
 
 Please see [the wiki page](http://wiki.github.com/facebook/hiphop-php/running-hiphop)
+
+
+## Debian Build 
+sudo apt-get install debootstrap
+mkdir ~/debian_squeeze/
+sudo debootstrap squeeze squeeze
+
+sudo mount --bind /proc/ proc/
+sudo mount --bind /dev dev
+sudo mount --bind /dev/pts dev/pts
+
+sudo chroot .
+
+------ inside of debian
+
+apt-get update
+apt-get install gcc
+apt-get install build-essential git
+
+git clone git://github.com/h4ck3rm1k3/hiphop-php.git
+mv hiphop-php hiphop-php-0.1
+
+apt-get install debhelper cmake libtbb-dev libmcrypt-dev re2c binutils-dev libonig-dev libmysqlclient15-dev libgd2-xpm-dev libmemcached-dev libboost-all-dev libpc\
+re3-dev libevent-dev libboost-all-dev libxml2-dev libbz2-dev libncurses-dev libreadline-dev libc-client2007e-dev libcap-dev
+
+apache2-mpm-prefork apache2-utils apache2.2-bin apache2.2-common autoconf automake autotools-dev bison curl flex libapache2-mod-php5 libapr1 libaprutil1
+  libaprutil1-dbd-sqlite3 libaprutil1-ldap libcurl4-openssl-dev libltdl-dev libltdl7 libmhash2 libqdbm14 libssh2-1-dev libtool m4 mcrypt php5-cli php5-common
+  php5-dev php5-suhosin shtool ssl-cert emacs23-nox
+
+#build the deb
+dpkg-buildpackage -uc -us -nc
