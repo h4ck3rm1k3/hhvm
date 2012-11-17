@@ -35,7 +35,7 @@ inline Variant x_assert(CVarRef assertion) {
   return f_assert(assertion);
 }
 
-inline int x_dl(CStrRef library) {
+inline int64 x_dl(CStrRef library) {
   FUNCTION_INJECTION_BUILTIN(dl);
   return f_dl(library);
 }
@@ -95,12 +95,12 @@ inline Array x_inclued_get_data() {
   return f_inclued_get_data();
 }
 
-inline int x_get_magic_quotes_gpc() {
+inline int64 x_get_magic_quotes_gpc() {
   FUNCTION_INJECTION_BUILTIN(get_magic_quotes_gpc);
   return f_get_magic_quotes_gpc();
 }
 
-inline int x_get_magic_quotes_runtime() {
+inline int64 x_get_magic_quotes_runtime() {
   FUNCTION_INJECTION_BUILTIN(get_magic_quotes_runtime);
   return f_get_magic_quotes_runtime();
 }
@@ -115,27 +115,27 @@ inline Variant x_getenv(CStrRef varname) {
   return f_getenv(varname);
 }
 
-inline int x_getlastmod() {
+inline int64 x_getlastmod() {
   FUNCTION_INJECTION_BUILTIN(getlastmod);
   return f_getlastmod();
 }
 
-inline int x_getmygid() {
+inline int64 x_getmygid() {
   FUNCTION_INJECTION_BUILTIN(getmygid);
   return f_getmygid();
 }
 
-inline int x_getmyinode() {
+inline int64 x_getmyinode() {
   FUNCTION_INJECTION_BUILTIN(getmyinode);
   return f_getmyinode();
 }
 
-inline int x_getmypid() {
+inline int64 x_getmypid() {
   FUNCTION_INJECTION_BUILTIN(getmypid);
   return f_getmypid();
 }
 
-inline int x_getmyuid() {
+inline int64 x_getmyuid() {
   FUNCTION_INJECTION_BUILTIN(getmyuid);
   return f_getmyuid();
 }
@@ -165,7 +165,7 @@ inline bool x_clock_settime(int clk_id, int64 sec, int64 nsec) {
   return f_clock_settime(clk_id, sec, nsec);
 }
 
-inline int x_cpu_get_count() {
+inline int64 x_cpu_get_count() {
   return f_cpu_get_count();
 }
 
@@ -196,6 +196,11 @@ inline void x_ini_restore(CStrRef varname) {
 inline String x_ini_set(CStrRef varname, CStrRef newvalue) {
   FUNCTION_INJECTION_BUILTIN(ini_set);
   return f_ini_set(varname, newvalue);
+}
+
+inline int64 x_memory_get_allocation() {
+  FUNCTION_NOPROFILE_BUILTIN(memory_get_allocation);
+  return f_memory_get_allocation();
 }
 
 inline int64 x_memory_get_peak_usage(bool real_usage = false) {
@@ -268,12 +273,32 @@ inline Variant x_version_compare(CStrRef version1, CStrRef version2, CStrRef sop
   return f_version_compare(version1, version2, sop);
 }
 
+inline bool x_gc_enabled() {
+  FUNCTION_INJECTION_BUILTIN(gc_enabled);
+  return f_gc_enabled();
+}
+
+inline void x_gc_enable() {
+  FUNCTION_INJECTION_BUILTIN(gc_enable);
+  f_gc_enable();
+}
+
+inline void x_gc_disable() {
+  FUNCTION_INJECTION_BUILTIN(gc_disable);
+  f_gc_disable();
+}
+
+inline int64 x_gc_collect_cycles() {
+  FUNCTION_INJECTION_BUILTIN(gc_collect_cycles);
+  return f_gc_collect_cycles();
+}
+
 inline String x_zend_logo_guid() {
   FUNCTION_INJECTION_BUILTIN(zend_logo_guid);
   return f_zend_logo_guid();
 }
 
-inline int x_zend_thread_id() {
+inline int64 x_zend_thread_id() {
   FUNCTION_INJECTION_BUILTIN(zend_thread_id);
   return f_zend_thread_id();
 }

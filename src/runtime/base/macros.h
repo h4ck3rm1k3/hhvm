@@ -17,6 +17,8 @@
 #ifndef __HPHP_MACROS_H__
 #define __HPHP_MACROS_H__
 
+#include "util/assert.h"
+
 namespace HPHP {
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -79,66 +81,63 @@ namespace HPHP {
 #define INVOKE_FEW_ARGS_PASS6  INVOKE_FEW_ARGS_PASS3, a3, a4, a5
 #define INVOKE_FEW_ARGS_PASS10 INVOKE_FEW_ARGS_PASS6, a6, a7, a8, a9
 
-#if INVOKE_FEW_ARGS_COUNT == 3
-#define INVOKE_FEW_ARGS_DECL_ARGS INVOKE_FEW_ARGS_DECL3
-#define INVOKE_FEW_ARGS_PASS_ARGS INVOKE_FEW_ARGS_PASS3
-#define INVOKE_FEW_ARGS_IMPL_ARGS INVOKE_FEW_ARGS_IMPL3
-#elif INVOKE_FEW_ARGS_COUNT == 6
-#define INVOKE_FEW_ARGS_DECL_ARGS INVOKE_FEW_ARGS_DECL6
-#define INVOKE_FEW_ARGS_PASS_ARGS INVOKE_FEW_ARGS_PASS6
-#define INVOKE_FEW_ARGS_IMPL_ARGS INVOKE_FEW_ARGS_IMPL6
-#elif INVOKE_FEW_ARGS_COUNT == 10
-#define INVOKE_FEW_ARGS_DECL_ARGS INVOKE_FEW_ARGS_DECL10
-#define INVOKE_FEW_ARGS_PASS_ARGS INVOKE_FEW_ARGS_PASS10
-#define INVOKE_FEW_ARGS_IMPL_ARGS INVOKE_FEW_ARGS_IMPL10
-#else
-#error Bad INVOKE_FEW_ARGS_COUNT
-#endif
+#define INVOKE_FEW_ARGS_PASS_ARR3 args[0], args[1], args[2]
+#define INVOKE_FEW_ARGS_PASS_ARR6 INVOKE_FEW_ARGS_PASS_ARR3, \
+    args[3], args[4], args[5]
+#define INVOKE_FEW_ARGS_PASS_ARR10 INVOKE_FEW_ARGS_PASS_ARR6, \
+    args[6], args[7], args[8], args[9]
 
-#define DECLARE_STATIC_PROP_OPS                                         \
-  public:                                                               \
-  static const MethodCallInfoTable s_call_info_table[];                 \
-  static const int s_call_info_index[];                                 \
+#define INVOKE_FEW_ARGS_HELPER(kind,num) kind##num
+#define INVOKE_FEW_ARGS(kind,num) \
+  INVOKE_FEW_ARGS_HELPER(INVOKE_FEW_ARGS_##kind,num)
 
-#define DECLARE_CLASS_COMMON_NO_SWEEP(cls, originalName) \
+
+#define INVOKE_FEW_ARGS_DECL_ARGS INVOKE_FEW_ARGS(DECL,INVOKE_FEW_ARGS_COUNT)
+#define INVOKE_FEW_ARGS_PASS_ARGS INVOKE_FEW_ARGS(PASS,INVOKE_FEW_ARGS_COUNT)
+#define INVOKE_FEW_ARGS_PASS_ARR_ARGS \
+  INVOKE_FEW_ARGS(PASS_ARR,INVOKE_FEW_ARGS_COUNT)
+#define INVOKE_FEW_ARGS_IMPL_ARGS INVOKE_FEW_ARGS(IMPL,INVOKE_FEW_ARGS_COUNT)
+
+#define DECLARE_CLASS_COMMON_NO_SWEEP(cls, originalName)                \
   DECLARE_OBJECT_ALLOCATION_NO_SWEEP(c_##cls)                           \
   public:                                                               \
   static const char *GetClassName() { return #originalName; }           \
   static StaticString s_class_name;                                     \
-  static const InstanceOfInfo s_instanceof_table[];                     \
-  static const int s_instanceof_index[];                                \
-  virtual const ObjectStaticCallbacks *o_get_callbacks() const {        \
-    return cw_##cls; }                                                  \
+  static HPHP::VM::Class* s_cls;                                        \
 
-#define DECLARE_CLASS_COMMON(cls, originalName) \
+#define DECLARE_CLASS_COMMON_NO_ALLOCATION(cls, originalName)           \
+  public:                                                               \
+  static void *ObjAllocatorInitSetup;                                   \
+  static const char *GetClassName() { return #originalName; }           \
+  static StaticString s_class_name;                                     \
+  static HPHP::VM::Class* s_cls;                                        \
+
+#define DECLARE_CLASS_COMMON(cls, originalName)                         \
   DECLARE_OBJECT_ALLOCATION(c_##cls)                                    \
   public:                                                               \
   static const char *GetClassName() { return #originalName; }           \
   static StaticString s_class_name;                                     \
-  static const InstanceOfInfo s_instanceof_table[];                     \
-  static const int s_instanceof_index[];                                \
-  virtual const ObjectStaticCallbacks *o_get_callbacks() const {        \
-    return cw_##cls; }                                                  \
+  static HPHP::VM::Class* s_cls;                                        \
 
 #define DECLARE_CLASS_NO_SWEEP(cls, originalName, parent)               \
   DECLARE_CLASS_COMMON_NO_SWEEP(cls, originalName)                      \
-  DECLARE_STATIC_PROP_OPS                                               \
+  public:                                                               \
+
+#define DECLARE_CLASS_NO_ALLOCATION(cls, originalName, parent)          \
+  DECLARE_CLASS_COMMON_NO_ALLOCATION(cls, originalName)                 \
   public:                                                               \
 
 #define DECLARE_CLASS(cls, originalName, parent)                        \
   DECLARE_CLASS_COMMON(cls, originalName)                               \
-  DECLARE_STATIC_PROP_OPS                                               \
   public:                                                               \
 
 #define DECLARE_DYNAMIC_CLASS(cls, originalName, parent)                \
   DECLARE_CLASS_COMMON_NO_SWEEP(cls, originalName)                      \
-  DECLARE_STATIC_PROP_OPS                                               \
   public:                                                               \
-
-#define CLASS_CHECK(exp) (checkClassExists(s, g), (exp))
 
 #define IMPLEMENT_CLASS_COMMON(cls)                                     \
   StaticString c_##cls::s_class_name(c_##cls::GetClassName());          \
+  HPHP::VM::Class* c_##cls::s_cls = NULL;                               \
 
 #define IMPLEMENT_CLASS(cls)                                            \
   IMPLEMENT_CLASS_COMMON(cls)                                           \
@@ -149,45 +148,22 @@ namespace HPHP {
   IMPLEMENT_OBJECT_ALLOCATION_NO_DEFAULT_SWEEP(c_##cls)                 \
 
 #define DECLARE_METHOD_INVOKE_HELPERS(methname)                         \
-  static CallInfo ci_##methname;                                        \
   static Variant ifa_##methname(MethodCallPackage &mcp,                 \
                                 int count, INVOKE_FEW_ARGS_IMPL_ARGS);  \
   static Variant i_##methname(MethodCallPackage &mcp, CArrRef params);  \
 
 #define DECLARE_METHOD_INVOKE_WRAPPER_HELPERS(methname)                 \
-  static CallInfo ciw_##methname;                                       \
   static Variant iwfa_##methname(void *self,                            \
                                  int count, INVOKE_FEW_ARGS_IMPL_ARGS); \
   static Variant iw_##methname(void *self, CArrRef params);             \
-
-#define DECLARE_METHOD_INVOKE_HELPERS_NOPARAM(methname)                 \
-  static CallInfo ci_##methname;                                        \
-  static Variant ifa_##methname(MethodCallPackage &mcp,                 \
-                                int count, INVOKE_FEW_ARGS_IMPL_ARGS);  \
-  static Variant i_##methname(MethodCallPackage &mcp, CArrRef params) { \
-    return ((CallInfo::MethInvoker0Args)ifa_##methname)(mcp, 0);        \
-  }                                                                     \
-
-#define DECLARE_METHOD_INVOKE_WRAPPER_HELPERS_NOPARAM(methname)         \
-  static CallInfo ciw_##methname;                                       \
-  static Variant iwfa_##methname(void *self,                            \
-                                 int count, INVOKE_FEW_ARGS_IMPL_ARGS); \
-  static Variant iw_##methname(void *self, CArrRef params) {            \
-    return ((CallInfo::FuncInvoker0Args)iwfa_##methname)(self, 0);      \
-  }                                                                     \
 
 //////////////////////////////////////////////////////////////////////////////
 // jump table entries
 
 #define HASH_GUARD(code, f)                                             \
   if (hash == code && !strcasecmp(s, #f))
-#define HASH_GUARD_LITSTR(code, str)                                    \
-  if (hash == code && (str.data() == s || !strcasecmp(s, str.data())))
 #define HASH_GUARD_STRING(code, f)                                      \
   if (hash == code && !strcasecmp(s.data(), #f))
-#define HASH_EXISTS_STRING(code, str, len)                              \
-  if (hash == code && s.length() == len &&                              \
-      memcmp(s.data(), str, len) == 0) return true
 #define HASH_INITIALIZED(code, name, str)                               \
   if (hash == code && strcmp(s, str) == 0)                              \
     return isInitialized(name)
@@ -216,19 +192,6 @@ do { \
 #define HASH_INDEX(code, str, index)                                    \
   if (hash == code && strcmp(s, #str) == 0) { return index;}
 
-#define HASH_INVOKE(code, f)                                            \
-  if (hash == code && !strcasecmp(s, #f)) return i_ ## f(NULL, params)
-#define HASH_INVOKE_REDECLARED(code, f)                                 \
-  if (hash == code && !strcasecmp(s, #f)) return g->i_ ## f(NULL, params)
-#define HASH_INVOKE_METHOD(code, f)                                     \
-  if (hash == code && !strcasecmp(s, #f)) return o_i_ ## f(params)
-#define HASH_INVOKE_CONSTRUCTOR(code, f, id)                            \
-  if (hash == code && !strcasecmp(s, #f)) return o_i_ ## id(params)
-#define HASH_INCLUDE(code, file, fun)                                   \
-  if (hash == code && !strcmp(file, s.c_str())) {                       \
-    return pm_ ## fun(once, variables);                                 \
-  }
-
 ///////////////////////////////////////////////////////////////////////////////
 // global variable macros
 
@@ -254,7 +217,7 @@ do { \
 #define LOOP_COUNTER(n)
 #define LOOP_COUNTER_CHECK(n)                                           \
   if ((++lc & 1023) == 0) {                                             \
-    check_request_timeout_ex(fi, lc);                                   \
+    check_request_timeout_ex(lc);                                       \
   }
 #define LOOP_COUNTER_CHECK_INFO(n)                                      \
   if ((++lc & 1023) == 0) {                                             \
@@ -268,7 +231,7 @@ do { \
 
 #ifdef EXECUTION_PROFILER
 #define EXECUTION_PROFILER_INJECTION(n) \
-  ExecutionProfiler ep(fi.getThreadInfo(), n);
+  ExecutionProfiler ep(ThreadInfo::s_threadInfo.getNoCheck(), n);
 #else
 #define EXECUTION_PROFILER_INJECTION(n)
 #endif
@@ -282,10 +245,10 @@ do { \
 // Get global variables from thread info.
 #define DECLARE_GLOBAL_VARIABLES_INJECTION(g)       \
   GlobalVariables *g ATTRIBUTE_UNUSED =  \
-    fi.getThreadInfo()->m_globals;
+    ThreadInfo::s_threadInfo->m_globals;
 #define DECLARE_SYSTEM_GLOBALS_INJECTION(g)         \
   SystemGlobals *g ATTRIBUTE_UNUSED =    \
-    (SystemGlobals *)fi.getThreadInfo()->m_globals;
+    (SystemGlobals *)ThreadInfo::s_threadInfo->m_globals;
 
 #define CHECK_ONCE(n)                             \
   {                                               \
@@ -295,6 +258,32 @@ do { \
   }
 
 // Stack frame injection is also for correctness, and cannot be disabled.
+#ifdef HHVM
+
+#define FRAME_INJECTION_FUNCTION_MEM(n) \
+  FrameInjectionVM fi;
+#define FRAME_INJECTION_FUNCTION_NOMEM(n) \
+  FrameInjectionVM fi;
+#define FRAME_INJECTION_FUNCTION_FS(n, fs) \
+  FrameInjectionVM fi;
+#define FRAME_INJECTION_STATIC_METHOD_MEM(n) \
+  FrameInjectionVM fi;
+#define FRAME_INJECTION_STATIC_METHOD_NOMEM(n) \
+  FrameInjectionVM fi;
+#define FRAME_INJECTION_OBJECT_METHOD_MEM(n) \
+  FrameInjectionVM fi;
+#define FRAME_INJECTION_OBJECT_METHOD_NOMEM(n) \
+  FrameInjectionVM fi;
+#define FRAME_INJECTION_OBJECT_METHOD_BUILTIN(n) \
+  FrameInjectionVM fi;
+#define FRAME_INJECTION_OBJECT_METHOD_ROOTLESS_MEM(n) \
+  FrameInjectionVM fi;
+#define FRAME_INJECTION_OBJECT_METHOD_ROOTLESS_NOMEM(n) \
+  FrameInjectionVM fi;
+#define FRAME_INJECTION_NO_PROFILE(n) \
+  FrameInjectionVM fi;
+
+#else
 
 #define FRAME_INJECTION_FUNCTION_MEM(n) \
   FIFunctionMem fi(#n);
@@ -318,6 +307,9 @@ do { \
 #define FRAME_INJECTION_OBJECT_METHOD_NOMEM(n) \
   FIObjectMethodNoMem fi(#n, this->getRoot());
 
+#define FRAME_INJECTION_OBJECT_METHOD_BUILTIN(n) \
+  FIObjectMethodMem fi(#n, this->getBuiltinRoot());
+
 // For classes that do not have redeclaring subclasses
 #define FRAME_INJECTION_OBJECT_METHOD_ROOTLESS_MEM(n) \
   FIObjectMethodMem fi(#n, this);
@@ -327,6 +319,8 @@ do { \
 
 #define FRAME_INJECTION_NO_PROFILE(n) \
   FIFunctionNP fi(#n);
+
+#endif // #ifdef HHVM
 
 // code injected into beginning of every function/method
 #define FUNCTION_INJECTION(n)                                       \
@@ -413,7 +407,7 @@ do { \
 #define INSTANCE_METHOD_INJECTION_BUILTIN(c, n)                       \
   if (!o_id) throw_instance_method_fatal(#n);                         \
   DECLARE_THREAD_INFO_NOINIT                                          \
-  FRAME_INJECTION_OBJECT_METHOD_MEM(n)                                \
+  FRAME_INJECTION_OBJECT_METHOD_BUILTIN(n)                            \
   DECLARE_SYSTEM_GLOBALS_INJECTION(g)                                 \
   EXECUTION_PROFILER_INJECTION(true);                                 \
 
@@ -424,12 +418,15 @@ do { \
   FRAME_INJECTION_FUNCTION_FS(n, FrameInjection::PseudoMain)          \
   EXECUTION_PROFILER_INJECTION(true);                                 \
 
-#define INTERCEPT_INJECTION_ALWAYS(name, func, args, rr)                \
-  static char intercepted = -1;                                         \
-  if (UNLIKELY(intercepted)) {                                          \
-    Variant r, h = get_intercept_handler(name, &intercepted);           \
-    if (!h.isNull() && handle_intercept(h, func, args, r)) return rr;   \
-  }                                                                     \
+#define INTERCEPT_INJECTION_ALWAYS(name, func, args, rr)        \
+  static char intercepted = -1;                                 \
+  if (UNLIKELY(intercepted)) {                                  \
+    Variant *h = get_intercept_handler(name, &intercepted);     \
+    if (h) {                                                    \
+      Variant r;                                                \
+      if (handle_intercept(*h, func, args, r)) return rr;       \
+    }                                                           \
+  }
 
 #ifdef ENABLE_INTERCEPT
 #define INTERCEPT_INJECTION(func, args, rr)       \
@@ -454,13 +451,6 @@ do { \
       counter[getDataTypeIndex(v.getType())]++; \
     }                                           \
   } while (0)
-
-// causes a division by zero error at compile time if the assertion fails
-// NOTE: use __LINE__, instead of __COUNTER__, for better compatibility
-#define CT_CONCAT_HELPER(a, b) a##b
-#define CT_CONCAT(a, b) CT_CONCAT_HELPER(a, b)
-#define CT_ASSERT(cond) \
-  enum { CT_CONCAT(compile_time_assert_, __LINE__) = 1/(!!(cond)) }
 
 #define CT_ASSERT_DESCENDENT_OF_OBJECTDATA(T)   \
   do {                                          \

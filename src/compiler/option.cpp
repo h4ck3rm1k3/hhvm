@@ -28,8 +28,10 @@
 #include <runtime/base/preg.h>
 
 using namespace HPHP;
-using namespace std;
-using namespace boost;
+
+using std::set;
+using std::map;
+using std::map;
 
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -74,13 +76,13 @@ set<string> Option::VolatileClasses;
 
 map<string, string> Option::FunctionSections;
 
-#if defined(HPHP_OSS)
-string Option::IdPrefix = "___";
-string Option::LabelEscape = "___";
-#else
+bool Option::GenerateTextHHBC = false;
+bool Option::GenerateBinaryHHBC = false;
+string Option::RepoCentralPath;
+bool Option::RepoDebugInfo = false;
+
 string Option::IdPrefix = "$$";
 string Option::LabelEscape = "$";
-#endif
 
 string Option::LambdaPrefix = "df_";
 string Option::Tab = "  ";
@@ -110,7 +112,6 @@ const char *Option::SystemScalarArrayName = "ssa_";
 const char *Option::ClassPrefix = "c_";
 const char *Option::ClassStaticsCallbackPrefix = "cw_";
 const char *Option::ClassStaticsCallbackNullPrefix = "cwn_";
-const char *Option::ClassStaticsIdGetterPrefix = "csig_";
 const char *Option::ClassStaticInitializerFlagPrefix = "csf_";
 const char *Option::ObjectPrefix = "o_";
 const char *Option::ObjectStaticPrefix = "os_";
@@ -136,10 +137,12 @@ const char *Option::SilencerPrefix = "sil_";
 const char *Option::ScalarPrefix = "s_";
 const char *Option::SysPrefix = "sys_";
 const char *Option::StaticStringPrefix = "ss";
+const char *Option::StaticStringProxyPrefix = "ssp";
 const char *Option::StaticArrayPrefix = "sa";
 const char *Option::StaticVarIntPrefix = "svi";
 const char *Option::StaticVarDblPrefix = "svd";
 const char *Option::StaticVarStrPrefix = "svs";
+const char *Option::StaticVarStrProxyPrefix = "svsp";
 const char *Option::StaticVarArrPrefix = "sva";
 
 const char *Option::FFIFnPrefix = "ffi_";
@@ -165,7 +168,7 @@ int Option::ScalarArrayOverflowLimit = 2000;
 bool Option::SeparateCompilation = false;
 bool Option::SeparateCompLib = false;
 bool Option::UseNamedScalarArray = true;
-int Option::LiteralStringFileCount = 10;
+int Option::LiteralStringFileCount = 2;
 bool Option::AnalyzePerfectVirtuals = true;
 bool Option::HardTypeHints = true;
 
@@ -181,7 +184,9 @@ bool Option::GenerateCPPMetaInfo = true;
 bool Option::GenerateCPPNameSpace = true;
 bool Option::GenArrayCreate = true;
 bool Option::UseScalarVariant = true;
+bool Option::UseStaticStringProxy = true;
 bool Option::UseCallUserFuncFewArgs = true;
+bool Option::GenGlobalState = false;
 bool Option::KeepStatementsWithNoEffect = false;
 bool Option::GenerateDummyPseudoMain = true;
 
@@ -199,11 +204,13 @@ std::string Option::ProgramName;
 std::string Option::PreprocessedPartitionConfig;
 
 bool Option::ParseTimeOpts = true;
+bool Option::OutputHHBC = false;
 bool Option::EnableHipHopSyntax = false;
 bool Option::EnableHipHopExperimentalSyntax = false;
 bool Option::EnableShortTags = true;
 bool Option::EnableAspTags = false;
 bool Option::EnableXHP = true;
+bool Option::EnableFinallyStatement = false;
 bool Option::NativeXHP = true;
 int Option::ScannerType = Scanner::AllowShortTags;
 int Option::ParserThreadCount = 0;
@@ -217,7 +224,7 @@ bool Option::EliminateDeadCode = true;
 bool Option::CopyProp = false;
 bool Option::LocalCopyProp = true;
 bool Option::StringLoopOpts = true;
-bool Option::AutoInline = false;
+int Option::AutoInline = 0;
 bool Option::ControlFlow = true;
 bool Option::VariableCoalescing = false;
 bool Option::ArrayAccessIdempotent = false;
@@ -241,6 +248,7 @@ bool Option::GenerateFFIStaticBinding = true;
 int Option::GCCOptimization[] = {0, 0, 0};
 
 void (*Option::m_hookHandler)(Hdf &config);
+bool (*Option::PersistenceHook)(BlockScopeRawPtr scope, FileScopeRawPtr file);
 
 ///////////////////////////////////////////////////////////////////////////////
 // load from a PHP file
@@ -320,7 +328,6 @@ void Option::Load(Hdf &config) {
     READ_CG_OPTION(ClassPrefix);
     READ_CG_OPTION(ClassStaticsCallbackPrefix);
     READ_CG_OPTION(ClassStaticsCallbackNullPrefix);
-    READ_CG_OPTION(ClassStaticsIdGetterPrefix);
     READ_CG_OPTION(ClassStaticInitializerFlagPrefix);
     READ_CG_OPTION(ObjectPrefix);
     READ_CG_OPTION(ObjectStaticPrefix);
@@ -381,10 +388,20 @@ void Option::Load(Hdf &config) {
     }
   }
 
+  {
+    Hdf repo = config["Repo"];
+    {
+      Hdf repoCentral = repo["Central"];
+      RepoCentralPath = repoCentral["Path"].getString();
+    }
+    RepoDebugInfo = repo["DebugInfo"].getBool(false);
+  }
+
   ScalarArrayFileCount = config["ScalarArrayFileCount"].getByte(1);
   if (ScalarArrayFileCount <= 0) ScalarArrayFileCount = 1;
-  LiteralStringFileCount = config["LiteralStringFileCount"].getInt32(10);
-  if (LiteralStringFileCount <= 0) LiteralStringFileCount = 10;
+  LiteralStringFileCount = config["LiteralStringFileCount"].getInt32(2);
+  if (LiteralStringFileCount <= 0) LiteralStringFileCount = 2;
+  UseStaticStringProxy = config["UseStaticStringProxy"].getBool(true);
   HardTypeHints = config["HardTypeHints"].getBool(true);
   ScalarArrayOverflowLimit = config["ScalarArrayOverflowLimit"].getInt32(2000);
   if (ScalarArrayOverflowLimit <= 0) ScalarArrayOverflowLimit = 2000;
@@ -414,6 +431,8 @@ void Option::Load(Hdf &config) {
     ParserThreadCount = Process::GetCPUCount();
   }
 
+  EnableFinallyStatement = config["EnableFinallyStatement"].getBool();
+
   RTTIOutputFile = config["RTTIOutputFile"].getString();
   EnableEval = (EvalLevel)config["EnableEval"].getByte(0);
   AllDynamic = config["AllDynamic"].getBool(true);
@@ -427,7 +446,7 @@ void Option::Load(Hdf &config) {
   CopyProp                 = config["CopyProp"].getBool(false);
   LocalCopyProp            = config["LocalCopyProp"].getBool(true);
   StringLoopOpts           = config["StringLoopOpts"].getBool(true);
-  AutoInline               = config["AutoInline"].getBool(false);
+  AutoInline               = config["AutoInline"].getInt32(0);
   ControlFlow              = config["ControlFlow"].getBool(true);
   VariableCoalescing       = config["VariableCoalescing"].getBool(false);
   ArrayAccessIdempotent    = config["ArrayAccessIdempotent"].getBool(false);

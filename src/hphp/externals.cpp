@@ -15,9 +15,10 @@
 */
 
 #include <runtime/base/complex_types.h>
+#include <runtime/ext_hhvm/ext_hhvm.h>
 #include <runtime/base/externals.h>
 
-using namespace std;
+using std::pair;
 
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
@@ -50,6 +51,7 @@ void init_builtin_constant_table() {}
 void init_constant_table() {}
 void init_static_variables() {}
 void free_global_variables() {}
+void free_global_variables_after_sweep() {}
 Array get_global_state() { return Array(); }
 
 Variant invoke_file(CStrRef path, bool once /* = false */,
@@ -57,12 +59,13 @@ Variant invoke_file(CStrRef path, bool once /* = false */,
                     const char *currDir /* = NULL */) {
   return false;
 }
+bool hphp_could_invoke_file(CStrRef s, void*) { return false; }
 
 Variant get_constant(CStrRef name, bool error) { return name;}
 Variant get_builtin_constant(CStrRef name, bool error) { return name;}
 ConstantType check_constant(CStrRef name) { return NoneBuiltinConstant;}
 Variant get_class_constant(CStrRef s, const char *prop,
-                           bool fatal /* = true */) {
+                           int fatal /* = true */) {
   return null;
 }
 
@@ -82,11 +85,11 @@ Array get_global_array_wrapper() {
 }
 
 bool get_call_info(const CallInfo *&ci, void *&extra,
-    const char *s, int64 hash) {
+    const char *s, strhash_t hash) {
   return false;
 }
 bool get_call_info_no_eval(const CallInfo *&ci, void *&extra,
-    const char *s, int64 hash) {
+    const char *s, strhash_t hash) {
   return false;
 }
 bool get_call_info_static_method(MethodCallPackage &info) {
@@ -96,16 +99,17 @@ const ObjectStaticCallbacks * get_object_static_callbacks(CStrRef s) {
   return NULL;
 }
 
-void fiber_marshal_global_state(GlobalVariables *g1, GlobalVariables *g2,
-                                FiberReferenceMap &refMap) {
-}
-
-void fiber_unmarshal_global_state(GlobalVariables *g1, GlobalVariables *g2,
-                                  FiberReferenceMap &refMap,
-                                  char defstrategy,
-                                  const vector<pair<string, char> > &resolver){
-}
-
 bool has_eval_support = false;
+
+HphpBinary::Type getHphpBinaryType() {
+  return HphpBinary::hphpc;
+}
+
+#ifdef HHVM
+const long long hhbc_ext_funcs_count = 0;
+const HhbcExtFuncInfo hhbc_ext_funcs[] = {};
+const long long hhbc_ext_class_count = 0;
+const HhbcExtClassInfo hhbc_ext_classes[] = {};
+#endif
 ///////////////////////////////////////////////////////////////////////////////
 }

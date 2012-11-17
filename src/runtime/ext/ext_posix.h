@@ -29,33 +29,34 @@ namespace HPHP {
 bool f_posix_access(CStrRef file, int mode = 0);
 
 inline String f_posix_ctermid() {
-  char *buffer = (char *)malloc(L_ctermid);
+  String s = String(L_ctermid, ReserveString);
+  char *buffer = s.mutableSlice().ptr;
   ctermid(buffer);
-  return String(buffer, AttachString);
+  return s.setSize(strlen(buffer));
 }
 
-inline int f_posix_get_last_error() {
+inline int64 f_posix_get_last_error() {
   return errno;
 }
 
 inline String f_posix_getcwd() {
-  char *buffer = (char *)malloc(PATH_MAX);
+  String s = String(PATH_MAX, ReserveString);
+  char *buffer = s.mutableSlice().ptr;
   if (getcwd(buffer, PATH_MAX) == NULL) {
-    free(buffer);
     return "/";
   }
-  return String(buffer, AttachString);
+  return s.setSize(strlen(buffer));
 }
 
-inline int f_posix_getegid() {
+inline int64 f_posix_getegid() {
   return getegid();
 }
 
-inline int f_posix_geteuid() {
+inline int64 f_posix_geteuid() {
   return geteuid();
 }
 
-inline int f_posix_getgid() {
+inline int64 f_posix_getgid() {
   return getgid();
 }
 
@@ -79,15 +80,15 @@ inline Variant f_posix_getpgid(int pid) {
   return ret;
 }
 
-inline int f_posix_getpgrp() {
+inline int64 f_posix_getpgrp() {
   return getpgrp();
 }
 
-inline int f_posix_getpid() {
+inline int64 f_posix_getpid() {
   return getpid();
 }
 
-inline int f_posix_getppid() {
+inline int64 f_posix_getppid() {
   return getppid();
 }
 
@@ -103,7 +104,7 @@ inline Variant f_posix_getsid(int pid) {
   return ret;
 }
 
-inline int f_posix_getuid() {
+inline int64 f_posix_getuid() {
   return getuid();
 }
 
@@ -140,7 +141,7 @@ inline bool f_posix_setpgid(int pid, int pgid) {
   return setpgid(pid, pgid) >= 0;
 }
 
-inline int f_posix_setsid() {
+inline int64 f_posix_setsid() {
   return setsid();
 }
 

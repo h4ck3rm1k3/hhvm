@@ -26,7 +26,8 @@
 #include <util/lock.h>
 #include <util/logger.h>
 
-using namespace std;
+using std::set;
+using std::deque;
 
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
@@ -82,7 +83,7 @@ public:
   virtual const char *getRemoteHost() {
     return m_remoteHost.c_str();
   }
-  virtual const uint16 getRemotePort() {
+  virtual uint16 getRemotePort() {
     return 0;
   }
   virtual const void *getPostData(int &size) {
@@ -283,6 +284,7 @@ void PageletServer::Restart() {
       (RuntimeOption::PageletServerThreadCount,
        RuntimeOption::PageletServerThreadRoundRobin,
        RuntimeOption::PageletServerThreadDropCacheTimeoutSeconds,
+       RuntimeOption::PageletServerThreadDropStack,
        NULL);
     Logger::Info("pagelet server started");
     s_dispatcher->start();
@@ -334,6 +336,14 @@ void PageletServer::AddToPipeline(const string &s) {
     dynamic_cast<PageletTransport *>(g_context->getTransport());
   ASSERT(job);
   job->addToPipeline(s);
+}
+
+int PageletServer::GetActiveWorker() {
+  return s_dispatcher->getActiveWorker();
+}
+
+int PageletServer::GetQueuedJobs() {
+  return s_dispatcher->getQueuedJobs();
 }
 
 ///////////////////////////////////////////////////////////////////////////////

@@ -35,14 +35,10 @@
 #include <runtime/base/program_functions.h>
 #include <runtime/eval/debugger/debugger.h>
 #include <util/db_conn.h>
-#include <util/log_aggregator.h>
 #include <runtime/ext/ext_apc.h>
 #include <sys/types.h>
 #include <signal.h>
 #include <util/ssl_init.h>
-
-using namespace boost;
-using namespace std;
 
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
@@ -55,7 +51,6 @@ time_t HttpServer::StartTime;
 
 HttpServer::HttpServer(void *sslCTX /* = NULL */)
   : m_stopped(false), m_sslCTX(sslCTX),
-    m_loggerThread(this, &HttpServer::flushLog),
     m_watchDog(this, &HttpServer::watchDog) {
 
   // enabling mutex profiling, but it's not turned on
@@ -88,7 +83,7 @@ HttpServer::HttpServer(void *sslCTX /* = NULL */)
   }
 
   if (RuntimeOption::EnableSSL && m_sslCTX) {
-    SSLInit::Init();
+    ASSERT(SSLInit::IsInited());
     m_pageServer->enableSSL(m_sslCTX, RuntimeOption::SSLPort);
   }
 
@@ -172,6 +167,8 @@ void HttpServer::onServerShutdown() {
     Logger::Info("debugger server stopped");
   }
 
+  XboxServer::Stop();
+
   // When a new instance of HPHP has taken over our page server socket,
   // stop our admin server and satellites so it can acquire those ports.
   for (unsigned int i = 0; i < m_satellites.size(); i++) {
@@ -213,7 +210,6 @@ HttpServer::~HttpServer() {
 void HttpServer::run() {
   StartTime = time(0);
 
-  m_loggerThread.start();
   m_watchDog.start();
 
   for (unsigned int i = 0; i < m_serviceThreads.size(); i++) {
@@ -301,7 +297,6 @@ void HttpServer::run() {
 
   hphp_process_exit();
   m_watchDog.waitForEnd();
-  m_loggerThread.waitForEnd();
   Logger::Info("all servers stopped");
 }
 
@@ -358,7 +353,7 @@ void HttpServer::removePid() {
 
 void HttpServer::killPid() {
   if (!RuntimeOption::PidFile.empty()) {
-    StringBuffer sb(RuntimeOption::PidFile.c_str());
+    CstrBuffer sb(RuntimeOption::PidFile.c_str());
     if (sb.size()) {
       int64 pid = sb.detach().toInt64();
       if (pid) {
@@ -368,40 +363,6 @@ void HttpServer::killPid() {
     }
     Logger::Error("Unable to read pid file %s for any meaningful pid",
                   RuntimeOption::PidFile.c_str());
-  }
-}
-
-///////////////////////////////////////////////////////////////////////////////
-// logger thread
-
-void HttpServer::flushLog() {
-  if (!Logger::UseLogAggregator) return;
-
-  ServerDataPtr database;
-  ostream *out = NULL;
-  if (!RuntimeOption::LogAggregatorDatabase.empty()) {
-    database = ServerData::Create(RuntimeOption::LogAggregatorDatabase);
-  } else if (!RuntimeOption::LogAggregatorFile.empty()) {
-    out = new ofstream(RuntimeOption::LogAggregatorFile.c_str());
-  } else {
-    out = &cout;
-  }
-
-  bool stopped = false;
-  while (!stopped) {
-    if (database) {
-      LogAggregator::TheLogAggregator.flush(database);
-    } else {
-      LogAggregator::TheLogAggregator.flush(*out);
-    }
-    sleep(RuntimeOption::LogAggregatorSleepSeconds);
-
-    Lock lock(this);
-    stopped = m_stopped;
-  }
-
-  if (out != &cout) {
-    delete out;
   }
 }
 

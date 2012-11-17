@@ -28,6 +28,7 @@
 #include <runtime/base/server/static_content_cache.h>
 #include <runtime/base/zend/zend_scanf.h>
 #include <runtime/base/file/pipe.h>
+#include <system/lib/systemlib.h>
 #include <util/logger.h>
 #include <util/util.h>
 #include <util/process.h>
@@ -81,8 +82,6 @@
 # define GLOB_FLAGMASK (~0)
 #endif
 
-using namespace std;
-
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
 // helpers
@@ -95,7 +94,7 @@ static bool check_error(const char *function, int line, bool ret) {
   return ret;
 }
 
-static Array stat_impl(struct stat *stat_sb) {
+Array stat_impl(struct stat *stat_sb) {
   Array ret;
 
   ret.append((int64)stat_sb->st_dev);
@@ -344,16 +343,13 @@ Variant f_file_get_contents(CStrRef filename,
 Variant f_file_put_contents(CStrRef filename, CVarRef data,
                             int flags /* = 0 */,
                             CVarRef context /* = null */) {
-  FILE *f = fopen(File::TranslatePath(filename).data(),
-                  (flags & PHP_FILE_APPEND) ? "ab" : "wb");
-  Object closer(NEWOBJ(PlainFile)(f));
-  if (!f) {
-    Logger::Verbose("%s/%d: %s", __FUNCTION__, __LINE__,
-                    Util::safe_strerror(errno).c_str());
+  Variant fvar = File::Open(filename, (flags & PHP_FILE_APPEND) ? "ab" : "wb");
+  if (!fvar) {
     return false;
   }
+  File *f = fvar.asObjRef().getTyped<File>();
 
-  if ((flags & LOCK_EX) && flock(fileno(f), LOCK_EX)) {
+  if ((flags & LOCK_EX) && flock(f->fd(), LOCK_EX)) {
     return false;
   }
 
@@ -371,7 +367,7 @@ Variant f_file_put_contents(CStrRef filename, CVarRef data,
         int len = fsrc->readImpl(buffer, sizeof(buffer));
         if (len == 0) break;
         numbytes += len;
-        int written = fwrite(buffer, 1, len, f);
+        int written = f->writeImpl(buffer, len);
         if (written != len) {
           numbytes = -1;
           break;
@@ -386,7 +382,7 @@ Variant f_file_put_contents(CStrRef filename, CVarRef data,
         String value = iter.second();
         if (!value.empty()) {
           numbytes += value.size();
-          int written = fwrite(value.data(), 1, value.size(), f);
+          int written = f->writeImpl(value.data(), value.size());
           if (written != value.size()) {
             numbytes = -1;
             break;
@@ -398,10 +394,12 @@ Variant f_file_put_contents(CStrRef filename, CVarRef data,
   default:
     {
       String value = data.toString();
-      numbytes += value.size();
-      int written = fwrite(value.data(), 1, value.size(), f);
-      if (written != value.size()) {
-        numbytes = -1;
+      if (!value.empty()) {
+        numbytes += value.size();
+        int written = f->writeImpl(value, value.size());
+        if (written != value.size()) {
+          numbytes = -1;
+        }
       }
     }
     break;
@@ -496,7 +494,9 @@ Variant f_parse_ini_file(CStrRef filename, bool process_sections /* = false */,
   String translated = File::TranslatePath(filename);
   if (translated.empty() || !f_file_exists(translated)) {
     if (filename[0] != '/') {
-      String cfd = FrameInjection::GetContainingFileName(true);
+      String cfd = hhvm
+                   ? g_vmContext->getContainingFileName(true)
+                   : FrameInjection::GetContainingFileName(true);
       if (!cfd.empty()) {
         int npos = cfd.rfind('/');
         if (npos >= 0) {
@@ -569,6 +569,12 @@ Variant f_fileinode(CStrRef filename) {
 }
 
 Variant f_filesize(CStrRef filename) {
+  if (StaticContentCache::TheFileCache) {
+    int64 size =
+      StaticContentCache::TheFileCache->fileSize(filename.data(),
+        filename.data()[0] != '/');
+    if (size >= 0) return size;
+  }
   struct stat sb;
   CHECK_SYSTEM(stat(File::TranslatePath(filename, true).data(), &sb));
   return (int64)sb.st_size;
@@ -987,7 +993,14 @@ bool f_copy(CStrRef source, CStrRef dest,
   if (!context.isNull() || !File::IsPlainFilePath(source) ||
       !File::IsPlainFilePath(dest)) {
     Variant sfile = f_fopen(source, "r", false, context);
+    if (same(sfile, false)) {
+      return false;
+    }
     Variant dfile = f_fopen(dest, "w", false, context);
+    if (same(dfile, false)) {
+      return false;
+    }
+    
     return f_stream_copy_to_stream(sfile, dfile).toBoolean();
   } else {
     int ret =
@@ -1013,7 +1026,7 @@ bool f_rename(CStrRef oldname, CStrRef newname,
   return (ret == 0);
 }
 
-int f_umask(CVarRef mask /* = null_variant */) {
+int64 f_umask(CVarRef mask /* = null_variant */) {
   int oldumask = umask(077);
   if (mask.isNull()) {
     umask(oldumask);
@@ -1065,11 +1078,7 @@ String f_basename(CStrRef path, CStrRef suffix /* = null_string */) {
       memcmp(cend - sufflen, suffix.data(), sufflen) == 0) {
     cend -= sufflen;
   }
-  int len = cend - comp;
-  char *ret = (char *)malloc(len + 1);
-  memcpy(ret, comp, len);
-  ret[len] = '\0';
-  return String(ret, len, AttachString);
+  return String(comp, cend - comp, CopyString);
 }
 
 bool f_fnmatch(CStrRef pattern, CStrRef filename, int flags /* = 0 */) {
@@ -1093,6 +1102,12 @@ Variant f_glob(CStrRef pattern, int flags /* = 0 */) {
   memset(&globbuf, 0, sizeof(glob_t));
   globbuf.gl_offs = 0;
   String work_pattern;
+
+  if (pattern.size() >= PATH_MAX) {
+    raise_warning("Pattern exceeds the maximum allowed length of %d characters",
+                  PATH_MAX);
+    return false;
+  }
 
   if (pattern.charAt(0) == '/') {
     work_pattern = pattern;
@@ -1145,6 +1160,11 @@ Variant f_glob(CStrRef pattern, int flags /* = 0 */) {
 
   if (basedir_limit && ret.empty()) {
     return false;
+  }
+  // php's glob always produces an array, but Variant::Variant(CArrRef)
+  // will produce KindOfNull if given a SmartPtr wrapped around null.
+  if (ret.isNull()) {
+    return Array::Create();
   }
   return ret;
 }
@@ -1201,52 +1221,9 @@ bool f_rmdir(CStrRef dirname, CVarRef context /* = null */) {
   return true;
 }
 
-static size_t php_dirname(char *path, int len) {
-  if (len == 0) {
-    /* Illegal use of this function */
-    return 0;
-  }
-
-  /* Strip trailing slashes */
-  register char *end = path + len - 1;
-  while (end >= path && *end == '/') {
-    end--;
-  }
-  if (end < path) {
-    /* The path only contained slashes */
-    path[0] = '/';
-    path[1] = '\0';
-    return 1;
-  }
-
-  /* Strip filename */
-  while (end >= path && *end != '/') {
-    end--;
-  }
-  if (end < path) {
-    /* No slash found, therefore return '.' */
-    path[0] = '.';
-    path[1] = '\0';
-    return 1;
-  }
-
-  /* Strip slashes which came before the file name */
-  while (end >= path && *end == '/') {
-    end--;
-  }
-  if (end < path) {
-    path[0] = '/';
-    path[1] = '\0';
-    return 1;
-  }
-  *(end+1) = '\0';
-
-  return end + 1 - path;
-}
-
 String f_dirname(CStrRef path) {
   char *buf = strndup(path.data(), path.size());
-  int len = php_dirname(buf, path.size());
+  int len = Util::dirname_helper(buf, path.size());
   return String(buf, len, AttachString);
 }
 
@@ -1338,10 +1315,10 @@ Variant f_dir(CStrRef directory) {
   if (same(dir, false)) {
     return false;
   }
-  c_Directory *c_d = NEWOBJ(c_Directory)();
-  c_d->m_path = directory;
-  c_d->m_handle = dir;
-  return c_d;
+  ObjectData* d = SystemLib::AllocDirectoryObject();
+  *(d->o_realProp("path", 0)) = directory;
+  *(d->o_realProp("handle", 0)) = dir;
+  return d;
 }
 
 Variant f_opendir(CStrRef path, CVarRef context /* = null */) {

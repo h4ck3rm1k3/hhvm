@@ -14,6 +14,9 @@
    +----------------------------------------------------------------------+
 */
 
+#define __STDC_LIMIT_MACROS
+#include <stdint.h>
+
 #include <runtime/base/execution_context.h>
 #include <runtime/base/complex_types.h>
 #include <runtime/base/type_conversions.h>
@@ -32,21 +35,33 @@
 #include <runtime/eval/debugger/debugger.h>
 #include <runtime/base/taint/taint_data.h>
 #include <runtime/base/taint/taint_warning.h>
+#include <runtime/vm/event_hook.h>
 #include <runtime/ext/ext_string.h>
 #include <util/logger.h>
 #include <util/process.h>
 #include <util/text_color.h>
-
-using namespace std;
+#include <runtime/eval/runtime/file_repository.h>
+#include <runtime/vm/translator/translator.h>
+#include <runtime/vm/translator/translator-inline.h>
+#include <runtime/vm/translator/translator-deps.h>
+#include <runtime/vm/debugger_hook.h>
 
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
 
 IMPLEMENT_THREAD_LOCAL_NO_CHECK_HOT(ExecutionContext, g_context);
 
-ExecutionContext::ExecutionContext()
-  : m_transport(NULL),
-    m_maxMemory(RuntimeOption::RequestMemoryMaxBytes),
+int64_t VMExecutionContext::s_threadIdxCounter = 0;
+Mutex VMExecutionContext::s_threadIdxLock;
+hphp_hash_map<pid_t, int64_t> VMExecutionContext::s_threadIdxMap;
+
+#define NEAR_FIELD_INIT m_fp(NULL), m_pc(NULL), m_isValid(1), m_eventHook(NULL),
+
+BaseExecutionContext::BaseExecutionContext() :
+#ifdef HHVM
+    NEAR_FIELD_INIT
+#endif
+    m_transport(NULL),
     m_maxTime(RuntimeOption::RequestTimeoutSeconds),
     m_cwd(Process::CurrentWorkingDirectory),
     m_out(NULL), m_implicitFlush(false), m_protectedLevel(0),
@@ -54,102 +69,118 @@ ExecutionContext::ExecutionContext()
     m_errorState(ExecutionContext::NoError),
     m_errorReportingLevel(RuntimeOption::RuntimeErrorReportingLevel),
     m_lastErrorNum(0), m_logErrors(false), m_throwAllErrors(false),
-    m_vhost(NULL), m_debuggerBypassCheck(false), m_debuggerPrintLevel(-1) {
-  MemoryManager::TheMemoryManager()->getStats().maxBytes = m_maxMemory;
+    m_vhost(NULL) {
+
+  setRequestMemoryMaxBytes(RuntimeOption::RequestMemoryMaxBytes);
   m_include_paths = Array::Create();
   for (unsigned int i = 0; i < RuntimeOption::IncludeSearchPaths.size(); ++i) {
     m_include_paths.append(String(RuntimeOption::IncludeSearchPaths[i]));
   }
 }
 
-ExecutionContext::~ExecutionContext() {
+VMExecutionContext::VMExecutionContext() :
+    m_constants(RuntimeOption::EvalConstEstimate),
+#ifndef HHVM
+    NEAR_FIELD_INIT
+#endif
+    m_lambdaCounter(0), m_nesting(0),
+    m_injTables(NULL), m_breakPointFilter(NULL), m_lastLocFilter(NULL),
+    m_interpreting(false), m_dbgNoBreak(false),
+    m_coverPrevLine(-1), m_coverPrevUnit(NULL),
+    m_executingSetprofileCallback(false) {
+
+#ifdef HHVM
+  // Make sure any fields accessed from the TC are within a byte of
+  // ExecutionContext's beginning.
+  CT_ASSERT(offsetof(ExecutionContext, m_stack) <= 0xff);
+  CT_ASSERT(offsetof(ExecutionContext, m_fp) <= 0xff);
+  CT_ASSERT(offsetof(ExecutionContext, m_pc) <= 0xff);
+  CT_ASSERT(offsetof(ExecutionContext, m_isValid) <= 0xff);
+  CT_ASSERT(offsetof(ExecutionContext, m_eventHook) <= 0xff);
+  CT_ASSERT(offsetof(ExecutionContext, m_currentThreadIdx) <= 0xff);
+#endif
+  const_assert(hhvm);
+
+  {
+    Lock lock(s_threadIdxLock);
+    pid_t tid = Process::GetThreadPid();
+    if (!mapGet(s_threadIdxMap, tid, &m_currentThreadIdx)) {
+      m_currentThreadIdx = s_threadIdxCounter++;
+      s_threadIdxMap[tid] = m_currentThreadIdx;
+    }
+  }
+  m_eventHook = new HPHP::VM::EventHook();
+}
+#undef NEAR_FIELD_INIT
+
+BaseExecutionContext::~BaseExecutionContext() {
   obFlushAll();
-  for (list<OutputBuffer*>::const_iterator iter = m_buffers.begin();
+  for (std::list<OutputBuffer*>::const_iterator iter = m_buffers.begin();
        iter != m_buffers.end(); ++iter) {
     delete *iter;
   }
 }
 
-void ExecutionContext::backupSession() {
+VMExecutionContext::~VMExecutionContext() {
+  // Discard any ConstInfo objects that were created to support reflection.
+  for (ConstInfoMap::const_iterator it = m_constInfo.begin();
+       it != m_constInfo.end(); ++it) {
+    delete it->second;
+  }
+  // decRef all of the PhpFiles in m_evaledFiles. Any PhpFile whose refcount
+  // reaches zero will be destroyed. Currently each PhpFile "owns" its Unit,
+  // so when a PhpFile is destroyed it will free its Unit as well.
+  for (EvaledFilesMap::iterator it = m_evaledFiles.begin();
+       it != m_evaledFiles.end();) {
+    EvaledFilesMap::iterator current = it;
+    ++it;
+    StringData* sd = current->first;
+    Eval::PhpFile* efile = current->second;
+    efile->decRefAndDelete();
+    m_evaledFiles.erase(current);
+    LITSTR_DECREF(sd);
+  }
+  // Discard all units that were created via create_function().
+  for (EvaledUnitsVec::iterator it = m_createdFuncs.begin();
+       it != m_createdFuncs.end(); ++it) {
+    delete *it;
+  }
+
+  delete m_eventHook;
+  delete m_injTables;
+  delete m_breakPointFilter;
+  delete m_lastLocFilter;
+
+  if (UNLIKELY(!m_preConsts.empty())) {
+    VM::Transl::unmergePreConsts(m_preConsts, this);
+    for (VM::PreConstVec::iterator i = m_preConsts.begin();
+         i != m_preConsts.end(); ++i) {
+      LITSTR_DECREF(const_cast<StringData*>(i->name));
+    }
+  }
+
+  // Any non-static contents of this array will be swept so the
+  // destructor doesn't need to walk the contents and clean everything
+  // up.
+  m_constants.dropContentsOnFloor();
+}
+
+void BaseExecutionContext::backupSession() {
   m_shutdownsBackup = m_shutdowns;
   m_userErrorHandlersBackup = m_userErrorHandlers;
   m_userExceptionHandlersBackup = m_userExceptionHandlers;
 }
 
-void ExecutionContext::restoreSession() {
+void BaseExecutionContext::restoreSession() {
   m_shutdowns = m_shutdownsBackup;
   m_userErrorHandlers = m_userErrorHandlersBackup;
   m_userExceptionHandlers = m_userExceptionHandlersBackup;
 }
 
-void ExecutionContext::fiberInit(FiberLocal *src, FiberReferenceMap &refMap) {
-  ExecutionContext *ec = dynamic_cast<ExecutionContext*>(src);
-  ASSERT(ec);
-
-  m_transport = ec->m_transport;
-  if (m_transport) {
-    m_transport->incFiberCount();
-  }
-  m_maxMemory = ec->m_maxMemory;
-  m_maxTime = ec->m_maxTime;
-  m_cwd = ec->m_cwd.fiberCopy();
-
-  for (unsigned int i = 0; i < ec->m_userErrorHandlers.size(); i++) {
-    pair<Variant, int> &handler = ec->m_userErrorHandlers[i];
-    m_userErrorHandlers.push_back
-      (pair<Variant, int>(handler.first.fiberMarshal(refMap), handler.second));
-  }
-  for (unsigned int i = 0; i < ec->m_userExceptionHandlers.size(); i++) {
-    m_userExceptionHandlers.push_back
-      (ec->m_userExceptionHandlers[i].fiberMarshal(refMap));
-  }
-
-  m_timezone = ec->m_timezone.fiberCopy();
-  m_timezoneDefault = ec->m_timezoneDefault.fiberCopy();
-  m_argSeparatorOutput = ec->m_argSeparatorOutput.fiberCopy();
-
-  m_include_paths = ec->m_include_paths.fiberMarshal(refMap);
-}
-
-void ExecutionContext::fiberExit(FiberLocal *src, FiberReferenceMap &refMap) {
-  ExecutionContext *ec = dynamic_cast<ExecutionContext*>(src);
-  ASSERT(ec);
-
-  if (m_transport) {
-    m_transport->decFiberCount();
-  }
-
-  Array shutdowns = ec->m_shutdowns.fiberUnmarshal(refMap);
-  for (int i = 0; i < ShutdownTypeCount; i++) {
-    Variant newfuncs = shutdowns[i];
-    if (!newfuncs.isNull()) {
-      Variant funcs = m_shutdowns[i];
-      if (funcs.isNull()) {
-        m_shutdowns.set(i, newfuncs);
-      } else {
-        Array arr = funcs.toArray();
-        arr.merge(newfuncs.toArray());
-        m_shutdowns.set(i, arr);
-      }
-    }
-  }
-
-  // isNull() is really a sub-optimal way of telling "who's changed".
-  if (m_timezone.isNull()) {
-    m_timezone = ec->m_timezone.fiberCopy();
-  }
-  if (m_timezoneDefault.isNull()) {
-    m_timezoneDefault = ec->m_timezoneDefault.fiberCopy();
-  }
-  if (m_argSeparatorOutput.isNull()) {
-    m_argSeparatorOutput = ec->m_argSeparatorOutput.fiberCopy();
-  }
-}
-
 ///////////////////////////////////////////////////////////////////////////////
 // system functions
 
-String ExecutionContext::getMimeType() const {
+String BaseExecutionContext::getMimeType() const {
   String mimetype;
   if (m_transport) {
     mimetype = m_transport->getMimeType();
@@ -166,7 +197,16 @@ String ExecutionContext::getMimeType() const {
   return mimetype;
 }
 
-void ExecutionContext::setContentType(CStrRef mimetype, CStrRef charset) {
+std::string BaseExecutionContext::getRequestUrl(size_t szLimit) {
+  Transport* t = getTransport();
+  std::string ret = t ? t->getUrl() : "";
+  if (szLimit != std::string::npos) {
+    ret = ret.substr(0, szLimit);
+  }
+  return ret;
+}
+
+void BaseExecutionContext::setContentType(CStrRef mimetype, CStrRef charset) {
   if (m_transport) {
     String contentType = mimetype;
     contentType += "; ";
@@ -177,7 +217,10 @@ void ExecutionContext::setContentType(CStrRef mimetype, CStrRef charset) {
   }
 }
 
-void ExecutionContext::setRequestMemoryMaxBytes(int64 max) {
+void BaseExecutionContext::setRequestMemoryMaxBytes(int64 max) {
+  if (max <= 0) {
+    max = INT64_MAX;
+  }
   m_maxMemory = max;
   MemoryManager::TheMemoryManager()->getStats().maxBytes = m_maxMemory;
 }
@@ -185,7 +228,7 @@ void ExecutionContext::setRequestMemoryMaxBytes(int64 max) {
 ///////////////////////////////////////////////////////////////////////////////
 // write()
 
-void ExecutionContext::write(CStrRef s) {
+void BaseExecutionContext::write(CStrRef s) {
 #ifdef TAINTED
   if (!getTransport() && !m_out) {
     // We are running a PHP script and we are about to echo to stdout
@@ -198,18 +241,16 @@ void ExecutionContext::write(CStrRef s) {
   write(s.data(), s.size());
 }
 
-void ExecutionContext::setStdout(PFUNC_STDOUT func, void *data) {
+void BaseExecutionContext::setStdout(PFUNC_STDOUT func, void *data) {
   m_stdout = func;
   m_stdoutData = data;
 }
 
 static void safe_stdout(const  void  *ptr,  size_t  size) {
-  if (write(fileno(stdout), ptr, size) < 0) {
-    throw FatalErrorException("unable to write to stdout");
-  }
+  write(fileno(stdout), ptr, size);
 }
 
-void ExecutionContext::writeStdout(const char *s, int len) {
+void BaseExecutionContext::writeStdout(const char *s, int len) {
   if (m_stdout == NULL) {
     if (Util::s_stdout_color) {
       safe_stdout(Util::s_stdout_color, strlen(Util::s_stdout_color));
@@ -223,7 +264,7 @@ void ExecutionContext::writeStdout(const char *s, int len) {
   }
 }
 
-void ExecutionContext::write(const char *s, int len) {
+void BaseExecutionContext::write(const char *s, int len) {
   if (m_out) {
     m_out->append(s, len);
   } else {
@@ -235,18 +276,18 @@ void ExecutionContext::write(const char *s, int len) {
 ///////////////////////////////////////////////////////////////////////////////
 // output buffers
 
-void ExecutionContext::obProtect(bool on) {
+void BaseExecutionContext::obProtect(bool on) {
   m_protectedLevel = on ? m_buffers.size() : 0;
 }
 
-void ExecutionContext::obStart(CVarRef handler /* = null */) {
+void BaseExecutionContext::obStart(CVarRef handler /* = null */) {
   OutputBuffer *ob = new OutputBuffer();
   ob->handler = handler;
   m_buffers.push_back(ob);
   resetCurrentBuffer();
 }
 
-String ExecutionContext::obCopyContents() {
+String BaseExecutionContext::obCopyContents() {
   if (!m_buffers.empty()) {
     StringBuffer &oss = m_buffers.back()->oss;
     if (!oss.empty()) {
@@ -256,7 +297,7 @@ String ExecutionContext::obCopyContents() {
   return "";
 }
 
-String ExecutionContext::obDetachContents() {
+String BaseExecutionContext::obDetachContents() {
   if (!m_buffers.empty()) {
     StringBuffer &oss = m_buffers.back()->oss;
     if (!oss.empty()) {
@@ -266,23 +307,23 @@ String ExecutionContext::obDetachContents() {
   return "";
 }
 
-int ExecutionContext::obGetContentLength() {
+int BaseExecutionContext::obGetContentLength() {
   if (m_buffers.empty()) {
     return 0;
   }
   return m_buffers.back()->oss.size();
 }
 
-void ExecutionContext::obClean() {
+void BaseExecutionContext::obClean() {
   if (!m_buffers.empty()) {
     m_buffers.back()->oss.reset();
   }
 }
 
-bool ExecutionContext::obFlush() {
+bool BaseExecutionContext::obFlush() {
   ASSERT(m_protectedLevel >= 0);
   if ((int)m_buffers.size() > m_protectedLevel) {
-    list<OutputBuffer*>::const_iterator iter = m_buffers.end();
+    std::list<OutputBuffer*>::const_iterator iter = m_buffers.end();
     OutputBuffer *last = *(--iter);
     const int flag = PHP_OUTPUT_HANDLER_START | PHP_OUTPUT_HANDLER_END;
     if (iter != m_buffers.begin()) {
@@ -322,11 +363,11 @@ bool ExecutionContext::obFlush() {
   return false;
 }
 
-void ExecutionContext::obFlushAll() {
+void BaseExecutionContext::obFlushAll() {
   while (obFlush()) { obEnd();}
 }
 
-bool ExecutionContext::obEnd() {
+bool BaseExecutionContext::obEnd() {
   ASSERT(m_protectedLevel >= 0);
   if ((int)m_buffers.size() > m_protectedLevel) {
     delete m_buffers.back();
@@ -339,18 +380,18 @@ bool ExecutionContext::obEnd() {
   return false;
 }
 
-void ExecutionContext::obEndAll() {
+void BaseExecutionContext::obEndAll() {
   while (obEnd()) {}
 }
 
-int ExecutionContext::obGetLevel() {
+int BaseExecutionContext::obGetLevel() {
   ASSERT((int)m_buffers.size() >= m_protectedLevel);
   return m_buffers.size() - m_protectedLevel;
 }
 
-Array ExecutionContext::obGetStatus(bool full) {
+Array BaseExecutionContext::obGetStatus(bool full) {
   Array ret = Array::Create();
-  list<OutputBuffer*>::const_iterator iter = m_buffers.begin();
+  std::list<OutputBuffer*>::const_iterator iter = m_buffers.begin();
   ++iter; // skip over the fake outermost buffer
   int level = 0;
   for (; iter != m_buffers.end(); ++iter, ++level) {
@@ -373,20 +414,20 @@ Array ExecutionContext::obGetStatus(bool full) {
   return ret;
 }
 
-void ExecutionContext::obSetImplicitFlush(bool on) {
+void BaseExecutionContext::obSetImplicitFlush(bool on) {
   m_implicitFlush = on;
 }
 
-Array ExecutionContext::obGetHandlers() {
+Array BaseExecutionContext::obGetHandlers() {
   Array ret;
-  for (list<OutputBuffer*>::const_iterator iter = m_buffers.begin();
+  for (std::list<OutputBuffer*>::const_iterator iter = m_buffers.begin();
        iter != m_buffers.end(); ++iter) {
     ret.append((*iter)->handler);
   }
   return ret;
 }
 
-void ExecutionContext::flush() {
+void BaseExecutionContext::flush() {
   if (m_buffers.empty()) {
     fflush(stdout);
   } else if (RuntimeOption::EnableEarlyFlush && m_protectedLevel &&
@@ -406,7 +447,7 @@ void ExecutionContext::flush() {
   }
 }
 
-void ExecutionContext::resetCurrentBuffer() {
+void BaseExecutionContext::resetCurrentBuffer() {
   if (m_buffers.empty()) {
     m_out = NULL;
   } else {
@@ -417,28 +458,16 @@ void ExecutionContext::resetCurrentBuffer() {
 ///////////////////////////////////////////////////////////////////////////////
 // program executions
 
-void ExecutionContext::registerShutdownFunction(CVarRef function,
-                                                Array arguments,
-                                                ShutdownType type) {
+void BaseExecutionContext::registerShutdownFunction(CVarRef function,
+                                                    Array arguments,
+                                                    ShutdownType type) {
   Array callback = CREATE_MAP2("name", function, "args", arguments);
   Variant &funcs = m_shutdowns.lvalAt(type);
   funcs.append(callback);
 }
 
-void ExecutionContext::registerTickFunction(CVarRef function,
-                                            Array arguments) {
-  Array callback = CREATE_MAP2("name", function, "args", arguments);
-  m_ticks.append(callback);
-  throw NotImplementedException(__func__);
-}
-
-void ExecutionContext::unregisterTickFunction(CVarRef function) {
-  //m_ticks.remove(function);
-  throw NotImplementedException(__func__);
-}
-
-Variant ExecutionContext::pushUserErrorHandler(CVarRef function,
-                                               int error_types) {
+Variant BaseExecutionContext::pushUserErrorHandler(CVarRef function,
+                                                   int error_types) {
   Variant ret;
   if (!m_userErrorHandlers.empty()) {
     ret = m_userErrorHandlers.back().first;
@@ -447,7 +476,7 @@ Variant ExecutionContext::pushUserErrorHandler(CVarRef function,
   return ret;
 }
 
-Variant ExecutionContext::pushUserExceptionHandler(CVarRef function) {
+Variant BaseExecutionContext::pushUserExceptionHandler(CVarRef function) {
   Variant ret;
   if (!m_userExceptionHandlers.empty()) {
     ret = m_userExceptionHandlers.back();
@@ -456,19 +485,19 @@ Variant ExecutionContext::pushUserExceptionHandler(CVarRef function) {
   return ret;
 }
 
-void ExecutionContext::popUserErrorHandler() {
+void BaseExecutionContext::popUserErrorHandler() {
   if (!m_userErrorHandlers.empty()) {
     m_userErrorHandlers.pop_back();
   }
 }
 
-void ExecutionContext::popUserExceptionHandler() {
+void BaseExecutionContext::popUserExceptionHandler() {
   if (!m_userExceptionHandlers.empty()) {
     m_userExceptionHandlers.pop_back();
   }
 }
 
-void ExecutionContext::registerRequestEventHandler
+void BaseExecutionContext::registerRequestEventHandler
 (RequestEventHandler *handler) {
   ASSERT(handler);
   if (m_requestEventHandlerSet.find(handler) ==
@@ -482,10 +511,10 @@ void ExecutionContext::registerRequestEventHandler
 
 static bool requestEventHandlerPriorityComp(RequestEventHandler *a,
                                             RequestEventHandler *b) {
-  return a->priority() <= b->priority();
+  return a->priority() < b->priority();
 }
 
-void ExecutionContext::onRequestShutdown() {
+void BaseExecutionContext::onRequestShutdown() {
   // Sort handlers by priority so that lower priority values get shutdown
   // first
   sort(m_requestEventHandlers.begin(), m_requestEventHandlers.end(),
@@ -502,14 +531,14 @@ void ExecutionContext::onRequestShutdown() {
   m_requestEventHandlerSet.clear();
 }
 
-void ExecutionContext::executeFunctions(CArrRef funcs) {
+void BaseExecutionContext::executeFunctions(CArrRef funcs) {
   for (ArrayIter iter(funcs); iter; ++iter) {
     Array callback = iter.second();
     f_call_user_func_array(callback["name"], callback["args"]);
   }
 }
 
-void ExecutionContext::onShutdownPreSend() {
+void BaseExecutionContext::onShutdownPreSend() {
   if (!m_shutdowns.isNull() && m_shutdowns.exists(ShutDown)) {
     executeFunctions(m_shutdowns[ShutDown]);
     m_shutdowns.remove(ShutDown);
@@ -517,11 +546,11 @@ void ExecutionContext::onShutdownPreSend() {
   obFlushAll(); // in case obStart was called without obFlush
 }
 
-void ExecutionContext::onShutdownPostSend() {
+void BaseExecutionContext::onShutdownPostSend() {
   ServerStats::SetThreadMode(ServerStats::PostProcessing);
   try {
     try {
-      ServerStatsHelper ssh("psp");
+      ServerStatsHelper ssh("psp", ServerStatsHelper::TRACK_HWINST);
       if (!m_shutdowns.isNull()) {
         if (m_shutdowns.exists(PostSend)) {
           executeFunctions(m_shutdowns[PostSend]);
@@ -545,16 +574,12 @@ void ExecutionContext::onShutdownPostSend() {
   ServerStats::SetThreadMode(ServerStats::Idling);
 }
 
-void ExecutionContext::onTick() {
-  executeFunctions(m_ticks);
-}
-
 ///////////////////////////////////////////////////////////////////////////////
 // error handling
 
-bool ExecutionContext::errorNeedsHandling(int errnum,
-                                          bool callUserHandler,
-                                          ErrorThrowMode mode) {
+bool BaseExecutionContext::errorNeedsHandling(int errnum,
+                                              bool callUserHandler,
+                                              ErrorThrowMode mode) {
   if (m_throwAllErrors) throw errnum;
   if (mode != NeverThrow || (getErrorReportingLevel() & errnum) != 0 ||
       RuntimeOption::NoSilencer) {
@@ -571,7 +596,7 @@ bool ExecutionContext::errorNeedsHandling(int errnum,
 
 class ErrorStateHelper {
 public:
-  ErrorStateHelper(ExecutionContext *context, int state) {
+  ErrorStateHelper(BaseExecutionContext *context, int state) {
     m_context = context;
     m_originalState = m_context->getErrorState();
     m_context->setErrorState(state);
@@ -580,15 +605,17 @@ public:
     m_context->setErrorState(m_originalState);
   }
 private:
-  ExecutionContext *m_context;
+  BaseExecutionContext *m_context;
   int m_originalState;
 };
 
-void ExecutionContext::handleError(const std::string &msg,
-                                   int errnum,
-                                   bool callUserHandler,
-                                   ErrorThrowMode mode,
-                                   const std::string &prefix) {
+void BaseExecutionContext::handleError(const std::string &msg,
+                                       int errnum,
+                                       bool callUserHandler,
+                                       ErrorThrowMode mode,
+                                       const std::string &prefix) {
+  SYNC_VM_REGS_SCOPED();
+
   int newErrorState = ErrorRaised;
   switch (getErrorState()) {
   case ErrorRaised:
@@ -631,12 +658,12 @@ void ExecutionContext::handleError(const std::string &msg,
       }
     }
 
-    Logger::Log(true, prefix.c_str(), ee, file, line);
+    Logger::Log(Logger::LogError, prefix.c_str(), ee, file, line);
   }
 }
 
-bool ExecutionContext::callUserErrorHandler(const Exception &e, int errnum,
-                                            bool swallowExceptions) {
+bool BaseExecutionContext::callUserErrorHandler(const Exception &e, int errnum,
+                                                bool swallowExceptions) {
   switch (getErrorState()) {
   case ExecutingUserHandler:
   case ErrorRaisedByUserHandler:
@@ -680,13 +707,13 @@ bool ExecutionContext::callUserErrorHandler(const Exception &e, int errnum,
   return false;
 }
 
-void ExecutionContext::recordLastError(const Exception &e,
-                                       int errnum /* = 0 */) {
+void BaseExecutionContext::recordLastError(const Exception &e,
+                                           int errnum /* = 0 */) {
   m_lastError = String(e.getMessage());
   m_lastErrorNum = errnum;
 }
 
-bool ExecutionContext::onFatalError(const Exception &e) {
+bool BaseExecutionContext::onFatalError(const Exception &e) {
   recordLastError(e);
   const char *file = NULL;
   int line = 0;
@@ -702,7 +729,7 @@ bool ExecutionContext::onFatalError(const Exception &e) {
     }
   }
   if (RuntimeOption::AlwaysLogUnhandledExceptions) {
-    Logger::Log(true, "HipHop Fatal error: ", e, file, line);
+    Logger::Log(Logger::LogError, "HipHop Fatal error: ", e, file, line);
   }
   bool handled = false;
   if (RuntimeOption::CallUserHandlerOnFatals) {
@@ -710,22 +737,26 @@ bool ExecutionContext::onFatalError(const Exception &e) {
     handled = callUserErrorHandler(e, errnum, true);
   }
   if (!handled && !RuntimeOption::AlwaysLogUnhandledExceptions) {
-    Logger::Log(true, "HipHop Fatal error: ", e, file, line);
+    Logger::Log(Logger::LogError, "HipHop Fatal error: ", e, file, line);
   }
   return handled;
 }
 
-bool ExecutionContext::onUnhandledException(Object e) {
+bool BaseExecutionContext::onUnhandledException(Object e) {
   String err = e.toString();
   if (RuntimeOption::AlwaysLogUnhandledExceptions) {
-    Logger::Error("HipHop Fatal error: Uncaught exception %s", err.data());
+    Logger::Error("HipHop Fatal error: Uncaught %s", err.data());
   }
 
   if (e.instanceof("Exception")) {
     // user thrown exception
     if (!m_userExceptionHandlers.empty()) {
-      f_call_user_func_array(m_userExceptionHandlers.back(),CREATE_VECTOR1(e));
-      return true;// no matter what handler returns!
+      if (!same(f_call_user_func_array
+                (m_userExceptionHandlers.back(),
+                 CREATE_VECTOR1(e)),
+                false)) {
+        return true;
+      }
     }
   } else {
     ASSERT(false);
@@ -733,12 +764,12 @@ bool ExecutionContext::onUnhandledException(Object e) {
   m_lastError = err;
 
   if (!RuntimeOption::AlwaysLogUnhandledExceptions) {
-    Logger::Error("HipHop Fatal error: Uncaught exception: %s", err.data());
+    Logger::Error("HipHop Fatal error: Uncaught %s", err.data());
   }
   return false;
 }
 
-void ExecutionContext::setLogErrors(bool on) {
+void BaseExecutionContext::setLogErrors(bool on) {
   if (m_logErrors != on) {
     m_logErrors = on;
     if (m_logErrors) {
@@ -754,7 +785,7 @@ void ExecutionContext::setLogErrors(bool on) {
   }
 }
 
-void ExecutionContext::setErrorLog(CStrRef filename) {
+void BaseExecutionContext::setErrorLog(CStrRef filename) {
   m_errorLog = filename;
   if (m_logErrors && !m_errorLog.empty()) {
     FILE *output = fopen(m_errorLog.data(), "a");
@@ -767,7 +798,7 @@ void ExecutionContext::setErrorLog(CStrRef filename) {
 ///////////////////////////////////////////////////////////////////////////////
 // IDebuggable
 
-void ExecutionContext::debuggerInfo(InfoVec &info) {
+void BaseExecutionContext::debuggerInfo(InfoVec &info) {
   if (m_maxMemory <= 0) {
     Add(info, "Max Memory", "(unlimited)");
   } else {
@@ -778,11 +809,11 @@ void ExecutionContext::debuggerInfo(InfoVec &info) {
 
 ///////////////////////////////////////////////////////////////////////////////
 
-void ExecutionContext::setenv(CStrRef name, CStrRef value) {
+void BaseExecutionContext::setenv(CStrRef name, CStrRef value) {
   m_envs.set(name, value);
 }
 
-String ExecutionContext::getenv(CStrRef name) const {
+String BaseExecutionContext::getenv(CStrRef name) const {
   if (m_envs.exists(name)) {
     return m_envs[name];
   }
@@ -798,11 +829,11 @@ String ExecutionContext::getenv(CStrRef name) const {
 
 ///////////////////////////////////////////////////////////////////////////////
 
-void ExecutionContext::setIncludePath(CStrRef path) {
+void BaseExecutionContext::setIncludePath(CStrRef path) {
   m_include_paths = f_explode(":", path);
 }
 
-String ExecutionContext::getIncludePath() const {
+String BaseExecutionContext::getIncludePath() const {
   StringBuffer sb;
   bool first = true;
   for (ArrayIter iter(m_include_paths); iter; ++iter) {

@@ -28,8 +28,6 @@
 #include <runtime/base/complex_types.h>
 
 using namespace HPHP;
-using namespace std;
-using namespace boost;
 
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -79,7 +77,7 @@ TypePtr ConstantTable::add(const std::string &name, TypePtr type,
 }
 
 void ConstantTable::setDynamic(AnalysisResultConstPtr ar,
-                               const std::string &name) {
+                               const std::string &name, bool forceVariant) {
   Symbol *sym = genSymbol(name, true);
   if (!sym->isDynamic()) {
     Lock lock(BlockScope::s_constMutex);
@@ -89,7 +87,9 @@ void ConstantTable::setDynamic(AnalysisResultConstPtr ar,
         addUpdates(BlockScope::UseKindConstRef);
     }
     m_hasDynamic = true;
-    setType(ar, sym, Type::Variant, true);
+    if (forceVariant) {
+      setType(ar, sym, Type::Variant, true);
+    }
   }
 }
 
@@ -102,7 +102,7 @@ void ConstantTable::setValue(AnalysisResultConstPtr ar, const std::string &name,
 
 bool ConstantTable::isRecursivelyDeclared(AnalysisResultConstPtr ar,
                                           const std::string &name) const {
-  if (const Symbol *sym = getSymbol(name)) {
+  if (const Symbol *sym ATTRIBUTE_UNUSED = getSymbol(name)) {
     ASSERT(sym->isPresent() && sym->valueSet());
     return true;
   }
@@ -144,6 +144,18 @@ const {
   return ConstructPtr();
 }
 
+void ConstantTable::cleanupForError(AnalysisResultConstPtr ar) {
+  AnalysisResult::Locker lock(ar);
+
+  BOOST_FOREACH(Symbol *sym, m_symbolVec) {
+    if (!sym->isDynamic()) {
+      sym->setDynamic();
+      sym->setDeclaration(ConstructPtr());
+      sym->setValue(ConstructPtr());
+    }
+  }
+}
+
 TypePtr ConstantTable::check(BlockScopeRawPtr context,
                              const std::string &name, TypePtr type,
                              bool coerce, AnalysisResultConstPtr ar,
@@ -159,7 +171,7 @@ TypePtr ConstantTable::check(BlockScopeRawPtr context,
   } else {
     Symbol *sym = getSymbol(name);
     if (!sym) {
-      if (ar->getPhase() != AnalysisResult::AnalyzeInclude) {
+      if (ar->getPhase() >= AnalysisResult::AnalyzeAll) {
         if (isClassScope) {
           ClassScopeRawPtr parent = findBase(ar, name, bases);
           if (parent) {
@@ -168,8 +180,11 @@ TypePtr ConstantTable::check(BlockScopeRawPtr context,
             if (defScope) return actualType;
           }
         }
-        Compiler::Error(Compiler::UseUndeclaredConstant, construct);
-        actualType = isClassScope ? Type::Variant : Type::String;
+        if (!isClassScope || !((ClassScope*)&m_blockScope)->isTrait()) {
+          Compiler::Error(Compiler::UseUndeclaredConstant, construct);
+        }
+        actualType = isClassScope || !Option::WholeProgram ?
+          Type::Variant : Type::String;
       }
     } else {
       ASSERT(sym->isPresent());
@@ -256,8 +271,14 @@ void ConstantTable::getCPPDynamicDecl(CodeGenerator &cg,
   BOOST_FOREACH(Symbol *sym, m_symbolVec) {
     if (sym->declarationSet() && sym->isDynamic() &&
         system == sym->isSystem()) {
-      symbols.insert(string(prefix) + classId + fmt +
-                     CodeGenerator::FormatLabel(sym->getName()));
+      string tmp = string(prefix) + classId + fmt +
+        CodeGenerator::FormatLabel(sym->getName());
+      if (Type::IsMappedToVariant(sym->getFinalType())) {
+        symbols.insert(tmp);
+      } else {
+        type2names[sym->getFinalType()->getCPPDecl(ar, BlockScopeRawPtr())].
+          insert(tmp);
+      }
     }
   }
 }

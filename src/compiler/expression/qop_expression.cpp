@@ -19,7 +19,6 @@
 #include <runtime/base/complex_types.h>
 
 using namespace HPHP;
-using namespace boost;
 
 ///////////////////////////////////////////////////////////////////////////////
 // constructors/destructors
@@ -199,8 +198,8 @@ bool QOpExpression::preOutputCPP(CodeGenerator &cg, AnalysisResultPtr ar,
 
   bool fix_condition = m_condition->preOutputCPP(cg, ar, 0);
   if (!cg.inExpression()) {
-    return fix_condition ||
-      (m_expYes && m_expYes->preOutputCPP(cg, ar, 0)) ||
+    return fix_condition || (state & FixOrder) ||
+      (!m_expYes || m_expYes->preOutputCPP(cg, ar, 0)) ||
       m_expNo->preOutputCPP(cg, ar, 0);
   }
 

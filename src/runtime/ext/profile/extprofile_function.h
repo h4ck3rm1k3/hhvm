@@ -95,7 +95,7 @@ inline Variant x_forward_static_call(int _argc, CVarRef function, CArrRef _argv 
   return f_forward_static_call(_argc, function, _argv);
 }
 
-inline String x_get_called_class() {
+inline Variant x_get_called_class() {
   FUNCTION_INJECTION_BUILTIN(get_called_class);
   return f_get_called_class();
 }
@@ -115,7 +115,7 @@ inline Array x_func_get_args() {
   return f_func_get_args();
 }
 
-inline int x_func_num_args() {
+inline int64 x_func_num_args() {
   FUNCTION_INJECTION_BUILTIN(func_num_args);
   return f_func_num_args();
 }

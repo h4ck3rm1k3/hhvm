@@ -23,11 +23,11 @@
 #include <boost/format.hpp>
 
 using namespace HPHP;
-using namespace std;
 
 ///////////////////////////////////////////////////////////////////////////////
 // statics
 
+TypePtr Type::Null        (new Type(Type::KindOfVoid        ));
 TypePtr Type::Boolean     (new Type(Type::KindOfBoolean     ));
 TypePtr Type::Int32       (new Type(Type::KindOfInt32       ));
 TypePtr Type::Int64       (new Type(Type::KindOfInt64       ));
@@ -53,11 +53,6 @@ Type::TypePtrMap Type::s_TypeHintTypes;
 void Type::InitTypeHintMap() {
   ASSERT(s_TypeHintTypes.empty());
   s_TypeHintTypes["array"] = Type::Array;
-  if (Option::EnableHipHopExperimentalSyntax) {
-    s_TypeHintTypes["vector"]  = Type::Array;
-    s_TypeHintTypes["map"]     = Type::Array;
-    s_TypeHintTypes["set"]     = Type::Array;
-  }
   if (Option::EnableHipHopSyntax) {
     s_TypeHintTypes["bool"]    = Type::Boolean;
     s_TypeHintTypes["boolean"] = Type::Boolean;
@@ -173,6 +168,7 @@ TypePtr Type::Intersection(AnalysisResultConstPtr ar,
 }
 
 bool Type::IsMappedToVariant(TypePtr t) {
+  if (!t) return true;
   switch (t->m_kindOf) {
   case KindOfBoolean:
   case KindOfInt32  :
@@ -245,6 +241,12 @@ TypePtr Type::Coerce(AnalysisResultConstPtr ar, TypePtr type1, TypePtr type2) {
     TypePtr tmp = type1;
     type1 = type2;
     type2 = tmp;
+  }
+  if (type1->m_kindOf == KindOfVoid &&
+      (type2->m_kindOf == KindOfString ||
+       type2->m_kindOf == KindOfArray ||
+       type2->m_kindOf == KindOfObject)) {
+    return type2;
   }
   if (type2->m_kindOf == KindOfSome ||
       type2->m_kindOf == KindOfAny) return type1;
@@ -349,6 +351,19 @@ bool Type::SameType(TypePtr type1, TypePtr type2) {
   return false;
 }
 
+bool Type::SubType(AnalysisResultConstPtr ar, TypePtr type1, TypePtr type2) {
+  if (!type1 && !type2) return true;
+  if (!type1 || !type2) return false;
+  if (type1->m_kindOf != type2->m_kindOf) return false;
+  if (!(type1->m_kindOf & KindOfObject)) return true;
+  // both are objects...
+  if (type1->m_name == type2->m_name) return true;
+  // ... with different classnames; check subtype relationship.
+  ClassScopePtr cls1 = ar->findClass(type1->m_name);
+  return cls1 && !cls1->isRedeclaring() &&
+         cls1->derivesFrom(ar, type2->m_name, true, false);
+}
+
 bool Type::IsExactType(KindOf kindOf) {
   // clever trick thanks to mwilliams - this will evaluate
   // to true iff exactly one bit is set in kindOf
@@ -375,7 +390,7 @@ string Type::GetFastCastMethod(
   const char *prefix0 = allowRef ? "to" : "as";
   const char *prefix1 = forConst ? "C"  : "";
   const char *prefix2 = "Ref";
-  const char *type;
+  const char *type ATTRIBUTE_UNUSED;
 
   switch (dst->getKindOf()) {
   case Type::KindOfBoolean:
@@ -410,6 +425,7 @@ string Type::GetFastCastMethod(
     type = "Obj";
     break;
   default:
+    type = ""; // make the compiler happy
     ASSERT(false);
     break;
   }
@@ -566,63 +582,63 @@ ClassScopePtr Type::getClass(AnalysisResultConstPtr ar,
     if (!scope) {
       cls.reset();
     } else {
-      cls = scope->findExactClass(Util::toLower(m_name));
+      cls = scope->findExactClass(cls);
     }
   }
   return cls;
 }
 
 string Type::getCPPDecl(AnalysisResultConstPtr ar,
-                        BlockScopeRawPtr scope) {
+                        BlockScopeRawPtr scope,
+                        CodeGenerator *cg /* = 0 */) {
   switch (m_kindOf) {
-  case KindOfBoolean:     return "bool";
-  case KindOfInt32:       return "int";
-  case KindOfInt64:       return "int64";
-  case KindOfDouble:      return "double";
-  case KindOfString:      return "String";
-  case KindOfArray:       return "Array";
-  case KindOfObject:{
-    ClassScopePtr cls(getClass(ar, scope));
-    if (!cls) return "Object";
-    return Option::SmartPtrPrefix + cls->getId();
-  }
-  case KindOfNumeric:     return "Numeric";
-  case KindOfPrimitive:   return "Primitive";
-  case KindOfPlusOperand: return "PlusOperand";
-  case KindOfSequence:    return "Sequence";
-  default:
-    return "Variant";
+    case KindOfBoolean:     return "bool";
+    case KindOfInt32:       return "int";
+    case KindOfInt64:       return "int64";
+    case KindOfDouble:      return "double";
+    case KindOfString:      return "String";
+    case KindOfArray:       return "Array";
+    case KindOfObject:{
+      ClassScopePtr cls(getClass(ar, scope));
+      if (!cls) return "Object";
+      if (cg && cg->isFileOrClassHeader() && scope) {
+        if (scope->getContainingClass()) {
+          scope->getContainingClass()->addUsedClassHeader(cls);
+        } else if (scope->getContainingFile()) {
+          scope->getContainingFile()->addUsedClassHeader(cls);
+        }
+      }
+      return Option::SmartPtrPrefix + cls->getId();
+    }
+    case KindOfNumeric:     return "Numeric";
+    case KindOfPrimitive:   return "Primitive";
+    case KindOfPlusOperand: return "PlusOperand";
+    case KindOfSequence:    return "Sequence";
+    default:
+      return "Variant";
   }
 }
 
 DataType Type::getDataType() const {
   switch (m_kindOf) {
-  case KindOfBoolean:     return HPHP::KindOfBoolean;
-  case KindOfInt32:       return HPHP::KindOfInt32;
-  case KindOfInt64:       return HPHP::KindOfInt64;
-  case KindOfDouble:      return HPHP::KindOfDouble;
-  case KindOfString:      return HPHP::KindOfString;
-  case KindOfArray:       return HPHP::KindOfArray;
-  case KindOfObject:      return HPHP::KindOfObject;
-  case KindOfNumeric:
-  case KindOfPrimitive:
-  case KindOfPlusOperand:
-  case KindOfSequence:
-  default:                return HPHP::KindOfVariant;
+    case KindOfBoolean:     return HPHP::KindOfBoolean;
+    case KindOfInt32:
+    case KindOfInt64:       return HPHP::KindOfInt64;
+    case KindOfDouble:      return HPHP::KindOfDouble;
+    case KindOfString:      return HPHP::KindOfString;
+    case KindOfArray:       return HPHP::KindOfArray;
+    case KindOfObject:      return HPHP::KindOfObject;
+    case KindOfNumeric:
+    case KindOfPrimitive:
+    case KindOfPlusOperand:
+    case KindOfSequence:
+    default:                return HPHP::KindOfUnknown;
   }
 }
 
 void Type::outputCPPDecl(CodeGenerator &cg, AnalysisResultConstPtr ar,
                          BlockScopeRawPtr scope) {
-  cg_printf(getCPPDecl(ar, scope).c_str());
-
-  if (isSpecificObject() && cg.isFileOrClassHeader() && scope) {
-    if (scope->getContainingClass()) {
-      scope->getContainingClass()->addUsedClassHeader(m_name);
-    } else if (scope->getContainingFile()) {
-      scope->getContainingFile()->addUsedClassHeader(m_name);
-    }
-  }
+  cg_printf(getCPPDecl(ar, scope, &cg).c_str());
 }
 
 void Type::outputCPPFastObjectCast(CodeGenerator &cg,
@@ -794,12 +810,18 @@ TypePtr Type::InferredObject(AnalysisResultConstPtr ar,
     // take the subclass
     ClassScopePtr cls1 = ar->findClass(type1->m_name);
     ClassScopePtr cls2 = ar->findClass(type2->m_name);
-    if (cls1 && !cls1->isRedeclaring()
-        && cls1->derivesFrom(ar, type2->m_name, true, false)) {
+    bool c1ok = cls1 && !cls1->isRedeclaring();
+    bool c2ok = cls2 && !cls2->isRedeclaring();
+
+    if (c1ok && cls1->derivesFrom(ar, type2->m_name, true, false)) {
       resultType = type1;
-    } else if (cls2 && !cls2->isRedeclaring()
-               && cls2->derivesFrom(ar, type1->m_name, true, false)) {
+    } else if (c2ok && cls2->derivesFrom(ar, type1->m_name, true, false)) {
       resultType = type2;
+    } else if (c1ok && c2ok && cls1->derivedByDynamic() &&
+               cls2->derivesFromRedeclaring()) {
+      resultType = type2;
+    } else {
+      resultType = type1;
     }
   }
   return resultType;

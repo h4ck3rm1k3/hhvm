@@ -75,7 +75,8 @@ class Variant;
     x(ModifierExpression, None),                \
     x(ConstantExpression, Const),               \
     x(EncapsListExpression, None),              \
-    x(ClosureExpression, None)
+    x(ClosureExpression, None),                 \
+    x(UserAttribute, None)
 
 class Expression : public Construct {
 public:
@@ -154,7 +155,9 @@ public:
   ExpressionPtr replaceValue(ExpressionPtr rep);
   void clearContext();
   int getContext() const { return m_context;}
-  bool hasContext(Context context) const { return (m_context & context) == context; }
+  bool hasContext(Context context) const {
+    return (m_context & context) == context;
+  }
   bool hasAnyContext(int context) const {
     if ((context & Declaration) == Declaration) {
       // special case Declaration because it is 2 bit fields
@@ -164,7 +167,9 @@ public:
     }
     return m_context & context;
   }
-  bool hasAllContext(int context) const { return (m_context & context) == context; }
+  bool hasAllContext(int context) const {
+    return (m_context & context) == context;
+  }
   bool hasSubExpr(ExpressionPtr sub) const;
   virtual void setComment(const std::string &) {}
   /**
@@ -197,7 +202,8 @@ public:
   void collectCPPTemps(ExpressionPtrVec &collection);
   void disableCSE();
   bool hasChainRoots();
-  bool preOutputCPPTemp(CodeGenerator &cg, AnalysisResultPtr ar, bool emitTemps);
+  bool preOutputCPPTemp(CodeGenerator &cg, AnalysisResultPtr ar,
+                        bool emitTemps);
   virtual bool preOutputCPP(CodeGenerator &cg, AnalysisResultPtr ar,
                             int state);
   bool preOutputOffsetLHS(CodeGenerator &cg, AnalysisResultPtr ar,
@@ -250,8 +256,10 @@ public:
   KindOf getKindOf() const { return m_kindOf;}
   virtual bool isTemporary() const { return false; }
   virtual bool isScalar() const { return false; }
+  bool isArray() const;
   virtual bool isRefable(bool checkError = false) const { return false; }
   virtual bool getScalarValue(Variant &value) { return false; }
+  FileScopeRawPtr getUsedScalarScope(CodeGenerator& cg);
   bool getEffectiveScalar(Variant &value);
   virtual ExpressionPtr clone() {
     ASSERT(false);
@@ -357,6 +365,7 @@ public:
     m_assertedType = assertedType;
   }
   TypePtr getType();
+  TypePtr getGenType();
   TypePtr getCPPType();
 
   bool isTypeAssertion() const {
@@ -392,18 +401,27 @@ public:
    */
   void computeLocalExprAltered();
 
+  bool outputCPPGuardedObjectPtr(CodeGenerator &cg);
 protected:
   static bool IsIdentifier(const std::string &value);
 
-  KindOf m_kindOf;
   int m_context;
+  int m_argNum;
+
+private:
+  KindOf m_kindOf;
+  bool m_originalScopeSet;
+  bool m_unused;
+  unsigned m_canon_id;
+  mutable int m_error;
+
+protected:
   TypePtr m_actualType;
   TypePtr m_expectedType; // null if the same as m_actualType
   TypePtr m_implementedType; // null if the same as m_actualType
   TypePtr m_assertedType;
   std::string m_cppTemp;
   std::string m_cppCseTemp;
-  int m_argNum;
 
   bool hasCPPCseTemp() const { return !m_cppCseTemp.empty(); }
 
@@ -418,7 +436,6 @@ protected:
                      bool force = false);
 
   void resetTypes();
-
  private:
   static ExprClass Classes[];
   void outputCPPInternal(CodeGenerator &cg, AnalysisResultPtr ar);
@@ -434,11 +451,7 @@ protected:
   bool canUseFastCast(AnalysisResultPtr ar);
 
   BlockScopeRawPtr m_originalScope;
-  bool m_originalScopeSet;
-  unsigned m_canon_id;
   ExpressionPtr m_canonPtr;
-  mutable int m_error;
-  bool m_unused;
   ExpressionPtr m_replacement;
 };
 

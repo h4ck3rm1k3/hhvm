@@ -35,7 +35,7 @@ class c_Closure : public ExtObjectData {
   DECLARE_CLASS(Closure, Closure, ObjectData)
 
   // need to implement
-  public: c_Closure();
+  public: c_Closure(const ObjectStaticCallbacks *cb = &cw_Closure);
   public: ~c_Closure();
   public: void t___construct();
   DECLARE_METHOD_INVOKE_HELPERS(__construct);
@@ -55,60 +55,43 @@ public:
    */
   virtual const CallInfo *t___invokeCallInfoHelper(void *&extra);
 
-  /**
-   * Used by HPHPI to make closures work
-   */
-  void *extraData() const { return m_extraData; }
+  String name() const { return String(m_name, CopyString); }
 
   /**
    * This is the constructor which is called internally-
    * PHP code will never be able to call this constructor
    */
-  c_Closure(const CallInfo *callInfo, void *extraData) :
-    m_callInfo(callInfo), m_extraData(extraData) {
+  c_Closure(const CallInfo *callInfo, const char *name,
+            const ObjectStaticCallbacks *cb = &cw_Closure) :
+      ExtObjectData(cb), m_callInfo(callInfo), m_name(name) {
     ASSERT(callInfo);
   }
 protected:
   virtual bool php_sleep(Variant &ret);
 private:
   const CallInfo *m_callInfo;
-  void *m_extraData;
+  const char *m_name;
 };
 
 ///////////////////////////////////////////////////////////////////////////////
-// class GeneratorClosure
+// class DummyClosure
 
-FORWARD_DECLARE_CLASS_BUILTIN(GeneratorClosure);
-class c_GeneratorClosure : public c_Closure {
+FORWARD_DECLARE_CLASS_BUILTIN(DummyClosure);
+class c_DummyClosure : public ExtObjectData {
  public:
-  // Closure is deliberately passed in as the original name,
-  // so that get_class() on a GeneratorClosure returns
-  // the string "Closure"
-  DECLARE_CLASS(GeneratorClosure, Closure, Closure)
+  DECLARE_CLASS(DummyClosure, DummyClosure, ObjectData)
 
   // need to implement
-  public: c_GeneratorClosure();
-  public: ~c_GeneratorClosure();
+  public: c_DummyClosure(const ObjectStaticCallbacks *cb = &cw_DummyClosure);
+  public: ~c_DummyClosure();
   public: void t___construct();
   DECLARE_METHOD_INVOKE_HELPERS(__construct);
   public: Variant t___destruct();
   DECLARE_METHOD_INVOKE_HELPERS(__destruct);
 
   // implemented by HPHP
-  public: c_GeneratorClosure *create();
-public:
-  /**
-   * This is the constructor which is called internally-
-   * PHP code will never be able to call this constructor
-   */
-  c_GeneratorClosure(
-    const CallInfo *callInfo,
-    void *extraData,
-    CArrRef vars) :
-    c_Closure(callInfo, extraData), m_vars(vars) {}
-public:
-  Array          m_vars;    /* use variables */
-  LVariableTable m_statics; /* static variables */
+  public: c_DummyClosure *create();
+
 };
 
 ///////////////////////////////////////////////////////////////////////////////

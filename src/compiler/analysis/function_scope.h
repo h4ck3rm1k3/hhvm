@@ -17,6 +17,7 @@
 #ifndef __FUNCTION_SCOPE_H__
 #define __FUNCTION_SCOPE_H__
 
+#include <compiler/expression/user_attribute.h>
 #include <compiler/analysis/block_scope.h>
 #include <compiler/option.h>
 
@@ -67,6 +68,7 @@ public:
                 ModifierExpressionPtr modifiers, int attribute,
                 const std::string &docComment,
                 FileScopePtr file,
+                const std::vector<UserAttributePtr> &attrs,
                 bool inPseudoMain = false);
 
   FunctionScope(FunctionScopePtr orig, AnalysisResultConstPtr ar,
@@ -102,6 +104,7 @@ public:
   bool isRefParam(int index) const;
   bool isRefReturn() const { return m_refReturn;}
   bool isDynamicInvoke() const { return m_dynamicInvoke; }
+  void setDynamicInvoke();
   bool hasImpl() const;
   void setDirectInvoke() { m_directInvoke = true; }
   bool hasDirectInvoke() const { return m_directInvoke; }
@@ -112,6 +115,8 @@ public:
   FunctionScopeRawPtr getOrigGenFS() const;
   void setNeedsRefTemp() { m_needsRefTemp = true; }
   bool needsRefTemp() const { return m_needsRefTemp; }
+  void setNeedsObjTemp() { m_needsObjTemp = true; }
+  bool needsObjTemp() const { return m_needsObjTemp; }
   void setNeedsCheckMem() { m_needsCheckMem = true; }
   bool needsCheckMem() const { return m_needsCheckMem; }
   void setClosureGenerator() { m_closureGenerator = true; }
@@ -138,6 +143,9 @@ public:
   void setHasTry() { m_hasTry = true; }
   bool hasGoto() const { return m_hasGoto; }
   bool hasTry() const { return m_hasTry; }
+  unsigned getNewID() { return m_nextID++; }
+
+  bool needsLocalThis() const;
 
   /**
    * Either __construct or a class-name constructor.
@@ -203,7 +211,6 @@ public:
   /**
    * Whether this function is a runtime helper function
    */
-  bool isHelperFunction() const;
   void setHelperFunction();
 
   /**
@@ -217,7 +224,14 @@ public:
   bool containsThis() const { return m_containsThis;}
   void setContainsThis(bool f=true) { m_containsThis = f;}
   bool containsBareThis() const { return m_containsBareThis; }
-  void setContainsBareThis(bool f=true) { m_containsBareThis = f; }
+  bool containsRefThis() const { return m_containsBareThis & 2; }
+  void setContainsBareThis(bool f, bool ref = false) {
+    if (f) {
+      m_containsBareThis |= ref ? 2 : 1;
+    } else {
+      m_containsBareThis = 0;
+    }
+  }
   /**
    * How many parameters a caller should provide.
    */
@@ -241,7 +255,7 @@ public:
   void fixRetExprs();
 
   bool needsTypeCheckWrapper() const;
-  const char *getPrefix(ExpressionListPtr params);
+  const char *getPrefix(AnalysisResultPtr ar, ExpressionListPtr params);
 
   void setOptFunction(FunctionOptPtr fn) { m_optFunction = fn; }
   FunctionOptPtr getOptFunction() const { return m_optFunction; }
@@ -272,9 +286,14 @@ public:
   }
   bool isRedeclaring() const { return m_redeclaring >= 0;}
 
+  void setLocalRedeclaring() { m_localRedeclaring = true; }
+  bool isLocalRedeclaring() const { return m_localRedeclaring; }
+
   /* For function_exists */
-  void setVolatile() { m_volatile = true;}
-  bool isVolatile() const { return m_volatile;}
+  void setVolatile() { m_volatile = true; }
+  bool isVolatile() const { return m_volatile; }
+  bool isPersistent() const { return m_persistent; }
+  void setPersistent(bool p) { m_persistent = p; }
 
   bool isInlined() const { return m_inlineable; }
   void disableInline() { m_inlineable = false; }
@@ -287,6 +306,10 @@ public:
      for this function */
   void setNRVOFix(bool flag) { m_nrvoFix = flag; }
   bool getNRVOFix() const { return m_nrvoFix; }
+
+  /* Indicates if a function may need to use a VarEnv or varargs (aka
+   * extraArgs) at run time */
+  bool mayUseVV() const;
 
   /**
    * Whether this function matches the specified one with same number of
@@ -304,6 +327,11 @@ public:
   TypePtr setParamType(AnalysisResultConstPtr ar, int index, TypePtr type);
   TypePtr getParamType(int index);
   TypePtr getParamTypeSpec(int index) { return m_paramTypeSpecs[index]; }
+
+  typedef hphp_hash_map<std::string, ExpressionPtr, string_hashi,
+    string_eqstri> UserAttributeMap;
+
+  UserAttributeMap& userAttributes() { return m_userAttributes;}
 
   /**
    * Override BlockScope::outputPHP() to generate return type.
@@ -369,6 +397,8 @@ public:
                               const char *instance = NULL,
                               const char *class_name = "");
 
+  void outputCPPDef(CodeGenerator &cg);
+
   /**
    * ...so ClassStatement can call them for classes that don't have
    * constructors defined
@@ -399,7 +429,7 @@ public:
   void serialize(JSON::CodeError::OutputStream &out) const;
   void serialize(JSON::DocTarget::OutputStream &out) const;
 
-  bool inPseudoMain() {
+  bool inPseudoMain() const {
     return m_pseudoMain;
   }
 
@@ -442,7 +472,8 @@ public:
 
   class FunctionInfo {
   public:
-    FunctionInfo(int rva = -1) : m_maybeStatic(false), m_refVarArg(rva) { }
+    FunctionInfo(int rva = -1) : m_maybeStatic(false), m_maybeRefReturn(false),
+                                 m_refVarArg(rva) { }
 
     bool isRefParam(int p) const {
       if (m_refVarArg >= 0 && p >= m_refVarArg) return true;
@@ -460,8 +491,12 @@ public:
     void setMaybeStatic() { m_maybeStatic = true; }
     bool getMaybeStatic() { return m_maybeStatic; }
 
+    void setMaybeRefReturn() { m_maybeRefReturn = true; }
+    bool getMaybeRefReturn() { return m_maybeRefReturn; }
+
   private:
     bool m_maybeStatic; // this could be a static method
+    bool m_maybeRefReturn;
     int m_refVarArg; // -1: no ref varargs;
                      // otherwise, any arg >= m_refVarArg is a reference
     std::set<int> m_refParams; // set of ref arg positions
@@ -492,6 +527,7 @@ private:
   TypePtr m_returnType;
   TypePtr m_prevReturn;
   ModifierExpressionPtr m_modifiers;
+  UserAttributeMap m_userAttributes;
 
   unsigned m_hasVoid : 1;
   unsigned m_method : 1;
@@ -503,25 +539,29 @@ private:
   unsigned m_dynamicInvoke : 1;
   unsigned m_overriding : 1; // overriding a virtual function
   unsigned m_volatile : 1; // for function_exists
+  unsigned m_persistent : 1;
   unsigned m_pseudoMain : 1;
   unsigned m_magicMethod : 1;
   unsigned m_system : 1;
   unsigned m_inlineable : 1;
   unsigned m_sep : 1;
   unsigned m_containsThis : 1; // contains a usage of $this?
-  unsigned m_containsBareThis : 1; // $this outside object-context
+  unsigned m_containsBareThis : 2; // $this outside object-context,
+                                   // 2 if in reference context
   unsigned m_nrvoFix : 1;
   unsigned m_inlineAsExpr : 1;
   unsigned m_inlineSameContext : 1;
   unsigned m_contextSensitive : 1;
   unsigned m_directInvoke : 1;
   unsigned m_needsRefTemp : 1;
+  unsigned m_needsObjTemp : 1;
   unsigned m_needsCheckMem : 1;
   unsigned m_closureGenerator : 1;
   unsigned m_noLSB : 1;
   unsigned m_nextLSB : 1;
   unsigned m_hasTry : 1;
   unsigned m_hasGoto : 1;
+  unsigned m_localRedeclaring : 1;
 
   int m_redeclaring; // multiple definition of the same function
   StatementPtr m_stmtCloned; // cloned method body stmt
@@ -533,6 +573,7 @@ private:
   ExpressionListPtr m_closureVars;
   ExpressionListPtr m_closureValues;
   ReadWriteMutex m_inlineMutex;
+  unsigned m_nextID; // used when cloning generators for traits
 };
 
 ///////////////////////////////////////////////////////////////////////////////

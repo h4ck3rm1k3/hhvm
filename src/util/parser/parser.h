@@ -83,8 +83,10 @@ public:
   static bool IsContinuationName           (const std::string &name);
   static bool IsContinuationFromClosureName(const std::string &name);
   static bool IsClosureOrContinuationName  (const std::string &name);
-  static bool IsAnonFunctionName           (const std::string &name);
-
+  static bool IsAnonFunctionName           (const std::string &name) {
+    return IsAnonFunctionName(name.c_str());
+  }
+  static bool IsAnonFunctionName           (const char *name);
   /**
    * Reset parser static variables. Good for unit tests.
    */
@@ -100,7 +102,7 @@ public:
    * Main function to call to start parsing the file. This function is already
    * implemented in hphp.y. Therefore, a subclass only has to declare it.
    */
-  virtual bool parse() = 0;
+  virtual bool parseImpl() = 0;
 
   /**
    * Raise a parser error.
@@ -111,6 +113,11 @@ public:
    * How to decide whether to turn on XHP.
    */
   virtual bool enableXHP() = 0;
+
+  /**
+   * Check if HipHop syntax is enabled.
+   */
+  virtual bool enableHipHopSyntax() = 0;
 
   /**
    * Public accessors.
@@ -140,7 +147,16 @@ public:
 
   void pushFuncLocation();
   LocationPtr popFuncLocation();
+  void pushClass(bool isXhpClass);
+  bool peekClass();
+  void popClass();
   std::string getAnonFuncName(AnonFuncKind kind);
+
+  // for typevar checking
+  void pushTypeScope();
+  void popTypeScope();
+  void addTypeVar(const std::string &name);
+  bool isTypeVar(const std::string &name);
 
   // for goto syntax checking
   void pushLabelInfo();
@@ -176,6 +192,8 @@ protected:
 
   Location m_loc;
   LocationPtrVec m_funcLocs;
+  std::vector<bool> m_classes; // used to determine if we are currently
+                               // inside a regular class or an XHP class
 
   struct LabelStmtInfo {
     int scopeId;
@@ -185,6 +203,11 @@ protected:
   };
   typedef std::map<std::string, LabelStmtInfo> LabelMap;
     // name => LabelStmtInfo
+
+  typedef std::set<std::string> TypevarScope;
+  typedef std::vector<TypevarScope> TypevarScopeStack;
+  TypevarScope m_typeVars;
+  TypevarScopeStack m_typeScopes;
 
   // for goto syntax checking
   typedef std::vector<int> LabelScopes;

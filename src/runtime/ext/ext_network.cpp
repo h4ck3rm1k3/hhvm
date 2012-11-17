@@ -68,13 +68,61 @@
                         PHP_DNS_PTR|PHP_DNS_HINFO|PHP_DNS_MX|PHP_DNS_TXT| \
                         PHP_DNS_A6|PHP_DNS_SRV|PHP_DNS_NAPTR|PHP_DNS_AAAA)
 
-using namespace std;
-
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
 // DNS
 
 static Mutex NetworkMutex;
+
+class ResolverInit {
+public:
+  ResolverInit() : m_res(NULL) {
+    m_res = (struct __res_state *)calloc(1, sizeof(*m_res));
+    if (res_ninit(m_res)) {
+      free(m_res);
+      m_res = NULL;
+    }
+  }
+  ~ResolverInit() {
+    if (m_res)
+      free(m_res);
+    m_res = NULL;
+  }
+
+  struct __res_state *getResolver(void) {
+    return m_res;
+  }
+
+  static DECLARE_THREAD_LOCAL(ResolverInit, s_res);
+private:
+  struct __res_state *m_res;
+};
+IMPLEMENT_THREAD_LOCAL(ResolverInit, ResolverInit::s_res);
+
+Variant f_gethostname() {
+  struct addrinfo hints, *res;
+  char h_name[NI_MAXHOST];
+  int error;
+  String canon_hname;
+
+  error = gethostname(h_name, NI_MAXHOST);
+  if (error) {
+    return false;
+  }
+
+  memset(&hints, 0, sizeof(hints));
+  hints.ai_family = AF_UNSPEC;
+  hints.ai_flags = AI_CANONNAME;
+
+  error = getaddrinfo(h_name, NULL, &hints, &res);
+  if (error) {
+    return String(h_name, CopyString);
+  }
+
+  canon_hname = String(res->ai_canonname, CopyString);
+  freeaddrinfo(res);
+  return canon_hname;
+}
 
 Variant f_gethostbyaddr(CStrRef ip_address) {
   IOStatusHelper io("gethostbyaddr", ip_address.data());
@@ -255,13 +303,13 @@ String f_long2ip(int proper_address) {
  *   __libc_res_nsend()   in resolv/res_send.c
  * */
 
-static void php_dns_free_res(struct __res_state res) {
+static void php_dns_free_res(struct __res_state *res) {
 #if defined(__GLIBC__)
   int ns;
   for (ns = 0; ns < MAXNS; ns++) {
-    if (res._u._ext.nsaddrs[ns] != NULL) {
-      free(res._u._ext.nsaddrs[ns]);
-      res._u._ext.nsaddrs[ns] = NULL;
+    if (res->_u._ext.nsaddrs[ns] != NULL) {
+      free(res->_u._ext.nsaddrs[ns]);
+      res->_u._ext.nsaddrs[ns] = NULL;
     }
   }
 #endif
@@ -298,13 +346,13 @@ bool f_dns_check_record(CStrRef host, CStrRef type /* = null_string */) {
   }
 
   unsigned char ans[MAXPACKET];
-  struct __res_state res;
-  memset(&res, 0, sizeof(res));
-  if (res_ninit(&res)) {
+  struct __res_state *res;
+  res = ResolverInit::s_res.get()->getResolver();
+  if (res == NULL) {
     return false;
   }
-  int i = res_nsearch(&res, host.data(), C_IN, ntype, ans, sizeof(ans));
-  res_nclose(&res);
+  int i = res_nsearch(res, host.data(), C_IN, ntype, ans, sizeof(ans));
+  res_nclose(res);
   php_dns_free_res(res);
   return (i >= 0);
 }
@@ -318,7 +366,7 @@ typedef union {
 static unsigned char *php_parserr(unsigned char *cp, querybuf *answer,
                                   int type_to_fetch, bool store,
                                   Array &subarray) {
-  unsigned short type, cls, dlen;
+  unsigned short type, cls ATTRIBUTE_UNUSED, dlen;
   unsigned long ttl;
   int64 n, i;
   unsigned short s;
@@ -396,17 +444,18 @@ static unsigned char *php_parserr(unsigned char *cp, querybuf *answer,
     int ll = 0;
 
     subarray.set("type", "TXT");
-    tp = (unsigned char *)malloc(dlen + 1);
+    String s = String(dlen, ReserveString);
+    tp = (unsigned char *)s.mutableSlice().ptr;
 
     while (ll < dlen) {
       n = cp[ll];
       memcpy(tp + ll , cp + ll + 1, n);
       ll = ll + n + 1;
     }
-    tp[dlen] = '\0';
+    s.setSize(dlen);
     cp += dlen;
 
-    subarray.set("txt", String((const char *)tp, dlen - 1, AttachString));
+    subarray.set("txt", s);
     break;
   }
   case DNS_T_SOA:
@@ -646,16 +695,16 @@ Variant f_dns_get_record(CStrRef hostname, int type /* = -1 */,
     }
     if (!type_to_fetch) continue;
 
-    struct __res_state res;
-    memset(&res, 0, sizeof(res));
-    if (res_ninit(&res)) {
+    struct __res_state *res;
+    res = ResolverInit::s_res.get()->getResolver();
+    if (res == NULL) {
       return false;
     }
 
-    int n = res_nsearch(&res, hostname.data(), C_IN, type_to_fetch,
+    int n = res_nsearch(res, hostname.data(), C_IN, type_to_fetch,
                         answer.qb2, sizeof answer);
     if (n < 0) {
-      res_nclose(&res);
+      res_nclose(res);
       php_dns_free_res(res);
       continue;
     }
@@ -674,7 +723,7 @@ Variant f_dns_get_record(CStrRef hostname, int type /* = -1 */,
       n = dn_skipname(cp, end);
       if (n < 0) {
         raise_warning("Unable to parse DNS data received");
-        res_nclose(&res);
+        res_nclose(res);
         php_dns_free_res(res);
         return false;
       }
@@ -689,7 +738,7 @@ Variant f_dns_get_record(CStrRef hostname, int type /* = -1 */,
         ret.append(retval);
       }
     }
-    res_nclose(&res);
+    res_nclose(res);
     php_dns_free_res(res);
   }
 
@@ -727,16 +776,16 @@ bool f_dns_get_mx(CStrRef hostname, VRefParam mxhosts,
   weights = Array::Create();
 
   /* Go! */
-  struct __res_state res;
-  memset(&res, 0, sizeof(res));
-  if (res_ninit(&res)) {
+  struct __res_state *res;
+  res = ResolverInit::s_res.get()->getResolver();
+  if (res == NULL) {
     return false;
   }
 
-  int i = res_nsearch(&res, hostname.data(), C_IN, DNS_T_MX,
+  int i = res_nsearch(res, hostname.data(), C_IN, DNS_T_MX,
                       (unsigned char*)&ans, sizeof(ans));
   if (i < 0) {
-    res_nclose(&res);
+    res_nclose(res);
     php_dns_free_res(res);
     return false;
   }
@@ -748,7 +797,7 @@ bool f_dns_get_mx(CStrRef hostname, VRefParam mxhosts,
   end = (unsigned char *)&ans +i;
   for (qdc = ntohs((unsigned short)hp->qdcount); qdc--; cp += i + QFIXEDSZ) {
     if ((i = dn_skipname(cp, end)) < 0 ) {
-      res_nclose(&res);
+      res_nclose(res);
       php_dns_free_res(res);
       return false;
     }
@@ -756,7 +805,7 @@ bool f_dns_get_mx(CStrRef hostname, VRefParam mxhosts,
   count = ntohs((unsigned short)hp->ancount);
   while (--count >= 0 && cp < end) {
     if ((i = dn_skipname(cp, end)) < 0 ) {
-      res_nclose(&res);
+      res_nclose(res);
       php_dns_free_res(res);
       return false;
     }
@@ -770,7 +819,7 @@ bool f_dns_get_mx(CStrRef hostname, VRefParam mxhosts,
     }
     GETSHORT(weight, cp);
     if ((i = dn_expand(ans, end, cp, buf, sizeof(buf)-1)) < 0) {
-      res_nclose(&res);
+      res_nclose(res);
       php_dns_free_res(res);
       return false;
     }
@@ -778,7 +827,7 @@ bool f_dns_get_mx(CStrRef hostname, VRefParam mxhosts,
     mxhosts.append(String(buf, CopyString));
     weights.append(weight);
   }
-  res_nclose(&res);
+  res_nclose(res);
   php_dns_free_res(res);
   return true;
 }
@@ -804,7 +853,7 @@ void f_header(CStrRef str, bool replace /* = true */,
   // new line safety check
   // NOTE: PHP actually allows "\n " and "\n\t" to fall through. Is that bad
   // for security?
-  if (header.find('\n') >= 0) {
+  if (header.find('\n') >= 0 || header.find('\r') >= 0) {
     raise_warning("Header may not contain more than a single header, "
                   "new line detected");
     return;
@@ -881,6 +930,19 @@ bool f_headers_sent(VRefParam file /* = null */, VRefParam line /* = null */) {
     return transport->headersSent();
   }
   return false;
+}
+
+bool f_header_register_callback(CVarRef callback) {
+  Transport *transport = g_context->getTransport();
+  if (!transport) {
+    // fail if there is no transport
+    return false;
+  }
+  if (transport->headersSent()) {
+    // fail if headers have already been sent
+    return false;
+  }
+  return transport->setHeaderCallback(callback);
 }
 
 void f_header_remove(CStrRef name /* = null_string */) {

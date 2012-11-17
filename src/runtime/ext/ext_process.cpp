@@ -28,13 +28,12 @@
 #include <util/light_process.h>
 #include <util/logger.h>
 #include <runtime/base/util/request_local.h>
+#include <runtime/vm/repo.h>
 
 #if !defined(_NSIG) && defined(NSIG)
 # define _NSIG NSIG
 #endif
 
-
-using namespace std;
 
 namespace HPHP {
 
@@ -84,8 +83,12 @@ static bool check_cmd(const char *cmd) {
       }
     }
     if (!allow) {
-      String file = FrameInjection::GetContainingFileName(true);
-      int line = FrameInjection::GetLine(true);
+      String file = hhvm
+                    ? g_vmContext->getContainingFileName(true)
+                    : FrameInjection::GetContainingFileName(true);
+      int line = hhvm
+                 ? g_vmContext->getLine(true)
+                 : FrameInjection::GetLine(true);
       Logger::Warning("Command %s is not in the whitelist, called at %s:%d",
                       cmd_tmp, file.data(), line);
       if (!RuntimeOption::WhitelistExecWarningOnly) {
@@ -140,20 +143,20 @@ void f_pcntl_exec(CStrRef path, CArrRef args /* = null_array */,
   free(argv);
 }
 
-int f_pcntl_fork() {
-  if (strcmp(RuntimeOption::ExecutionMode, "srv") == 0) {
+int64 f_pcntl_fork() {
+  if (RuntimeOption::serverExecutionMode()) {
     raise_error("forking is disallowed in server mode");
+    return -1;
+  }
+  if (VM::Repo::prefork()) {
+    raise_error("forking is disallowed in multi-threaded mode");
     return -1;
   }
 
   std::cout.flush();
   std::cerr.flush();
   pid_t pid = fork();
-  if (pid == 0) {
-    // hzhao: I haven't found a good way to restart fiber threads in a forked
-    // children without causing any problems yet.
-    FiberAsyncFunc::Disable();
-  }
+  VM::Repo::postfork(pid);
   return pid;
 }
 
@@ -251,16 +254,25 @@ class SignalHandlers : public RequestEventHandler {
 public:
   SignalHandlers() {
     memset(signaled, 0, sizeof(signaled));
+    pthread_sigmask(SIG_SETMASK, NULL, &oldSet);
   }
   virtual void requestInit() {
     handlers.reset();
+    // restore the old signal mask, thus unblock those that should be
+    pthread_sigmask(SIG_SETMASK, &oldSet, NULL);
   }
   virtual void requestShutdown() {
+    // block all signals
+    sigset_t set;
+    sigfillset(&set);
+    pthread_sigmask(SIG_BLOCK, &set, NULL);
+
     handlers.reset();
   }
 
   Array handlers;
   int signaled[_NSIG];
+  sigset_t oldSet;
 };
 IMPLEMENT_STATIC_REQUEST_LOCAL(SignalHandlers, s_signal_handlers);
 
@@ -272,6 +284,7 @@ static void pcntl_signal_handler(int signo) {
     data.setSignaledFlag();
   }
 }
+
 class SignalHandlersStaticInitializer {
 public:
   SignalHandlersStaticInitializer() {
@@ -326,7 +339,7 @@ bool f_pcntl_signal(int signo, CVarRef handler,
   return true;
 }
 
-int f_pcntl_wait(VRefParam status, int options /* = 0 */) {
+int64 f_pcntl_wait(VRefParam status, int options /* = 0 */) {
   int child_id;
   int nstatus = 0;
   child_id = LightProcess::pcntl_waitpid(-1, &nstatus, options);
@@ -339,7 +352,7 @@ int f_pcntl_wait(VRefParam status, int options /* = 0 */) {
   return child_id;
 }
 
-int f_pcntl_waitpid(int pid, VRefParam status, int options /* = 0 */) {
+int64 f_pcntl_waitpid(int pid, VRefParam status, int options /* = 0 */) {
   int nstatus = status;
   pid_t child_id = LightProcess::pcntl_waitpid((pid_t)pid, &nstatus, options);
   status = nstatus;
@@ -554,7 +567,7 @@ public:
     mode = DESC_FILE;
     childend = dup(file->fd());
     if (childend < 0) {
-      raise_warning("unable to dup File-Handle for descriptor %ld - %s",
+      raise_warning("unable to dup File-Handle for descriptor %d - %s",
                       index, Util::safe_strerror(errno).c_str());
       return false;
     }
@@ -800,7 +813,7 @@ bool f_proc_terminate(CObjRef process, int signal /* = 0 */) {
   return kill(proc->child, signal <= 0 ? SIGTERM : signal) == 0;
 }
 
-int f_proc_close(CObjRef process) {
+int64 f_proc_close(CObjRef process) {
   return process.getTyped<ChildProcess>()->close();
 }
 

@@ -23,6 +23,7 @@
 #include <compiler/code_generator.h>
 #include <boost/graph/adjacency_list.hpp>
 #include <util/json.h>
+#include <runtime/base/md5.h>
 
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
@@ -63,23 +64,25 @@ public:
   typedef boost::graph_traits<Graph>::vertex_descriptor vertex_descriptor;
 
 public:
-  FileScope(const std::string &fileName, int fileSize);
-  ~FileScope() {}
+  FileScope(const std::string &fileName, int fileSize, const MD5 &md5);
+  ~FileScope() { delete m_redeclaredFunctions; }
   int getSize() const { return m_size;}
 
   // implementing FunctionContainer
   virtual std::string getParentName() const { ASSERT(false); return "";}
 
   const std::string &getName() const { return m_fileName;}
+  const MD5& getMd5() const { return m_md5; }
   StatementListPtr getStmt() const { return m_tree;}
   const StringToClassScopePtrVecMap &getClasses() const {
     return m_classes;
   }
   void getClassesFlattened(ClassScopePtrVec &classes) const;
   ClassScopePtr getClass(const char *name);
+  void getScopesSet(BlockScopeRawPtrQueue &v);
 
-  virtual int getFunctionCount() const;
-  virtual void countReturnTypes(std::map<std::string, int> &counts);
+  int getFunctionCount() const;
+  void countReturnTypes(std::map<std::string, int> &counts);
   int getClassCount() const { return m_classes.size();}
 
   void pushAttribute();
@@ -102,10 +105,17 @@ public:
    * are the only functions a parser calls upon analysis results.
    */
   FunctionScopePtr setTree(AnalysisResultConstPtr ar, StatementListPtr tree);
-  void cleanupForError();
+  void cleanupForError(AnalysisResultConstPtr ar,
+                       int line, const std::string &msg);
 
+  bool addFunction(AnalysisResultConstPtr ar, FunctionScopePtr funcScope);
   bool addClass(AnalysisResultConstPtr ar, ClassScopePtr classScope);
-
+  const StringToFunctionScopePtrVecMap *getRedecFunctions() {
+    return m_redeclaredFunctions;
+  }
+  void addUsedClosure(FunctionScopeRawPtr closure) {
+    m_usedClosures.insert(closure);
+  }
   void addUsedLiteralString(std::string s) {
     m_usedLiteralStrings.insert(s);
   }
@@ -159,15 +169,15 @@ public:
     m_usedConstsHeader.insert(s);
   }
 
-  void addUsedClassConstHeader(const std::string &cls, const std::string &s) {
-    m_usedClassConstsHeader.insert(UsedClassConst(cls, s));
+  void addUsedClassConstHeader(ClassScopeRawPtr cls, const std::string &s) {
+    m_usedClassConstsHeader.insert(CodeGenerator::UsedClassConst(cls, s));
   }
 
-  void addUsedClassHeader(const std::string &s) {
+  void addUsedClassHeader(ClassScopeRawPtr s) {
     m_usedClassesHeader.insert(s);
   }
 
-  void addUsedClassFullHeader(const std::string &s) {
+  void addUsedClassFullHeader(ClassScopeRawPtr s) {
     m_usedClassesFullHeader.insert(s);
   }
 
@@ -200,8 +210,19 @@ public:
     m_vertex = vertex;
   }
 
+  void setModule() { m_module = true; }
+  void setPrivateInclude() { m_privateInclude = true; }
+  bool isPrivateInclude() const { return m_privateInclude && !m_externInclude; }
+  void setExternInclude() { m_externInclude = true; }
+
   void analyzeProgram(AnalysisResultPtr ar);
-  void inferTypes(AnalysisResultPtr ar);
+  void analyzeIncludes(AnalysisResultPtr ar);
+  void analyzeIncludesHelper(AnalysisResultPtr ar);
+  bool insertClassUtil(AnalysisResultPtr ar, ClassScopeRawPtr cls, bool def);
+
+  bool checkClass(const std::string &cls);
+  ClassScopeRawPtr resolveClass(ClassScopeRawPtr cls);
+  FunctionScopeRawPtr resolveFunction(FunctionScopeRawPtr func);
   void visit(AnalysisResultPtr ar,
              void (*cb)(AnalysisResultPtr, StatementPtr, void*),
              void *data);
@@ -221,15 +242,11 @@ public:
   FunctionScopeRawPtr getPseudoMain() const {
     return m_pseudoMain;
   }
-  void setHasNonPrivateScope() { m_hasNonPrivateInclude = true;}
   void outputCPPForwardStaticDecl(CodeGenerator &cg, AnalysisResultPtr ar);
-  void outputCPPForwardDeclHeader(CodeGenerator &cg, AnalysisResultPtr ar);
   void outputCPPDeclHeader(CodeGenerator &cg, AnalysisResultPtr ar);
   void outputCPPForwardDeclarations(CodeGenerator &cg, AnalysisResultPtr ar);
   void outputCPPDeclarations(CodeGenerator &cg, AnalysisResultPtr ar);
   void outputCPPClassHeaders(AnalysisResultPtr ar,
-                             CodeGenerator::Output output);
-  void outputCPPForwardClassHeaders(CodeGenerator &cg, AnalysisResultPtr ar,
                              CodeGenerator::Output output);
   void outputCPPImpl(CodeGenerator &cg, AnalysisResultPtr ar);
   void outputCPPPseudoMain(CodeGenerator &cg, AnalysisResultPtr ar);
@@ -248,21 +265,27 @@ public:
   }
 private:
   int m_size;
+  MD5 m_md5;
+  unsigned m_module : 1;
+  unsigned m_privateInclude : 1;
+  unsigned m_externInclude : 1;
+  unsigned m_includeState : 2;
+
   std::vector<int> m_attributes;
   std::string m_fileName;
   StatementListPtr m_tree;
+  StringToFunctionScopePtrVecMap *m_redeclaredFunctions;
   StringToClassScopePtrVecMap m_classes;      // name => class
-  ClassScopePtrVec m_ignoredClasses;
   FunctionScopeRawPtr m_pseudoMain;
 
   vertex_descriptor m_vertex;
 
+  std::set<FunctionScopeRawPtr> m_usedClosures;
   std::set<std::string> m_usedFuncsInline;
-  std::set<std::string> m_usedClassesHeader;
-  std::set<std::string> m_usedClassesFullHeader;
+  CodeGenerator::ClassScopeSet m_usedClassesHeader;
+  CodeGenerator::ClassScopeSet m_usedClassesFullHeader;
   std::set<std::string> m_usedConstsHeader;
-  typedef std::pair<std::string, std::string> UsedClassConst;
-  std::set<UsedClassConst> m_usedClassConstsHeader;
+  CodeGenerator::UsedClassConstSet m_usedClassConstsHeader;
   std::set<std::string> m_usedIncludesInline;
   std::set<std::string> m_usedLiteralStrings;
   std::set<std::string> m_usedLitVarStrings;
@@ -278,7 +301,8 @@ private:
   std::set<std::string> m_usedDefaultValueScalarVarArrays;
   std::string m_pseudoMainName;
   std::set<std::string> m_pseudoMainVariables;
-  bool m_hasNonPrivateInclude;
+  BlockScopeSet m_providedDefs;
+  std::set<std::string> m_redecBases;
 
   FunctionScopePtr createPseudoMain(AnalysisResultConstPtr ar);
   void setFileLevel(StatementListPtr stmt);

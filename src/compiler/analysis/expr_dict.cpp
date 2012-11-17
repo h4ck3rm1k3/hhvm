@@ -15,7 +15,6 @@
 */
 
 #include <compiler/analysis/alias_manager.h>
-//#include <compiler/analysis/control_flow.h>
 #include <compiler/analysis/expr_dict.h>
 
 #include <compiler/expression/expression.h>
@@ -25,7 +24,6 @@
 #include <compiler/statement/method_statement.h>
 
 using namespace HPHP;
-using namespace boost;
 using std::vector;
 
 ///////////////////////////////////////////////////////////////////////////////

@@ -35,8 +35,6 @@
 #include <algorithm>
 
 using namespace HPHP;
-using namespace std;
-using namespace boost;
 
 ///////////////////////////////////////////////////////////////////////////////
 // constructors/destructors
@@ -44,9 +42,10 @@ using namespace boost;
 ClassStatement::ClassStatement
 (STATEMENT_CONSTRUCTOR_PARAMETERS,
  int type, const string &name, const string &parent,
- ExpressionListPtr base, const string &docComment, StatementListPtr stmt)
+ ExpressionListPtr base, const string &docComment, StatementListPtr stmt,
+ ExpressionListPtr attrList)
   : InterfaceStatement(STATEMENT_CONSTRUCTOR_PARAMETER_VALUES(ClassStatement),
-                       name, base, docComment, stmt),
+                       name, base, docComment, stmt, attrList),
     m_type(type), m_ignored(false) {
   m_parent = Util::toLower(parent);
   m_originalParent = parent;
@@ -74,22 +73,37 @@ void ClassStatement::onParse(AnalysisResultConstPtr ar, FileScopePtr fs) {
   }
 
   vector<string> bases;
-  if (!m_parent.empty()) {
-    bases.push_back(m_parent);
+  if (!m_originalParent.empty()) {
+    bases.push_back(m_originalParent);
   }
-  if (m_base) m_base->getStrings(bases);
+  if (m_base) m_base->getOriginalStrings(bases);
+
+  vector<UserAttributePtr> attrs;
+  if (m_attrList) {
+    for (int i = 0; i < m_attrList->getCount(); ++i) {
+      UserAttributePtr a =
+        dynamic_pointer_cast<UserAttribute>((*m_attrList)[i]);
+      attrs.push_back(a);
+    }
+  }
+
   StatementPtr stmt = dynamic_pointer_cast<Statement>(shared_from_this());
-  ClassScopePtr classScope(new ClassScope(kindOf, m_originalName, m_parent,
+  ClassScopePtr classScope(new ClassScope(kindOf, m_originalName,
+                                          m_originalParent,
                                           bases, m_docComment,
-                                          stmt));
+                                          stmt, attrs));
   setBlockScope(classScope);
   if (!fs->addClass(ar, classScope)) {
     m_ignored = true;
     return;
   }
 
+  if (Option::PersistenceHook) {
+    classScope->setPersistent(Option::PersistenceHook(classScope, fs));
+  }
+
   if (m_stmt) {
-    bool seenConstruct = false;
+    MethodStatementPtr constructor;
 
     // flatten continuation StatementList into MethodStatements
     for (int i = 0; i < m_stmt->getCount(); i++) {
@@ -107,32 +121,29 @@ void ClassStatement::onParse(AnalysisResultConstPtr ar, FileScopePtr fs) {
       MethodStatementPtr meth =
         dynamic_pointer_cast<MethodStatement>((*m_stmt)[i]);
       if (meth && meth->getName() == "__construct") {
-        seenConstruct = true;
+        constructor = meth;
         break;
       }
     }
     for (int i = 0; i < m_stmt->getCount(); i++) {
-      if (!seenConstruct) {
+      if (!constructor) {
         MethodStatementPtr meth =
           dynamic_pointer_cast<MethodStatement>((*m_stmt)[i]);
-        if (meth && classScope && meth->getName() == classScope->getName()
-            && !meth->getModifiers()->isStatic() && !classScope->isTrait()) {
+        if (meth && meth->getName() == classScope->getName()
+            && !classScope->isTrait()) {
           // class-name constructor
+          constructor = meth;
           classScope->setAttribute(ClassScope::ClassNameConstructor);
         }
       }
       IParseHandlerPtr ph = dynamic_pointer_cast<IParseHandler>((*m_stmt)[i]);
       ph->onParseRecur(ar, classScope);
     }
-
-    for (int i = 0; i < m_stmt->getCount(); i++) {
-      UseTraitStatementPtr useTrait =
-        dynamic_pointer_cast<UseTraitStatement>((*m_stmt)[i]);
-      if (useTrait) {
-        vector<string> usedTraits;
-        useTrait->getUsedTraitNames(usedTraits);
-        classScope->addUsedTraits(usedTraits);
-      }
+    if (constructor && constructor->getModifiers()->isStatic()) {
+      constructor->parseTimeFatal(Compiler::InvalidAttribute,
+                                  "Constructor %s::%s() cannot be static",
+                                  classScope->getOriginalName().c_str(),
+                                  constructor->getOriginalName().c_str());
     }
   }
 }
@@ -172,26 +183,7 @@ void ClassStatement::analyzeProgram(AnalysisResultPtr ar) {
     m_stmt->analyzeProgram(ar);
   }
 
-  ClassScopePtr clsScope = getClassScope();
-
-  // Check that every trait stmt is either a method, class_var, or trait_use
-  if (clsScope->isTrait()) {
-    StatementListPtr stmts = getStmts();
-    if (stmts) {
-      for (int s = 0; s < stmts->getCount(); s++) {
-        StatementPtr stmt = (*stmts)[s];
-        if(!dynamic_pointer_cast<UseTraitStatement>(stmt) &&
-           !dynamic_pointer_cast<MethodStatement>(stmt) &&
-           !dynamic_pointer_cast<ClassVariable>(stmt)) {
-          Compiler::Error(Compiler::InvalidTraitStatement, stmt);
-        }
-      }
-    }
-  }
-
   if (ar->getPhase() != AnalysisResult::AnalyzeAll) return;
-
-  clsScope->importUsedTraits(ar);
 
   ar->recordClassSource(m_name, m_loc, getFileScope()->getName());
   for (unsigned int i = 0; i < bases.size(); i++) {
@@ -200,8 +192,10 @@ void ClassStatement::analyzeProgram(AnalysisResultPtr ar) {
       if ((!cls->isInterface() && (m_parent.empty() || i > 0 )) ||
           (cls->isInterface() && (!m_parent.empty() && i == 0 )) ||
           (cls->isTrait())) {
-        Compiler::Error(Compiler::InvalidDerivation, shared_from_this(),
-                        cls->getOriginalName());
+        Compiler::Error(Compiler::InvalidDerivation,
+                        shared_from_this(),
+                        "You are extending " + cls->getOriginalName() + 
+                          " which is an interface or a trait");
       }
       if (cls->isUserClass()) {
         cls->addUse(getScope(), BlockScope::UseKindParentRef);
@@ -276,7 +270,8 @@ void ClassStatement::outputPHP(CodeGenerator &cg, AnalysisResultPtr ar) {
 bool ClassStatement::hasImpl() const {
   ClassScopeRawPtr cls = getClassScope();
   return cls->isVolatile() ||
-    cls->getVariables()->getAttribute(VariableTable::ContainsDynamicStatic);
+    cls->getVariables()->getAttribute(VariableTable::ContainsDynamicStatic) ||
+    (hhvm && Option::OutputHHBC);
 }
 
 void ClassStatement::outputCPPClassDecl(CodeGenerator &cg,
@@ -285,7 +280,6 @@ void ClassStatement::outputCPPClassDecl(CodeGenerator &cg,
                                         const char *originalName,
                                         const char *parent) {
   ClassScopeRawPtr classScope = getClassScope();
-  if (classScope->isTrait()) return;
   VariableTablePtr variables = classScope->getVariables();
   ConstantTablePtr constants = classScope->getConstants();
   const char *sweep =
@@ -305,21 +299,6 @@ void ClassStatement::outputCPPClassDecl(CodeGenerator &cg,
 
   cg_printf("DECLARE_CLASS_COMMON%s(%s, %s)\n", sweep,
             clsName, CodeGenerator::EscapeLabel(originalName).c_str());
-
-  cg.printSection("DECLARE_STATIC_PROP_OPS");
-  cg_printf("public:\n");
-
-  cg.printSection("DECLARE_COMMON_INVOKE");
-  if (classScope->hasJumpTable(ClassScope::JumpTableCallInfo)) {
-    cg.printf("static const MethodCallInfoTable s_call_info_table[];\n");
-    cg.printf("static const int s_call_info_index[];\n");
-  } else {
-    cg.printf("static const int s_call_info_table = 0;\n");
-    cg.printf("static const int s_call_info_index = 0;\n");
-  }
-
-  cg_printf("\n");
-  cg_printf("public:\n");
 }
 
 void ClassStatement::GetCtorAndInitInfo(
@@ -359,38 +338,12 @@ void ClassStatement::getCtorAndInitInfo(bool &needsCppCtor, bool &needsInit) {
 }
 
 void ClassStatement::outputCPPImpl(CodeGenerator &cg, AnalysisResultPtr ar) {
-  ClassScopeRawPtr classScope = getClassScope();
-  if (classScope->isTrait()) return;
   if (cg.getContext() == CodeGenerator::NoContext) {
-    if (classScope->isVolatile()) {
-      string name = CodeGenerator::FormatLabel(m_name);
-      if (classScope->isRedeclaring()) {
-        cg_printf("g->%s%s = &%s%s;\n",
-                  Option::ClassStaticsCallbackPrefix,
-                  name.c_str(),
-                  Option::ClassStaticsCallbackPrefix,
-                  classScope->getId().c_str());
-      }
-      cg_printf("g->CDEC(%s) = true;\n", name.c_str());
-
-      const vector<string> &bases = classScope->getBases();
-      for (vector<string>::const_iterator it = bases.begin();
-           it != bases.end(); ++it) {
-        if (cg.checkHoistedClass(*it)) continue;
-        ClassScopePtr base = ar->findClass(*it);
-        if (base && base->isVolatile()) {
-          cg_printf("checkClassExistsThrow(");
-          cg_printString(base->getOriginalName(), ar, shared_from_this());
-          string lname = Util::toLower(base->getOriginalName());
-          cg_printf(", &%s->CDEC(%s));\n",
-                    cg.getGlobals(ar),
-                    CodeGenerator::FormatLabel(lname).c_str());
-        }
-      }
-    }
+    InterfaceStatement::outputCPPImpl(cg, ar);
     return;
   }
 
+  ClassScopeRawPtr classScope = getClassScope();
   if (cg.getContext() != CodeGenerator::CppForwardDeclaration) {
     printSource(cg);
   }
@@ -450,8 +403,11 @@ void ClassStatement::outputCPPImpl(CodeGenerator &cg, AnalysisResultPtr ar) {
       cg_printf("public:\n");
 
       cg.printSection("Properties");
-      classScope->getVariables()->outputCPPPropertyDecl(cg, ar,
-          classScope->derivesFromRedeclaring());
+      if (classScope->getVariables()->outputCPPPropertyDecl(
+            cg, ar, classScope->derivesFromRedeclaring())) {
+        cg.printSection("Destructor");
+        cg_printf("~%s%s() NEVER_INLINE {}", Option::ClassPrefix, clsName);
+      }
 
       if (Option::GenerateCppLibCode) {
         cg.printSection("Methods");
@@ -467,13 +423,22 @@ void ClassStatement::outputCPPImpl(CodeGenerator &cg, AnalysisResultPtr ar) {
       bool needsCppCtor = classScope->needsCppCtor();
       bool needsInit    = classScope->needsInitMethod();
 
+      bool disableDestructor =
+        !classScope->canSkipCreateMethod(ar) ||
+        (!classScope->derivesFromRedeclaring() &&
+         !classScope->hasAttribute(ClassScope::HasDestructor, ar));
+
       if (Option::GenerateCPPMacros) {
-        bool dyn = (!parCls && !m_parent.empty()) ||
-          classScope->derivesFromRedeclaring() ==
+        bool dyn = classScope->derivesFromRedeclaring() ==
           ClassScope::DirectFromRedeclared;
         bool idyn = parCls && classScope->derivesFromRedeclaring() ==
           ClassScope::IndirectFromRedeclared;
         bool redec = classScope->isRedeclaring();
+
+        if (!parCls && !m_parent.empty()) {
+          assert(dyn);
+        }
+
         if (!classScope->derivesFromRedeclaring()) {
           outputCPPClassDecl(cg, ar, clsName, m_originalName.c_str(),
                              parCls ? parCls->getId().c_str()
@@ -485,7 +450,7 @@ void ClassStatement::outputCPPImpl(CodeGenerator &cg, AnalysisResultPtr ar) {
                     parCls->getId().c_str());
         }
 
-        if (classScope->checkHasPropTable()) {
+        if (classScope->checkHasPropTable(ar)) {
           cg_printf("static const ClassPropTable %sprop_table;\n",
                     Option::ObjectStaticPrefix);
         }
@@ -503,81 +468,89 @@ void ClassStatement::outputCPPImpl(CodeGenerator &cg, AnalysisResultPtr ar) {
         bool hasCallStatic = classScope->getAttribute(
           ClassScope::HasUnknownStaticMethodHandler);
 
-        if (dyn || idyn || redec || hasGet || hasSet || hasIsset || hasUnset ||
-            hasCall || hasCallStatic) {
-          if (redec && classScope->derivedByDynamic()) {
-            if (!dyn && !idyn) {
-              cg_printf("private: ObjectData* root;\n");
-              cg_printf("public:\n");
-              cg_printf("virtual ObjectData *getRoot() { return root; }\n");
-            }
+        bool hasRootParam =
+          classScope->derivedByDynamic() && (redec || dyn || idyn);
+        string lateInit = "";
+        if (redec && classScope->derivedByDynamic()) {
+          if (!dyn && !idyn && (!parCls || parCls->isUserClass())) {
+            cg_printf("private: ObjectData* root;\n");
+            cg_printf("public:\n");
+            cg_printf("virtual ObjectData *getRoot() { return root; }\n");
+            lateInit = "root(r ? r : this)";
           }
-
-          string conInit = "";
-          bool hasParam = false;
-          bool needsLateInit = false;
-          if (dyn) {
-            conInit = " : DynamicObjectData(\"" + m_parent + "\", r)";
-            hasParam = true;
-          } else if (idyn) {
-            conInit = " : " + string(Option::ClassPrefix) + parCls->getId() +
-              "(r ? r : this)";
-            hasParam = true;
-          } else {
-            if (redec && classScope->derivedByDynamic()) {
-              conInit = "root(r ? r : this)";
-              needsLateInit = true;
-            }
-            hasParam = true;
-          }
-
-          // this dance around the initialization list is to make
-          // sure members get set in the right order - since properties
-          // come first, and root comes later, we need to init the
-          // properties first, and then root.
-          if (needsLateInit) {
-            cg_printf("%s%s(%s) : ",
-                      Option::ClassPrefix,
-                      clsName,
-                      hasParam ? "ObjectData* r = NULL" : "");
-            if (needsCppCtor) {
-              cg.setContext(CodeGenerator::CppConstructor);
-              ASSERT(!cg.hasInitListFirstElem());
-              m_stmt->outputCPP(cg, ar);
-              cg.clearInitListFirstElem();
-              cg.setContext(CodeGenerator::CppDeclaration);
-              cg_printf(", ");
-            }
-            cg_printf("%s", conInit.c_str());
-          } else {
-            cg_printf("%s%s(%s)%s%s",
-                      Option::ClassPrefix,
-                      clsName,
-                      hasParam ? "ObjectData* r = NULL" : "",
-                      conInit.c_str(),
-                      needsCppCtor ? conInit.empty() ? " : " : ", " : "");
-            if (needsCppCtor) {
-              cg.setContext(CodeGenerator::CppConstructor);
-              ASSERT(!cg.hasInitListFirstElem());
-              m_stmt->outputCPP(cg, ar);
-              cg.clearInitListFirstElem();
-              cg.setContext(CodeGenerator::CppDeclaration);
-            }
-          }
-
-          cg_indentBegin(" {%s",
-                         hasGet || hasSet || hasIsset || hasUnset ||
-                         hasCall || hasCallStatic ?
-                         "\n" : "");
-          if (hasGet) cg_printf("setAttribute(UseGet);\n");
-          if (hasSet) cg_printf("setAttribute(UseSet);\n");
-          if (hasIsset) cg_printf("setAttribute(UseIsset);\n");
-          if (hasUnset) cg_printf("setAttribute(UseUnset);\n");
-          if (hasCall) cg_printf("setAttribute(HasCall);\n");
-          if (hasCallStatic) cg_printf("setAttribute(HasCallStatic);\n");
-          cg_indentEnd("}\n");
-          hasEmitCppCtor = true;
         }
+
+        string callbacks = Option::ClassStaticsCallbackPrefix + clsNameStr;
+        string conInit = "";
+        if (dyn) {
+          conInit = "DynamicObjectData(cb, \"" +
+            CodeGenerator::EscapeLabel(m_parent) + "\", ";
+          if (hasRootParam) {
+            conInit += "r)";
+          } else {
+            conInit += "this)";
+          }
+        } else if (parCls) {
+          conInit = string(Option::ClassPrefix) + parCls->getId() + "(";
+          if (parCls->derivedByDynamic() &&
+              (parCls->isRedeclaring() ||
+               parCls->derivesFromRedeclaring() != ClassScope::FromNormal)) {
+            if (hasRootParam) {
+              conInit += "r ? r : ";
+            }
+            conInit += "this, ";
+          }
+          conInit += "cb)";
+        } else {
+          if (system) {
+            conInit = "ExtObjectData(cb)";
+          } else {
+            if (hasRootParam) {
+              conInit = "ObjectData(cb, r)";
+            } else {
+              conInit = "ObjectData(cb, false)";
+            }
+          }
+        }
+
+        cg_printf("%s%s(%sconst ObjectStaticCallbacks *cb = &%s%s) : %s",
+                  Option::ClassPrefix,
+                  clsName,
+                  hasRootParam ? "ObjectData* r = NULL," : "",
+                  callbacks.c_str(),
+                  redec ? ".oscb" : "",
+                  conInit.c_str());
+
+        if (needsCppCtor) {
+          cg_printf(", ");
+          cg.setContext(CodeGenerator::CppConstructor);
+          ASSERT(!cg.hasInitListFirstElem());
+          m_stmt->outputCPP(cg, ar);
+          cg.clearInitListFirstElem();
+          cg.setContext(CodeGenerator::CppDeclaration);
+        }
+        if (!lateInit.empty()) {
+          cg_printf(", %s", lateInit.c_str());
+        }
+
+        cg_indentBegin(" {%s",
+                       hasGet || hasSet || hasIsset || hasUnset ||
+                       hasCall || hasCallStatic || disableDestructor ||
+                       hasRootParam ? "\n" : "");
+        if (hasRootParam) {
+          cg_printf("setId(r);\n");
+        }
+        if (hasGet) cg_printf("setAttribute(UseGet);\n");
+        if (hasSet) cg_printf("setAttribute(UseSet);\n");
+        if (hasIsset) cg_printf("setAttribute(UseIsset);\n");
+        if (hasUnset) cg_printf("setAttribute(UseUnset);\n");
+        if (hasCall) cg_printf("setAttribute(HasCall);\n");
+        if (hasCallStatic) cg_printf("setAttribute(HasCallStatic);\n");
+        if (disableDestructor) {
+          cg_printf("if (!hhvm) setAttribute(NoDestructor);\n");
+        }
+        cg_indentEnd("}\n");
+        hasEmitCppCtor = true;
       }
 
       if (needsCppCtor && !hasEmitCppCtor) {
@@ -587,19 +560,13 @@ void ClassStatement::outputCPPImpl(CodeGenerator &cg, AnalysisResultPtr ar) {
         m_stmt->outputCPP(cg, ar);
         cg.clearInitListFirstElem();
         cg.setContext(CodeGenerator::CppDeclaration);
-        cg_printf(" {}\n");
+        cg_printf(" {%s}\n",
+                  disableDestructor ?
+                  " if (!hhvm) setAttribute(NoDestructor); " : "");
       }
 
       if (needsInit) {
         cg_printf("void init();\n");
-      }
-
-      if (!classScope->getAttribute(ClassScope::HasConstructor)) {
-        FunctionScopePtr func = classScope->findFunction(ar, "__construct",
-                                                         false);
-        if (func && !func->isAbstract() && !classScope->isInterface()) {
-          func->outputCPPCreateDecl(cg, ar);
-        }
       }
 
       // doCall
@@ -627,7 +594,7 @@ void ClassStatement::outputCPPImpl(CodeGenerator &cg, AnalysisResultPtr ar) {
 
       if (m_stmt) m_stmt->outputCPP(cg, ar);
       {
-        set<string> done;
+        std::set<string> done;
         classScope->outputCPPStaticMethodWrappers(cg, ar, done, clsName);
       }
       if (Option::GenerateCPPMacros) {
@@ -710,7 +677,7 @@ void ClassStatement::outputCPPImpl(CodeGenerator &cg, AnalysisResultPtr ar) {
       // uses a different cg to generate a separate file for each PHP class
       // also, uses the original capitalized class name
       string clsFile = outputDir + getOriginalName() + ".java";
-      ofstream fcls(clsFile.c_str());
+      std::ofstream fcls(clsFile.c_str());
       CodeGenerator cgCls(&fcls, CodeGenerator::FileCPP);
       cgCls.setContext(CodeGenerator::JavaFFI);
 
@@ -810,8 +777,8 @@ void ClassStatement::outputJavaFFIConstructor(CodeGenerator &cg,
 
   // generates the constructor
   cg_printf("public %s(", getOriginalName().c_str());
-  ostringstream args;
-  ostringstream params;
+  std::ostringstream args;
+  std::ostringstream params;
   bool first = true;
   for (int i = 0; i < ac; i++) {
     if (first) {
@@ -860,7 +827,7 @@ void ClassStatement::outputJavaFFICPPCreator(CodeGenerator &cg,
   cg_printf("JNIEXPORT jlong JNICALL\n");
   cg_printf("%s(JNIEnv *env, jclass cls", mangledName.c_str());
 
-  ostringstream args;
+  std::ostringstream args;
   bool first = true;
   if (varArgs) {
     args << ac << " + (((Variant *)va)->isNull() ? 0"

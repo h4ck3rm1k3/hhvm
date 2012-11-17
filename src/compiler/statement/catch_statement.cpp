@@ -20,14 +20,13 @@
 #include <compiler/analysis/function_scope.h>
 #include <compiler/analysis/variable_table.h>
 #include <compiler/expression/modifier_expression.h>
+#include <compiler/expression/scalar_expression.h>
 #include <compiler/analysis/code_error.h>
 #include <util/util.h>
 #include <compiler/analysis/class_scope.h>
 #include <compiler/option.h>
 
 using namespace HPHP;
-using namespace std;
-using namespace boost;
 
 ///////////////////////////////////////////////////////////////////////////////
 // constructors/destructors
@@ -37,17 +36,32 @@ CatchStatement::CatchStatement
  const std::string &className, const std::string &variable,
  StatementPtr stmt)
   : Statement(STATEMENT_CONSTRUCTOR_PARAMETER_VALUES(CatchStatement)),
+    StaticClassName(ExpressionPtr(
+                      new ScalarExpression(scope, loc,
+                                           T_STRING, className, false))),
     m_variable(new SimpleVariable(scope, loc, variable)),
     m_stmt(stmt), m_valid(true) {
   m_variable->setContext(Expression::LValue);
-  m_className = Util::toLower(className);
-  m_originalClassName = className;
+}
+
+CatchStatement::CatchStatement
+(STATEMENT_CONSTRUCTOR_PARAMETERS,
+ const std::string &className, const std::string &variable,
+ StatementPtr stmt, StatementPtr finallyStmt)
+  : Statement(STATEMENT_CONSTRUCTOR_PARAMETER_VALUES(CatchStatement)),
+    StaticClassName(ExpressionPtr(
+                      new ScalarExpression(scope, loc,
+                                           T_STRING, className, false))),
+    m_variable(new SimpleVariable(scope, loc, variable)),
+    m_stmt(stmt), m_finallyStmt(finallyStmt), m_valid(true) {
+  m_variable->setContext(Expression::LValue);
 }
 
 StatementPtr CatchStatement::clone() {
   CatchStatementPtr stmt(new CatchStatement(*this));
   stmt->m_stmt = Clone(m_stmt);
   stmt->m_variable = Clone(m_variable);
+  stmt->m_finallyStmt = Clone(m_finallyStmt);
   return stmt;
 }
 
@@ -60,6 +74,7 @@ StatementPtr CatchStatement::clone() {
 void CatchStatement::analyzeProgram(AnalysisResultPtr ar) {
   addUserClass(ar, m_className);
   m_variable->analyzeProgram(ar);
+  (void)resolveClass();
   if (m_stmt) m_stmt->analyzeProgram(ar);
   if (m_variable->isThis()) {
     // catch (Exception $this) { ... }
@@ -76,6 +91,8 @@ ConstructPtr CatchStatement::getNthKid(int n) const {
       return m_variable;
     case 1:
       return m_stmt;
+    case 2:
+      return m_finallyStmt;
     default:
       ASSERT(false);
       break;
@@ -84,7 +101,7 @@ ConstructPtr CatchStatement::getNthKid(int n) const {
 }
 
 int CatchStatement::getKidCount() const {
-  return 2;
+  return 2 + (m_finallyStmt ? 1 : 0);
 }
 
 void CatchStatement::setNthKid(int n, ConstructPtr cp) {
@@ -95,6 +112,8 @@ void CatchStatement::setNthKid(int n, ConstructPtr cp) {
     case 1:
       m_stmt = boost::dynamic_pointer_cast<Statement>(cp);
       break;
+    case 2:
+      m_finallyStmt = boost::dynamic_pointer_cast<Statement>(cp);
     default:
       ASSERT(false);
       break;
@@ -102,13 +121,9 @@ void CatchStatement::setNthKid(int n, ConstructPtr cp) {
 }
 
 void CatchStatement::inferTypes(AnalysisResultPtr ar) {
-  ClassScopePtr cls = ar->findClass(m_className);
+  ClassScopePtr cls = resolveClassWithChecks();
   TypePtr type;
-  m_valid = cls;
-  if (!m_valid && getScope()->isFirstPass()) {
-    ConstructPtr self = shared_from_this();
-    Compiler::Error(Compiler::UnknownClass, self);
-  }
+  m_valid = cls || isRedeclared();
 
   // This can never be a specific exception type, because a future exception
   // class may be re-declaring, then generated code like this won't work with
@@ -123,7 +138,7 @@ void CatchStatement::inferTypes(AnalysisResultPtr ar) {
 // code generation functions
 
 void CatchStatement::outputPHP(CodeGenerator &cg, AnalysisResultPtr ar) {
-  cg_printf(" catch (%s $%s) ", m_originalClassName.c_str(),
+  cg_printf(" catch (%s $%s) ", m_origClassName.c_str(),
             m_variable->getName().c_str());
   cg_indentBegin("{\n");
   if (m_stmt) m_stmt->outputPHP(cg, ar);

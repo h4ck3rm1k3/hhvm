@@ -33,8 +33,6 @@
 #include <dlfcn.h>
 
 using namespace HPHP;
-using namespace std;
-using namespace boost;
 
 #define BF_COLUMN_COUNT  3
 #define BF_COLUMN_NAME   0
@@ -459,7 +457,7 @@ bool BuiltinSymbols::Load(AnalysisResultPtr ar, bool extOnly /* = false */) {
     s_constants = ConstantTablePtr(new ConstantTable(*ar2.get()));
     NoSuperGlobals = true;
   }
-  s_constants->setDynamic(ar, "SID");
+  s_constants->setDynamic(ar, "SID", true);
 
   // load extension constants, classes and dynamics
   ParseExtConsts(ar, ExtensionConsts, false);
@@ -507,25 +505,13 @@ AnalysisResultPtr BuiltinSymbols::LoadGlobalSymbols(const char *fileName) {
 }
 
 void BuiltinSymbols::LoadFunctions(AnalysisResultPtr ar,
-                                   StringToFunctionScopePtrVecMap &functions) {
+                                   StringToFunctionScopePtrMap &functions) {
   ASSERT(Loaded);
   for (StringToFunctionScopePtrMap::const_iterator it = s_functions.begin();
        it != s_functions.end(); ++it) {
     if (functions.find(it->first) == functions.end()) {
-      functions[it->first].push_back(it->second);
+      functions[it->first] = it->second;
       FunctionScope::RecordFunctionInfo(it->first, it->second);
-    }
-  }
-}
-
-void BuiltinSymbols::LoadHelperFunctions(
-  AnalysisResultPtr ar,
-  StringToFunctionScopePtrVecMap &functions) {
-  ASSERT(Loaded);
-  for (StringToFunctionScopePtrMap::const_iterator it =
-          s_helperFunctions.begin(); it != s_helperFunctions.end(); ++it) {
-    if (functions.find(it->first) == functions.end()) {
-      functions[it->first].push_back(it->second);
     }
   }
 }
@@ -539,10 +525,10 @@ void BuiltinSymbols::LoadClasses(AnalysisResultPtr ar,
   // will not overwrite them with their own file and line number information
   for (StringToClassScopePtrMap::const_iterator iter =
          s_classes.begin(); iter != s_classes.end(); ++iter) {
-    const StringToFunctionScopePtrVecMap &funcs = iter->second->getFunctions();
-    for (StringToFunctionScopePtrVecMap::const_iterator iter =
+    const StringToFunctionScopePtrMap &funcs = iter->second->getFunctions();
+    for (StringToFunctionScopePtrMap::const_iterator iter =
            funcs.begin(); iter != funcs.end(); ++iter) {
-      FunctionScope::RecordFunctionInfo(iter->first, iter->second.back());
+      FunctionScope::RecordFunctionInfo(iter->first, iter->second);
     }
   }
 }
@@ -579,12 +565,10 @@ void BuiltinSymbols::LoadSuperGlobals() {
 
 bool BuiltinSymbols::IsSuperGlobal(const std::string &name) {
   if (NoSuperGlobals) return false;
-  LoadSuperGlobals();
   return s_superGlobals.find(name) != s_superGlobals.end();
 }
 
 TypePtr BuiltinSymbols::GetSuperGlobalType(const std::string &name) {
-  LoadSuperGlobals();
   StringToTypePtrMap::const_iterator iter = s_superGlobals.find(name);
   if (iter != s_superGlobals.end()) {
     return iter->second;

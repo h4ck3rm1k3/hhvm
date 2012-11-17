@@ -15,6 +15,7 @@
 */
 
 #include <sstream>
+#include <cmath>
 #include <limits.h>
 #include <compiler/expression/scalar_expression.h>
 #include <util/parser/hphp.tab.hpp>
@@ -35,8 +36,6 @@
 #include <compiler/analysis/file_scope.h>
 
 using namespace HPHP;
-using namespace std;
-using namespace boost;
 
 ///////////////////////////////////////////////////////////////////////////////
 // constructors/destructors
@@ -74,7 +73,6 @@ ScalarExpression::ScalarExpression
   case KindOfString:
     m_type = T_STRING;
     break;
-  case KindOfInt32:
   case KindOfInt64:
     m_type = T_LNUMBER;
     break;
@@ -137,8 +135,6 @@ void ScalarExpression::analyzeProgram(AnalysisResultPtr ar) {
         m_translated.clear();
         if (b && b->is(BlockScope::ClassScope)) {
           ClassScopePtr clsScope = dynamic_pointer_cast<ClassScope>(b);
-
-          // For traits, don't fill this yet -- it must be imported first
           if (!clsScope->isTrait()) {
             m_translated = clsScope->getOriginalName();
           }
@@ -234,7 +230,7 @@ TypePtr ScalarExpression::inferenceImpl(AnalysisResultConstPtr ar,
     break;
 
   case T_LINE:
-    actualType = Type::Int32;
+    actualType = Type::Int64;
     break;
 
   case T_CONSTANT_ENCAPSED_STRING:
@@ -442,8 +438,7 @@ void ScalarExpression::OutputCPPString(
   ASSERT(!fullName.empty());
   string prefix(Option::ScalarPrefix);
   if (Option::SystemGen) prefix += Option::SysPrefix;
-  size_t pos = fullName.find(prefix);
-  ASSERT(pos == 0);
+  ASSERT(fullName.find(prefix) == 0);
   string name =
     fullName.substr(prefix.size() + strlen(Option::StaticStringPrefix));
   cg.printf("NAMVAR(%s%s%s, \"%s\")",
@@ -466,8 +461,7 @@ void ScalarExpression::outputCPPString(CodeGenerator &cg,
         (cg.getContext() == CodeGenerator::CppClassConstantsImpl);
       OutputCPPString(output, cg, ar, getScope(), constant);
     } else {
-      assert(false);
-      cg_printf("%s", m_value.c_str());
+      not_reached();
     }
     break;
   }
@@ -502,7 +496,7 @@ void ScalarExpression::outputCPPNamedInteger(CodeGenerator &cg,
   string name = ar->getScalarVarIntegerName(intId, index);
   cg_printf("NAMVAR(%s, %lldLL)", name.c_str(), val);
 
-  getFileScope()->addUsedScalarVarInteger(val);
+  getUsedScalarScope(cg)->addUsedScalarVarInteger(val);
   if (cg.isFileOrClassHeader()) {
     if (getClassScope()) {
       getClassScope()->addUsedScalarVarIntegerHeader(val);
@@ -517,7 +511,7 @@ void ScalarExpression::outputCPPInteger(CodeGenerator &cg,
   Variant v = getVariant();
   ASSERT(v.isInteger());
   if (v.toInt64() == LONG_MIN) {
-    cg_printf("(int64)0x%llxLL", LONG_MIN);
+    cg_printf("(int64)0x%llxLL", (uint64)LONG_MIN);
   } else {
     cg_printf("%lldLL", v.toInt64());
   }
@@ -534,7 +528,7 @@ void ScalarExpression::outputCPPNamedDouble(CodeGenerator &cg,
     cg_printf("NAMVAR(%s, ", name.c_str());
     ar->outputCPPFiniteDouble(cg, dval);
     cg_printf(")");
-    getFileScope()->addUsedScalarVarDouble(dval);
+    getUsedScalarScope(cg)->addUsedScalarVarDouble(dval);
     if (cg.isFileOrClassHeader()) {
       if (getClassScope()) {
         getClassScope()->addUsedScalarVarDoubleHeader(dval);
@@ -542,12 +536,12 @@ void ScalarExpression::outputCPPNamedDouble(CodeGenerator &cg,
         getFileScope()->addUsedScalarVarDoubleHeader(dval);
       }
     }
-  } else if (isnan(dval)) {
+  } else if (std::isnan(dval)) {
     cg_printf("NAN_varNR");
   } else if (dval > 0) {
     cg_printf("INF_varNR");
   } else {
-    cg_printf("NEGINF_varNR", Option::ConstantPrefix);
+    cg_printf("NEGINF_varNR");
   }
 }
 
@@ -556,7 +550,7 @@ void ScalarExpression::outputCPPDouble(CodeGenerator &cg,
   double dval = getVariant().getDouble();
   if (finite(dval)) {
     ar->outputCPPFiniteDouble(cg, dval);
-  } else if (isnan(dval)) {
+  } else if (std::isnan(dval)) {
     cg_printf("%sNAN", Option::ConstantPrefix);
   } else if (dval > 0) {
     cg_printf("%sINF", Option::ConstantPrefix);
@@ -579,6 +573,7 @@ void ScalarExpression::outputCPPImpl(CodeGenerator &cg, AnalysisResultPtr ar) {
     break;
   }
   case T_LINE:
+    ar->addInteger(getVariant().toInt64());
     if (cg.hasScalarVariant() && Option::UseScalarVariant) {
       outputCPPNamedInteger(cg, ar);
     } else {
@@ -599,6 +594,7 @@ void ScalarExpression::outputCPPImpl(CodeGenerator &cg, AnalysisResultPtr ar) {
     break;
   }
   case T_LNUMBER:
+    ar->addInteger(getVariant().toInt64());
     if (cg.hasScalarVariant() && Option::UseScalarVariant) {
       outputCPPNamedInteger(cg, ar);
     } else {
@@ -633,7 +629,7 @@ int64 ScalarExpression::getHash() const {
   return hash;
 }
 
-Variant ScalarExpression::getVariant() {
+Variant ScalarExpression::getVariant() const {
   if (!m_serializedValue.empty()) {
     Variant ret = f_unserialize
       (String(m_serializedValue.data(),
@@ -701,7 +697,9 @@ bool ScalarExpression::getInt(int64 &i) const {
 
 bool ScalarExpression::getDouble(double &d) const {
   if (m_type == T_DNUMBER) {
-    d = String(m_value).toDouble();
+    Variant v = getVariant();
+    ASSERT(v.isDouble());
+    d = v.toDouble();
     return true;
   }
   return false;

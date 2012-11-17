@@ -33,7 +33,6 @@
 #include <compiler/statement/loop_statement.h>
 
 using namespace HPHP;
-using namespace boost;
 
 ///////////////////////////////////////////////////////////////////////////////
 // constructors/destructors
@@ -267,11 +266,12 @@ ExpressionPtr BinaryOpExpression::simplifyArithmetic(
       // 1 * $a => $a, 0 + $a => $a
       if ((ival1 == 1 && m_op == '*') || (ival1 == 0 && m_op == '+')) {
         TypePtr actType2 = m_exp2->getActualType();
-        TypePtr expType2 = m_exp2->getExpectedType();
-        if ((actType2 && actType2->mustBe(Type::KindOfNumeric)
-                      && actType2->isExactType()) ||
-            (expType2 && expType2->mustBe(Type::KindOfNumeric)
-                      && Type::IsCastNeeded(ar, actType2, expType2))) {
+        TypePtr expType = getExpectedType();
+        if (actType2 &&
+            (actType2->mustBe(Type::KindOfNumeric) ||
+             (expType && expType->mustBe(Type::KindOfNumeric) &&
+              !actType2->couldBe(Type::KindOfArray) &&
+              Type::IsCastNeeded(ar, actType2, expType)))) {
           return m_exp2;
         }
       }
@@ -279,13 +279,17 @@ ExpressionPtr BinaryOpExpression::simplifyArithmetic(
       String sval1 = v1.toString();
       if ((sval1.empty() && m_op == '.')) {
         TypePtr actType2 = m_exp2->getActualType();
-        TypePtr expType2 = m_exp2->getExpectedType();
+        TypePtr expType = getExpectedType();
         // '' . $a => $a
-        if ((actType2 && actType2->is(Type::KindOfString)) ||
-            (expType2 && expType2->is(Type::KindOfString) &&
-             Type::IsCastNeeded(ar, actType2, expType2))) {
+        if ((expType && expType->is(Type::KindOfString)) ||
+            (actType2 && actType2->is(Type::KindOfString))) {
           return m_exp2;
         }
+        ExpressionPtr rep(new UnaryOpExpression(
+                            getScope(), getLocation(),
+                            m_exp2, T_STRING_CAST, true));
+        rep->setActualType(Type::String);
+        return rep;
       }
     }
   }
@@ -295,11 +299,12 @@ ExpressionPtr BinaryOpExpression::simplifyArithmetic(
       // $a * 1 => $a, $a + 0 => $a
       if ((ival2 == 1 && m_op == '*') || (ival2 == 0 && m_op == '+')) {
         TypePtr actType1 = m_exp1->getActualType();
-        TypePtr expType1 = m_exp1->getExpectedType();
-        if ((actType1 && actType1->mustBe(Type::KindOfNumeric)
-                      && actType1->isExactType()) ||
-            (expType1 && expType1->mustBe(Type::KindOfNumeric)
-                      && Type::IsCastNeeded(ar, actType1, expType1))) {
+        TypePtr expType = getExpectedType();
+        if (actType1 &&
+            (actType1->mustBe(Type::KindOfNumeric) ||
+             (expType && expType->mustBe(Type::KindOfNumeric) &&
+              !actType1->couldBe(Type::KindOfArray) &&
+              Type::IsCastNeeded(ar, actType1, expType)))) {
           return m_exp1;
         }
       }
@@ -307,13 +312,17 @@ ExpressionPtr BinaryOpExpression::simplifyArithmetic(
       String sval2 = v2.toString();
       if ((sval2.empty() && m_op == '.')) {
         TypePtr actType1 = m_exp1->getActualType();
-        TypePtr expType1 = m_exp1->getExpectedType();
+        TypePtr expType = getExpectedType();
         // $a . '' => $a
-        if ((actType1 && actType1->is(Type::KindOfString)) ||
-            (expType1 && expType1->is(Type::KindOfString) &&
-             Type::IsCastNeeded(ar, actType1, expType1))) {
+        if ((expType && expType->is(Type::KindOfString)) ||
+            (actType1 && actType1->is(Type::KindOfString))) {
           return m_exp1;
         }
+        ExpressionPtr rep(new UnaryOpExpression(
+                            getScope(), getLocation(),
+                            m_exp1, T_STRING_CAST, true));
+        rep->setActualType(Type::String);
+        return rep;
       }
     }
   }
@@ -453,6 +462,23 @@ ExpressionPtr BinaryOpExpression::foldConst(AnalysisResultConstPtr ar) {
   if (m_exp1->isScalar()) {
     if (!m_exp1->getScalarValue(v1)) return ExpressionPtr();
     try {
+      if (hhvm &&
+          Option::OutputHHBC &&
+          (!Option::WholeProgram || !Option::ParseTimeOpts)) {
+        // In the VM, don't optimize __CLASS__ if within a trait, since
+        // __CLASS__ is not resolved yet.
+        ClassScopeRawPtr clsScope = getOriginalClass();
+        if (clsScope && clsScope->isTrait()) {
+          ScalarExpressionPtr scalar1 =
+            dynamic_pointer_cast<ScalarExpression>(m_exp1);
+          ScalarExpressionPtr scalar2 =
+            dynamic_pointer_cast<ScalarExpression>(m_exp2);
+          if ((scalar1 && scalar1->getType() == T_CLASS_C) ||
+              (scalar2 && scalar2->getType() == T_CLASS_C)) {
+            return ExpressionPtr();
+          }
+        }
+      }
       Variant result;
       switch (m_op) {
         case T_LOGICAL_XOR:
@@ -875,8 +901,18 @@ void BinaryOpExpression::preOutputStash(CodeGenerator &cg, AnalysisResultPtr ar,
                                         int state) {
   if (hasCPPTemp() || isScalar()) return;
   if (m_op == '.' && (state & FixOrder)) {
-    if (m_exp1) m_exp1->preOutputStash(cg, ar, state|StashVars);
-    if (m_exp2) m_exp2->preOutputStash(cg, ar, state|StashVars);
+    if (m_exp1) {
+      if (!m_exp1->getActualType() && m_exp1->hasCPPTemp()) {
+        cg_printf("id(%s);\n", m_exp1->cppTemp().c_str());
+      }
+      m_exp1->preOutputStash(cg, ar, state|StashVars);
+    }
+    if (m_exp2) {
+      if (!m_exp2->getActualType() && m_exp2->hasCPPTemp()) {
+        cg_printf("id(%s);\n", m_exp2->cppTemp().c_str());
+      }
+      m_exp2->preOutputStash(cg, ar, state|StashVars);
+    }
   } else {
     Expression::preOutputStash(cg, ar, state);
   }
@@ -913,8 +949,20 @@ int BinaryOpExpression::getConcatList(ExpressionPtrVec &ev, ExpressionPtr exp,
     } else if (exp->is(Expression::KindOfBinaryOpExpression)) {
       BinaryOpExpressionPtr b = static_pointer_cast<BinaryOpExpression>(exp);
       if (b->getOp() == '.') {
-        return getConcatList(ev, b->getExp1(), hasVoid) +
-          getConcatList(ev, b->getExp2(), hasVoid);
+        if (b->getExp1()->is(Expression::KindOfSimpleVariable) &&
+            b->getExp1()->isLocalExprAltered() &&
+            !b->getExp1()->hasCPPTemp() &&
+            b->getExp2()->hasEffect() &&
+            !b->getExp2()->hasCPPTemp()) {
+          /*
+            In this case, the simple variable must be evaluated
+            after b->getExp2(). But when we output a concat list we
+            explicitly order the expressions from left to right.
+          */
+        } else {
+          return getConcatList(ev, b->getExp1(), hasVoid) +
+            getConcatList(ev, b->getExp2(), hasVoid);
+        }
       }
     } else if (exp->is(Expression::KindOfEncapsListExpression)) {
       EncapsListExpressionPtr e =
@@ -929,6 +977,8 @@ int BinaryOpExpression::getConcatList(ExpressionPtrVec &ev, ExpressionPtr exp,
         return num;
       }
     }
+  } else if (!exp->getActualType()) {
+    return 0;
   }
 
   ev.push_back(exp);
@@ -941,9 +991,8 @@ static void outputStringExpr(CodeGenerator &cg, AnalysisResultPtr ar,
                              ExpressionPtr exp, bool asLitStr) {
   if (asLitStr && exp->isLiteralString()) {
     const std::string &s = exp->getLiteralString();
-    char *enc = string_cplus_escape(s.c_str(), s.size());
-    cg_printf("\"%s\", %d", enc, s.size());
-    free(enc);
+    std::string enc = string_cplus_escape(s.c_str(), s.size());
+    cg_printf("\"%s\", %d", enc.c_str(), (int)s.size());
     return;
   }
 
@@ -965,7 +1014,11 @@ static void outputStringBufExprs(ExpressionPtrVec &ev,
 
 bool BinaryOpExpression::preOutputCPP(CodeGenerator &cg, AnalysisResultPtr ar,
                                       int state) {
-  if (isOpEqual()) return Expression::preOutputCPP(cg, ar, state);
+  if (isOpEqual() && (m_exp1->is(KindOfArrayElementExpression) ||
+                      m_exp1->is(KindOfObjectPropertyExpression))) {
+    return Expression::preOutputCPP(cg, ar, state);
+  }
+
   bool effect2 = m_exp2->hasEffect();
   const char *prefix = 0;
   if (effect2 || m_exp1->hasEffect()) {
@@ -987,7 +1040,12 @@ bool BinaryOpExpression::preOutputCPP(CodeGenerator &cg, AnalysisResultPtr ar,
           numConcat++;
         }
       }
-      numConcat += getConcatList(ev, m_exp2, hasVoid);
+      if (ok) {
+        numConcat += getConcatList(ev, m_exp2, hasVoid);
+        if (numConcat <= 2 && !prefix) {
+          return Expression::preOutputCPP(cg, ar, state);
+        }
+      }
     }
     if (ok) {
       if (!cg.inExpression()) return true;
@@ -1002,7 +1060,9 @@ bool BinaryOpExpression::preOutputCPP(CodeGenerator &cg, AnalysisResultPtr ar,
       } else if (numConcat) {
         buf = m_cppTemp = genCPPTemp(cg, ar);
         buf += "_buf";
-        cg_printf("StringBuffer %s;\n", buf.c_str());
+        if (numConcat > 1) {
+          cg_printf("StringBuffer %s;\n", buf.c_str());
+        }
       } else {
         m_cppTemp = "\"\"";
       }
@@ -1012,8 +1072,14 @@ bool BinaryOpExpression::preOutputCPP(CodeGenerator &cg, AnalysisResultPtr ar,
         bool is_void = !exp->getActualType();
         exp->preOutputCPP(cg, ar, 0);
         if (!is_void) {
-          cg_printf("%s.appendWithTaint(", buf.c_str());
-          outputStringExpr(cg, ar, exp, true);
+          bool asLit = true;
+          if (numConcat > 1 || prefix) {
+            cg_printf("%s.appendWithTaint(", buf.c_str());
+          } else {
+            asLit = false;
+            cg_printf("CStrRef %s = (", m_cppTemp.c_str());
+          }
+          outputStringExpr(cg, ar, exp, asLit);
           cg_printf(")");
         } else {
           exp->outputCPPUnneeded(cg, ar);
@@ -1021,7 +1087,7 @@ bool BinaryOpExpression::preOutputCPP(CodeGenerator &cg, AnalysisResultPtr ar,
         cg_printf(";\n");
       }
 
-      if (numConcat && !prefix) {
+      if (numConcat > 1 && !prefix) {
         cg_printf("CStrRef %s(%s.detachWithTaint());\n",
                   m_cppTemp.c_str(), buf.c_str());
         if (m_op == T_CONCAT_EQUAL) {
@@ -1173,13 +1239,23 @@ void BinaryOpExpression::outputCPPImpl(CodeGenerator &cg,
   case T_CONCAT_EQUAL:
     if (const char *prefix = stringBufferPrefix(cg, ar, m_exp1)) {
       SimpleVariablePtr sv = static_pointer_cast<SimpleVariable>(m_exp1);
-      ExpressionPtrVec ev;
-      bool hasVoid = false;
-      getConcatList(ev, m_exp2, hasVoid);
-      cg_printf("%s", stringBufferName(Option::TempPrefix, prefix,
-                                       sv->getName().c_str()).c_str());
-      outputStringBufExprs(ev, cg, ar);
-      return;
+      if (m_exp2->hasCPPTemp()) {
+        cg_printf("%s.appendWithTaint(%s)",
+                  stringBufferName(Option::TempPrefix, prefix,
+                                   sv->getName().c_str()).c_str(),
+                  m_exp2->cppTemp().c_str());
+        return;
+      } else {
+        ExpressionPtrVec ev;
+        bool hasVoid = false;
+        getConcatList(ev, m_exp2, hasVoid);
+        if (!hasVoid) {
+          cg_printf("%s", stringBufferName(Option::TempPrefix, prefix,
+                                           sv->getName().c_str()).c_str());
+          outputStringBufExprs(ev, cg, ar);
+          return;
+        }
+      }
     }
     cg_printf("concat_assign");
     break;
@@ -1189,9 +1265,12 @@ void BinaryOpExpression::outputCPPImpl(CodeGenerator &cg,
       ExpressionPtrVec ev;
       bool hasVoid = false;
       int num = getConcatList(ev, self, hasVoid);
+      if (num < 2) {
+        cg_printf("concat");
+        break;
+      }
       assert(!hasVoid);
       if (num <= MAX_CONCAT_ARGS) {
-        assert(num >= 2);
         if (num == 2) {
           cg_printf("concat(");
         } else {
@@ -1323,8 +1402,8 @@ void BinaryOpExpression::outputCPPImpl(CodeGenerator &cg,
             }
           } else if (s == "parent" && notQuoted) {
             ClassScopeRawPtr cls = getOriginalClass();
-            if (cls && !cls->getParent().empty()) {
-              s = cls->getParent();
+            if (cls && !cls->getOriginalParent().empty()) {
+              s = cls->getOriginalParent();
             }
           }
           cg_printString(s, ar, shared_from_this());

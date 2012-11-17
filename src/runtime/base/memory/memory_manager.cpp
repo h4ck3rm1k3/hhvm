@@ -23,8 +23,10 @@
 #include <stdint.h>
 
 #include <runtime/base/memory/memory_manager.h>
+#include <runtime/base/memory/smart_allocator.h>
 #include <runtime/base/memory/leak_detectable.h>
 #include <runtime/base/memory/sweepable.h>
+#include <runtime/base/builtin_functions.h>
 #include <runtime/base/runtime_option.h>
 #include <runtime/base/server/http_server.h>
 #include <util/alloc.h>
@@ -88,21 +90,21 @@ static inline void threadStats(uint64*& allocated, uint64*& deallocated,
   if (mallctlbymib(threadAllocatedpMib,
                    sizeof(threadAllocatedpMib) / sizeof(size_t),
                    &allocated, &len, NULL, 0)) {
-    assert(false);
+    not_reached();
   }
 
   len = sizeof(deallocated);
   if (mallctlbymib(threadDeallocatedpMib,
                    sizeof(threadDeallocatedpMib) / sizeof(size_t),
                    &deallocated, &len, NULL, 0)) {
-    assert(false);
+    not_reached();
   }
 
   len = sizeof(cactive);
   if (mallctlbymib(statsCactiveMib,
                    sizeof(statsCactiveMib) / sizeof(size_t),
                    &cactive, &len, NULL, 0)) {
-    assert(false);
+    not_reached();
   }
 
   size_t headRoom = RuntimeOption::ServerMemoryHeadRoom;
@@ -116,21 +118,54 @@ static inline void threadStats(uint64*& allocated, uint64*& deallocated,
 }
 #endif
 
-IMPLEMENT_THREAD_LOCAL_NO_CHECK(MemoryManager, MemoryManager::s_singleton);
-
-ThreadLocalNoCheck<MemoryManager> &MemoryManager::TheMemoryManager() {
-  return s_singleton;
+static void* MemoryManagerInit() {
+  // We store the free list pointers right at the start of each object,
+  // overlapping SmartHeader.data, and we also clobber _count as a
+  // free-object flag when the object is deallocated (if hhvm).
+  // This assert just makes sure they don't overflow.
+  static_assert(FAST_REFCOUNT_OFFSET + sizeof(int) <=
+                SmartAllocatorImpl::MinItemSize,
+                "MinItemSize is too small");
+  MemoryManager::TlsWrapper tls;
+  return (void*)tls.getNoCheck;
 }
 
-MemoryManager::MemoryManager() : m_enabled(false), m_checkpoint(false) {
-  if (RuntimeOption::EnableMemoryManager) {
-    m_enabled = true;
-  }
+void* MemoryManager::TlsInitSetup = MemoryManagerInit();
+
+void MemoryManager::Create(void* storage) {
+  new (storage) MemoryManager();
+}
+
+void MemoryManager::Delete(MemoryManager* mm) {
+  mm->~MemoryManager();
+}
+
+void MemoryManager::OnThreadExit(MemoryManager* mm) {
+  mm->~MemoryManager();
+}
+
+MemoryManager::AllocIterator::AllocIterator(const MemoryManager* mman)
+  : m_mman(*mman)
+  , m_it(m_mman.m_smartAllocators.begin())
+{}
+
+SmartAllocatorImpl*
+MemoryManager::AllocIterator::current() const {
+  return m_it == m_mman.m_smartAllocators.end() ? 0 : *m_it;
+}
+
+void MemoryManager::AllocIterator::next() {
+  ++m_it;
+}
+
+MemoryManager::MemoryManager() : m_front(0), m_limit(0), m_smartsweep(0),
+  m_enabled(RuntimeOption::EnableMemoryManager) {
 #ifdef USE_JEMALLOC
   threadStats(m_allocated, m_deallocated, m_cactive, m_cactiveLimit);
 #endif
   resetStats();
-  m_stats.maxBytes = 0;
+  m_stats.maxBytes = INT64_MAX;
+  m_strings.next = m_strings.prev = &m_strings; // empty circular list
 }
 
 void MemoryManager::resetStats() {
@@ -138,17 +173,26 @@ void MemoryManager::resetStats() {
   m_stats.alloc = 0;
   m_stats.peakUsage = 0;
   m_stats.peakAlloc = 0;
+  m_stats.totalAlloc = 0;
 #ifdef USE_JEMALLOC
   if (s_statsEnabled) {
-    m_delta = int64(*m_allocated) - int64(*m_deallocated);
+#ifdef HHVM
+    m_stats.jemallocDebt = 0;
+#endif
+    m_prevAllocated = int64(*m_allocated);
+    m_delta = m_prevAllocated - int64(*m_deallocated);
   }
 #endif
 }
 
+NEVER_INLINE
+void MemoryManager::refreshStatsHelper() {
+  refreshStats();
+}
+
 void MemoryManager::refreshStatsHelperExceeded() {
-  RequestInjectionData &data =
-    ThreadInfo::s_threadInfo.getNoCheck()->m_reqInjectionData;
-  data.setMemExceededFlag();
+  ThreadInfo* info = ThreadInfo::s_threadInfo.getNoCheck();
+  info->m_reqInjectionData.setMemExceededFlag();
 }
 
 #ifdef USE_JEMALLOC
@@ -163,81 +207,66 @@ void MemoryManager::refreshStatsHelperStop() {
 void MemoryManager::add(SmartAllocatorImpl *allocator) {
   ASSERT(allocator);
   m_smartAllocators.push_back(allocator);
-  ASSERT(&allocator->getStats() == &m_stats);
-
-  /**
-   * If a SmartAllocator is registered later than checkpoint, there must be no
-   * historical objects to restore. But this allocator still needs to be
-   * registered to rollback new objects after checkpoints.
-   */
-  if (m_checkpoint) {
-    allocator->disableRestore();
-  }
-}
-
-void MemoryManager::add(UnsafePointer *p) {
-  ASSERT(p);
-  ASSERT(!m_checkpoint);
-  m_unsafePointers.insert(p);
-}
-
-void MemoryManager::remove(UnsafePointer *p) {
-  ASSERT(p);
-  ASSERT(!m_checkpoint);
-  m_unsafePointers.erase(p);
-}
-
-void MemoryManager::protectUnsafePointers() {
-  for (std::set<UnsafePointer*>::iterator iter = m_unsafePointers.begin();
-       iter != m_unsafePointers.end(); ++iter) {
-    UnsafePointer *p = *iter;
-    ASSERT(p);
-    p->protect();
-  }
-}
-
-void MemoryManager::checkpoint() {
-  ASSERT(!m_checkpoint);
-  m_checkpoint = true;
-
-  protectUnsafePointers();
-  int size = 0;
-  int count = 0;
-  for (unsigned int i = 0; i < m_smartAllocators.size(); i++) {
-    count += m_smartAllocators[i]->calculateObjects(m_linearAllocator, size);
-  }
-
-  m_linearAllocator.beginBackup(size, count);
-  for (unsigned int i = 0; i < m_smartAllocators.size(); i++) {
-    m_smartAllocators[i]->backupObjects(m_linearAllocator);
-  }
-  m_linearAllocator.endBackup();
 }
 
 void MemoryManager::sweepAll() {
   Sweepable::SweepAll();
+#ifdef HHVM_GC
+  GCRootTracker<StringData>::clear();
+  GCRootTracker<ArrayData>::clear();
+  GCRootTracker<ObjectData>::clear();
+  GCRootTracker<Variant>::clear();
+  GCRoot<StringData>::clear();
+  GCRoot<ArrayData>::clear();
+  GCRoot<ObjectData>::clear();
+  GCRoot<Variant>::clear();
+#endif
 }
+
+struct SmallNode {
+  size_t padbytes; // <= kMaxSmartSize means small block
+};
+
+struct SweepNode {
+  SweepNode* next;
+  union {
+    SweepNode* prev;
+    size_t padbytes;
+  };
+};
+
+typedef std::vector<char*>::const_iterator SlabIter;
 
 void MemoryManager::rollback() {
-  m_linearAllocator.beginRestore();
-  for (unsigned int i = 0; i < m_smartAllocators.size(); i++) {
-    m_smartAllocators[i]->rollbackObjects(m_linearAllocator);
+  StringData::sweepAll();
+  for (unsigned int i = 0, n = m_smartAllocators.size(); i < n; i++) {
+    m_smartAllocators[i]->clear();
   }
-  m_linearAllocator.endRestore();
-  protectUnsafePointers();
-}
-
-void MemoryManager::cleanup() {
+  // free smart-malloc slabs
+  for (SlabIter i = m_slabs.begin(), end = m_slabs.end(); i != end; ++i) {
+    free(*i);
+  }
+  m_slabs.clear();
+  // free large allocation blocks
+  if (SweepNode* n = m_smartsweep) {
+    for (SweepNode *next = 0; next != m_smartsweep; n = next) {
+      next = n->next;
+      free(n);
+    }
+    m_smartsweep = 0;
+  }
+  // zero out freelists
+  for (unsigned i = 0; i < kNumSizes; i++) {
+    m_smartfree[i].clear();
+  }
+  m_front = m_limit = 0;
 }
 
 void MemoryManager::logStats() {
-  for (unsigned int i = 0; i < m_smartAllocators.size(); i++) {
-    m_smartAllocators[i]->logStats();
-  }
   LeakDetectable::LogMallocStats();
 }
 
-void MemoryManager::checkMemory(bool detailed) {
+void MemoryManager::checkMemory() {
   printf("----- MemoryManager for Thread %ld -----\n", (long)pthread_self());
 
   refreshStats();
@@ -246,11 +275,216 @@ void MemoryManager::checkMemory(bool detailed) {
   printf("Peak Usage: %lld bytes\t", m_stats.peakUsage);
   printf("Peak Alloc: %lld bytes\n", m_stats.peakAlloc);
 
-  for (unsigned int i = 0; i < m_smartAllocators.size(); i++) {
-    m_smartAllocators[i]->checkMemory(detailed);
+  printf("Slabs: %lu KiB\n", m_slabs.size() * SLAB_SIZE / 1024);
+}
+
+//
+// smart_malloc implementation notes
+//
+// These functions allocate all small blocks from a single slab,
+// and defer larger allocations directly to malloc.  When small blocks
+// are freed they're placed the appropriate size-segreated freelist.
+// (m_smartfree[i]).  Small blocks have an 8-byte SmallNode and
+// are swept en-masse when slabs are freed.
+//
+// Medium blocks use a 16-byte SweepNode header to maintain a doubly-linked
+// list of blocks to free at request end.  smart_free can distinguish
+// SmallNode and SweepNode because valid next/prev pointers must be
+// larger than kMaxSmartSize.
+//
+
+inline void* MemoryManager::smartMalloc(size_t nbytes) {
+  ASSERT(nbytes > 0);
+  // add room for header before rounding up
+  size_t padbytes = (nbytes + sizeof(SmallNode) + kMask) & ~kMask;
+  if (LIKELY(padbytes <= kMaxSmartSize)) {
+    m_stats.usage += padbytes;
+    unsigned i = (padbytes - 1) >> kLgSizeQuantum;
+    ASSERT(i < kNumSizes);
+    void* p = m_smartfree[i].maybePop();
+    if (LIKELY(p != 0)) return p;
+    char* mem = m_front;
+    if (LIKELY(mem + padbytes <= m_limit)) {
+      m_front = mem + padbytes;
+      SmallNode* n = (SmallNode*) mem;
+      n->padbytes = padbytes;
+      return n + 1;
+    }
+    return smartMallocSlab(padbytes);
   }
-  m_linearAllocator.checkMemory(detailed);
-  printf("Unsafe pointers: %d\n", (int)m_unsafePointers.size());
+  return smartMallocBig(nbytes);
+}
+
+inline void MemoryManager::smartFree(void* ptr) {
+  ASSERT(ptr != 0);
+  SweepNode* n = ((SweepNode*)ptr) - 1;
+  size_t padbytes = n->padbytes;
+  if (LIKELY(padbytes <= kMaxSmartSize)) {
+    ASSERT(memset(ptr, kSmartFreeFill, padbytes - sizeof(SmallNode)));
+    unsigned i = (padbytes - 1) >> kLgSizeQuantum;
+    ASSERT(i < kNumSizes);
+    m_smartfree[i].push(ptr);
+    m_stats.usage -= padbytes;
+    return;
+  }
+  smartFreeBig(n);
+}
+
+// quick-and-dirty realloc implementation.  We could do better if the block
+// is malloc'd, by deferring to the underlying realloc.
+inline void* MemoryManager::smartRealloc(void* ptr, size_t nbytes) {
+  ASSERT(ptr != 0 && nbytes > 0);
+  SweepNode* n = ((SweepNode*)ptr) - 1;
+  size_t old_padbytes = n->padbytes;
+  if (LIKELY(old_padbytes <= kMaxSmartSize)) {
+    void* newmem = smartMalloc(nbytes);
+    memcpy(newmem, ptr, std::min(old_padbytes - sizeof(SmallNode), nbytes));
+    smartFree(ptr);
+    return newmem;
+  }
+  SweepNode* next = n->next;
+  SweepNode* prev = n->prev;
+  SweepNode* n2 = (SweepNode*) realloc(n, nbytes + sizeof(SweepNode));
+  if (n2 != n) {
+    // block moved; must re-link to sweeplist
+    if (hhvm && UNLIKELY(m_stats.usage > m_stats.maxBytes)) {
+      refreshStatsHelper();
+    }
+    if (next != n) {
+      next->prev = prev->next = n2;
+    } else {
+      n2->next = n2->prev = n2;
+    }
+    if (m_smartsweep == n) m_smartsweep = n2;
+  }
+  return n2 + 1;
+}
+
+/**
+ * Get a new slab, then allocate nbytes from it and install it in our
+ * slab list.  Return the newly allocated nbytes-sized block.
+ */
+NEVER_INLINE char* MemoryManager::newSlab(size_t nbytes) {
+  if (hhvm && UNLIKELY(m_stats.usage > m_stats.maxBytes)) {
+    refreshStatsHelper();
+  }
+  char* slab = (char*) Util::safe_malloc(SLAB_SIZE);
+  JEMALLOC_STATS_ADJUST(&m_stats, SLAB_SIZE);
+  m_stats.alloc += SLAB_SIZE;
+  if (m_stats.alloc > m_stats.peakAlloc) {
+    m_stats.peakAlloc = m_stats.alloc;
+  }
+  m_slabs.push_back(slab);
+  m_front = slab + nbytes;
+  m_limit = slab + SLAB_SIZE;
+  return slab;
+}
+
+NEVER_INLINE
+void* MemoryManager::smartMallocSlab(size_t padbytes) {
+  SmallNode* n = (SmallNode*) newSlab(padbytes);
+  n->padbytes = padbytes;
+  return n + 1;
+}
+
+inline void* MemoryManager::smartEnlist(SweepNode* n) {
+  if (hhvm && UNLIKELY(m_stats.usage > m_stats.maxBytes)) {
+    refreshStatsHelper();
+  }
+  SweepNode* next = m_smartsweep;
+  if (next) {
+    SweepNode* prev = next->prev;
+    n->next = next;
+    n->prev = prev;
+    next->prev = prev->next = n;
+  } else {
+    n->next = n->prev = n;
+  }
+  m_smartsweep = n;
+  ASSERT(n->padbytes > kMaxSmartSize);
+  return n + 1;
+}
+
+NEVER_INLINE
+void* MemoryManager::smartMallocBig(size_t nbytes) {
+  ASSERT(nbytes > 0);
+  SweepNode* n = (SweepNode*) Util::safe_malloc(nbytes + sizeof(SweepNode));
+  return smartEnlist(n);
+}
+
+NEVER_INLINE
+void* MemoryManager::smartCallocBig(size_t totalbytes) {
+  ASSERT(totalbytes > 0);
+  SweepNode* n = (SweepNode*)Util::safe_calloc(totalbytes + sizeof(SweepNode),
+                                               1);
+  return smartEnlist(n);
+}
+
+NEVER_INLINE
+void MemoryManager::smartFreeBig(SweepNode* n) {
+  SweepNode* next = n->next;
+  SweepNode* prev = n->prev;
+  next->prev = prev;
+  prev->next = next;
+  if (UNLIKELY(n == m_smartsweep)) {
+    m_smartsweep = (next != n) ? next : 0;
+  }
+  free(n);
+}
+
+// allocate nbytes from the current slab, aligned to 16-bytes
+inline void* MemoryManager::slabAlloc(size_t nbytes) {
+  const size_t kAlignMask = 15;
+  ASSERT((nbytes & 7) == 0);
+  char* ptr = (char*)(uintptr_t(m_front + kAlignMask) & ~kAlignMask);
+  if (ptr + nbytes <= m_limit) {
+    m_front = ptr + nbytes;
+    return ptr;
+  }
+  return newSlab(nbytes);
+}
+
+static inline MemoryManager& MM() {
+  return *MemoryManager::TheMemoryManager();
+}
+
+// smart_malloc api entry points, with support for malloc/free corner cases.
+
+HOT_FUNC
+void* smart_malloc(size_t nbytes) {
+  return MM().smartMalloc(std::max(nbytes, size_t(1)));
+}
+
+HOT_FUNC
+void* smart_calloc(size_t count, size_t nbytes) {
+  size_t totalbytes = std::max(nbytes * count, size_t(1));
+  if (totalbytes <= MemoryManager::kMaxSmartSize) {
+    return memset(MM().smartMalloc(totalbytes), 0, totalbytes);
+  }
+  return MM().smartCallocBig(totalbytes);
+}
+
+HOT_FUNC
+void* smart_realloc(void* ptr, size_t nbytes) {
+  if (!ptr) return MM().smartMalloc(std::max(nbytes, size_t(1)));
+  if (!nbytes) return ptr ? MM().smartFree(ptr), (void*)0 : (void*)0;
+  return MM().smartRealloc(ptr, nbytes);
+}
+
+HOT_FUNC
+void smart_free(void* ptr) {
+  if (ptr) MM().smartFree(ptr);
+}
+
+// SmartAllocator facade
+
+HOT_FUNC
+void* SmartAllocatorImpl::alloc(size_t nbytes) {
+  ASSERT(nbytes == size_t(m_itemSize));
+  MM().getStats().usage += nbytes;
+  void* ptr = m_free.maybePop();
+  if (LIKELY(ptr != NULL)) return ptr;
+  return MM().slabAlloc(nbytes);
 }
 
 ///////////////////////////////////////////////////////////////////////////////

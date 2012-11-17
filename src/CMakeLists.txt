@@ -18,7 +18,25 @@
 include(HPHPSetup)
 
 # find all the source files
-set(RECURSIVE_SOURCE_SUBDIRS runtime/base runtime/eval runtime/ext system/gen system/lib util)
+if ("$ENV{USE_HHVM}" STREQUAL "1")
+	SET(USE_HHVM TRUE)
+	SET(ENV{HHVM} 1)
+else()
+	SET(USE_HHVM FALSE)
+endif()
+
+if (USE_HHVM)
+	ADD_DEFINITIONS("-DHHVM -DHHVM_BINARY=1 -DHHVM_PATH=\\\"${HPHP_HOME}/src/hhvm/hhvm\\\"")
+else()
+	ADD_DEFINITIONS("-DHHVM_PATH=\"\"")
+endif(USE_HHVM)
+
+if (USE_HHVM)
+	set(RECURSIVE_SOURCE_SUBDIRS runtime/base runtime/eval runtime/ext runtime/ext_hhvm runtime/vm system/gen system/lib util)
+else()
+	set(RECURSIVE_SOURCE_SUBDIRS runtime/base runtime/eval runtime/ext runtime/vm system/gen system/lib util)
+endif(USE_HHVM)
+
 foreach (dir ${RECURSIVE_SOURCE_SUBDIRS})
 
 	auto_sources(files "*.cpp" "RECURSE" "${CMAKE_CURRENT_SOURCE_DIR}/${dir}")
@@ -28,6 +46,31 @@ foreach (dir ${RECURSIVE_SOURCE_SUBDIRS})
 	list(APPEND C_SOURCES ${files})
 
 endforeach(dir ${RECURSIVE_SOURCE_SUBDIRS})
+
+# Disable hardware counters off of Linux
+if(NOT LINUX)
+	add_definitions(-DNO_HARDWARE_COUNTERS)
+	list(REMOVE_ITEM CXX_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/util/hardware_counter.cpp)
+endif()
+
+# remove ext_hhvm
+foreach (file ${CXX_SOURCES})
+       	if (${file} MATCHES "ext_hhvm")
+               	message("Removing hhvm file ${file}")
+                       list(REMOVE_ITEM CXX_SOURCES ${file})
+                endif()
+endforeach(file ${CXX_SOURCES})
+
+# remove ext/sep for hhvm
+if (USE_HHVM)
+	foreach (file ${CXX_SOURCES})
+		if (${file} MATCHES "ext/sep")
+			message("Removing ${file}")
+			list(REMOVE_ITEM CXX_SOURCES ${file})
+		endif()
+	endforeach(file ${CXX_SOURCES})
+endif(USE_HHVM)
+
 
 if (EXISTS "${hphp_SOURCE_DIR}/HPHP_EXCLUDE_FILES.txt")
 	FILE(READ ${hphp_SOURCE_DIR}/HPHP_EXCLUDE_FILES.txt HPHP_EXCLUDE_FILES)
@@ -94,6 +137,7 @@ add_subdirectory(third_party/libafdt)
 add_subdirectory(third_party/libmbfl)
 add_subdirectory(third_party/libsqlite3)
 add_subdirectory(third_party/timelib)
+add_subdirectory(third_party/lz4)
 
 foreach (CXX_FILE ${CXX_SOURCES})
 	if(${CXX_FILE} MATCHES ".no.cpp$")
@@ -105,16 +149,38 @@ foreach (CXX_FILE ${CXX_SOURCES})
 	endif()
 endforeach()
 
-ADD_LIBRARY(hphp_runtime_static STATIC ${CXX_SOURCES} ${C_SOURCES})
+add_custom_command(
+  OUTPUT runtime/base/compiler_id.h
+  COMMAND bin/generate_compiler_id.sh
+  DEPENDS ${CXX_SOURCES} ${C_SOURCES}
+  WORKING_DIRECTORY ${HPHP_HOME}
+  COMMENT "Generating Compiler ID"
+  VERBATIM)
+
+add_custom_command(
+  OUTPUT runtime/vm/repo_schema.h
+  COMMAND bin/generate_repo_schema.sh
+  DEPENDS ${CXX_SOURCES} ${C_SOURCES}
+  WORKING_DIRECTORY ${HPHP_HOME}
+  COMMENT "Generating Repo Schema ID"
+  VERBATIM)
+
+ADD_LIBRARY(hphp_runtime_static STATIC runtime/vm/repo_schema.h runtime/base/compiler_id.h ${CXX_SOURCES} ${C_SOURCES})
 #ADD_LIBRARY(hphp_runtime SHARED ${C_SOURCES} ${CXX_SOURCES})
 SET_TARGET_PROPERTIES(hphp_runtime_static PROPERTIES OUTPUT_NAME "hphp_runtime")
 SET_TARGET_PROPERTIES(hphp_runtime_static PROPERTIES PREFIX "lib")
 #SET_TARGET_PROPERTIES(hphp_runtime PROPERTIES CLEAN_DIRECT_OUTPUT 1)
 SET_TARGET_PROPERTIES(hphp_runtime_static PROPERTIES CLEAN_DIRECT_OUTPUT 1)
 
+SET(CMAKE_CXX_ARCHIVE_APPEND "<CMAKE_AR> q <TARGET> <LINK_FLAGS> <OBJECTS>")
+
 hphp_link(hphp_runtime_static)
 
 add_subdirectory(compiler)
+
+if (USE_HHVM)
+        add_subdirectory(runtime/ext_hhvm)
+endif(USE_HHVM)
 
 add_subdirectory(hphp)
 

@@ -139,17 +139,20 @@ static Variant php_mcrypt_do_crypt(CStrRef cipher, CStrRef key, CStrRef data,
 
   int block_size;
   unsigned long int data_size;
+  String s;
   char *data_s;
   /* Check blocksize */
   if (mcrypt_enc_is_block_mode(td) == 1) { /* It's a block algorithm */
     block_size = mcrypt_enc_get_block_size(td);
     data_size = (((data.size() - 1) / block_size) + 1) * block_size;
-    data_s = (char*)malloc(data_size + 1);
+    s = String(data_size, ReserveString);
+    data_s = (char*)s.mutableSlice().ptr;
     memset(data_s, 0, data_size);
     memcpy(data_s, data.data(), data.size());
   } else { /* It's not a block algorithm */
     data_size = data.size();
-    data_s = (char*)malloc(data_size + 1);
+    s = String(data_size, ReserveString);
+    data_s = (char*)s.mutableSlice().ptr;
     memcpy(data_s, data.data(), data.size());
   }
 
@@ -162,9 +165,6 @@ static Variant php_mcrypt_do_crypt(CStrRef cipher, CStrRef key, CStrRef data,
   } else {
     mcrypt_generic(td, data_s, data_size);
   }
-  data_s[data_size] = '\0';
-
-  String ret(data_s, data_size, AttachString);
 
   /* freeing vars */
   mcrypt_generic_end(td);
@@ -174,7 +174,7 @@ static Variant php_mcrypt_do_crypt(CStrRef cipher, CStrRef key, CStrRef data,
   if (iv_s != NULL) {
     free(iv_s);
   }
-  return ret;
+  return s.setSize(data_size);
 }
 
 static Variant mcrypt_generic(CObjRef td, CStrRef data, bool dencrypt) {
@@ -189,18 +189,21 @@ static Variant mcrypt_generic(CObjRef td, CStrRef data, bool dencrypt) {
     return false;
   }
 
+  String s;
   unsigned char* data_s;
   int block_size, data_size;
   /* Check blocksize */
   if (mcrypt_enc_is_block_mode(pm->m_td) == 1) { /* It's a block algorithm */
     block_size = mcrypt_enc_get_block_size(pm->m_td);
     data_size = (((data.size() - 1) / block_size) + 1) * block_size;
-    data_s = (unsigned char*)malloc(data_size + 1);
+    s = String(data_size, ReserveString);
+    data_s = (unsigned char *)s.mutableSlice().ptr;
     memset(data_s, 0, data_size);
     memcpy(data_s, data.data(), data.size());
   } else { /* It's not a block algorithm */
     data_size = data.size();
-    data_s = (unsigned char*)malloc(data_size + 1);
+    s = String(data_size, ReserveString);
+    data_s = (unsigned char *)s.mutableSlice().ptr;
     memcpy(data_s, data.data(), data.size());
   }
 
@@ -209,8 +212,7 @@ static Variant mcrypt_generic(CObjRef td, CStrRef data, bool dencrypt) {
   } else {
     mcrypt_generic(pm->m_td, data_s, data_size);
   }
-  data_s[data_size] = '\0';
-  return String((char*)data_s, data_size, AttachString);
+  return s.setSize(data_size);
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -270,14 +272,14 @@ Array f_mcrypt_list_modes(CStrRef lib_dir /* = null_string */) {
   return ret;
 }
 
-int f_mcrypt_module_get_algo_block_size(CStrRef algorithm,
+int64 f_mcrypt_module_get_algo_block_size(CStrRef algorithm,
                                         CStrRef lib_dir /* = null_string */) {
   String dir = lib_dir.empty() ? MCG(algorithms_dir) : lib_dir;
   return mcrypt_module_get_algo_block_size((char*)algorithm.data(),
                                            (char*)dir.data());
 }
 
-int f_mcrypt_module_get_algo_key_size(CStrRef algorithm,
+int64 f_mcrypt_module_get_algo_key_size(CStrRef algorithm,
                                       CStrRef lib_dir /* = null_string */) {
   String dir = lib_dir.empty() ? MCG(algorithms_dir) : lib_dir;
   return mcrypt_module_get_algo_key_size((char*)algorithm.data(),
@@ -447,7 +449,7 @@ Variant f_mcrypt_get_iv_size(CStrRef cipher, CStrRef mode) {
   return ret;
 }
 
-int f_mcrypt_get_key_size(CStrRef cipher, CStrRef module) {
+int64 f_mcrypt_get_key_size(CStrRef cipher, CStrRef module) {
   MCRYPT td = mcrypt_module_open((char*)cipher.data(),
                                  (char*)MCG(algorithms_dir).data(),
                                  (char*)module.data(),
@@ -469,15 +471,15 @@ String f_mcrypt_enc_get_algorithms_name(CObjRef td) {
   return ret;
 }
 
-int f_mcrypt_enc_get_block_size(CObjRef td) {
+int64 f_mcrypt_enc_get_block_size(CObjRef td) {
   return mcrypt_enc_get_block_size(td.getTyped<MCrypt>()->m_td);
 }
 
-int f_mcrypt_enc_get_iv_size(CObjRef td) {
+int64 f_mcrypt_enc_get_iv_size(CObjRef td) {
   return mcrypt_enc_get_iv_size(td.getTyped<MCrypt>()->m_td);
 }
 
-int f_mcrypt_enc_get_key_size(CObjRef td) {
+int64 f_mcrypt_enc_get_key_size(CObjRef td) {
   return mcrypt_enc_get_key_size(td.getTyped<MCrypt>()->m_td);
 }
 
@@ -513,11 +515,11 @@ bool f_mcrypt_enc_is_block_mode(CObjRef td) {
   return mcrypt_enc_is_block_mode(td.getTyped<MCrypt>()->m_td) == 1;
 }
 
-int f_mcrypt_enc_self_test(CObjRef td) {
+int64 f_mcrypt_enc_self_test(CObjRef td) {
   return mcrypt_enc_self_test(td.getTyped<MCrypt>()->m_td);
 }
 
-int f_mcrypt_generic_init(CObjRef td, CStrRef key, CStrRef iv) {
+int64 f_mcrypt_generic_init(CObjRef td, CStrRef key, CStrRef iv) {
   MCrypt *pm = td.getTyped<MCrypt>();
   int max_key_size = mcrypt_enc_get_key_size(pm->m_td);
   int iv_size = mcrypt_enc_get_iv_size(pm->m_td);

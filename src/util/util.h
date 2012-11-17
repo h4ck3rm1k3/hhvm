@@ -21,8 +21,10 @@
 #include <string>
 #include <map>
 #include <set>
+#include <stdio.h>
 #include <stdlib.h>
 #include <stdarg.h>
+#include <arpa/inet.h> // For htonl().
 
 /**
  * Simple utility functions.
@@ -32,9 +34,26 @@ namespace HPHP { namespace Util {
 
 #define ALWAYS_INLINE  __attribute__((always_inline))
 #define NEVER_INLINE  __attribute__((noinline))
+#define INLINE_SINGLE_CALLER ALWAYS_INLINE
 #define LIKELY(pred)   __builtin_expect((pred), true)
 #define UNLIKELY(pred) __builtin_expect((pred), false)
+#define UNUSED         __attribute__((unused))
+#define FLATTEN        __attribute__((flatten))
 #define HOT_FUNC       __attribute__ ((section (".text.hot.builtin")))
+
+#ifdef DEBUG
+#define DEBUG_ONLY /* nop */
+#else
+#define DEBUG_ONLY UNUSED
+#endif
+
+#ifdef HHVM
+#define HOT_FUNC_VM HOT_FUNC
+#define HOT_FUNC_HPHP
+#else
+#define HOT_FUNC_VM
+#define HOT_FUNC_HPHP HOT_FUNC
+#endif
 
 /*
  * we need to keep some unreferenced functions from being removed by
@@ -143,17 +162,64 @@ std::string safe_strerror(int errnum);
 /**
  * Thread-safe dirname().
  */
+std::string safe_dirname(const char *path, int len);
 std::string safe_dirname(const char *path);
+std::string safe_dirname(const std::string& path);
+
+/**
+ * Helper function for safe_dirname.
+ */
+size_t dirname_helper(char *path, int len);
 
 /**
  * Check if value is a power of two.
  */
-bool isPowerOfTwo(int value);
+template<typename Int>
+static inline bool isPowerOfTwo(Int value) {
+  return (value > 0 && (value & (value-1)) == 0);
+}
 
 /**
  * Round up value to the nearest power of two
  */
-int roundUpToPowerOfTwo(int value);
+template<typename Int>
+static inline Int roundUpToPowerOfTwo(Int value) {
+#ifdef DEBUG
+  (void) (0 / value); // fail for 0; ASSERT is a pain.
+#endif
+  --value;
+  // Verified that gcc is smart enough to unroll this and emit
+  // constant shifts.
+  for (unsigned i = 1; i < sizeof(Int) * 8; i *= 2)
+    value |= value >> i;
+  ++value;
+  return value;
+}
+
+/**
+ * Return log-base-2 of the next power of 2, i.e. CLZ
+ */
+static inline int lgNextPower2(uint64_t value) {
+#ifdef DEBUG
+  (void) (0 / value); // fail for 0; ASSERT is a pain.
+#endif
+  return 64 - __builtin_clzll(value - 1);
+}
+
+static inline int lgNextPower2(uint32_t value) {
+#ifdef DEBUG
+  (void) (0 / value); // fail for 0; ASSERT is a pain.
+#endif
+  return 32 - __builtin_clz(value - 1);
+}
+
+static inline uint64_t nextPower2(uint64_t value) {
+  return uint64_t(1) << lgNextPower2(value);
+}
+
+static inline uint32_t nextPower2(uint32_t value) {
+  return uint32_t(1) << lgNextPower2(value);
+}
 
 /**
  * Duplicate a buffer of given size, null-terminate the result.
@@ -198,6 +264,68 @@ void find(std::vector<std::string> &out,
  * Format a regex pattern by surrounding with slashes and escaping pattern.
  */
 std::string format_pattern(const std::string &pattern, bool prefixSlash);
+
+static inline void compiler_membar( ) {
+  asm volatile("" : : :"memory");
+}
+
+/**
+ * Given the address of a C++ function, returns that function's name
+ * or a hex string representation of the address if it can't find
+ * the function's name. Attempts to demangle C++ function names. It's
+ * the caller's responsibility to free the returned C string.
+ */
+char* getNativeFunctionName(void* codeAddr);
+
+/**
+ * Get the vtable offset corresponding to a method pointer. NB: only works
+ * for single inheritance. For no inheritance at all, use
+ * getMethodHardwarePtr. ABI-specific, don't play on or around.
+ */
+template <typename MethodPtr>
+int64_t getVTableOffset(MethodPtr meth) {
+  union {
+    MethodPtr meth;
+    int64_t offset;
+  } u;
+  u.meth = meth;
+  return u.offset - 1;
+}
+
+template <typename MethodPtr>
+void* getMethodHardwarePtr(MethodPtr meth) {
+  union {
+    MethodPtr meth;
+    void* ptr;
+  } u;
+  u.meth = meth;
+  return u.ptr;
+}
+
+/**
+ * 64-bit equivalents of 32-bit htonl() and ntohq().
+ */
+#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+#define htonq(a) a
+#define ntohq(a) a
+#else
+#define ntohq(a)                                                              \
+  (uint64_t)(((uint64_t) (ntohl((uint32_t) ((a) >> 32))))                     \
+             | (((uint64_t) (ntohl((uint32_t)                                 \
+                ((a) & 0x00000000ffffffff)))) << 32))
+#define htonq(a)                                                              \
+  (uint64_t) (((uint64_t) (htonl((uint32_t) ((a) >> 32))))                    \
+              | (((uint64_t) (htonl((uint32_t)                                \
+                 ((a) & 0x00000000ffffffff)))) << 32))
+#endif
+
+/**
+ * Read typed data from an offset relative to a base address
+ */
+template <class T>
+static T& getDataRef(void* base, unsigned offset) {
+  return *(T*)((char*)base + offset);
+}
 
 ///////////////////////////////////////////////////////////////////////////////
 }}

@@ -95,24 +95,22 @@ public:
    */
   virtual const CallInfo *t___invokeCallInfoHelper(void *&extra);
 
-  /**
-   * Used by HPHPI to make closures work
-   */
-  void *extraData() const { return m_extraData; }
+  String name() const { return String(m_name, CopyString); }
 
   /**
    * This is the constructor which is called internally-
    * PHP code will never be able to call this constructor
    */
-  c_Closure(const CallInfo *callInfo, void *extraData) :
-    m_callInfo(callInfo), m_extraData(extraData) {
+  c_Closure(const CallInfo *callInfo, const char *name,
+            const ObjectStaticCallbacks *cb = &cw_Closure) :
+    ExtObjectData(cb), m_callInfo(callInfo), m_name(name) {
     ASSERT(callInfo);
   }
 protected:
   virtual bool php_sleep(Variant &ret);
 private:
   const CallInfo *m_callInfo;
-  void *m_extraData;
+  const char *m_name;
 EOT
 ,
   )
@@ -148,26 +146,9 @@ EndClass();
 
 BeginClass(
   array(
-    'name' => 'GeneratorClosure',
-    'parent' => 'Closure',
-    'footer' => <<<EOT
-public:
-  /**
-   * This is the constructor which is called internally-
-   * PHP code will never be able to call this constructor
-   */
-  c_GeneratorClosure(
-    const CallInfo *callInfo,
-    void *extraData,
-    CArrRef vars) :
-    c_Closure(callInfo, extraData), m_vars(vars) {}
-public:
-  Array m_vars;    /* use variables    */
-  Array m_statics; /* static variables */
-EOT
-,
-  )
-);
+    'name' => "DummyClosure",
+    'desc' => "Represents an invalid closure which will fatal when used.",
+  ));
 
 DefineFunction(
   array(

@@ -22,7 +22,7 @@
 #include <runtime/base/variable_serializer.h>
 
 #include <arpa/inet.h>
-#if defined(__FREEBSD__)
+#if defined(__FreeBSD__)
 # include <sys/endian.h>
 # elif defined(__APPLE__)
 # include <machine/endian.h>
@@ -34,7 +34,7 @@
 #if !defined(htonll) && !defined(ntohll)
 
 #if __BYTE_ORDER == __LITTLE_ENDIAN
-# if defined(__FREEBSD__)
+# if defined(__FreeBSD__)
 #  define htonll(x) bswap64(x)
 #  define ntohll(x) bswap64(x)
 # elif defined(__APPLE__)
@@ -190,11 +190,10 @@ public:
     int32 size;
     read(size);
     if (size > 0 && size + 1 > 0) {
-      char *buf = (char*)malloc(size + 1);
-      if (!buf) throwOutOfMemory();
+      data = String(size, ReserveString);
+      char *buf = data.mutableSlice().ptr;
       read(buf, size);
-      buf[size] = '\0';
-      data = String(buf, size, AttachString);
+      data.setSize(size);
     } else if (size) {
       throwInvalidStringSize(size);
     }

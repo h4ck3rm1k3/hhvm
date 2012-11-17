@@ -19,14 +19,18 @@
 #include <time.h>
 #include <runtime/base/runtime_option.h>
 #include <runtime/base/server/server_note.h>
+#include <runtime/base/server/server_stats.h>
 #include <runtime/base/server/request_uri.h>
 #include <util/process.h>
 #include <util/atomic.h>
 #include <util/compatibility.h>
 #include <util/util.h>
+#include <util/hardware_counter.h>
+
+using std::endl;
 
 namespace HPHP {
-using namespace std;
+
 ///////////////////////////////////////////////////////////////////////////////
 
 AccessLog::~AccessLog() {
@@ -147,7 +151,7 @@ void AccessLog::log(Transport *transport, const VirtualHost *vhost) {
 int AccessLog::writeLog(Transport *transport, const VirtualHost *vhost,
                         FILE *outFile, const char *format) {
    char c;
-   ostringstream out;
+   std::ostringstream out;
    while (c = *format++) {
      if (c != '%') {
        out << c;
@@ -223,7 +227,32 @@ void AccessLog::skipField(const char* &format) {
   format++;
 }
 
-bool AccessLog::genField(ostringstream &out, const char* &format,
+static void escape_data(std::ostringstream &out, const char *s, int len)
+{
+  static const char digits[] = "0123456789abcdef";
+
+  for (int i = 0; i < len; i++) {
+    unsigned char uc = *s++;
+    switch (uc) {
+      case '"':  out << "\\\""; break;
+      case '\\': out << "\\\\"; break;
+      case '\b': out << "\\b";  break;
+      case '\f': out << "\\f";  break;
+      case '\n': out << "\\n";  break;
+      case '\r': out << "\\r";  break;
+      case '\t': out << "\\t";  break;
+      default:
+        if (uc >= ' ' && (uc & 127) == uc) {
+          out << (char)uc;
+        } else {
+          out << "\\x" << digits[(uc >> 4) & 15] << digits[(uc >> 0) & 15];
+        }
+        break;
+    }
+  }
+}
+
+bool AccessLog::genField(std::ostringstream &out, const char* &format,
                          Transport *transport, const VirtualHost *vhost,
                          const string &arg) {
   int responseSize = transport->getResponseSize();
@@ -239,6 +268,29 @@ bool AccessLog::genField(ostringstream &out, const char* &format,
     // Fall through
   case 'B':
     out << responseSize;
+    break;
+  case 'C':
+    if (arg.empty()) {
+      return false;
+    } else {
+      string cookie = transport->getCookie(arg);
+      if (cookie.empty()) return false;
+      escape_data(out, cookie.c_str(), cookie.size());
+    }
+    break;
+  case 'D':
+    {
+      struct timespec now;
+      gettime(CLOCK_MONOTONIC, &now);
+      out << gettime_diff_us(transport->getWallTime(), now);
+    }
+    break;
+  case 'd':
+    {
+      struct timespec now;
+      gettime(CLOCK_THREAD_CPUTIME_ID, &now);
+      out << gettime_diff_us(transport->getCpuTime(), now);
+    }
     break;
   case 'h':
     out << transport->getRemoteHost();
@@ -263,6 +315,29 @@ bool AccessLog::genField(ostringstream &out, const char* &format,
       String note = ServerNote::Get(arg);
       if (note.isNull()) return false;
       out << note.c_str();
+    }
+    break;
+  case 'r':
+    {
+      const char *method = NULL;
+      switch (transport->getMethod()) {
+      case Transport::GET: method = "GET"; break;
+      case Transport::POST: method = "POST"; break;
+      case Transport::HEAD: method = "HEAD"; break;
+      default: break;
+      }
+      if (!method) return false;
+      out << method << " ";
+
+      const char *url = transport->getUrl();
+      if (vhost && vhost->hasLogFilter()) {
+        out << vhost->filterUrl(url);
+      } else {
+        out << url;
+      }
+
+      string httpVersion = transport->getHTTPVersion();
+      out << " HTTP/" << httpVersion;
     }
     break;
   case 's':
@@ -296,29 +371,6 @@ bool AccessLog::genField(ostringstream &out, const char* &format,
   case 'T':
     out << TimeStamp::Current() - m_fGetThreadData()->startTime;
     break;
-  case 'r':
-    {
-      const char *method = NULL;
-      switch (transport->getMethod()) {
-      case Transport::GET: method = "GET"; break;
-      case Transport::POST: method = "POST"; break;
-      case Transport::HEAD: method = "HEAD"; break;
-      default: break;
-      }
-      if (!method) return false;
-      out << method << " ";
-
-      const char *url = transport->getUrl();
-      if (vhost && vhost->hasLogFilter()) {
-        out << vhost->filterUrl(url);
-      } else {
-        out << url;
-      }
-
-      string httpVersion = transport->getHTTPVersion();
-      out << " HTTP/" << httpVersion;
-    }
-    break;
   case 'U':
     {
       String b, q;
@@ -337,20 +389,21 @@ bool AccessLog::genField(ostringstream &out, const char* &format,
       }
     }
     break;
-  case 'D':
+  case 'Y':
     {
-      struct timespec now;
-      gettime(CLOCK_MONOTONIC, &now);
-      out << gettime_diff_us(transport->getWallTime(), now);
+      int64 now = Util::HardwareCounter::GetInstructionCount();
+      out << now - transport->getInstructions();
     }
     break;
-  case 'd':
-    {
-      struct timespec now;
-      gettime(CLOCK_THREAD_CPUTIME_ID, &now);
-      out << gettime_diff_us(transport->getCpuTime(), now);
-    }
+  case 'y':
+    out << ServerStats::Get("page.inst.psp");
     break;
+  case 'Z':
+     out << ServerStats::Get("page.wall.psp");
+     break;
+  case 'z':
+     out << ServerStats::Get("page.cpu.psp");
+     break;
   default:
     return false;
   }

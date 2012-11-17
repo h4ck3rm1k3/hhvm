@@ -18,11 +18,14 @@
 #include <runtime/ext/ext_icu_ucsdet.h>
 #include <unicode/unistr.h>
 
+#include <system/lib/systemlib.h>
+
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
 IMPLEMENT_DEFAULT_EXTENSION(icu_ucsdet);
 
-c_EncodingDetector::c_EncodingDetector() {
+c_EncodingDetector::c_EncodingDetector(const ObjectStaticCallbacks *cb) :
+    ExtObjectData(cb) {
   UErrorCode status = U_ZERO_ERROR;
   m_encoding_detector = ucsdet_open(&status);
 
@@ -42,10 +45,11 @@ void c_EncodingDetector::t___construct() {
 void c_EncodingDetector::t_settext(CStrRef text) {
   INSTANCE_METHOD_INJECTION_BUILTIN(EncodingDetector, EncodingDetector::settext);
   UErrorCode status = U_ZERO_ERROR;
+  m_text = text;
   ucsdet_setText(
     m_encoding_detector,
-    text.data(),
-    text.length(),
+    m_text.data(),
+    m_text.length(),
     &status);
   if (U_FAILURE(status)) {
     throw Exception(
@@ -57,10 +61,11 @@ void c_EncodingDetector::t_settext(CStrRef text) {
 void c_EncodingDetector::t_setdeclaredencoding(CStrRef text) {
   INSTANCE_METHOD_INJECTION_BUILTIN(EncodingDetector, EncodingDetector::setdeclaredencoding);
   UErrorCode status = U_ZERO_ERROR;
+  m_declaredencoding = text;
   ucsdet_setDeclaredEncoding(
     m_encoding_detector,
-    text.data(),
-    text.length(),
+    m_declaredencoding.data(),
+    m_declaredencoding.length(),
     &status);
   if (U_FAILURE(status)) {
     throw Exception(
@@ -108,14 +113,9 @@ Array c_EncodingDetector::t_detectall() {
   return ret;
 }
 
-Variant c_EncodingDetector::t___destruct() {
-  INSTANCE_METHOD_INJECTION_BUILTIN(EncodingDetector, EncodingDetector::__destruct);
-  return null;
-}
-
 ///////////////////////////////////////////////////////////////////////////////
-c_EncodingMatch::c_EncodingMatch() :
-m_encoding_match(0) {
+c_EncodingMatch::c_EncodingMatch(const ObjectStaticCallbacks *cb) :
+    ExtObjectData(cb), m_encoding_match(0) {
 }
 
 c_EncodingMatch::~c_EncodingMatch() {
@@ -151,7 +151,7 @@ String c_EncodingMatch::t_getencoding() {
   return String(encoding);
 }
 
-int c_EncodingMatch::t_getconfidence() {
+int64 c_EncodingMatch::t_getconfidence() {
   INSTANCE_METHOD_INJECTION_BUILTIN(EncodingMatch, EncodingMatch::getconfidence);
   validate();
 
@@ -211,11 +211,6 @@ String c_EncodingMatch::t_getutf8() {
   std::string utf8str;
   ustr.toUTF8String(utf8str);
   return String(utf8str);
-}
-
-Variant c_EncodingMatch::t___destruct() {
-  INSTANCE_METHOD_INJECTION_BUILTIN(EncodingMatch, EncodingMatch::__destruct);
-  return null;
 }
 
 ///////////////////////////////////////////////////////////////////////////////

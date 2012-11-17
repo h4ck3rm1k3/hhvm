@@ -40,8 +40,6 @@
     pdo_handle_error(stmt->dbh, stmt);                  \
   }                                                     \
 
-using namespace std;
-
 namespace HPHP {
 IMPLEMENT_DEFAULT_EXTENSION(PDO);
 ///////////////////////////////////////////////////////////////////////////////
@@ -885,21 +883,22 @@ public:
   }
 
   virtual void requestShutdown() {
-    for (set<PDOConnection*>::iterator iter = m_persistent_connections.begin();
+    for (std::set<PDOConnection*>::iterator iter =
+            m_persistent_connections.begin();
          iter != m_persistent_connections.end(); ++iter) {
       (*iter)->persistentSave();
     }
   }
 
 public:
-  set<PDOConnection*> m_persistent_connections;
+  std::set<PDOConnection*> m_persistent_connections;
 };
 IMPLEMENT_STATIC_REQUEST_LOCAL(PDORequestData, s_pdo_request_data);
 
 ///////////////////////////////////////////////////////////////////////////////
 // PDO
 
-c_PDO::c_PDO() {
+c_PDO::c_PDO(const ObjectStaticCallbacks *cb) : ExtObjectData(cb) {
 }
 
 c_PDO::~c_PDO() {
@@ -981,14 +980,19 @@ void c_PDO::t___construct(CStrRef dsn, CStrRef username /* = null_string */,
       m_dbh = dynamic_cast<PDOConnection*>
         (g_persistentObjects->get(PDOConnection::PersistentKey,
                                   shashkey.data()));
-      m_dbh->persistentRestore();
-      s_pdo_request_data->m_persistent_connections.insert(m_dbh.get());
 
-      /* is the connection still alive ? */
-      if (m_dbh->support(PDOConnection::MethodCheckLiveness) &&
-          !m_dbh->checkLiveness()) {
-        /* nope... need to kill it */
-        m_dbh = NULL;
+      if (m_dbh.get()) {
+        m_dbh->persistentRestore();
+
+        /* is the connection still alive ? */
+        if (m_dbh->support(PDOConnection::MethodCheckLiveness) &&
+            !m_dbh->checkLiveness()) {
+          /* nope... need to kill it */
+          m_dbh = NULL;
+        } else {
+          /* Yep, use it and mark it for saving at rshutdown */
+          s_pdo_request_data->m_persistent_connections.insert(m_dbh.get());
+        }
       }
 
       if (m_dbh.get()) {
@@ -1483,11 +1487,6 @@ Array c_PDO::ti_getavailabledrivers(const char* cls) {
   return f_pdo_drivers();
 }
 
-Variant c_PDO::t___destruct() {
-  INSTANCE_METHOD_INJECTION_BUILTIN(PDO, PDO::__destruct);
-  return null;
-}
-
 ///////////////////////////////////////////////////////////////////////////////
 
 static inline bool rewrite_name_to_position(sp_PDOStatement stmt,
@@ -1828,13 +1827,14 @@ static bool do_fetch(sp_PDOStatement stmt, bool do_bind, Variant &ret,
       return false;
     }
     if ((flags & PDO_FETCH_SERIALIZE) == 0) {
-      ret = create_object(clsname, Array(), false);
+      ret = create_object_only(clsname);
       if (!do_fetch_class_prepare(stmt)) {
         return false;
       }
       if (stmt->fetch.constructor && (flags & PDO_FETCH_PROPS_LATE)) {
-        ret.toObject()->o_invoke(stmt->fetch.constructor,
-                                 stmt->fetch.ctor_args, -1);
+        ret.asCObjRef().get()->o_invoke(stmt->fetch.constructor,
+                                        stmt->fetch.ctor_args, -1);
+        ret.asCObjRef().get()->clearNoDestruct();
       }
     }
     break;
@@ -1970,7 +1970,8 @@ static bool do_fetch(sp_PDOStatement stmt, bool do_bind, Variant &ret,
     if (stmt->fetch.constructor &&
         !(flags & (PDO_FETCH_PROPS_LATE | PDO_FETCH_SERIALIZE))) {
       ret.toObject()->o_invoke(stmt->fetch.constructor, stmt->fetch.ctor_args,
-                              -1);
+                               -1);
+      ret.toObject()->clearNoDestruct();
     }
     if (flags & PDO_FETCH_CLASSTYPE) {
       stmt->fetch.clsname = old_clsname;
@@ -2476,7 +2477,6 @@ safe:
             plc->quoted = "NULL";
             break;
 
-          case KindOfInt32:
           case KindOfInt64:
           case KindOfDouble:
             plc->quoted = param->parameter.toString();
@@ -2502,9 +2502,9 @@ safe:
 
 rewrite:
     /* allocate output buffer */
-    newbuffer = (char*)malloc(newbuffer_len + 1);
-    newbuffer[newbuffer_len] = '\0';
-    out = String(newbuffer, newbuffer_len, AttachString);
+    out = String(newbuffer_len, ReserveString);
+    newbuffer = out.mutableSlice().ptr;
+    out.setSize(newbuffer_len);
 
     /* and build the query */
     plc = placeholders;
@@ -2598,7 +2598,8 @@ clean_up:
 ///////////////////////////////////////////////////////////////////////////////
 // PDOStatement
 
-c_PDOStatement::c_PDOStatement() : m_rowIndex(-1) {
+c_PDOStatement::c_PDOStatement(const ObjectStaticCallbacks *cb) :
+    ExtObjectData(cb), m_rowIndex(-1) {
 }
 
 c_PDOStatement::~c_PDOStatement() {
@@ -3163,11 +3164,6 @@ Variant c_PDOStatement::t___sleep() {
   INSTANCE_METHOD_INJECTION_BUILTIN(PDOStatement, PDOStatement::__sleep);
   throw_pdo_exception(null, null, "You cannot serialize or unserialize "
                       "PDOStatement instances");
-  return null;
-}
-
-Variant c_PDOStatement::t___destruct() {
-  INSTANCE_METHOD_INJECTION_BUILTIN(PDOStatement, PDOStatement::__destruct);
   return null;
 }
 

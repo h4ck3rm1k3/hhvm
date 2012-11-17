@@ -23,42 +23,36 @@
 
 namespace HPHP {
 
-IMPLEMENT_SMART_ALLOCATION(SharedMap, SmartAllocatorImpl::NeedRestore);
+IMPLEMENT_SMART_ALLOCATION_HOT(SharedMap);
 ///////////////////////////////////////////////////////////////////////////////
-
-SharedMap::SharedMap(SharedVariant* source) : m_arr(source) {
-  source->incRef();
-}
-
+HOT_FUNC
 CVarRef SharedMap::getValueRef(ssize_t pos) const {
   SharedVariant *sv = m_arr->getValue(pos);
   DataType t = sv->getType();
   if (!IS_REFCOUNTED_TYPE(t)) return sv->asCVarRef();
-  Variant *pv = m_localCache.lvalPtr((int64)pos, false, false);
-  if (pv) return *pv;
-  Variant &r = m_localCache.addLval((int64)pos);
-  r = sv->toLocal();
-  return r;
+  if (LIKELY(m_localCache != NULL)) {
+    Variant *pv;
+    ArrayData *escalated DEBUG_ONLY =
+      m_localCache->ZendArray::lvalPtr((int64)pos, pv, false, false);
+    ASSERT(!escalated);
+    if (pv) return *pv;
+  } else {
+    m_localCache = NEW(ZendArray)();
+    m_localCache->incRefCount();
+  }
+  Variant v = sv->toLocal();
+  Variant *r;
+  ArrayData *escalated DEBUG_ONLY =
+    m_localCache->ZendArray::addLval((int64)pos, r, false);
+  ASSERT(!escalated);
+  *r = v;
+  return *r;
 }
 
-Variant SharedMap::getValueUncached(ssize_t pos) const {
-  SharedVariant *sv = m_arr->getValue(pos);
-  DataType t = sv->getType();
-  if (!IS_REFCOUNTED_TYPE(t)) return sv->asCVarRef();
-  Variant *pv = m_localCache.lvalPtr((int64)pos, false, false);
-  if (pv) return *pv;
-  return sv->toLocal();
+bool SharedMap::exists(const StringData* k) const {
+  return m_arr->getIndex(k) != -1;
 }
 
-bool SharedMap::exists(CVarRef k) const {
-  return m_arr->getIndex(k) != -1;
-}
-bool SharedMap::exists(CStrRef k) const {
-  return m_arr->getIndex(k) != -1;
-}
-bool SharedMap::exists(litstr k) const {
-  return m_arr->getIndex(k) != -1;
-}
 bool SharedMap::exists(int64 k) const {
   return m_arr->getIndex(k) != -1;
 }
@@ -66,45 +60,15 @@ bool SharedMap::exists(int64 k) const {
 ssize_t SharedMap::getIndex(int64 k) const {
   return m_arr->getIndex(k);
 }
-ssize_t SharedMap::getIndex(litstr k) const {
-  return m_arr->getIndex(k);
-}
-ssize_t SharedMap::getIndex(CStrRef k) const {
-  return m_arr->getIndex(k);
-}
-ssize_t SharedMap::getIndex(CVarRef k) const {
+
+ssize_t SharedMap::getIndex(const StringData* k) const {
   return m_arr->getIndex(k);
 }
 
-CVarRef SharedMap::get(CVarRef k, bool error /* = false */) const {
+CVarRef SharedMap::get(const StringData* k, bool error /* = false */) const {
   int index = m_arr->getIndex(k);
   if (index == -1) {
-    if (error) {
-      raise_notice("Undefined index: %s", k.toString().data());
-    }
-    return null_variant;
-  }
-  return getValueRef(index);
-}
-
-CVarRef SharedMap::get(CStrRef k, bool error /* = false */) const {
-  int index = m_arr->getIndex(k);
-  if (index == -1) {
-    if (error) {
-      raise_notice("Undefined index: %s", k.data());
-    }
-    return null_variant;
-  }
-  return getValueRef(index);
-}
-
-CVarRef SharedMap::get(litstr k, bool error /* = false */) const {
-  int index = m_arr->getIndex(k);
-  if (index == -1) {
-    if (error) {
-      raise_notice("Undefined index: %s", k);
-    }
-    return null_variant;
+    return error ? getNotFound(k) : null_variant;
   }
   return getValueRef(index);
 }
@@ -112,10 +76,7 @@ CVarRef SharedMap::get(litstr k, bool error /* = false */) const {
 CVarRef SharedMap::get(int64 k, bool error /* = false */) const {
   int index = m_arr->getIndex(k);
   if (index == -1) {
-    if (error) {
-      raise_notice("Undefined index: %ld", k);
-    }
-    return null_variant;
+    return error ? getNotFound(k) : null_variant;
   }
   return getValueRef(index);
 }
@@ -130,7 +91,8 @@ ArrayData *SharedMap::lval(int64 k, Variant *&ret, bool copy,
   }
   return escalated;
 }
-ArrayData *SharedMap::lval(litstr k, Variant *&ret, bool copy,
+
+ArrayData *SharedMap::lval(StringData* k, Variant *&ret, bool copy,
                            bool checkExist /* = false */) {
   ArrayData *escalated = escalate();
   ArrayData *ee = escalated->lval(k, ret, false);
@@ -140,26 +102,7 @@ ArrayData *SharedMap::lval(litstr k, Variant *&ret, bool copy,
   }
   return escalated;
 }
-ArrayData *SharedMap::lval(CStrRef k, Variant *&ret, bool copy,
-                           bool checkExist /* = false */) {
-  ArrayData *escalated = escalate();
-  ArrayData *ee = escalated->lval(k, ret, false);
-  if (ee) {
-    escalated->release();
-    return ee;
-  }
-  return escalated;
-}
-ArrayData *SharedMap::lval(CVarRef k, Variant *&ret, bool copy,
-                           bool checkExist /* = false */) {
-  ArrayData *escalated = escalate();
-  ArrayData *ee = escalated->lval(k, ret, false);
-  if (ee) {
-    escalated->release();
-    return ee;
-  }
-  return escalated;
-}
+
 ArrayData *SharedMap::lvalNew(Variant *&ret, bool copy) {
   ArrayData *escalated = escalate();
   ArrayData *ee = escalated->lvalNew(ret, false);
@@ -179,7 +122,8 @@ ArrayData *SharedMap::set(int64 k, CVarRef v, bool copy) {
   }
   return escalated;
 }
-ArrayData *SharedMap::set(CStrRef k, CVarRef v, bool copy) {
+
+ArrayData *SharedMap::set(StringData* k, CVarRef v, bool copy) {
   ArrayData *escalated = escalate();
   ArrayData *ee = escalated->set(k, v, false);
   if (ee) {
@@ -188,15 +132,7 @@ ArrayData *SharedMap::set(CStrRef k, CVarRef v, bool copy) {
   }
   return escalated;
 }
-ArrayData *SharedMap::set(CVarRef k, CVarRef v, bool copy) {
-  ArrayData *escalated = escalate();
-  ArrayData *ee = escalated->set(k, v, false);
-  if (ee) {
-    escalated->release();
-    return ee;
-  }
-  return escalated;
-}
+
 ArrayData *SharedMap::setRef(int64 k, CVarRef v, bool copy) {
   ArrayData *escalated = escalate();
   ArrayData *ee = escalated->setRef(k, v, false);
@@ -206,16 +142,8 @@ ArrayData *SharedMap::setRef(int64 k, CVarRef v, bool copy) {
   }
   return escalated;
 }
-ArrayData *SharedMap::setRef(CStrRef k, CVarRef v, bool copy) {
-  ArrayData *escalated = escalate();
-  ArrayData *ee = escalated->setRef(k, v, false);
-  if (ee) {
-    escalated->release();
-    return ee;
-  }
-  return escalated;
-}
-ArrayData *SharedMap::setRef(CVarRef k, CVarRef v, bool copy) {
+
+ArrayData *SharedMap::setRef(StringData* k, CVarRef v, bool copy) {
   ArrayData *escalated = escalate();
   ArrayData *ee = escalated->setRef(k, v, false);
   if (ee) {
@@ -234,16 +162,8 @@ ArrayData *SharedMap::remove(int64 k, bool copy) {
   }
   return escalated;
 }
-ArrayData *SharedMap::remove(CStrRef k, bool copy) {
-  ArrayData *escalated = escalate();
-  ArrayData *ee = escalated->remove(k, false);
-  if (ee) {
-    escalated->release();
-    return ee;
-  }
-  return escalated;
-}
-ArrayData *SharedMap::remove(CVarRef k, bool copy) {
+
+ArrayData *SharedMap::remove(const StringData* k, bool copy) {
   ArrayData *escalated = escalate();
   ArrayData *ee = escalated->remove(k, false);
   if (ee) {
@@ -255,14 +175,6 @@ ArrayData *SharedMap::remove(CVarRef k, bool copy) {
 
 ArrayData *SharedMap::copy() const {
   return escalate();
-}
-
-ArrayData *SharedMap::fiberCopy() const {
-  ArrayInit ai(size());
-  for (int i = 0; i < size(); i++) {
-    ai.add(getKey(i), getValueUncached(i), true);
-  }
-  return ai.create();
 }
 
 ArrayData *SharedMap::append(CVarRef v, bool copy) {
@@ -318,6 +230,52 @@ ArrayData *SharedMap::prepend(CVarRef v, bool copy) {
 ArrayData *SharedMap::escalate(bool mutableIteration /* = false */) const {
   ArrayData *ret = NULL;
   m_arr->loadElems(ret, *this, mutableIteration);
+  ASSERT(!ret->isStatic());
+  return ret;
+}
+
+TypedValue* SharedMap::nvGet(int64 k) const {
+  int index = m_arr->getIndex(k);
+  if (index == -1) return NULL;
+  return (TypedValue*)&getValueRef(index);
+}
+
+TypedValue* SharedMap::nvGet(const StringData* key) const {
+  int index = m_arr->getIndex(key);
+  if (index == -1) return NULL;
+  return (TypedValue*)&getValueRef(index);
+}
+
+void SharedMap::nvGetKey(TypedValue* out, ssize_t pos) {
+  Variant k = m_arr->getKey(pos);
+  TypedValue* tv = k.asTypedValue();
+  // copy w/out clobbering out->_count.
+  out->m_type = tv->m_type;
+  out->m_data.num = tv->m_data.num;
+  if (tv->m_type != KindOfInt64) out->m_data.pstr->incRefCount();
+}
+
+TypedValue* SharedMap::nvGetValueRef(ssize_t pos) {
+  return const_cast<TypedValue*>(SharedMap::getValueRef(pos).asTypedValue());
+}
+
+TypedValue* SharedMap::nvGetCell(int64 k) const {
+  int index = m_arr->getIndex(k);
+  return index != -1 ? getValueRef(index).getTypedAccessor() :
+         nvGetNotFound(k);
+}
+
+TypedValue* SharedMap::nvGetCell(const StringData* key) const {
+  int index = m_arr->getIndex(key);
+  return index != -1 ? getValueRef(index).getTypedAccessor() :
+         nvGetNotFound(key);
+}
+
+ArrayData* SharedMap::escalateForSort() {
+  ArrayData *ret = NULL;
+  bool keepRef = false;
+  bool mapInit = true;
+  m_arr->loadElems(ret, *this, keepRef, mapInit);
   ASSERT(!ret->isStatic());
   return ret;
 }

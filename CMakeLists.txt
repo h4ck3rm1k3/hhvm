@@ -23,9 +23,11 @@ include(CheckFunctionExists)
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/src)
 
 IF(CMAKE_SIZEOF_VOID_P EQUAL 4)
-	message(STATUS "------------")
-	message(STATUS "32-bit support is experimental, things may be broken")
-	message(STATUS "------------")
+	message(FATAL_ERROR "32-bit support is currently unsupported, check back with a later version of HipHop")
+ENDIF()
+
+IF ("$ENV{USE_HHVM}" STREQUAL "1")
+	message("USE_HHVM is set")
 ENDIF()
 
 include("${CMAKE_CURRENT_SOURCE_DIR}/CMake/HPHPInstall.cmake")

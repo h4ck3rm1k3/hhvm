@@ -23,6 +23,7 @@
 #include <compiler/statement/method_statement.h>
 #include <compiler/statement/trait_prec_statement.h>
 #include <compiler/statement/trait_alias_statement.h>
+#include <compiler/expression/user_attribute.h>
 #include <util/json.h>
 #include <util/case_insensitive.h>
 #include <compiler/option.h>
@@ -75,7 +76,8 @@ public:
     ClassNameConstructor          = 0x0008,
     HasDestructor                 = 0x0010,
     NotFinal                      = 0x0020,
-    DECLARE_MAGIC(Has, NotFinal),
+    UsesUnknownTrait              = 0x0040,
+    DECLARE_MAGIC(Has, UsesUnknownTrait),
     DECLARE_MAGIC(MayHave, HasArrayAccess),
     DECLARE_MAGIC(Inherits, MayHaveArrayAccess)
   };
@@ -101,8 +103,8 @@ public:
   ClassScope(KindOf kindOf, const std::string &name,
              const std::string &parent,
              const std::vector<std::string> &bases,
-             const std::string &docComment, StatementPtr stmt);
-
+             const std::string &docComment, StatementPtr stmt,
+             const std::vector<UserAttributePtr> &attrs);
 
   /**
    * Special constructor for extension classes.
@@ -120,10 +122,9 @@ public:
 
   virtual std::string getId() const;
 
-  void checkDerivation(AnalysisResultPtr ar, hphp_string_set &seen);
-  const std::string &getParent() const { return m_parent;}
+  void checkDerivation(AnalysisResultPtr ar, hphp_string_iset &seen);
+  const std::string &getOriginalParent() const { return m_parent; }
   std::string getHeaderFilename();
-  std::string getForwardHeaderFilename();
 
   /**
    * Returns topmost parent class that has the method.
@@ -155,7 +156,9 @@ public:
 
   /* For class_exists */
   void setVolatile();
-  bool isVolatile() { return m_volatile;}
+  bool isVolatile() const { return m_volatile;}
+  bool isPersistent() const { return m_persistent; }
+  void setPersistent(bool p) { m_persistent = p; }
 
   bool needLazyStaticInitializer();
 
@@ -180,9 +183,24 @@ public:
   bool getAttribute(Attribute attr) const {
     return m_attribute & attr;
   }
+  bool hasAttribute(Attribute attr, AnalysisResultConstPtr ar) const {
+    if (getAttribute(attr)) return true;
+    ClassScopePtr parent = getParentScope(ar);
+    return parent && !parent->isRedeclaring() && parent->hasAttribute(attr, ar);
+  }
+  void setKnownBase(int i) { ASSERT(i < 32); m_knownBases |= 1u << i; }
+  bool hasUnknownBases() const {
+    int n = m_bases.size();
+    if (!n) return false;
+    if (n >= 32) n = 0;
+    return m_knownBases != (((1u << n) - 1) & 0xffffffff);
+  }
+  bool hasKnownBase(int i) const {
+    return m_knownBases & (1u << (i < 32 ? i : 31));
+  }
 
-  void addMissingMethod(const std::string &name) {
-    m_missingMethods.insert(name);
+  const FunctionScopePtrVec &getFunctionsVec() const {
+    return m_functionsVec;
   }
 
   /**
@@ -267,6 +285,11 @@ public:
 
   std::vector<std::string> &getBases() { return m_bases;}
 
+  typedef hphp_hash_map<std::string, ExpressionPtr, string_hashi,
+    string_eqstri> UserAttributeMap;
+
+  UserAttributeMap& userAttributes() { return m_userAttributes;}
+
   ClassScopePtr getParentScope(AnalysisResultConstPtr ar) const;
 
   void addUsedLiteralStringHeader(const std::string &s) {
@@ -313,15 +336,15 @@ public:
     m_usedConstsHeader.insert(s);
   }
 
-  void addUsedClassConstHeader(const std::string &cls, const std::string &s) {
-    m_usedClassConstsHeader.insert(UsedClassConst(cls, s));
+  void addUsedClassConstHeader(ClassScopeRawPtr cls, const std::string &s) {
+    m_usedClassConstsHeader.insert(CodeGenerator::UsedClassConst(cls, s));
   }
 
-  void addUsedClassHeader(const std::string &s) {
+  void addUsedClassHeader(ClassScopeRawPtr s) {
     m_usedClassesHeader.insert(s);
   }
 
-  void addUsedClassFullHeader(const std::string &s) {
+  void addUsedClassFullHeader(ClassScopeRawPtr s) {
     m_usedClassesFullHeader.insert(s);
   }
 
@@ -363,6 +386,9 @@ public:
   void serialize(JSON::CodeError::OutputStream &out) const;
   void serialize(JSON::DocTarget::OutputStream &out) const;
 
+  static void outputCPPHashTableClasses
+    (CodeGenerator &cg, const StringToClassScopePtrVecMap &classScopes,
+     const std::vector<const char*> &classes);
   static void outputCPPClassVarInitImpl(
     CodeGenerator &cg, const StringToClassScopePtrVecMap &classScopes,
     const std::vector<const char *> &classes);
@@ -393,10 +419,10 @@ public:
   bool isTrait() const { return m_kindOf == KindOfTrait; }
   bool hasProperty(const std::string &name) const;
   bool hasConst(const std::string &name) const;
+  void outputCPPDef(CodeGenerator &cg);
   void outputCPPHeader(AnalysisResultPtr ar,
                        CodeGenerator::Output output);
-  void outputCPPForwardHeader(AnalysisResultPtr ar,
-                              CodeGenerator::Output output);
+  void outputCPPForwardHeader(CodeGenerator &cg,AnalysisResultPtr ar);
   void outputCPPJumpTableDecl(CodeGenerator &cg, AnalysisResultPtr ar);
 
   void outputMethodWrappers(CodeGenerator &cg, AnalysisResultPtr ar);
@@ -441,11 +467,8 @@ public:
   /**
    * Override function container
    */
-  virtual bool addFunction(AnalysisResultConstPtr ar,
-                           FunctionScopePtr funcScope);
-
-  void outputCPPJumpTable(CodeGenerator &cg, AnalysisResultPtr ar,
-                          bool staticOnly, bool dynamicObject);
+  bool addFunction(AnalysisResultConstPtr ar,
+                   FunctionScopePtr funcScope);
 
   void outputVolatileCheckBegin(CodeGenerator &cg,
                                 AnalysisResultPtr ar,
@@ -488,8 +511,9 @@ public:
     return m_needsInit;
   }
 
-  bool canSkipCreateMethod() const;
-  bool checkHasPropTable();
+  bool needsEnableDestructor(AnalysisResultConstPtr ar) const;
+  bool canSkipCreateMethod(AnalysisResultConstPtr ar) const;
+  bool checkHasPropTable(AnalysisResultConstPtr ar);
 
   struct IndexedSym {
     IndexedSym(int i, int p, const Symbol *s) :
@@ -509,31 +533,18 @@ public:
 
   typedef std::map<std::string, ClassPropTableInfo>
     ClassPropTableMap;
+
 protected:
   void findJumpTableMethods(CodeGenerator &cg, AnalysisResultPtr ar,
-                            bool staticOnly, std::vector<const char *> &funcs);
+                            std::vector<const char *> &funcs);
+  bool hasJumpTableMethods(CodeGenerator &cg, AnalysisResultPtr ar);
 private:
   // need to maintain declaration order for ClassInfo map
   FunctionScopePtrVec m_functionsVec;
 
-  KindOf m_kindOf;
   std::string m_parent;
   mutable std::vector<std::string> m_bases;
-  mutable int m_attribute;
-  bool m_dynamic;
-  int m_redeclaring; // multiple definition of the same class
-  bool m_volatile; // for class_exists
-  Derivation m_derivesFromRedeclaring;
-  bool m_derivedByDynamic;
-  std::set<std::string> m_missingMethods;
-  bool m_sep;
-  bool m_needsCppCtor;
-  bool m_needsInit;
-  enum TraitStatus {
-    NOT_FLATTENED,
-    BEING_FLATTENED,
-    FLATTENED
-  } m_traitStatus;
+  UserAttributeMap m_userAttributes;
 
   std::set<JumpTableName> m_emptyJumpTables;
   std::set<std::string> m_usedLiteralStringsHeader;
@@ -545,10 +556,9 @@ private:
   std::set<std::string> m_usedDefaultValueScalarArrays;
   std::set<std::string> m_usedDefaultValueScalarVarArrays;
   std::set<std::string> m_usedConstsHeader;
-  typedef std::pair<std::string, std::string> UsedClassConst;
-  std::set<UsedClassConst> m_usedClassConstsHeader;
-  std::set<std::string> m_usedClassesHeader;
-  std::set<std::string> m_usedClassesFullHeader;
+  CodeGenerator::UsedClassConstSet m_usedClassConstsHeader;
+  CodeGenerator::ClassScopeSet m_usedClassesHeader;
+  CodeGenerator::ClassScopeSet m_usedClassesFullHeader;
   std::vector<std::string> m_usedTraitNames;
   // m_traitAliases is used to support ReflectionClass::getTraitAliases
   std::vector<std::pair<std::string, std::string> > m_traitAliases;
@@ -574,7 +584,33 @@ private:
   };
 
   typedef std::list<TraitMethod> TraitMethodList;
-  std::map<std::string, TraitMethodList> m_importMethToTraitMap;
+  typedef std::map<std::string, TraitMethodList> MethodToTraitListMap;
+  typedef std::map<std::string, std::string> GeneratorRenameMap;
+  MethodToTraitListMap m_importMethToTraitMap;
+  typedef std::map<std::string, MethodStatementPtr> ImportedMethodMap;
+
+  mutable int m_attribute;
+  int m_redeclaring; // multiple definition of the same class
+  KindOf m_kindOf;
+  Derivation m_derivesFromRedeclaring;
+  enum TraitStatus {
+    NOT_FLATTENED,
+    BEING_FLATTENED,
+    FLATTENED
+  } m_traitStatus;
+  unsigned m_dynamic:1;
+  unsigned m_volatile:1; // for class_exists
+  unsigned m_persistent:1;
+  unsigned m_derivedByDynamic:1;
+  unsigned m_sep:1;
+  unsigned m_needsCppCtor:1;
+  unsigned m_needsInit:1;
+  // m_knownBases has a bit for each base class saying whether
+  // its known to exist at the point of definition of this class.
+  // for classes with more than 31 bases, bit 31 is set iff
+  // bases 32 through n are all known.
+  unsigned m_knownBases;
+  mutable unsigned m_needsEnableDestructor:2;
 
   void addImportTraitMethod(const TraitMethod &traitMethod,
                             const std::string &methName);
@@ -583,11 +619,17 @@ private:
                                      ClassScopePtr traitCls,
                                      ModifierExpressionPtr modifiers);
 
-  void importTraitMethod(const TraitMethod &traitMethod,
-                         AnalysisResultPtr ar,
-                         const std::string &methName);
+  MethodStatementPtr importTraitMethod(const TraitMethod&  traitMethod,
+                                       AnalysisResultPtr   ar,
+                                       std::string         methName,
+                                       GeneratorRenameMap& genRenameMap,
+                                       const ImportedMethodMap &
+                                       importedTraitMethods);
 
   void importTraitProperties(AnalysisResultPtr ar);
+
+  void relinkGeneratorMethods(AnalysisResultPtr ar,
+                              ImportedMethodMap& importedMethods);
 
   void findTraitMethodsToImport(AnalysisResultPtr ar, ClassScopePtr trait);
 
@@ -605,9 +647,17 @@ private:
   ClassScopePtr findSingleTraitWithMethod(AnalysisResultPtr ar,
                                           const std::string &methodName) const;
 
+  void removeSpareTraitAbstractMethods(AnalysisResultPtr ar);
+
   bool usesTrait(const std::string &traitName) const;
 
   bool hasMethod(const std::string &methodName) const;
+
+  const std::string& getNewGeneratorName(FunctionScopePtr    genFuncScope,
+                                         GeneratorRenameMap& genRenameMap);
+
+  void renameCreateContinuationCalls(AnalysisResultPtr ar, ConstructPtr c,
+                                     ImportedMethodMap &importedMethods);
 
   std::string getBaseHeaderFilename();
 
@@ -615,23 +665,14 @@ private:
     CodeGenerator &cg, AnalysisResultPtr ar,
     FunctionScopePtr func, bool fewArgs);
 
-  static void outputCPPClassJumpTable
-  (CodeGenerator &cg, const StringToClassScopePtrVecMap &classScopes,
-   const std::vector<const char*> &classes, const char* macro,
-   bool useString = false);
-
-  static void outputCPPHashTableClassVarInit
-    (CodeGenerator &cg, const StringToClassScopePtrVecMap &classScopes,
-     const std::vector<const char*> &classes);
-
   void outputCPPMethodInvokeTable
     (CodeGenerator &cg, AnalysisResultPtr ar,
      const std::vector <const char*> &keys,
-     const StringToFunctionScopePtrVecMap &funcScopes, bool fewArgs,
+     const StringToFunctionScopePtrMap &funcScopes, bool fewArgs,
      bool staticOnly);
   void outputCPPMethodInvokeTableSupport(CodeGenerator &cg,
       AnalysisResultPtr ar, const std::vector<const char*> &keys,
-      const StringToFunctionScopePtrVecMap &funcScopes, bool fewArgs);
+      const StringToFunctionScopePtrMap &funcScopes, bool fewArgs);
   hphp_const_char_imap<int> m_implemented;
 
   ClassScopePtr getNextParentWithProp(AnalysisResultPtr ar);

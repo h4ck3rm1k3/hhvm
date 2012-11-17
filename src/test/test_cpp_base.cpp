@@ -29,8 +29,6 @@
 #include <test/test_mysql_info.inc>
 #include <system/lib/systemlib.h>
 
-using namespace std;
-
 ///////////////////////////////////////////////////////////////////////////////
 
 TestCppBase::TestCppBase() {
@@ -45,9 +43,6 @@ bool TestCppBase::RunTests(const std::string &which) {
   RUN_TEST(TestArray);
   RUN_TEST(TestObject);
   RUN_TEST(TestVariant);
-#ifndef DEBUGGING_SMART_ALLOCATOR
-  RUN_TEST(TestMemoryManager);
-#endif
   RUN_TEST(TestIpBlockMap);
   RUN_TEST(TestEqualAsStr);
   return ret;
@@ -78,9 +73,6 @@ private:
 class SomeClass {
 public:
   SomeClass() : m_data(0) {}
-  bool calculate(int &size) { return false;}
-  void backup(LinearAllocator &allocator) {}
-  void restore(const char *&data) {}
   void sweep() {}
   void dump() { printf("data: %d\n", m_data);}
   int m_data;
@@ -94,7 +86,8 @@ public:
   CStrRef o_getClassNameHook() const { return s_TestResource; }
 };
 
-typedef SmartAllocator<SomeClass, -1, SmartAllocatorImpl::NoCallbacks>
+typedef SmartAllocator<SomeClass,
+                       SmartAllocatorImpl::TestAllocator>
         SomeClassAlloc;
 
 bool TestCppBase::TestSmartAllocator() {
@@ -209,11 +202,16 @@ bool TestCppBase::TestString() {
     VS((const char *)String("test").rvalAt(2), "s");
     String s = "test";
     s.lvalAt(2) = "";
-    VS((const char *)s, "tet");
+    VS(s, String("te\0t", 4, AttachLiteral));
     s.lvalAt(2) = "zz";
-    VS((const char *)s, "tez");
-    s.lvalAt(4) = "q";
-    VS((const char *)s, "tez q");
+    VS(s, "tezt");
+    s.lvalAt(5) = "q";
+    VS(s, "tezt q");
+
+    String s2 = s; // test copy-on-write
+    s.lvalAt(1) = "3";
+    VS(s,  "t3zt q");
+    VS(s2, "tezt q");
   }
 
   return Count(true);
@@ -288,7 +286,6 @@ bool TestCppBase::TestArray() {
   }
   {
     Variant arr = CREATE_MAP1("n1", "v1");
-    arr.escalate(true);
     Variant k, v;
     for (MutableArrayIter iter = arr.begin(&k, v); iter.advance();) {
       arr.weakRemove(k);
@@ -788,7 +785,6 @@ bool TestCppBase::TestVariant() {
   }
   {
     Variant arr = CREATE_VECTOR2(1, 2);
-    arr.escalate(true);
     Variant v;
     for (MutableArrayIter iter = arr.begin(NULL, v); iter.advance();) {
       v++;
@@ -851,110 +847,17 @@ public:
   Variant m_curlMultiConn;
   String key;
   String value;
-  DECLARE_SMART_ALLOCATION_NOCALLBACKS(TestGlobals);
+  DECLARE_SMART_ALLOCATION(TestGlobals);
   void dump() {}
 };
-IMPLEMENT_SMART_ALLOCATION_NOCALLBACKS(TestGlobals);
+IMPLEMENT_SMART_ALLOCATION(TestGlobals);
 
-bool TestCppBase::TestMemoryManager() {
-  s_apc_store.reset();
-  MemoryManager::TheMemoryManager()->enable();
-
-  TestGlobals *globals = NEW(TestGlobals)();
-  f_apc_store("key", CREATE_VECTOR2("value", "s"));
-  f_apc_store("key2", "apple");
-  f_apc_store("key3", CREATE_MAP1("foo", "foo"));
-  globals->m_array2 = f_apc_fetch("key");
-  String apple = f_apc_fetch("key2"); // a shared string data
-  Array arr = CREATE_MAP1(apple, "jobs");
-  VS(arr[apple], "jobs");
-  globals->m_string2 = f_apc_fetch("key2");
-  globals->m_conn = f_mysql_connect(TEST_HOSTNAME, TEST_DATABASE,
-                                    TEST_PASSWORD, false, 0);
-  MemoryManager::TheMemoryManager()->checkpoint();
-  globals->m_curlconn = f_curl_init("http://localhost:8080/request");
-  f_curl_setopt(globals->m_curlconn, CURLOPT_WRITEFUNCTION,
-                String("foo", CopyString));
-  globals->m_curlMultiConn = f_curl_multi_init();
-  Variant c1 = f_curl_init("http://localhost:8080/request");
-  Variant c2 = f_curl_init("http://localhost:8080/request");
-  f_curl_multi_add_handle(globals->m_curlMultiConn, c1);
-  f_curl_multi_add_handle(globals->m_curlMultiConn, c2);
-  globals->m_conn = null;
-
-  // we do it twice, so to verify MemoryManager's rollback() is valid
-  // we do it 3rd time, so to verify LinearAllocator works under rollback.
-  // we do it 4th time, so to verify MySQL connection works under rollback.
-  for (int i = 0; i < 4; i++) {
-
-    // Circular reference between two arrays. Without sweeping, these memory
-    // will still be reachable after exit.
-    {
-      Variant arr = Array::Create();
-      arr.append(arr);
-    }
-    {
-      Variant arr = Array::Create();
-      arr.append(ref(arr));
-    }
-    {
-      Variant arr1 = Array::Create();
-      Variant arr2 = Array::Create();
-      arr1.append(ref(arr2));
-      arr2.append(ref(arr1));
-    }
-
-    // Circular reference between two objects.
-    {
-      Object obj(SystemLib::AllocStdClassObject());
-      obj->o_set("a", obj);
-      obj->o_set("f", Object(NEWOBJ(PlainFile)()));
-    }
-    {
-      Object obj1(SystemLib::AllocStdClassObject());
-      Object obj2(SystemLib::AllocStdClassObject());
-      obj1->o_set("a", obj2);
-      obj2->o_set("a", obj1);
-      obj1->o_set("f", Object(NEWOBJ(PlainFile)()));
-    }
-
-    // dangling APC variables inside circular arrays
-    {
-      Variant arr1 = Array::Create();
-      Variant arr2 = Array::Create();
-      arr1.append(ref(arr2));
-      arr2.append(ref(arr1));
-      f_apc_store("name", CREATE_VECTOR2("value", "s"));
-      Variant v = f_apc_fetch("name");
-      arr1.append(v);
-      f_apc_delete("name");
-    }
-
-    globals->m_string++; // mutating m_data internally
-    VS(globals->m_string, "appleorangf");
-
-    globals->m_array.set("a", "pear");
-    globals->m_array.set("c", "banana");
-    VS(globals->m_array["a"], "pear");
-    VS(globals->m_array["c"], "banana");
-
-    globals->m_conn = null;
-    MemoryManager::TheMemoryManager()->sweepAll();
-    MemoryManager::TheMemoryManager()->rollback();
-    VS(globals->m_array2["0"], "value");
-    VS(globals->m_array2["1"], "s");
-    VS(globals->m_string2, "apple");
-    Logger::Verbose("%s", SharedStores::ReportStats(0).c_str());
-
-    VS(globals->m_string, "appleorange");
-
-    VS(globals->m_array["a"], "apple");
-    VERIFY(!globals->m_array.exists("c"));
-
-    VS(arr[apple], "jobs");
-  }
-  DELETE(TestGlobals)(globals);
-  return Count(true);
+/* Pull 32bit Big Endian words from an in6_addr */
+static inline long in6addrWord(struct in6_addr addr, char wordNo) {
+  return ((addr.s6_addr[(wordNo*4)+0] << 24) |
+          (addr.s6_addr[(wordNo*4)+1] << 16) |
+          (addr.s6_addr[(wordNo*4)+2] <<  8) |
+          (addr.s6_addr[(wordNo*4)+3] <<  0)) & 0xFFFFFFFF;
 }
 
 bool TestCppBase::TestIpBlockMap() {
@@ -963,33 +866,33 @@ bool TestCppBase::TestIpBlockMap() {
 
   VERIFY(IpBlockMap::ReadIPv6Address("204.15.21.0/22", &addr, bits));
   VS(bits, 118);
-  VS((long)addr.s6_addr32[0], (long)htonl(0x00000000));
-  VS((long)addr.s6_addr32[1], (long)htonl(0x00000000));
-  VS((long)addr.s6_addr32[2], (long)htonl(0x0000FFFF));
-  VS((long)addr.s6_addr32[3], (long)htonl(0xCC0F1500));
+  VS(in6addrWord(addr, 0), 0x00000000L);
+  VS(in6addrWord(addr, 1), 0x00000000L);
+  VS(in6addrWord(addr, 2), 0x0000FFFFL);
+  VS(in6addrWord(addr, 3), 0xCC0F1500L);
 
   VERIFY(IpBlockMap::ReadIPv6Address("127.0.0.1", &addr, bits));
   VS(bits, 128);
-  VS((long)addr.s6_addr32[0], (long)htonl(0x00000000));
-  VS((long)addr.s6_addr32[1], (long)htonl(0x00000000));
-  VS((long)addr.s6_addr32[2], (long)htonl(0x0000FFFF));
-  VS((long)addr.s6_addr32[3], (long)htonl(0x7F000001));
+  VS(in6addrWord(addr, 0), 0x00000000L);
+  VS(in6addrWord(addr, 1), 0x00000000L);
+  VS(in6addrWord(addr, 2), 0x0000FFFFL);
+  VS(in6addrWord(addr, 3), 0x7F000001L);
 
   VERIFY(IpBlockMap::ReadIPv6Address(
     "1111:2222:3333:4444:5555:6666:789a:bcde", &addr, bits));
   VS(bits, 128);
-  VS((long)addr.s6_addr32[0], (long)htonl(0x11112222));
-  VS((long)addr.s6_addr32[1], (long)htonl(0x33334444));
-  VS((long)addr.s6_addr32[2], (long)htonl(0x55556666));
-  VS((long)addr.s6_addr32[3], (long)htonl(0x789abcde));
+  VS(in6addrWord(addr, 0), 0x11112222L);
+  VS(in6addrWord(addr, 1), 0x33334444L);
+  VS(in6addrWord(addr, 2), 0x55556666L);
+  VS(in6addrWord(addr, 3), 0x789abcdeL);
 
   VERIFY(IpBlockMap::ReadIPv6Address(
     "1111:2222:3333:4444:5555:6666:789a:bcde/68", &addr, bits));
   VS(bits, 68);
-  VS((long)addr.s6_addr32[0], (long)htonl(0x11112222));
-  VS((long)addr.s6_addr32[1], (long)htonl(0x33334444));
-  VS((long)addr.s6_addr32[2], (long)htonl(0x55556666));
-  VS((long)addr.s6_addr32[3], (long)htonl(0x789abcde));
+  VS(in6addrWord(addr, 0), 0x11112222L);
+  VS(in6addrWord(addr, 1), 0x33334444L);
+  VS(in6addrWord(addr, 2), 0x55556666L);
+  VS(in6addrWord(addr, 3), 0x789abcdeL);
 
   IpBlockMap::BinaryPrefixTrie root(true);
   unsigned char value[16];

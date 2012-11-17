@@ -18,23 +18,26 @@
 #include <runtime/ext/ext_icu_uspoof.h>
 #include <runtime/base/util/exceptions.h>
 
+#include <system/lib/systemlib.h>
+
 namespace HPHP {
 IMPLEMENT_DEFAULT_EXTENSION(icu_uspoof);
 ///////////////////////////////////////////////////////////////////////////////
 
-const int q_SpoofChecker$$SINGLE_SCRIPT_CONFUSABLE =
+const int64 q_SpoofChecker$$SINGLE_SCRIPT_CONFUSABLE =
   USPOOF_SINGLE_SCRIPT_CONFUSABLE;
-const int q_SpoofChecker$$MIXED_SCRIPT_CONFUSABLE =
+const int64 q_SpoofChecker$$MIXED_SCRIPT_CONFUSABLE =
   USPOOF_MIXED_SCRIPT_CONFUSABLE;
-const int q_SpoofChecker$$WHOLE_SCRIPT_CONFUSABLE =
+const int64 q_SpoofChecker$$WHOLE_SCRIPT_CONFUSABLE =
   USPOOF_WHOLE_SCRIPT_CONFUSABLE;
-const int q_SpoofChecker$$ANY_CASE = USPOOF_ANY_CASE;
-const int q_SpoofChecker$$SINGLE_SCRIPT = USPOOF_SINGLE_SCRIPT;
-const int q_SpoofChecker$$INVISIBLE = USPOOF_INVISIBLE;
-const int q_SpoofChecker$$CHAR_LIMIT = USPOOF_CHAR_LIMIT;
+const int64 q_SpoofChecker$$ANY_CASE = USPOOF_ANY_CASE;
+const int64 q_SpoofChecker$$SINGLE_SCRIPT = USPOOF_SINGLE_SCRIPT;
+const int64 q_SpoofChecker$$INVISIBLE = USPOOF_INVISIBLE;
+const int64 q_SpoofChecker$$CHAR_LIMIT = USPOOF_CHAR_LIMIT;
 
 ///////////////////////////////////////////////////////////////////////////////
-c_SpoofChecker::c_SpoofChecker() {
+c_SpoofChecker::c_SpoofChecker(const ObjectStaticCallbacks *cb) :
+    ExtObjectData(cb) {
   UErrorCode status = U_ZERO_ERROR;
   m_spoof_checker = uspoof_open(&status);
 
@@ -131,11 +134,6 @@ void c_SpoofChecker::t_setchecks(int checks) {
       "Could not set spoof checks to %d, error %d (%s)",
       checks, status, u_errorName(status));
   }
-}
-
-Variant c_SpoofChecker::t___destruct() {
-  INSTANCE_METHOD_INJECTION_BUILTIN(SpoofChecker, SpoofChecker::__destruct);
-  return null;
 }
 
 ///////////////////////////////////////////////////////////////////////////////

@@ -28,10 +28,9 @@
 #include <runtime/ext/ext_function.h>
 #include <runtime/ext/ext_class.h>
 #include <runtime/ext/ext_output.h>
+#include <runtime/ext/ext_stream.h>
 
 #include <system/lib/systemlib.h>
-
-using namespace std;
 
 namespace HPHP {
 IMPLEMENT_DEFAULT_EXTENSION(soap);
@@ -1813,14 +1812,15 @@ int64 f__soap_active_version() {
 ///////////////////////////////////////////////////////////////////////////////
 // class SoapServer
 
-c_SoapServer::c_SoapServer() :
-  m_type(SOAP_FUNCTIONS),
-  m_version(SOAP_1_1),
-  m_sdl(NULL),
-  m_encoding(NULL),
-  m_typemap(NULL),
-  m_features(0),
-  m_send_errors(1) {
+c_SoapServer::c_SoapServer(const ObjectStaticCallbacks *cb) :
+    ExtObjectData(cb),
+    m_type(SOAP_FUNCTIONS),
+    m_version(SOAP_1_1),
+    m_sdl(NULL),
+    m_encoding(NULL),
+    m_typemap(NULL),
+    m_features(0),
+    m_send_errors(1) {
 }
 
 c_SoapServer::~c_SoapServer() {
@@ -2130,7 +2130,7 @@ void c_SoapServer::t_handle(CStrRef request /* = null_string */) {
     soap_obj = m_soap_object;
   } else if (m_type == SOAP_CLASS) {
     try {
-      soap_obj = create_object(m_soap_class.name.data(),
+      soap_obj = create_object(m_soap_class.name,
                                m_soap_class.argv);
     } catch (Exception &e) {
       send_soap_server_fault(function, e, NULL);
@@ -2244,7 +2244,7 @@ void c_SoapServer::t_setpersistence(int64 mode) {
     if (mode == SOAP_PERSISTENCE_SESSION || mode == SOAP_PERSISTENCE_REQUEST) {
       m_soap_class.persistance = mode;
     } else {
-      raise_warning("Tried to set persistence with bogus value (%ld)", mode);
+      raise_warning("Tried to set persistence with bogus value (%lld)", mode);
     }
   } else {
     raise_warning("Tried to set persistence when you are using you "
@@ -2274,30 +2274,26 @@ void c_SoapServer::t_addsoapheader(CObjRef fault) {
   m_soap_headers.append(obj);
 }
 
-Variant c_SoapServer::t___destruct() {
-  INSTANCE_METHOD_INJECTION_BUILTIN(SoapServer, SoapServer::__destruct);
-  return null;
-}
-
 ///////////////////////////////////////////////////////////////////////////////
 // class SoapClient
 
-c_SoapClient::c_SoapClient() :
-  m_soap_version(SOAP_1_1),
-  m_sdl(NULL),
-  m_encoding(NULL),
-  m_typemap(NULL),
-  m_features(0),
-  m_style(SOAP_RPC),
-  m_use(SOAP_LITERAL),
-  m_authentication(SOAP_AUTHENTICATION_BASIC),
-  m_proxy_port(0),
-  m_connection_timeout(0),
-  m_max_redirect(0),
-  m_use11(true),
-  m_compression(false),
-  m_exceptions(true),
-  m_trace(false) {
+c_SoapClient::c_SoapClient(const ObjectStaticCallbacks *cb) :
+    ExtObjectDataFlags<ObjectData::HasCall>(cb),
+    m_soap_version(SOAP_1_1),
+    m_sdl(NULL),
+    m_encoding(NULL),
+    m_typemap(NULL),
+    m_features(0),
+    m_style(SOAP_RPC),
+    m_use(SOAP_LITERAL),
+    m_authentication(SOAP_AUTHENTICATION_BASIC),
+    m_proxy_port(0),
+    m_connection_timeout(0),
+    m_max_redirect(0),
+    m_use11(true),
+    m_compression(false),
+    m_exceptions(true),
+    m_trace(false) {
 }
 
 c_SoapClient::~c_SoapClient() {
@@ -2331,6 +2327,18 @@ void c_SoapClient::t___construct(CVarRef wsdl,
       if (m_location.empty()) {
         throw SoapException("'location' option is required in nonWSDL mode");
       }
+    }
+
+    if (options.exists("stream_context")) {
+      StreamContext *sc = NULL;
+      if (options["stream_context"].isObject()) {
+        sc = options["stream_context"].toObject()
+                                      .getTyped<StreamContext>();
+      }
+      if (!sc) {
+        throw SoapException("'stream_context' is not a StreamContext");
+      }
+      m_stream_context_options = sc->m_options;
     }
 
     if (options.exists("soap_version")) {
@@ -2390,6 +2398,7 @@ void c_SoapClient::t___construct(CVarRef wsdl,
       if (!m_login.empty()) {
         http.auth(m_login.data(), m_password.data(), !m_digest);
       }
+      http.setStreamContextOptions(m_stream_context_options);
       m_sdl = s_soap_data->get_sdl(swsdl.data(), cache_wsdl, &http);
     } else {
       m_sdl = s_soap_data->get_sdl(swsdl.data(), cache_wsdl);
@@ -2685,12 +2694,17 @@ Variant c_SoapClient::t___dorequest(CStrRef buf, CStrRef location, CStrRef actio
   if (!m_login.empty()) {
     http.auth(m_login.data(), m_password.data(), !m_digest);
   }
+  http.setStreamContextOptions(m_stream_context_options);
   StringBuffer response;
   int code = http.post(location.data(), buffer.data(), buffer.size(), response,
                        &headers);
   if (code == 0) {
+    String msg = "Failed Sending HTTP Soap request";
+    if (!http.getLastError().empty()) {
+      msg += ": " + http.getLastError();
+    }
     m_soap_fault = Object(SystemLib::AllocSoapFaultObject(
-      "HTTP", "Failed Sending HTTP SOAP request"));
+      "HTTP", msg));
     return null;
   }
   if (code != 200) {
@@ -2746,15 +2760,10 @@ bool c_SoapClient::t___setsoapheaders(CVarRef headers /* = null_variant */) {
   return true;
 }
 
-Variant c_SoapClient::t___destruct() {
-  INSTANCE_METHOD_INJECTION_BUILTIN(SoapClient, SoapClient::__destruct);
-  return null;
-}
-
 ///////////////////////////////////////////////////////////////////////////////
 // class SoapVar
 
-c_SoapVar::c_SoapVar() {
+c_SoapVar::c_SoapVar(const ObjectStaticCallbacks *cb) : ExtObjectData(cb) {
 }
 
 c_SoapVar::~c_SoapVar() {
@@ -2770,7 +2779,7 @@ void c_SoapVar::t___construct(CVarRef data, CVarRef type,
   if (type.isNull()) {
     m_type = UNKNOWN_TYPE;
   } else {
-    map<int, encodePtr> &defEncIndex = SOAP_GLOBAL(defEncIndex);
+    std::map<int, encodePtr> &defEncIndex = SOAP_GLOBAL(defEncIndex);
     int64 ntype = type.toInt64();
     if (defEncIndex.find(ntype) != defEncIndex.end()) {
       m_type = ntype;
@@ -2787,15 +2796,10 @@ void c_SoapVar::t___construct(CVarRef data, CVarRef type,
   if (!node_namespace.empty()) m_namens = node_namespace;
 }
 
-Variant c_SoapVar::t___destruct() {
-  INSTANCE_METHOD_INJECTION_BUILTIN(SoapVar, SoapVar::__destruct);
-  return null;
-}
-
 ///////////////////////////////////////////////////////////////////////////////
 // class SoapParam
 
-c_SoapParam::c_SoapParam() {
+c_SoapParam::c_SoapParam(const ObjectStaticCallbacks *cb) : ExtObjectData(cb) {
 }
 
 c_SoapParam::~c_SoapParam() {
@@ -2811,15 +2815,11 @@ void c_SoapParam::t___construct(CVarRef data, CStrRef name) {
   m_data = data;
 }
 
-Variant c_SoapParam::t___destruct() {
-  INSTANCE_METHOD_INJECTION_BUILTIN(SoapParam, SoapParam::__destruct);
-  return null;
-}
-
 ///////////////////////////////////////////////////////////////////////////////
 // class SoapHeader
 
-c_SoapHeader::c_SoapHeader() {
+c_SoapHeader::c_SoapHeader(const ObjectStaticCallbacks *cb) :
+    ExtObjectData(cb) {
 }
 
 c_SoapHeader::~c_SoapHeader() {
@@ -2854,11 +2854,6 @@ void c_SoapHeader::t___construct(CStrRef ns, CStrRef name,
   } else if (!actor.isNull()) {
     raise_warning("Invalid actor");
   }
-}
-
-Variant c_SoapHeader::t___destruct() {
-  INSTANCE_METHOD_INJECTION_BUILTIN(SoapHeader, SoapHeader::__destruct);
-  return null;
 }
 
 ///////////////////////////////////////////////////////////////////////////////

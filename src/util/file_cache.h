@@ -53,7 +53,7 @@ public:
   bool dirExists(const char *name, bool isRelative = true) const;
   bool exists(const char *name, bool isRelative = true) const;
   char *read(const char *name, int &len, bool &compressed) const;
-
+  int64 fileSize(const char *name, bool isRelative) const;
   void dump();
 
   static std::string GetRelativePath(const char *path);
@@ -64,7 +64,7 @@ private:
     int clen;    // compressed len
     char *cdata; // compressed data
   };
-  typedef __gnu_cxx::hash_map<std::string, Buffer, string_hash> FileMap;
+  typedef hphp_hash_map<std::string, Buffer, string_hash> FileMap;
 
   FileMap m_files;
   int m_fd;

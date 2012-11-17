@@ -29,13 +29,13 @@
 #include <util/logger.h>
 #include <util/process.h>
 #include <boost/format.hpp>
+#include <boost/scoped_ptr.hpp>
 
 #define USE_VARARGS
 #define PREFER_STDARG
 #include <readline/readline.h>
 #include <readline/history.h>
 
-using namespace std;
 using namespace HPHP::Util::TextArt;
 
 #define PHP_WORD_BREAK_CHARACTERS " \t\n\"\\'`@=;,|{[()]}+*%^!~&"
@@ -43,23 +43,48 @@ using namespace HPHP::Util::TextArt;
 namespace HPHP { namespace Eval {
 ///////////////////////////////////////////////////////////////////////////////
 
-static DebuggerClient s_debugger_client;
+static boost::scoped_ptr<DebuggerClient> debugger_client;
+
+static DebuggerClient& getStaticDebuggerClient() {
+  /*
+   * DebuggerClient acquires global mutexes in its constructor, so we
+   * allocate s_debugger_client lazily to ensure that all of the
+   * global mutexes have been initialized before we enter the
+   * constructor.
+   *
+   * This initialization is thread-safe because program_functions.cpp
+   * must call Debugger::StartClient (which ends up here) before any
+   * additional threads are created.
+   */
+  if (!debugger_client) {
+    debugger_client.reset(new DebuggerClient);
+  }
+  return *debugger_client;
+}
+
+void shutdown_hphpd() {
+  if (debugger_client) {
+    debugger_client->resetSmartAllocatedMembers();
+    debugger_client.reset();
+  }
+}
+
 ///////////////////////////////////////////////////////////////////////////////
 // readline setups
 
 static char* debugger_generator(const char* text, int state) {
-  return s_debugger_client.getCompletion(text, state);
+  return getStaticDebuggerClient().getCompletion(text, state);
 }
 
 static char **debugger_completion(const char *text, int start, int end) {
-  if (s_debugger_client.setCompletion(text, start, end)) {
+  if (getStaticDebuggerClient().setCompletion(text, start, end)) {
     return rl_completion_matches((char*)text, &debugger_generator);
   }
   return NULL;
 }
 
 static void debugger_signal_handler(int sig) {
-  s_debugger_client.onSignal(sig);
+  getStaticDebuggerClient().onSignal(sig);
 }
 
 void DebuggerClient::onSignal(int sig) {
@@ -78,6 +103,7 @@ void DebuggerClient::onSignal(int sig) {
            "press Ctrl-C again to quit.", secWait);
     } else {
       info("Pausing program execution, please wait...");
+      usageLogSignal();
       m_sigTime = now;
     }
     m_signum = CmdSignal::SignalBreak;
@@ -165,7 +191,7 @@ const char *DebuggerClient::LineNoFormat = "%4d ";
 const char *DebuggerClient::LocalPrompt = "hphpd";
 const char *DebuggerClient::ConfigFileName = ".hphpd.hdf";
 const char *DebuggerClient::HistoryFileName = ".hphpd.history";
-std::string DebuggerClient::SourceRoot;
+std::string DebuggerClient::HomePrefix = "/home";
 
 bool DebuggerClient::UseColor = true;
 bool DebuggerClient::NoPrompt = false;
@@ -244,13 +270,13 @@ void DebuggerClient::LoadCodeColor(CodeColor index, Hdf hdf,
 
 SmartPtr<Socket> DebuggerClient::Start(const DebuggerClientOptions &options) {
   Debugger::SetTextColors();
-  SmartPtr<Socket> ret = s_debugger_client.connectLocal();
-  s_debugger_client.start(options);
+  SmartPtr<Socket> ret = getStaticDebuggerClient().connectLocal();
+  getStaticDebuggerClient().start(options);
   return ret;
 }
 
 void DebuggerClient::Stop() {
-  s_debugger_client.stop();
+  getStaticDebuggerClient().stop();
 }
 
 void DebuggerClient::AdjustScreenMetrics() {
@@ -272,11 +298,15 @@ bool DebuggerClient::IsValidNumber(const std::string &arg) {
   return true;
 }
 
-String DebuggerClient::FormatVariable(CVarRef v, int maxlen /* = 80 */) {
+String DebuggerClient::FormatVariable(CVarRef v, int maxlen /* = 80 */,
+                                      bool vardump /* = false */) {
   String value;
   if (maxlen <= 0) {
     try {
-      VariableSerializer vs(VariableSerializer::VarDump, 0, 2);
+      VariableSerializer::Type t = vardump ?
+                                   VariableSerializer::VarDump :
+                                   VariableSerializer::PrintR;
+      VariableSerializer vs(t, 0, 2);
       value = vs.serialize(v, true);
     } catch (StringBufferLimitException &e) {
       value = "Serialization limit reached";
@@ -286,7 +316,7 @@ String DebuggerClient::FormatVariable(CVarRef v, int maxlen /* = 80 */) {
     }
   } else {
     VariableSerializer vs(VariableSerializer::DebuggerDump, 0, 2);
-    value = vs.serialize(v, true);
+    value = vs.serializeWithLimit(v, maxlen);
   }
 
   if (maxlen <= 0 || value.length() - maxlen < 30) {
@@ -294,11 +324,8 @@ String DebuggerClient::FormatVariable(CVarRef v, int maxlen /* = 80 */) {
   }
 
   StringBuffer sb;
-  sb.append(value.substr(0, maxlen / 2));
-  sb.append(" ...(omitted ");
-  sb.append(value.size() - maxlen);
-  sb.append(" chars)... ");
-  sb.append(value.substr(value.size() - maxlen / 2));
+  sb.append(value.substr(0, maxlen));
+  sb.append(" ...(omitted)");
   return sb.detach();
 }
 
@@ -343,17 +370,33 @@ String DebuggerClient::FormatTitle(const char *title) {
 
 ///////////////////////////////////////////////////////////////////////////////
 
-DebuggerClient::DebuggerClient()
+DebuggerClient::DebuggerClient(std::string name /* = "" */)
     : m_tutorial(0), m_printFunction(""),
-      m_bypassAccessCheck(false),
+      m_logFile(""), m_logFileHandler(NULL),
       m_mainThread(this, &DebuggerClient::run), m_stopped(false),
+      m_quitting(false),
       m_inputState(TakingCommand), m_runState(NotYet),
       m_signum(CmdSignal::SignalNone), m_sigTime(0),
       m_acLen(0), m_acIndex(0), m_acPos(0), m_acLiveListsDirty(true),
-      m_threadId(0), m_listLine(0), m_listLineFocus(0), m_frame(0) {
+      m_threadId(0), m_listLine(0), m_listLineFocus(0), m_frame(0),
+      m_clientState(StateUninit), m_outputBuf(NULL), m_inApiUse(false),
+      m_nameForApi(name), m_usageLogFP(NULL) {
+  initUsageLogging();
 }
 
 DebuggerClient::~DebuggerClient() {
+  m_stopped = true;
+  m_mainThread.waitForEnd();
+  if (m_outputBuf) {
+    delete m_outputBuf;
+    m_outputBuf = NULL;
+  }
+  FILE *f = getLogFileHandler();
+  if (f != NULL) {
+    fclose(f);
+    setLogFileHandler(NULL);
+  }
+  finiUsageLogging();
 }
 
 void DebuggerClient::reset() {
@@ -369,12 +412,12 @@ void DebuggerClient::reset() {
 }
 
 bool DebuggerClient::isLocal() {
-  return m_machines[0] == m_machine;
+  return !isApiMode() && m_machines[0] == m_machine;
 }
 
 bool DebuggerClient::connect(const std::string &host, int port) {
-  ASSERT(!m_machines.empty());
-  ASSERT(m_machines[0]->m_name == LocalPrompt);
+  ASSERT(isApiMode() ||
+         (!m_machines.empty() && m_machines[0]->m_name == LocalPrompt));
   for (unsigned int i = 1; i < m_machines.size(); i++) {
     if (f_gethostbyname(m_machines[i]->m_name) ==
         f_gethostbyname(host)) {
@@ -433,6 +476,8 @@ SmartPtr<Socket> DebuggerClient::connectLocal() {
   SmartPtr<Socket> socket1(new Socket(fds[0], AF_UNIX));
   SmartPtr<Socket> socket2(new Socket(fds[1], AF_UNIX));
 
+  socket1->unregister();
+  socket2->unregister();
   DMachineInfoPtr machine(new DMachineInfo());
   machine->m_sandboxAttached = true;
   machine->m_name = LocalPrompt;
@@ -450,6 +495,10 @@ bool DebuggerClient::connectRemote(const std::string &host, int port) {
   info("Connecting to %s:%d...", host.c_str(), port);
   Socket *sock = new Socket(socket(PF_INET, SOCK_STREAM, 0), PF_INET,
                             String(host), port);
+  // Ensure the socket is not swept---it is cached across requests in
+  // API mode, and in client mode we expect to destruct it ourselves
+  // when ~DebuggerClient runs.
+  sock->unregister();
   Object obj(sock);
   if (f_socket_connect(sock, String(host), port)) {
     DMachineInfoPtr machine(new DMachineInfo());
@@ -472,6 +521,7 @@ bool DebuggerClient::reconnect() {
     info("Re-connecting to %s:%d...", host.c_str(), port);
     Socket *sock = new Socket(socket(PF_INET, SOCK_STREAM, 0), PF_INET,
                               String(host), port);
+    sock->unregister();
     Object obj(sock);
     if (f_socket_connect(sock, String(host), port)) {
       for (unsigned int i = 0; i < m_machines.size(); i++) {
@@ -511,12 +561,39 @@ std::string DebuggerClient::getPrompt() {
   return *name + "> ";
 }
 
-void DebuggerClient::start(const DebuggerClientOptions &options) {
+void DebuggerClient::init(const DebuggerClientOptions &options) {
+  m_options = options;
+
+  if (isApiMode()) {
+    if (options.user.empty()) {
+      return;
+    }
+    m_configFileName = options.configFName;
+    if (m_configFileName.empty()) {
+      m_configFileName = HomePrefix + "/" + options.user + "/" +
+                         ConfigFileName;
+    }
+  } else {
+    if (!options.configFName.empty()) {
+      m_configFileName = options.configFName;
+    }
+    m_options.user = Process::GetCurrentUser();
+  }
+
+  usageLogInit();
+
   loadConfig();
+
   if (!options.cmds.empty()) {
     UseColor = false;
     s_use_utf8 = false;
     NoPrompt = true;
+  }
+
+  if (options.apiMode) {
+    UseColor = false;
+    NoPrompt = true;
+    m_outputBuf = new StringBuffer();
   }
 
   if (!NoPrompt) {
@@ -527,8 +604,10 @@ void DebuggerClient::start(const DebuggerClientOptions &options) {
   if (!options.host.empty()) {
     connectRemote(options.host, options.port);
   }
+}
 
-  m_options = options;
+void DebuggerClient::start(const DebuggerClientOptions &options) {
+  init(options);
   m_mainThread.start();
 }
 
@@ -538,6 +617,9 @@ void DebuggerClient::stop() {
 }
 
 void DebuggerClient::run() {
+  // Make sure we don't run the interface thread for API mode
+  ASSERT(!isApiMode());
+
   ReadlineApp app;
   playMacro("startup");
 
@@ -550,7 +632,11 @@ void DebuggerClient::run() {
 
   hphp_session_init();
   ExecutionContext *context = hphp_context_init();
-  hphp_invoke_simple(m_options.extension);
+  if (m_options.extension.empty()) {
+    hphp_invoke_simple("", true); // warm-up only
+  } else {
+    hphp_invoke_simple(m_options.extension);
+  }
   while (true) {
     try {
       runImpl();
@@ -563,7 +649,13 @@ void DebuggerClient::run() {
     }
     break;
   }
-  reset();
+  // We are about to exit from client and idealy we should cleanup,
+  // but we the reset() where will try to cleanup Socket under DMachineInfo,
+  // which is created by another thread. If it's cleaned up here, later we'll
+  // have a SEGV when trying to sweep the object from the other thread.
+  // We should refactor the code to avoid Sweepable object being passed across
+  // threads later.
+  // reset();
   hphp_context_exit(context, false);
   hphp_session_exit();
 }
@@ -658,20 +750,40 @@ void DebuggerClient::addCompletion(const char *name) {
   m_acStrings.push_back(name);
 }
 
-void DebuggerClient::addCompletion(const std::vector<String> &items) {
+void DebuggerClient::addCompletion(const std::vector<std::string> &items) {
   m_acItems.insert(m_acItems.end(), items.begin(), items.end());
 }
 
-char *DebuggerClient::getCompletion(const std::vector<String> &items,
+char *DebuggerClient::getCompletion(const std::vector<std::string> &items,
                                     const char *text) {
   while (++m_acPos < (int)items.size()) {
-    const char *p = items[m_acPos].data();
+    const char *p = items[m_acPos].c_str();
     if (m_acLen == 0 || strncasecmp(p, text, m_acLen) == 0) {
       return strdup(p);
     }
   }
   m_acPos = -1;
   return NULL;
+}
+
+std::vector<std::string> DebuggerClient::getAllCompletions(
+  std::string const &text) {
+  std::vector<std::string> res;
+
+  if (m_acLiveListsDirty) {
+    updateLiveLists();
+  }
+
+  for (int i = 0; i < AutoCompleteCount; ++i) {
+    const std::vector<std::string> &items = (*m_acLiveLists)[i];
+    for (size_t j = 0; j < items.size(); ++j) {
+      const char *p = items[j].c_str();
+      if (strncasecmp(p, text.c_str(), text.length()) == 0) {
+        res.push_back(std::string(p));
+      }
+    }
+  }
+  return res;
 }
 
 char *DebuggerClient::getCompletion(const std::vector<const char *> &items,
@@ -787,24 +899,63 @@ bool DebuggerClient::initializeMachine() {
     }
 
     // attaching to default sandbox
+    int waitForgSandbox = false;
     if (!m_machine->m_sandboxAttached) {
-      try {
-        CmdMachine::AttachSandbox(this, NULL, m_options.sandbox.c_str());
-      } catch (DebuggerConsoleExitException &e) {
-        m_machine->m_sandboxAttached = true;
-      }
+      const char *user = m_options.user.empty() ?
+                         NULL : m_options.user.c_str();
+      m_machine->m_sandboxAttached = waitForgSandbox =
+        CmdMachine::AttachSandbox(this, user, m_options.sandbox.c_str());
       if (!m_machine->m_sandboxAttached) {
         Logger::Error("Unable to communicate with default sandbox.");
-        return false;
       }
-
-      m_machine->m_initialized = true;
-      throw DebuggerConsoleExitException();
     }
 
     m_machine->m_initialized = true;
+    if (!isApiMode() && waitForgSandbox) {
+      // Throw exception here to wait for next interrupt from server
+      throw DebuggerConsoleExitException();
+    }
   }
   return true;
+}
+
+DebuggerCommandPtr DebuggerClient::waitForNextInterrupt() {
+  const char *func = "DebuggerClient::waitForNextInterrupt()";
+  while (!m_stopped) {
+    DebuggerCommandPtr cmd;
+    if (DebuggerCommand::Receive(m_machine->m_thrift, cmd, func)) {
+      if (!cmd) {
+        Logger::Error("Unable to communicate with server.");
+        return DebuggerCommandPtr();
+      }
+      if (cmd->is(DebuggerCommand::KindOfSignal)) {
+        if (!cmd->onClientD(this)) {
+          Logger::Error("Unable to handle signal command.");
+          return DebuggerCommandPtr();
+        }
+        continue;
+      }
+      if (!cmd->is(DebuggerCommand::KindOfInterrupt)) {
+        int expected = DebuggerCommand::KindOfInterrupt;
+        if (!m_pendingCommands.empty() &&
+            cmd->is((DebuggerCommand::Type)m_pendingCommands.back())) {
+          m_pendingCommands.pop_back();
+          // found a match, fall through
+        } else {
+          Logger::Error("Bad cmd type: %d expecting %d", cmd->getType(),
+                        expected);
+          return DebuggerCommandPtr();
+        }
+      }
+      m_sigTime = 0;
+      m_machine->m_interrupting = true;
+      setClientState(StateReadyForCommand);
+      m_inputState = TakingCommand;
+      usageLogInterrupt(cmd);
+      return cmd;
+    }
+  }
+  return DebuggerCommandPtr();
 }
 
 void DebuggerClient::runImpl() {
@@ -819,7 +970,7 @@ void DebuggerClient::runImpl() {
           throw DebuggerServerLostException();
         }
         if (cmd->is(DebuggerCommand::KindOfSignal)) {
-          if (!cmd->onClient(this)) {
+          if (!cmd->onClientD(this)) {
             Logger::Error("%s: unable to poll signal", func);
             return;
           }
@@ -830,12 +981,15 @@ void DebuggerClient::runImpl() {
           return;
         }
         m_sigTime = 0;
-        if (!cmd->onClient(this)) {
-          Logger::Error("%s: unable to process %d", func, cmd->getType());
-          return;
+        usageLogInterrupt(cmd);
+        {
+          if (!cmd->onClientD(this)) {
+            Logger::Error("%s: unable to process %d", func, cmd->getType());
+            return;
+          }
         }
         m_machine->m_interrupting = true;
-
+        setClientState(StateReadyForCommand);
         m_inputState = TakingCommand;
         if (!m_machine->m_initialized) {
           try {
@@ -849,6 +1003,7 @@ void DebuggerClient::runImpl() {
         if (!console()) {
           return;
         }
+        setClientState(StateBusy);
         m_inputState = TakingInterrupt;
       }
     }
@@ -872,14 +1027,17 @@ bool DebuggerClient::console() {
       line = readline(getPrompt().c_str());
       if (line == NULL) {
         // treat ^D as quit
-        char *quit_cmd = (char *)malloc(sizeof(char) * 2);
-        strcpy(quit_cmd, "q");
-        line = (const char *)quit_cmd;
+        try {
+          print("quit");
+          quit();
+        } catch (DebuggerClientExitException &e) {
+          return false;
+        }
       }
     } else if (!NoPrompt) {
       print("%s%s", getPrompt().c_str(), line);
     }
-    if (*line) {
+    if (*line && !m_macroPlaying) {
       // even if line is bad command, we still want to remember it, so
       // people can go back and fix typos
       add_history(line);
@@ -933,14 +1091,86 @@ bool DebuggerClient::console() {
 ///////////////////////////////////////////////////////////////////////////////
 // output functions
 
+String DebuggerClient::getPrintString() {
+  int size = m_outputBuf->size();
+  if (size) {
+    return m_outputBuf->detach();
+  }
+  return "";
+}
+
+Array DebuggerClient::getOutputArray() {
+  Array ret;
+  switch (m_outputType) {
+    case OTCodeLoc:
+      ret.set("output_type", "code_loc");
+      ret.set("file", m_otFile);
+      ret.set("line_no", m_otLineNo);
+      ret.set("watch_values", m_otValues);
+      break;
+    case OTStacktrace:
+      ret.set("output_type", "stacktrace");
+      ret.set("stacktrace", m_stacktrace);
+      ret.set("frame", m_frame);
+      break;
+    case OTValues:
+      ret.set("output_type", "values");
+      ret.set("values", m_otValues);
+      break;
+    case OTText:
+      ret.set("output_type", "text");
+      break;
+    default:
+      ret.set("output_type", "invalid");
+  }
+  ret.set("cmd", m_command);
+  ret.set("text", getPrintString());
+  return ret;
+}
+
+//
+// Called when a breakpoint is reached, to produce the console
+// spew showing the code around the breakpoint.
+//
 void DebuggerClient::shortCode(BreakPointInfoPtr bp) {
   if (bp && !bp->m_file.empty() && bp->m_line1) {
     Variant source = CmdList::GetSourceFile(this, bp->m_file);
     if (source.isString()) {
-      code(source, bp->m_line1,
-           bp->m_line1 > 1 ? bp->m_line1 - 1 : bp->m_line1,
-           bp->m_line2 + 1,
-           bp->m_char1, bp->m_line2, bp->m_char2);
+      // Line and column where highlight should start and end
+      int beginHighlightLine = bp->m_line1;
+      int beginHighlightColumn = bp->m_char1;
+      int endHighlightLine = bp->m_line2;
+      int endHighlightColumn = bp->m_char2;
+      // Lines where source listing should start and end
+      int firstLine = std::max(beginHighlightLine - 1, 1);
+      int lastLine = endHighlightLine + 1;
+      int maxLines = getDebuggerClientMaxCodeLines();
+
+      // If MaxCodeLines == 0: don't spew any code after a [s]tep or [n]ext
+      // command.
+      if (maxLines == 0) {
+        return;
+      }
+
+      // If MaxCodeLines > 0: limit spew to a maximum of # lines.
+      if (maxLines > 0) {
+        int numHighlightLines = endHighlightLine - beginHighlightLine + 1;
+        if (numHighlightLines > maxLines) {
+          // If there are too many highlight lines, truncate spew
+          // by setting lastLine ...
+          lastLine = beginHighlightLine + maxLines - 1;
+          // ... and set endHighlightLine/Column so that it is just past the end
+          // of the spew, and all code up to the truncation will be highlighted.
+          endHighlightLine = lastLine + 1;
+          endHighlightColumn = 1;
+        }
+      }
+
+      code(source, beginHighlightLine,
+           firstLine, lastLine,
+           beginHighlightColumn,
+           endHighlightLine,
+           endHighlightColumn);
     }
   }
 }
@@ -949,8 +1179,13 @@ bool DebuggerClient::code(CStrRef source, int lineFocus, int line1 /* = 0 */,
                           int line2 /* = 0 */, int charFocus0 /* = 0 */,
                           int lineFocus1 /* = 0 */, int charFocus1 /* = 0 */) {
   if (line1 == 0 && line2 == 0) {
-    String highlighted = highlight_code(source, 0, lineFocus, charFocus0,
-                                        lineFocus1, charFocus1);
+    String highlighted;
+    if (isApiMode()) {
+      highlighted = source;
+    } else {
+      highlighted = highlight_code(source, 0, lineFocus, charFocus0,
+                                   lineFocus1, charFocus1);
+    }
     if (!highlighted.empty()) {
       print(highlighted);
       return true;
@@ -958,8 +1193,13 @@ bool DebuggerClient::code(CStrRef source, int lineFocus, int line1 /* = 0 */,
     return false;
   }
 
-  String highlighted = highlight_php(source, 1, lineFocus, charFocus0,
-                                     lineFocus1, charFocus1);
+  String highlighted;
+  if (isApiMode()) {
+    highlighted = source;
+  } else {
+    highlighted = highlight_php(source, 1, lineFocus, charFocus0,
+                                lineFocus1, charFocus1);
+  }
   int line = 1;
   const char *begin = highlighted.data();
   StringBuffer sb;
@@ -973,13 +1213,14 @@ bool DebuggerClient::code(CStrRef source, int lineFocus, int line1 /* = 0 */,
     }
   }
   if (!sb.empty()) {
-    print("%s%s", sb.data(), ANSI_COLOR_END);
+    print("%s%s", sb.data(), isApiMode() ? "\0" : ANSI_COLOR_END);
     return true;
   }
   return false;
 }
 
 char DebuggerClient::ask(const char *fmt, ...) {
+  ASSERT(!isApiMode());
   string msg;
   va_list ap;
   va_start(ap, fmt);
@@ -992,6 +1233,23 @@ char DebuggerClient::ask(const char *fmt, ...) {
   return tolower(getchar());
 }
 
+#define FWRITE(ptr, size, nmemb, stream)                                \
+do {                                                                    \
+  if (isApiMode()) {                                                    \
+    ASSERT(m_outputBuf);                                                \
+    m_outputBuf->append(ptr, size * nmemb);                             \
+  }                                                                     \
+                                                                        \
+  /* LogFile debugger setting */                                        \
+  FILE *f = getLogFileHandler();                                        \
+  if (f != NULL) {                                                      \
+    fwrite(ptr, size, nmemb, f);                                        \
+  }                                                                     \
+                                                                        \
+  /* For debugging, still output to stdout */                           \
+  fwrite(ptr, size, nmemb, stream);                                     \
+} while (0)                                                             \
+
 void DebuggerClient::print(const char *fmt, ...) {
   string msg;
   va_list ap;
@@ -1001,27 +1259,27 @@ void DebuggerClient::print(const char *fmt, ...) {
 }
 
 void DebuggerClient::print(const std::string &s) {
-  fwrite(s.data(), 1, s.length(), stdout);
-  fwrite("\n", 1, 1, stdout);
+  FWRITE(s.data(), 1, s.length(), stdout);
+  FWRITE("\n", 1, 1, stdout);
   fflush(stdout);
 }
 
 void DebuggerClient::print(CStrRef msg) {
-  fwrite(msg.data(), 1, msg.length(), stdout);
-  fwrite("\n", 1, 1, stdout);
+  FWRITE(msg.data(), 1, msg.length(), stdout);
+  FWRITE("\n", 1, 1, stdout);
   fflush(stdout);
 }
 
 #define IMPLEMENT_COLOR_OUTPUT(name, where, color)                      \
   void DebuggerClient::name(CStrRef msg) {                              \
     if (UseColor && color) {                                            \
-      fwrite(color, 1, strlen(color), where);                           \
+      FWRITE(color, 1, strlen(color), where);                           \
     }                                                                   \
-    fwrite(msg.data(), 1, msg.length(), where);                         \
+    FWRITE(msg.data(), 1, msg.length(), where);                         \
     if (UseColor && color) {                                            \
-      fwrite(ANSI_COLOR_END, 1, strlen(ANSI_COLOR_END), where);         \
+      FWRITE(ANSI_COLOR_END, 1, strlen(ANSI_COLOR_END), where);         \
     }                                                                   \
-    fwrite("\n", 1, 1, where);                                          \
+    FWRITE("\n", 1, 1, where);                                          \
     fflush(where);                                                      \
   }                                                                     \
   void DebuggerClient::name(const char *fmt, ...) {                     \
@@ -1039,6 +1297,9 @@ IMPLEMENT_COLOR_OUTPUT(help,     stdout,  HelpColor);
 IMPLEMENT_COLOR_OUTPUT(info,     stdout,  InfoColor);
 IMPLEMENT_COLOR_OUTPUT(output,   stdout,  OutputColor);
 IMPLEMENT_COLOR_OUTPUT(error,    stderr,  ErrorColor);
+
+#undef FWRITE
+#undef IMPLEMENT_COLOR_OUTPUT
 
 string DebuggerClient::wrap(const std::string &s) {
   String ret = StringUtil::WordWrap(String(s.c_str(), s.size(), AttachLiteral),
@@ -1198,66 +1459,106 @@ const char **DebuggerClient::GetCommands() {
 void DebuggerClient::shiftCommand() {
   if (m_command.size() > 1) {
     m_args.insert(m_args.begin(), m_command.substr(1));
+    m_argIdx.insert(m_argIdx.begin(), 1);
     m_command = m_command.substr(0, 1);
   }
 }
 
 DebuggerCommand *DebuggerClient::createCommand() {
+#define MATCH_CMD(name, cmd)                 \
+do {                                         \
+  if (match(name)) {                         \
+    m_commandCanonical = name;               \
+    return new cmd();                        \
+  }                                          \
+  return NULL;                               \
+} while(0)                                   \
+
+#define NEW_CMD_NAME(name, cmd)              \
+do {                                         \
+  m_commandCanonical = name;                 \
+  return new cmd();                          \
+} while(0)                                   \
+
   // give gdb users some love
-  if (m_command == "bt") return new CmdWhere();
-  if (m_command == "set") return new CmdConfig();
+  if (m_command == "bt") NEW_CMD_NAME("where", CmdWhere);
+  if (m_command == "set") NEW_CMD_NAME("config", CmdConfig);
+  if (m_command == "inst") NEW_CMD_NAME("instrument", CmdInstrument);
+  if (m_command == "complete") NEW_CMD_NAME("complete", CmdComplete);
 
   switch (tolower(m_command[0])) {
-    case 'a': return (match("abort")     ) ? new CmdAbort    () : NULL;
-    case 'b': return (match("break")     ) ? new CmdBreak    () : NULL;
-    case 'c': return (match("continue")  ) ? new CmdContinue () : NULL;
-    case 'd': return (match("down")      ) ? new CmdDown     () : NULL;
-    case 'e': return (match("exception") ) ? new CmdException() : NULL;
-    case 'f': return (match("frame")     ) ? new CmdFrame    () : NULL;
-    case 'g': return (match("global")    ) ? new CmdGlobal   () : NULL;
-    case 'h': return (match("help")      ) ? new CmdHelp     () : NULL;
-    case 'i': return (match("info")      ) ? new CmdInfo     () : NULL;
-    case 'j': return (match("jump")      ) ? new CmdJump     () : NULL;
-    case 'k': return (match("konstant")  ) ? new CmdConstant () : NULL;
-    case 'l': return (match("list")      ) ? new CmdList     () : NULL;
-    case 'm': return (match("machine")   ) ? new CmdMachine  () : NULL;
-    case 'n': return (match("next")      ) ? new CmdNext     () : NULL;
-    case 'o': return (match("out")       ) ? new CmdOut      () : NULL;
-    case 'p': return (match("print")     ) ? new CmdPrint    () : NULL;
-    case 'q': return (match("quit")      ) ? new CmdQuit     () : NULL;
-    case 'r': return (match("run")       ) ? new CmdRun      () : NULL;
-    case 's': return (match("step")      ) ? new CmdStep     () : NULL;
-    case 't': return (match("thread")    ) ? new CmdThread   () : NULL;
-    case 'u': return (match("up")        ) ? new CmdUp       () : NULL;
-    case 'v': return (match("variable")  ) ? new CmdVariable () : NULL;
-    case 'w': return (match("where")     ) ? new CmdWhere    () : NULL;
-    case 'z': return (match("zend")      ) ? new CmdZend     () : NULL;
+    case 'a': MATCH_CMD("abort"    , CmdAbort    );
+    case 'b': MATCH_CMD("break"    , CmdBreak    );
+    case 'c': MATCH_CMD("continue" , CmdContinue );
+    case 'd': MATCH_CMD("down"     , CmdDown     );
+    case 'e': MATCH_CMD("exception", CmdException);
+    case 'f': MATCH_CMD("frame"    , CmdFrame    );
+    case 'g': MATCH_CMD("global"   , CmdGlobal   );
+    case 'h': MATCH_CMD("help"     , CmdHelp     );
+    case 'i': MATCH_CMD("info"     , CmdInfo     );
+    case 'j': MATCH_CMD("jump"     , CmdJump     );
+    case 'k': MATCH_CMD("konstant" , CmdConstant );
+    case 'l': MATCH_CMD("list"     , CmdList     );
+    case 'm': MATCH_CMD("machine"  , CmdMachine  );
+    case 'n': MATCH_CMD("next"     , CmdNext     );
+    case 'o': MATCH_CMD("out"      , CmdOut      );
+    case 'p': MATCH_CMD("print"    , CmdPrint    );
+    case 'q': MATCH_CMD("quit"     , CmdQuit     );
+    case 'r': MATCH_CMD("run"      , CmdRun      );
+    case 's': MATCH_CMD("step"     , CmdStep     );
+    case 't': MATCH_CMD("thread"   , CmdThread   );
+    case 'u': MATCH_CMD("up"       , CmdUp       );
+    case 'v': MATCH_CMD("variable" , CmdVariable );
+    case 'w': MATCH_CMD("where"    , CmdWhere    );
+    case 'z': MATCH_CMD("zend"     , CmdZend     );
 
     // these single lettter commands allow "x{cmd}" and "x {cmd}"
-    case 'x': shiftCommand(); return new CmdExtended();
-    case 'y': shiftCommand(); return new CmdUser();
-    case '!': shiftCommand(); return new CmdShell();
-    case '&': shiftCommand(); return new CmdMacro();
+    case 'x': shiftCommand(); NEW_CMD_NAME("extended", CmdExtended);
+    case 'y': shiftCommand(); NEW_CMD_NAME("user", CmdUser);
+    case '!': shiftCommand(); NEW_CMD_NAME("shell", CmdShell);
+    case '&': shiftCommand(); NEW_CMD_NAME("macro", CmdMacro);
   }
   return NULL;
+#undef MATCH_CMD
+#undef NEW_CMD_NAME
 }
 
 bool DebuggerClient::process() {
+  clearCachedLocal();
+  if (isApiMode()) {
+    // construct m_line based on m_command and m_args
+    m_line = m_command;
+    m_argIdx.clear();
+    m_argIdx.push_back(m_line.size());
+    for (unsigned int i = 0; i < m_args.size(); i++) {
+      m_line += " " + m_args[i];
+      m_argIdx.push_back(m_line.size());
+    }
+  }
   switch (tolower(m_command[0])) {
     case '@':
     case '=':
-    case '$': return processTakeCode();
-    case '<': return match("<?php") && processTakeCode();
-    case '?':
-      if (match("?"))  return CmdHelp().onClient(this);
+    case '$': {
+      return processTakeCode();
+    }
+    case '<': {
+      return match("<?php") && processTakeCode();
+    }
+    case '?': {
+      if (match("?")) {
+        usageLog("help", m_line);
+        return CmdHelp().onClientD(this);
+      }
       if (match("?>")) return processEval();
       break;
+    }
     default: {
       DebuggerCommand *cmd = createCommand();
       if (cmd) {
+        usageLog(m_commandCanonical, m_line);
         if (cmd->is(DebuggerCommand::KindOfRun)) playMacro("startup");
         DebuggerCommandPtr deleter(cmd);
-        return cmd->onClient(this);
+        return cmd->onClientD(this);
       } else {
         return processTakeCode();
       }
@@ -1271,7 +1572,8 @@ bool DebuggerClient::process() {
 ///////////////////////////////////////////////////////////////////////////////
 // helpers
 
-void DebuggerClient::addToken(std::string &token) {
+void DebuggerClient::addToken(std::string &token, int idx) {
+  m_argIdx.push_back(idx);
   if (m_command.empty()) {
     m_command = token;
   } else {
@@ -1286,13 +1588,16 @@ void DebuggerClient::parseCommand(const char *line) {
 
   char quote = 0;
   string token;
-  for (const char *p = line; *p; p++) {
-    char ch = *p;
+  m_argIdx.clear();
+  int i = 0;
+  for (i = 0; line[i]; i++) {
+    char ch = line[i];
+    char next = line[i+1];
     switch (ch) {
       case ' ':
         if (!quote) {
           if (!token.empty()) {
-            addToken(token);
+            addToken(token, i);
           }
         } else {
           token += ch;
@@ -1300,32 +1605,36 @@ void DebuggerClient::parseCommand(const char *line) {
         break;
       case '"':
       case '\'':
-        if (token.empty() && quote == 0) {
+        if (quote == 0) {
           quote = ch;
           token += ch;
           break;
         }
-        if (quote == ch && (p[1] == ' ' || p[1] == 0)) {
+        if (quote == ch && (next == ' ' || next == 0)) {
           token += ch;
-          addToken(token);
+          addToken(token, i);
           quote = 0;
           break;
         }
         token += ch;
         break;
       case '\\':
-        if (p[1]) {
-          p++;
-          token += *p;
+        if ((next == ' ' || next == '"' || next == '\'' || next == '\\')) {
+          if (quote == '\'') {
+            token += ch;
+          }
+          i++;
+          token += next;
+          break;
         }
-        break;
+        // fall through
       default:
         token += ch;
         break;
     }
   }
   if (!token.empty()) {
-    addToken(token);
+    addToken(token, i);
   }
 }
 
@@ -1386,61 +1695,78 @@ std::string DebuggerClient::argValue(int index) {
   return "";
 }
 
-std::string DebuggerClient::argRest(int index) {
+std::string DebuggerClient::lineRest(int index) {
   ASSERT(index > 0);
-  --index;
-  if (index >= 0 && index < (int)m_args.size()) {
-    string ret = m_args[index];
-    while (++index < (int)m_args.size()) {
-      ret += " " + m_args[index];
-    }
-    return ret;
-  }
-  return "";
+  return m_line.substr(m_argIdx[index - 1] + 1);
 }
 
 ///////////////////////////////////////////////////////////////////////////////
 // comunication with DebuggerProxy
 
 DebuggerCommandPtr DebuggerClient::xend(DebuggerCommand *cmd) {
-  return send(cmd, cmd->getType());
+  send(cmd);
+  return recv(cmd->getType());
 }
 
-DebuggerCommandPtr DebuggerClient::send(DebuggerCommand *cmd, int expected) {
-  const char *func = "DebuggerClient::send()";
+void DebuggerClient::send(DebuggerCommand *cmd) {
+  if (!cmd->send(m_machine->m_thrift)) {
+    throw DebuggerProtocolException();
+  }
+}
 
-  if (cmd->send(m_machine->m_thrift)) {
-    DebuggerCommandPtr res;
-    if (!expected) {
-      return res;
+DebuggerCommandPtr DebuggerClient::recv(int expected) {
+  const char *func = "DebuggerClient::recv()";
+
+  DebuggerCommandPtr res;
+  while (true) {
+    while (!DebuggerCommand::Receive(m_machine->m_thrift, res, func)) {
+      if (m_stopped) throw DebuggerClientExitException();
+    }
+    if (!res) {
+      Logger::Error("Unable to communicate with server. Server's down?");
+      throw DebuggerServerLostException();
+    }
+    if (!res->getWireError().empty()) {
+      error("wire error: %s", res->getWireError().data());
+    }
+    if (res->is((DebuggerCommand::Type)expected)) {
+      usageLogDone(boost::lexical_cast<string>(expected));
+      break;
     }
 
-    while (true) {
-      while (!DebuggerCommand::Receive(m_machine->m_thrift, res, func)) {
-        if (m_stopped) throw DebuggerClientExitException();
-      }
-      if (!res) {
-        Logger::Error("Unable to communicate with server. Server's down?");
-        throw DebuggerServerLostException();
-      }
-      if (res->is((DebuggerCommand::Type)expected)) {
-        return res;
-      }
+    if (!res->is(DebuggerCommand::KindOfInterrupt)) {
+      Logger::Error("%s: unexpected return: %d", func, res->getType());
+      throw DebuggerProtocolException();
+    }
 
-      if (!res->is(DebuggerCommand::KindOfInterrupt)) {
-        Logger::Error("%s: unexpected return: %d", func, res->getType());
-        throw DebuggerProtocolException();
-      }
+    usageLogInterrupt(res);
 
-      // eval() can cause more breakpoints
-      if (!res->onClient(this) || !console()) {
+    if (isApiMode()) {
+      // Hit breakpoint during eval
+      // Could also happen with CmdPrint, but since CmdPrint is also used
+      // for handling watch, it could potentially lead to infinite recursion
+      // Do not support KindOfPrint until we separate watch from it.
+      if (expected == DebuggerCommand::KindOfEval ||
+          expected == DebuggerCommand::KindOfPrint) {
+        m_pendingCommands.push_back(expected);
+      } else {
+        continue;
+      }
+      break;
+    }
+
+    // eval() can cause more breakpoints
+    if (!res->onClientD(this) || !console()) {
+      if (m_quitting) {
+        throw DebuggerClientExitException();
+      } else {
         Logger::Error("%s: unable to process %d", func, res->getType());
         throw DebuggerProtocolException();
       }
     }
   }
 
-  throw DebuggerProtocolException();
+  return res;
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -1466,18 +1792,26 @@ bool DebuggerClient::processTakeCode() {
 
   char first = m_line[0];
   if (first == '@') {
+    usageLog("@", m_line);
     m_code = string("<?php ") + (m_line.c_str() + 1) + ";";
     return processEval();
   } else if (first == '=') {
-    m_code = string("<?php $_") + m_line + "; " + m_printFunction;
+    usageLog("=", m_line);
+    while (m_line.at(m_line.size() - 1) == ';') {
+      // strip the trailing ;
+      m_line = m_line.substr(0, m_line.size() - 1);
+    }
+    m_code = string("<?php $_=(") + m_line.substr(1) + "); " + m_printFunction;
     return processEval();
   } else if (first != '<') {
+    usageLog("eval", m_line);
     // User entered something that did not start with @, =, or <
     // and also was not a debugger command. Interpret it as PHP.
     m_code = "<?php ";
     m_code += m_line + ";";
     return processEval();
   }
+  usageLog("<?php", m_line);
   m_code = "<?php ";
   m_code += m_line.substr(m_command.length()) + "\n";
   m_inputState = TakingCode;
@@ -1494,7 +1828,7 @@ bool DebuggerClient::processEval() {
   m_runState = Running;
   m_inputState = TakingCommand;
   m_acLiveListsDirty = true;
-  CmdEval().onClient(this);
+  CmdEval().onClientD(this);
   return true;
 }
 
@@ -1505,6 +1839,7 @@ void DebuggerClient::swapHelp() {
 }
 
 void DebuggerClient::quit() {
+  m_quitting = true;
   for (unsigned int i = 0; i < m_machines.size(); i++) {
     m_machines[i]->m_thrift.close();
   }
@@ -1525,7 +1860,7 @@ void DebuggerClient::updateThreads(DThreadInfoPtrVec threads) {
   m_threads = threads;
   for (unsigned int i = 0; i < m_threads.size(); i++) {
     DThreadInfoPtr thread = m_threads[i];
-    map<int64, int>::const_iterator iter =
+    std::map<int64, int>::const_iterator iter =
       m_threadIdMap.find(thread->m_id);
     if (iter != m_threadIdMap.end()) {
       m_threads[i]->m_index = iter->second;
@@ -1566,11 +1901,11 @@ void DebuggerClient::getListLocation(std::string &file, int &line,
 void DebuggerClient::setListLocation(const std::string &file, int line,
                                      bool center) {
   m_listFile = file;
-  if (!m_listFile.empty() && m_listFile[0] != '/' && !SourceRoot.empty()) {
-    if (SourceRoot[SourceRoot.size() - 1] != '/') {
-      SourceRoot += "/";
+  if (!m_listFile.empty() && m_listFile[0] != '/' && !m_sourceRoot.empty()) {
+    if (m_sourceRoot[m_sourceRoot.size() - 1] != '/') {
+      m_sourceRoot += "/";
     }
-    m_listFile = SourceRoot + m_listFile;
+    m_listFile = m_sourceRoot + m_listFile;
   }
 
   m_listLine = line;
@@ -1584,7 +1919,7 @@ void DebuggerClient::setListLocation(const std::string &file, int line,
 }
 
 void DebuggerClient::setSourceRoot(const std::string &sourceRoot) {
-  m_config["SourceRoot"] = SourceRoot = sourceRoot;
+  m_config["SourceRoot"] = m_sourceRoot = sourceRoot;
   saveConfig();
 
   // apply change right away
@@ -1753,14 +2088,118 @@ void DebuggerClient::record(const char *line) {
 }
 
 ///////////////////////////////////////////////////////////////////////////////
+// helpers for server API
+
+bool DebuggerClient::apiGrab() {
+  Lock l(m_inApiUseLck);
+  if (m_inApiUse) {
+    return false;
+  }
+  m_inApiUse = true;
+  return true;
+}
+
+void DebuggerClient::apiFree() {
+  Lock l(m_inApiUseLck);
+  m_inApiUse = false;
+}
+
+void DebuggerClient::resetSmartAllocatedMembers() {
+  // Essentially sets these to null: so it's safe to run their
+  // destructors at sweep time or after the SmartAllocators are torn
+  // down.
+  new (&m_stacktrace) Array();
+  new (&m_otValues) Array();
+}
+
+///////////////////////////////////////////////////////////////////////////////
+// helpers for usage logging
+
+void DebuggerClient::initUsageLogging() {
+  // Usage log file is a runtime option instead of debugger config because
+  // it is for internal monitoring and we don't want users to modify this.
+  if (RuntimeOption::DebuggerUsageLogFile.empty()) {
+    return;
+  }
+  mode_t old = umask(0);
+  m_usageLogFP = fopen(RuntimeOption::DebuggerUsageLogFile.c_str(), "a");
+  if (!m_usageLogFP) {
+    Logger::Error("failed to open debugger usage log file %s",
+                  RuntimeOption::DebuggerUsageLogFile.c_str());
+  }
+  umask(old);
+}
+
+void DebuggerClient::finiUsageLogging() {
+  if (m_usageLogFP) {
+    fclose(m_usageLogFP);
+    m_usageLogFP = NULL;
+  }
+}
+
+void DebuggerClient::usageLog(const std::string& cmd, const std::string& line) {
+  if (!m_usageLogFP) {
+    return;
+  }
+
+  if (m_usageLogHeader.empty()) {
+    std::string login = m_options.user;
+    std::string host = Process::GetHostName();
+    std::string clientMode = isApiMode() ? "api" : "terminal";
+    m_usageLogHeader = login + " " + host + " hhvm " + clientMode;
+  }
+
+  struct timespec tp;
+  gettime(CLOCK_REALTIME, &tp);
+
+#define MAX_LINE 1024
+  char buf[MAX_LINE];
+  int len = snprintf(buf, MAX_LINE, "%s %lld %lld %s #### %s",
+                     m_usageLogHeader.c_str(),
+                     (int64)tp.tv_sec, (int64)tp.tv_nsec,
+                     cmd.c_str(), line.c_str());
+  len = len >= MAX_LINE ? MAX_LINE - 1: len;
+  buf[len] = '\n';
+#undef MAX_LINE
+  fwrite(buf, len + 1, 1, m_usageLogFP);
+  fflush(m_usageLogFP);
+}
+
+void DebuggerClient::usageLogInterrupt(DebuggerCommandPtr cmd) {
+  CmdInterruptPtr intr = dynamic_pointer_cast<CmdInterrupt>(cmd);
+  if (!intr) {
+    return;
+  }
+  switch (intr->getInterruptType()) {
+    case SessionStarted: usageLog("interrupt", "SessionStarted"); break;
+    case SessionEnded: usageLog("interrupt", "SessionEnded"); break;
+    case RequestStarted: usageLog("interrupt", "RequestStarted"); break;
+    case RequestEnded: usageLog("interrupt", "RequestEnded"); break;
+    case PSPEnded: usageLog("interrupt", "PSPEnded"); break;
+    case HardBreakPoint: usageLog("interrupt", "HardBreakPoint"); break;
+    case BreakPointReached: usageLog("interrupt", "BreakPointReached"); break;
+    case ExceptionThrown: usageLog("interrupt", "ExceptionThrown"); break;
+    default:
+      usageLog("interrupt", "unknown");
+  }
+}
+
+///////////////////////////////////////////////////////////////////////////////
 // configuration
 
 void DebuggerClient::loadConfig() {
-  m_configFileName = Process::GetHomeDirectory() + ConfigFileName;
+  if (m_configFileName.empty()) {
+    m_configFileName = Process::GetHomeDirectory() + ConfigFileName;
+  }
 
   // make sure file exists
   FILE *f = fopen(m_configFileName.c_str(), "a");
-  if (f) fclose(f);
+  if (f) {
+    fclose(f);
+  } else {
+    m_configFileName.clear();
+    return;
+  }
 
   try {
     m_config.open(m_configFileName);
@@ -1782,15 +2221,21 @@ void DebuggerClient::loadConfig() {
 
   m_tutorial = m_config["Tutorial"].getInt32(0);
   std::string pprint = m_config["PrettyPrint"].getString("hphpd_print_value");
-  m_bypassAccessCheck = m_config["BypassAccessCheck"].getBool();
-  m_printLevel = m_config["PrintLevel"].getInt16(3);
-  if (m_printLevel > 0 && m_printLevel < MinPrintLevel) {
-    m_printLevel = MinPrintLevel;
+  setDebuggerBypassCheck(m_config["BypassAccessCheck"].getBool());
+  setDebuggerSmallStep(m_config["SmallStep"].getBool());
+  int printLevel = m_config["PrintLevel"].getInt16(3);
+  if (printLevel > 0 && printLevel < MinPrintLevel) {
+    printLevel = MinPrintLevel;
   }
+  setDebuggerPrintLevel(printLevel);
+
+  int maxCodeLines = m_config["MaxCodeLines"].getInt16(-1);
+  m_config["MaxCodeLines"] = maxCodeLines;
+  setDebuggerClientMaxCodeLines(maxCodeLines);
 
   m_printFunction = (boost::format(
-    "(function_exists(\"%s\") ? %s($_) : print_r($_));")  % pprint % pprint)
-    .str();
+    "(function_exists(\"%s\") ? %s($_) : print_r(print_r($_, true)));")
+    % pprint % pprint).str();
 
   m_config["Tutorial"]["Visited"].get(m_tutorialVisited);
 
@@ -1801,7 +2246,7 @@ void DebuggerClient::loadConfig() {
     m_macros.push_back(macro);
   }
 
-  SourceRoot = m_config["SourceRoot"].getString();
+  m_sourceRoot = m_config["SourceRoot"].getString();
 
   saveConfig(); // so to generate a starter for people
 }
@@ -1815,7 +2260,7 @@ void DebuggerClient::saveConfig() {
   m_config["Tutorial"] = m_tutorial;
   Hdf visited = m_config["Tutorial"]["Visited"];
   unsigned int i = 0;
-  for (set<string>::const_iterator iter = m_tutorialVisited.begin();
+  for (std::set<string>::const_iterator iter = m_tutorialVisited.begin();
        iter != m_tutorialVisited.end(); ++iter) {
     visited[i++] = *iter;
   }

@@ -15,7 +15,9 @@
    +----------------------------------------------------------------------+
 */
 
+#include <runtime/base/util/request_local.h>
 #include <runtime/ext/thrift/transport.h>
+#include <runtime/ext/ext_reflection.h>
 #include <runtime/ext/ext_thrift.h>
 
 #include <stack>
@@ -25,6 +27,8 @@ namespace HPHP {
 
 static const uint8_t VERSION_MASK = 0x1f;
 static const uint8_t VERSION = 2;
+static const uint8_t VERSION_LOW = 1;
+static const uint8_t VERSION_DOUBLE_BE = 2;
 static const uint8_t PROTOCOL_ID = 0x82;
 static const uint8_t TYPE_MASK = 0xe0;
 static const uint8_t TYPE_SHIFT_AMOUNT = 5;
@@ -136,7 +140,24 @@ enum TError {
   ERR_BAD_VERSION = 4
 };
 
-static void thrift_error(CStrRef what, TError why) __attribute__((noreturn));
+class CompactRequestData : public RequestEventHandler {
+  public:
+    CompactRequestData() : version(VERSION) { }
+    void clear() { version = VERSION; }
+
+    virtual void requestInit() {
+      clear();
+    }
+
+    virtual void requestShutdown() {
+      clear();
+    }
+
+    uint8_t version;
+};
+IMPLEMENT_STATIC_REQUEST_LOCAL(CompactRequestData, s_compact_request_data);
+
+static void thrift_error(CStrRef what, TError why) ATTRIBUTE_NORETURN;
 static void thrift_error(CStrRef what, TError why) {
   throw create_object("TProtocolException", CREATE_VECTOR2(what, why));
 }
@@ -145,6 +166,7 @@ class CompactWriter {
   public:
     CompactWriter(CObjRef _transportobj) :
       transport(_transportobj),
+      version(VERSION),
       state(STATE_CLEAR),
       lastFieldNum(0),
       boolFieldNum(0),
@@ -152,9 +174,13 @@ class CompactWriter {
       containerHistory() {
     }
 
+    void setWriteVersion(uint8_t _version) {
+      version = _version;
+    }
+
     void writeHeader(CStrRef name, uint8_t msgtype, uint32_t seqid) {
       writeUByte(PROTOCOL_ID);
-      writeUByte(VERSION | (msgtype << TYPE_SHIFT_AMOUNT));
+      writeUByte(version | (msgtype << TYPE_SHIFT_AMOUNT));
       writeVarint(seqid);
       writeString(name);
 
@@ -167,6 +193,7 @@ class CompactWriter {
 
   private:
     PHPOutputTransport transport;
+    uint8_t version;
     CState state;
     uint16_t lastFieldNum;
     uint16_t boolFieldNum;
@@ -180,7 +207,7 @@ class CompactWriter {
       lastFieldNum = 0;
 
       // Get field specification
-      CArrRef spec = get_static_property(obj->o_getClassName(), "_TSPEC")
+      CArrRef spec = f_hphp_get_static_property(obj->o_getClassName(), "_TSPEC")
         .toArray();
 
       // Write each member
@@ -199,7 +226,7 @@ class CompactWriter {
         TType fieldType = (TType)fieldSpec
           .rvalAt(s_type, AccessFlags::Error_Key).toByte();
 
-        Variant fieldVal = obj->o_get(fieldName);
+        Variant fieldVal = obj->o_get(fieldName, true, obj->o_getClassName());
 
         if (!fieldVal.isNull()) {
           writeFieldBegin(fieldNo, fieldType);
@@ -294,7 +321,12 @@ class CompactWriter {
             } u;
 
             u.d = value.toDouble();
-            uint64_t bits = htonll(u.i);
+            uint64_t bits;
+            if (version >= VERSION_DOUBLE_BE) {
+              bits = htonll(u.i);
+            } else {
+              bits = htolell(u.i);
+            }
 
             transport.write((char*)&bits, 8);
           }
@@ -440,6 +472,7 @@ class CompactReader {
   public:
     CompactReader(CObjRef _transportobj) :
       transport(_transportobj),
+      version(VERSION),
       state(STATE_CLEAR),
       lastFieldNum(0),
       boolValue(true),
@@ -455,8 +488,8 @@ class CompactReader {
 
       uint8_t versionAndType = readUByte();
       uint8_t type = (versionAndType & TYPE_MASK) >> TYPE_SHIFT_AMOUNT;
-      uint8_t version = versionAndType & VERSION_MASK;
-      if (version != VERSION) {
+      version = versionAndType & VERSION_MASK;
+      if (version < VERSION_LOW || version > VERSION) {
         thrift_error("Bad version in TCompact message", ERR_BAD_VERSION);
       }
 
@@ -466,12 +499,12 @@ class CompactReader {
 
       if (type == T_REPLY) {
         Object ret = create_object(resultClassName, Array());
-        Variant spec = get_static_property(resultClassName, "_TSPEC");
+        Variant spec = f_hphp_get_static_property(resultClassName, "_TSPEC");
         readStruct(ret, spec);
         return ret;
       } else if (type == T_EXCEPTION) {
         Object exn = create_object("TApplicationException", Array());
-        Variant spec = get_static_property("TApplicationException", "_TSPEC");
+        Variant spec = f_hphp_get_static_property("TApplicationException", "_TSPEC");
         readStruct(exn, spec);
         throw exn;
       } else {
@@ -481,6 +514,7 @@ class CompactReader {
 
   private:
     PHPInputTransport transport;
+    uint8_t version;
     CState state;
     uint16_t lastFieldNum;
     bool boolValue;
@@ -491,7 +525,7 @@ class CompactReader {
       readStructBegin();
 
       while (true) {
-        uint16_t fieldNum;
+        int16_t fieldNum;
         TType fieldType;
         readFieldBegin(fieldNum, fieldType);
 
@@ -511,7 +545,7 @@ class CompactReader {
           if (typesAreCompatible(fieldType, expectedType)) {
             readComplete = true;
             Variant fieldValue = readField(fieldSpec, fieldType);
-            dest->set(fieldName, fieldValue);
+            dest->o_set(fieldName, fieldValue, dest->o_getClassName());
           }
         }
 
@@ -538,7 +572,7 @@ class CompactReader {
       structHistory.pop();
     }
 
-    void readFieldBegin(uint16_t &fieldNum, TType &fieldType) {
+    void readFieldBegin(int16_t &fieldNum, TType &fieldType) {
       uint8_t fieldTypeAndDelta = readUByte();
       int delta = fieldTypeAndDelta >> 4;
       CType fieldCType = (CType)(fieldTypeAndDelta & 0x0f);
@@ -591,7 +625,7 @@ class CompactReader {
             }
 
             Variant newStructSpec =
-              get_static_property(classNameString, "_TSPEC");
+              f_hphp_get_static_property(classNameString, "_TSPEC");
 
             if (!newStructSpec.is(KindOfArray)) {
               thrift_error("invalid type of spec", ERR_INVALID_DATA);
@@ -626,7 +660,11 @@ class CompactReader {
             } u;
 
             transport.readBytes(&(u.i), 8);
-            u.i = ntohll(u.i);
+            if (version >= VERSION_DOUBLE_BE) {
+              u.i = ntohll(u.i);
+            } else {
+              u.i = letohll(u.i);
+            }
             return u.d;
           }
 
@@ -659,7 +697,7 @@ class CompactReader {
             readStructBegin();
 
             while (true) {
-              uint16_t fieldNum;
+              int16_t fieldNum;
               TType fieldType;
               readFieldBegin(fieldNum, fieldType);
 
@@ -846,14 +884,11 @@ class CompactReader {
       uint32_t size = readVarint();
 
       if (size && (size + 1)) {
-        char* buf = (char*) malloc(size + 1);
-        if (!buf) {
-          thrift_error("unable to allocate string", ERR_UNKNOWN);
-        }
+        String s = String(size, ReserveString);
+        char* buf = s.mutableSlice().ptr;
 
         transport.readBytes(buf, size);
-        buf[size] = '\0';
-        return String(buf, size, AttachString);
+        return s.setSize(size);
       } else {
         transport.skip(size);
         return "";
@@ -874,12 +909,19 @@ class CompactReader {
 
 };
 
+int f_thrift_protocol_set_compact_version(int version) {
+  int result = s_compact_request_data->version;
+  s_compact_request_data->version = (uint8_t)version;
+  return result;
+}
+
 void f_thrift_protocol_write_compact(CObjRef transportobj,
                                      CStrRef method_name,
                                      int64 msgtype,
                                      CObjRef request_struct,
                                      int seqid) {
   CompactWriter writer(transportobj);
+  writer.setWriteVersion(s_compact_request_data->version);
   writer.writeHeader(method_name, (uint8_t)msgtype, (uint32_t)seqid);
   writer.write(request_struct);
 }

@@ -31,8 +31,6 @@
 #include <runtime/ext/ext_misc.h>
 
 using namespace HPHP;
-using namespace std;
-using namespace boost;
 
 ///////////////////////////////////////////////////////////////////////////////
 // constructors/destructors
@@ -42,12 +40,13 @@ ConstantExpression::ConstantExpression
  const string &name, const string &docComment)
   : Expression(EXPRESSION_CONSTRUCTOR_PARAMETER_VALUES(ConstantExpression)),
     m_name(name), m_docComment(docComment),
-    m_valid(false), m_dynamic(false), m_visited(false) {
+    m_valid(false), m_dynamic(false), m_visited(false), m_depsSet(false) {
 }
 
 ExpressionPtr ConstantExpression::clone() {
   ConstantExpressionPtr exp(new ConstantExpression(*this));
   Expression::deepCopy(exp);
+  m_depsSet = false;
   return exp;
 }
 
@@ -61,14 +60,18 @@ bool ConstantExpression::isLiteralNull() const {
   return isNull();
 }
 
+bool ConstantExpression::isNull() const {
+  string lower = Util::toLower(m_name);
+  return (lower == "null");
+}
+
 bool ConstantExpression::isBoolean() const {
   string lower = Util::toLower(m_name);
   return (lower == "true" || lower == "false");
 }
 
-bool ConstantExpression::isNull() const {
-  string lower = Util::toLower(m_name);
-  return (lower == "null");
+bool ConstantExpression::isDouble() const {
+  return (m_name == "INF" || m_name == "NAN");
 }
 
 bool ConstantExpression::getBooleanValue() const {
@@ -134,20 +137,9 @@ void ConstantExpression::analyzeProgram(AnalysisResultPtr ar) {
         } else {
           ConstructPtr decl = sym->getDeclaration();
           if (decl) {
-            if (!decl->getScope()) {
-              /*
-                this only happens if a define is parsed, but a
-                later syntax error in the same file prevents
-                completeScope being called on the scope containing
-                the define.
-                Might be better to catch this in the parser...
-              */
-              sym->setDeclaration(ExpressionPtr());
-              sym->setValue(ExpressionPtr());
-            } else {
-              decl->getScope()->addUse(
-                getScope(), BlockScope::UseKindConstRef);
-            }
+            decl->getScope()->addUse(
+              getScope(), BlockScope::UseKindConstRef);
+            m_depsSet = true;
           }
         }
       }
@@ -176,7 +168,14 @@ ExpressionPtr ConstantExpression::preOptimize(AnalysisResultConstPtr ar) {
     ExpressionPtr value = dynamic_pointer_cast<Expression>(sym->getValue());
     if (!sym->isSystem()) BlockScope::s_constMutex.unlock();
 
-    if (!value || !value->isScalar()) break;
+    if (!value || !value->isScalar()) {
+      if (!m_depsSet && sym->getDeclaration()) {
+        sym->getDeclaration()->getScope()->addUse(
+          getScope(), BlockScope::UseKindConstRef);
+        m_depsSet = true;
+      }
+      break;
+    }
 
     Variant scalarValue;
     if (value->getScalarValue(scalarValue) &&
@@ -198,9 +197,6 @@ ExpressionPtr ConstantExpression::preOptimize(AnalysisResultConstPtr ar) {
     rep->setComment(getText());
     Option::FlAnnotate = annotate;
     rep->setLocation(getLocation());
-    if (!sym->isSystem() && !value->is(KindOfScalarExpression)) {
-      value->getScope()->addUse(getScope(), BlockScope::UseKindConstRef);
-    }
     return replaceValue(rep);
   }
 

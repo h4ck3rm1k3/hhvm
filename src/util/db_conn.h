@@ -20,6 +20,7 @@
 #include "db_dataset.h"
 #include "exception.h"
 #include "mutex.h"
+#include "async_job.h"
 
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
@@ -31,6 +32,7 @@ public:
     va_list ap; va_start(ap, fmt); format(fmt, ap); va_end(ap);
   }
   int m_code;
+  EXCEPTION_COMMON_IMPL(DatabaseException);
 };
 
 class DBConnectionException : public DatabaseException {
@@ -40,6 +42,7 @@ public:
       : DatabaseException(code, "Failed to connect to %s %s: %s (%d)",
                           ip, database, msg, code) {
   }
+  EXCEPTION_COMMON_IMPL(DBConnectionException);
 };
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -48,6 +51,13 @@ public:
  * What it takes to connect to a MySQL server.
  */
 DECLARE_BOOST_TYPES(ServerData);
+DECLARE_BOOST_TYPES(DBConnQueryJob);
+template <> class WorkerInfo<DBConnQueryJob> {
+ public:
+  enum { DoInit = false };
+};
+
+typedef std::vector<std::pair<std::string, std::string> > SessionVariableVec;
 
 class ServerData {
  public:
@@ -64,14 +74,17 @@ class ServerData {
 
  public:
   ServerData();
-  ServerData(const char *ip, const char *database, int port = 0,
-             const char *username = NULL, const char *password = NULL);
+  ServerData(const char *ip, const char *database, int port,
+             const char *username, const char *password,
+             const SessionVariableVec &sessionVariables);
 
   const std::string &getIP() const { return m_ip;}
   int getPort() const;
   const std::string &getUserName() const;
   const std::string &getPassword() const;
   const std::string &getDatabase() const { return m_database;}
+  const SessionVariableVec &getSessionVariables() const
+    { return m_sessionVariables; }
 
  private:
   std::string m_ip;
@@ -79,6 +92,7 @@ class ServerData {
   std::string m_username;
   std::string m_password;
   std::string m_database;
+  SessionVariableVec m_sessionVariables;
 };
 
 typedef std::pair<ServerDataPtr, std::string> ServerQuery;
@@ -167,7 +181,8 @@ class DBConn {
 
   static void ClearLocalDatabases();
   static void AddLocalDB(int dbId, const char *ip, const char *db,
-                         int port, const char *username, const char *password);
+                         int port, const char *username, const char *password,
+                         const SessionVariableVec &sessionVariables);
 
  private:
   static Mutex s_mutex;
@@ -180,42 +195,8 @@ class DBConn {
   unsigned int m_readTimeout;
   int m_maxRetryOpenOnFail;
   int m_maxRetryQueryOnFail;
-  DECLARE_BOOST_TYPES(QueryJob);
-  class QueryJob {
-  public:
-    QueryJob(ServerDataPtr server, const std::string sql, int index,
-             Mutex &mutex, DBDataSet &dsResult, bool retryQueryOnFail,
-             unsigned int readTimeout, unsigned int connectTimeout,
-             int maxRetryOpenOnFail, int maxRetryQueryOnFail)
-      : m_server(server), m_sql(sql), m_index(index),
-        m_affected(0), m_dsMutex(&mutex), m_dsResult(&dsResult),
-        m_retryQueryOnFail(retryQueryOnFail), m_connectTimeout(connectTimeout),
-        m_readTimeout(readTimeout),
-        m_maxRetryOpenOnFail(maxRetryOpenOnFail),
-        m_maxRetryQueryOnFail(maxRetryQueryOnFail) {}
 
-    ServerDataPtr m_server;
-    std::string m_sql;
-    int m_index;
-    int m_affected;
-    Mutex *m_dsMutex;
-    DBDataSet *m_dsResult;
-    ErrorInfo m_error;
-    bool m_retryQueryOnFail;
-    int m_connectTimeout;
-    int m_readTimeout;
-    int m_maxRetryOpenOnFail;
-    int m_maxRetryQueryOnFail;
-  };
-
-  class QueryWorker {
-  public:
-    void onThreadEnter() {}
-    void doJob(QueryJobPtr job);
-    void onThreadExit() { mysql_thread_end();}
-  };
-
-  static int parallelExecute(QueryJobPtrVec &jobs, ErrorInfoMap &errors,
+  static int parallelExecute(DBConnQueryJobPtrVec &jobs, ErrorInfoMap &errors,
                              int maxThread);
 };
 

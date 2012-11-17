@@ -49,9 +49,11 @@ public:
     IsPrivate              = (1 <<  8), //           x             x
     IsStatic               = (1 <<  9), //           x             x
     IsInherited            = (1 << 10), //                         x
-
+    HasCall                = IsPublic,  //    x
+    HasCallStatic          = IsProtected,//   x
+    IgnoreRedefinition     = IsPrivate, //                  x
     IsReference            = (1 << 11), //                  x      x     x
-    IsOptional             = (1 << 12), //                               x
+    IsConstructor          = (1 << 12), //                         x
 
     // need a non-zero number for const char * maps
     IsNothing              = (1 << 13),
@@ -79,6 +81,15 @@ public:
     HasAliasedMethods      = (1u << 31),//    x
   };
 
+  enum GetArrayKind {
+    GetArrayNone = 0,
+    GetArrayPrivate = 1,
+    GetArrayDynamic = 2,
+
+    GetArrayAll = GetArrayPrivate|GetArrayDynamic,
+    GetArrayPublic = GetArrayDynamic
+  };
+
   class ConstantInfo {
   public:
     ConstantInfo();
@@ -98,25 +109,41 @@ public:
     std::string svalue; // serialized, only used by eval
   };
 
+  class UserAttributeInfo {
+  public:
+    UserAttributeInfo();
+
+    String name;
+
+    Variant getValue() const;
+    void setStaticValue(CVarRef value);
+
+  private:
+    Variant value;
+  };
+
   struct ParameterInfo {
+    ~ParameterInfo();
     Attribute attribute;
     const char *name;
     const char *type;      // hinted type
     const char *value;     // serialized default value
     const char *valueText; // original PHP code
+    std::vector<const UserAttributeInfo *> userAttrs;
   };
 
-  class MethodInfo {
-  public:
+  struct MethodInfo {
     MethodInfo() : docComment(NULL) {}
+    MethodInfo(const char **&p);
     ~MethodInfo();
+    MethodInfo *getDeclared();
     Attribute attribute;
+    int volatile_redec_offset;
     String name;
-    Variant (**invokeFn)(const Array& params);
-    Variant (*invokeFailedFn)(const Array& params);
 
     std::vector<const ParameterInfo *> parameters;
     std::vector<const ConstantInfo *> staticVariables;
+    std::vector<const UserAttributeInfo *> userAttrs;
 
     const char *docComment;
     const char *file;
@@ -146,6 +173,7 @@ public:
   typedef std::vector<PropertyInfo *>             PropertyVec;
   typedef StringMap<ConstantInfo *>               ConstantMap;
   typedef std::vector<ConstantInfo *>             ConstantVec;
+  typedef std::vector<UserAttributeInfo *>        UserAttributeVec;
   typedef std::vector<std::pair<String, String> > TraitAliasVec;
 
 public:
@@ -167,17 +195,17 @@ public:
   /**
    * Locate one function.
    */
+  static const MethodInfo *FindSystemFunction(CStrRef name);
   static const MethodInfo *FindFunction(CStrRef name);
 
   /**
    * Return a list of declared classes.
    */
-  static Array GetClasses(bool declaredOnly);
+  static Array GetClasses() { return GetClassLike(IsInterface|IsTrait, 0); }
 
-  /**
-   * Whether a class exists, without considering interfaces.
-   */
-  static bool HasClass(CStrRef name);
+  static bool HasClassInterfaceOrTrait(CStrRef name) {
+    return FindClassInterfaceOrTrait(name);
+  }
 
   /**
    * Locate one class.
@@ -185,24 +213,19 @@ public:
   static const ClassInfo *FindClass(CStrRef name);
 
   /**
+   * Locate one system class.
+   */
+  static const ClassInfo *FindSystemClass(CStrRef name);
+
+  /**
    * Return a list of declared interfaces.
    */
-  static Array GetInterfaces(bool declaredOnly);
+  static Array GetInterfaces() { return GetClassLike(IsInterface, IsInterface); }
 
   /**
    * Return a list of declared traits.
    */
-  static Array GetTraits(bool declaredOnly);
-
-  /**
-   * Whether an interface exists.
-   */
-  static bool HasInterface(CStrRef name);
-
-  /**
-   * Whether a trait exists.
-   */
-  static bool HasTrait(CStrRef name);
+  static Array GetTraits() { return GetClassLike(IsTrait, IsTrait); }
 
   /**
    * Locate one interface.
@@ -210,14 +233,29 @@ public:
   static const ClassInfo *FindInterface(CStrRef name);
 
   /**
+   * Locate one system interface.
+   */
+  static const ClassInfo *FindSystemInterface(CStrRef name);
+
+  /**
    * Locate one trait.
    */
   static const ClassInfo *FindTrait(CStrRef name);
 
   /**
+   * Locate one system trait.
+   */
+  static const ClassInfo *FindSystemTrait(CStrRef name);
+
+  /**
    * Locate either a class, interface, or trait.
    */
   static const ClassInfo *FindClassInterfaceOrTrait(CStrRef name);
+
+  /**
+   * Locate either a system class, system interface, or system trait.
+   */
+  static const ClassInfo *FindSystemClassInterfaceOrTrait(CStrRef name);
 
   /**
    * Locate one constant (excluding dynamic and redeclared constants)
@@ -234,7 +272,8 @@ public:
    * interfaces.
    *   type: 0: unknown; 1: class; 2: interface
    */
-  static void GetClassMethods(MethodVec &ret, CStrRef classname, int type = 0);
+  static bool GetClassMethods(MethodVec &ret, CStrRef classname, int type = 0);
+  static bool GetClassMethods(MethodVec &ret, const ClassInfo *classInfo);
 
   /**
    * Return all properties a class has, including the ones on base classes and
@@ -242,6 +281,12 @@ public:
    */
   static void GetClassProperties(PropertyMap &props, CStrRef classname);
   static void GetClassProperties(PropertyVec &props, CStrRef classname);
+
+  /**
+   * Read user attributes in from the class map.
+   */
+  static void ReadUserAttributes(const char **&p,
+                                 std::vector<const UserAttributeInfo*> &attrs);
 
   /**
    * Return lists of names for auto-complete purposes.
@@ -259,37 +304,39 @@ public:
                              std::vector<String> *clsConstants);
 
   static void GetArray(const ObjectData *obj, const ClassPropTable *ct,
-                       Array &props, bool pubOnly);
-  static void SetArray(ObjectData *obj, const ClassPropTable *ct, CArrRef props);
+                       Array &props, GetArrayKind kind);
+  static void GetArray(const ObjectData *obj, const ClassPropTable *ct,
+                       Array &props, bool pubOnly) {
+    GetArray(obj, ct, props, pubOnly ? GetArrayPublic : GetArrayAll);
+  }
+  static void SetArray(ObjectData *obj, const ClassPropTable *ct,
+                       CArrRef props);
   static void SetHook(ClassInfoHook *hook) { s_hook = hook; }
 
 public:
-  ClassInfo() : m_docComment(NULL), m_parentCache(NULL) {}
+  ClassInfo() : m_cdec_offset(0), m_docComment(NULL) {}
   virtual ~ClassInfo() {}
 
-  Attribute getAttribute() const { return getCurrent()->m_attribute;}
-  const char *getFile() const { return getCurrent()->m_file;}
-  int getLine1() const { return getCurrent()->m_line1;}
-  int getLine2() const { return getCurrent()->m_line2;}
+  inline const ClassInfo *checkCurrent() const {
+    ASSERT(!(m_attribute & IsRedeclared));
+    return this;
+  }
+
+  Attribute getAttribute() const { return checkCurrent()->m_attribute;}
+  const char *getFile() const { return checkCurrent()->m_file;}
+  int getLine1() const { return checkCurrent()->m_line1;}
+  int getLine2() const { return checkCurrent()->m_line2;}
+  virtual const ClassInfo* getCurrentOrNull() const { return this; }
   virtual CStrRef getName() const { return m_name;}
   const char *getDocComment() const { return m_docComment; }
-  virtual const ClassInfo *getCurrent() const { return this; }
-  virtual bool isClassInfoRedeclared() const { return false; }
-  /**
-   * Whether or not declaration is executed.
-   */
-  bool isDeclared() const;
+
+  virtual void postInit();
 
   /**
    * Parents of this class.
    */
   virtual CStrRef getParentClass() const = 0;
-  const ClassInfo *getParentClassInfo() const {
-    if (m_parentCache) return m_parentCache;
-    CStrRef parentName = getParentClass();
-    if (parentName.empty()) return NULL;
-    return m_parentCache = FindClass(parentName);
-  }
+  const ClassInfo *getParentClassInfo() const;
   virtual const InterfaceSet &getInterfaces() const = 0;
   virtual const InterfaceVec &getInterfacesVec() const = 0;
   virtual const TraitSet &getTraits() const = 0;
@@ -335,27 +382,31 @@ public:
   ConstantInfo *getConstantInfo(CStrRef name) const;
   bool hasConstant(CStrRef name) const;
 
+  virtual const UserAttributeVec &getUserAttributeVec() const = 0;
+
 protected:
   static bool s_loaded;            // whether class map is loaded
   static ClassInfo *s_systemFuncs; // all system functions
   static ClassInfo *s_userFuncs;   // all user functions
-  static ClassMap s_classes;       // all classes
-  static ClassMap s_interfaces;    // all interfaces
-  static ClassMap s_traits;        // all traits
 
   static ClassInfoHook *s_hook;
 
   Attribute m_attribute;
+  int m_cdec_offset;
   String m_name;
   const char *m_file;
   int m_line1;
   int m_line2;
   const char *m_docComment;
-  mutable const ClassInfo *m_parentCache; // cache the found parent class
 
   bool derivesFromImpl(CStrRef name, bool considerInterface) const;
   bool checkAccess(ClassInfo *defClass, MethodInfo *methodInfo,
                    bool staticCall, bool hasObject) const;
+
+private:
+  static ClassMap s_class_like;       // all classes, interfaces and traits
+  static Array GetClassLike(unsigned mask, unsigned value);
+  const ClassInfo *getDeclared() const;
 };
 
 /**
@@ -368,9 +419,11 @@ public:
    * Read one class's information from specified map pointer and move it.
    */
   ClassInfoUnique(const char **&p);
+  virtual ~ClassInfoUnique();
 
   // implementing ClassInfo
   CStrRef getParentClass() const { return m_parent;}
+  const ClassInfo *getParentClassInfo() const;
   const InterfaceSet &getInterfaces() const { return m_interfaces;}
   const InterfaceVec &getInterfacesVec() const { return m_interfacesVec;}
   const TraitSet &getTraits() const { return m_traits;}
@@ -382,9 +435,13 @@ public:
   const PropertyVec &getPropertiesVec() const { return m_propertiesVec;}
   const ConstantMap &getConstants() const { return m_constants;}
   const ConstantVec &getConstantsVec() const { return m_constantsVec;}
+  const UserAttributeVec &getUserAttributeVec() const { return m_userAttrVec;}
+
+  virtual void postInit();
 
 private:
   String        m_parent;          // parent class name
+  const ClassInfo *m_parentInfo;   // parent class info (or null)
   InterfaceSet  m_interfaces;      // all interfaces
   InterfaceVec  m_interfacesVec;   // all interfaces in declaration order
   TraitSet      m_traits;          // all used traits
@@ -396,6 +453,7 @@ private:
   PropertyVec   m_propertiesVec;   // all properties in declaration order
   ConstantMap   m_constants;       // all constants
   ConstantVec   m_constantsVec;    // all constants in declaration order
+  UserAttributeVec m_userAttrVec;
 };
 
 /**
@@ -409,8 +467,6 @@ public:
   ClassInfoRedeclared(const char **&p);
 
   // implementing ClassInfo
-  virtual const ClassInfo *getCurrent() const { return current(); }
-  virtual bool isClassInfoRedeclared() const { return true; }
   virtual CStrRef getName() const { return current()->getName();}
   CStrRef getParentClass() const { return current()->getParentClass();}
 
@@ -447,18 +503,18 @@ public:
   const ConstantVec &getConstantsVec() const {
     return current()->getConstantsVec();
   }
+  const UserAttributeVec &getUserAttributeVec() const {
+    return current()->getUserAttributeVec();
+  }
 
+  virtual void postInit();
 private:
   std::vector<ClassInfo*> m_redeclaredClasses;
-  int (*m_redeclaredIdGetter)();
+  int m_redeclaredIdOffset;
 
+  const ClassInfo* getCurrentOrNull() const;
   const ClassInfo* current() const {
-    int id = m_redeclaredIdGetter();
-    if (id >= 0) {
-      return m_redeclaredClasses[id];
-    }
-    // Not sure what to do
-    return this;
+    not_reached();
   }
 };
 
@@ -475,14 +531,12 @@ public:
   virtual Array getTraits() const = 0;
   virtual Array getConstants() const = 0;
   virtual const ClassInfo::MethodInfo *findFunction(CStrRef name) const = 0;
-  virtual const ClassInfo *findClass(CStrRef name) const = 0;
-  virtual const ClassInfo *findInterface(CStrRef name) const = 0;
-  virtual const ClassInfo *findTrait(CStrRef name) const = 0;
+  virtual const ClassInfo *findClassLike(CStrRef name) const = 0;
   virtual const ClassInfo::ConstantInfo *findConstant(CStrRef name) const = 0;
 };
 
 struct ClassPropTableEntry {
-  enum {
+  enum PropFlags {
     Private = 1,
     Protected = 2,
     Public = 4,
@@ -493,13 +547,13 @@ struct ClassPropTableEntry {
     FastInit = 128
   };
 
-  int64         hash;
-  int           next;
-  int           init_offset;
-  uint16        prop_offset;
-  uint8         flags;
-  uint8         type;
-  int           offset;
+  strhash_t     hash;
+  int16_t       next;
+  uint16_t      init_offset; // change to uint32 if we overflow
+  uint16_t      prop_offset;
+  uint8_t       flags; // PropFlags
+  int8_t        type;  // DataType
+  int32_t       offset;
   StaticString *keyName;
   bool isPublic() const { return flags & Public; }
   bool isPrivate() const { return flags & Private; }
@@ -509,12 +563,10 @@ struct ClassPropTableEntry {
   bool isLast() const { return flags & Last; }
   bool isFastInit() const { return flags & FastInit; }
 
-  static Variant GetVariant(int type, const void *addr) {
+  static Variant GetVariant(DataType type, const void *addr) {
     switch (type) {
       case KindOfBoolean:
         return *(bool*)addr;
-      case KindOfInt32:
-        return *(int*)addr;
       case KindOfInt64:
         return *(int64*)addr;
       case KindOfDouble:
@@ -532,7 +584,7 @@ struct ClassPropTableEntry {
   }
 
   Variant getVariant(const void *addr) const {
-    return GetVariant(type, addr);
+    return GetVariant(DataType(type), addr);
   }
 };
 

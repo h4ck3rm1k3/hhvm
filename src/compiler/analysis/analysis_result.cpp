@@ -29,6 +29,8 @@
 #include <compiler/statement/if_branch_statement.h>
 #include <compiler/statement/method_statement.h>
 #include <compiler/statement/loop_statement.h>
+#include <compiler/statement/class_variable.h>
+#include <compiler/statement/use_trait_statement.h>
 #include <compiler/analysis/symbol_table.h>
 #include <compiler/package.h>
 #include <compiler/parser/parser.h>
@@ -42,7 +44,6 @@
 #include <compiler/expression/expression_list.h>
 #include <compiler/expression/array_pair_expression.h>
 #include <runtime/base/rtti_info.h>
-#include <runtime/base/array/small_array.h>
 #include <runtime/ext/ext_json.h>
 #include <runtime/base/zend/zend_printf.h>
 #include <util/atomic.h>
@@ -54,8 +55,12 @@
 #include <util/timer.h>
 
 using namespace HPHP;
-using namespace std;
-using namespace boost;
+using std::map;
+using std::set;
+using std::ostringstream;
+using std::ofstream;
+using std::ifstream;
+using std::pair;
 
 ///////////////////////////////////////////////////////////////////////////////
 // initialization
@@ -134,11 +139,14 @@ void AnalysisResult::parseOnDemand(const std::string &name) const {
     if (name.find(root) == 0) {
       rname = name.substr(root.length());
     }
-    if (m_files.find(rname) == m_files.end() &&
-        (m_parseOnDemand || inParseOnDemandDirs(rname)) &&
+    if ((m_parseOnDemand || inParseOnDemandDirs(rname)) &&
         Option::PackageExcludeFiles.find(rname) ==
         Option::PackageExcludeFiles.end() &&
         !Option::IsFileExcluded(rname, Option::PackageExcludePatterns)) {
+      {
+        Locker l(this);
+        if (m_files.find(rname) != m_files.end()) return;
+      }
       m_package->addSourceFile(rname.c_str());
     }
   }
@@ -154,25 +162,15 @@ FileScopePtr AnalysisResult::findFileScope(const std::string &name) const {
 
 FunctionScopePtr AnalysisResult::findFunction(
   const std::string &funcName) const {
-  StringToFunctionScopePtrVecMap::const_iterator bit =
+  StringToFunctionScopePtrMap::const_iterator bit =
     m_functions.find(funcName);
   if (bit != m_functions.end()) {
-    return bit->second[0];
+    return bit->second;
   }
-  StringToFunctionScopePtrVecMap::const_iterator iter =
+  StringToFunctionScopePtrMap::const_iterator iter =
     m_functionDecs.find(funcName);
   if (iter != m_functionDecs.end()) {
-    return iter->second.back();
-  }
-  return FunctionScopePtr();
-}
-
-FunctionScopePtr AnalysisResult::findHelperFunction(const std::string &
-                                                    funcName) const {
-  StringToFunctionScopePtrVecMap::const_iterator bit =
-    m_helperFunctions.find(funcName);
-  if (bit != m_helperFunctions.end()) {
-    return bit->second[0];
+    return iter->second;
   }
   return FunctionScopePtr();
 }
@@ -234,8 +232,6 @@ ClassScopePtr AnalysisResult::findClass(const std::string &name,
 
 const ClassScopePtrVec &AnalysisResult::findRedeclaredClasses
 (const std::string &name) const {
-  ASSERT(name == Util::toLower(name));
-
   StringToClassScopePtrVecMap::const_iterator iter = m_classDecs.find(name);
   if (iter == m_classDecs.end()) {
     static ClassScopePtrVec empty;
@@ -246,8 +242,6 @@ const ClassScopePtrVec &AnalysisResult::findRedeclaredClasses
 }
 
 ClassScopePtrVec AnalysisResult::findClasses(const std::string &name) const {
-  ASSERT(name == Util::toLower(name));
-
   StringToClassScopePtrMap::const_iterator sysIter =
     m_systemClasses.find(name);
   if (sysIter != m_systemClasses.end()) {
@@ -269,24 +263,13 @@ ClassScopePtr AnalysisResult::findExactClass(ConstructPtr cs,
                                              const std::string &name) const {
   ClassScopePtr cls = findClass(name);
   if (!cls || !cls->isRedeclaring()) return cls;
-  std::string lowerName = Util::toLower(name);
   if (ClassScopePtr currentCls = cs->getClassScope()) {
-    if (lowerName == currentCls->getName()) {
+    if (cls->getName() == currentCls->getName()) {
       return currentCls;
     }
   }
   if (FileScopePtr currentFile = cs->getFileScope()) {
-    StatementList &stmts = *currentFile->getStmt();
-    for (int i = stmts.getCount(); i--; ) {
-      StatementPtr s = stmts[i];
-      if (s && s->is(Statement::KindOfClassStatement)) {
-        ClassScopeRawPtr scope =
-          static_pointer_cast<ClassStatement>(s)->getClassScope();
-        if (lowerName == scope->getName()) {
-          return scope;
-        }
-      }
-    }
+    return currentFile->resolveClass(cls);
   }
   return ClassScopePtr();
 }
@@ -351,11 +334,14 @@ void AnalysisResult::countReturnTypes(std::map<std::string, int> &counts) {
 // static analysis functions
 
 bool AnalysisResult::declareFunction(FunctionScopePtr funcScope) const {
-  ASSERT(m_phase <= AnalyzeInclude);
+  ASSERT(m_phase < AnalyzeAll);
 
   string fname = funcScope->getName();
   // System functions override
   if (m_functions.find(fname) != m_functions.end()) {
+    // we need someone to hold on to a reference to it
+    // even though we're not going to do anything with it
+    this->lock()->m_ignoredScopes.push_back(funcScope);
     return false;
   }
 
@@ -363,11 +349,14 @@ bool AnalysisResult::declareFunction(FunctionScopePtr funcScope) const {
 }
 
 bool AnalysisResult::declareClass(ClassScopePtr classScope) const {
-  ASSERT(m_phase <= AnalyzeInclude);
+  ASSERT(m_phase < AnalyzeAll);
 
   string cname = classScope->getName();
   // System classes override
   if (m_systemClasses.find(cname) != m_systemClasses.end()) {
+    // we need someone to hold on to a reference to it
+    // even though we're not going to do anything with it
+    this->lock()->m_ignoredScopes.push_back(classScope);
     return false;
   }
 
@@ -383,7 +372,6 @@ bool AnalysisResult::declareClass(ClassScopePtr classScope) const {
 }
 
 void AnalysisResult::declareUnknownClass(const std::string &name) {
-  ASSERT(name == Util::toLower(name));
   m_classDecs.operator[](name);
 }
 
@@ -406,28 +394,6 @@ static bool by_source(const BlockScopePtr &b1, const BlockScopePtr &b2) {
 void AnalysisResult::canonicalizeSymbolOrder() {
   getConstants()->canonicalizeSymbolOrder();
   getVariables()->canonicalizeSymbolOrder();
-
-  for (StringToFunctionScopePtrVecMap::iterator iter = m_functions.begin();
-       iter != m_functions.end(); ++iter) {
-    FunctionScopePtrVec &funcs = iter->second;
-    if (funcs.size() > 1) {
-      sort(funcs.begin(), funcs.end(), by_source);
-    }
-  }
-
-  for (StringToFunctionScopePtrVecMap::iterator iter = m_functionDecs.begin();
-       iter != m_functionDecs.end(); ++iter) {
-    const string &fname = iter->first;
-    FunctionScopePtrVec &funcs = iter->second;
-    if (funcs.size() > 1 ||
-        Option::DynamicInvokeFunctions.find(fname) !=
-        Option::DynamicInvokeFunctions.end()) {
-      sort(funcs.begin(), funcs.end(), by_source);
-      for (unsigned int i = 0; i < funcs.size(); i++) {
-        funcs[i]->setRedeclaring(i);
-      }
-    }
-  }
 
   AnalysisResultPtr ar = shared_from_this();
   for (StringToClassScopePtrVecMap::iterator iter = m_classDecs.begin();
@@ -462,8 +428,12 @@ bool AnalysisResult::addClassDependency(FileScopePtr usingFile,
 
   StringToClassScopePtrVecMap::const_iterator iter =
     m_classDecs.find(className);
-  if (iter == m_classDecs.end() || iter->second.size() != 1) return false;
+  if (iter == m_classDecs.end() || !iter->second.size()) return false;
   ClassScopePtr classScope = iter->second[0];
+  if (iter->second.size() != 1) {
+    classScope = usingFile->resolveClass(classScope);
+    if (!classScope) return false;
+  }
   FileScopePtr fileScope = classScope->getContainingFile();
   link(usingFile, fileScope);
   return true;
@@ -474,15 +444,19 @@ bool AnalysisResult::addFunctionDependency(FileScopePtr usingFile,
   if (BuiltinSymbols::s_functions.find(functionName) !=
       BuiltinSymbols::s_functions.end())
     return true;
-  StringToFunctionScopePtrVecMap::const_iterator iter =
+  StringToFunctionScopePtrMap::const_iterator iter =
     m_functionDecs.find(functionName);
-  if (iter == m_functionDecs.end() ||
-      iter->second.size() != 1) return false;
-  FunctionScopePtr functionScope = iter->second[0];
+  if (iter == m_functionDecs.end()) return false;
+  FunctionScopePtr functionScope = iter->second;
+  if (functionScope->isRedeclaring()) {
+    functionScope = usingFile->resolveFunction(functionScope);
+    if (!functionScope) return false;
+  }
   FileScopePtr fileScope = functionScope->getContainingFile();
   link(usingFile, fileScope);
   return true;
 }
+
 bool AnalysisResult::addIncludeDependency(FileScopePtr usingFile,
                                           const std::string &includeFilename) {
   ASSERT(!includeFilename.empty());
@@ -533,13 +507,11 @@ bool AnalysisResult::isSystemConstant(const std::string &constName) const {
 void AnalysisResult::loadBuiltinFunctions() {
   AnalysisResultPtr ar = shared_from_this();
   BuiltinSymbols::LoadFunctions(ar, m_functions);
-  BuiltinSymbols::LoadHelperFunctions(ar, m_helperFunctions);
 }
 
 void AnalysisResult::loadBuiltins() {
   AnalysisResultPtr ar = shared_from_this();
   BuiltinSymbols::LoadFunctions(ar, m_functions);
-  BuiltinSymbols::LoadHelperFunctions(ar, m_helperFunctions);
   BuiltinSymbols::LoadClasses(ar, m_systemClasses);
   BuiltinSymbols::LoadVariables(ar, m_variables);
   BuiltinSymbols::LoadConstants(ar, m_constants);
@@ -551,21 +523,54 @@ void AnalysisResult::checkClassDerivations() {
   for (StringToClassScopePtrVecMap::const_iterator iter = m_classDecs.begin();
        iter != m_classDecs.end(); ++iter) {
     BOOST_FOREACH(cls, iter->second) {
-      hphp_string_set seen;
+      hphp_string_iset seen;
       cls->checkDerivation(ar, seen);
+      if (Option::WholeProgram || !Option::OutputHHBC) {
+        cls->importUsedTraits(ar);
+      }
     }
   }
 }
 
 void AnalysisResult::collectFunctionsAndClasses(FileScopePtr fs) {
-  const StringToFunctionScopePtrVecMap &funcs = fs->getFunctions();
-  for (StringToFunctionScopePtrVecMap::const_iterator iter = funcs.begin();
+  const StringToFunctionScopePtrMap &funcs = fs->getFunctions();
+
+  for (StringToFunctionScopePtrMap::const_iterator iter = funcs.begin();
        iter != funcs.end(); ++iter) {
-    for (unsigned int i = 0; i < iter->second.size(); i++) {
-      FunctionScopePtr func = iter->second[i];
-      if (!func->inPseudoMain()) {
-        FunctionScopePtrVec &funcVec = m_functionDecs[iter->first];
+    FunctionScopePtr func = iter->second;
+    if (!func->inPseudoMain()) {
+      FunctionScopePtr &funcDec = m_functionDecs[iter->first];
+      if (funcDec) {
+        FunctionScopePtrVec &funcVec = m_functionReDecs[iter->first];
+        int sz = funcVec.size();
+        if (!sz) {
+          funcDec->setRedeclaring(sz++);
+          funcVec.push_back(funcDec);
+        }
+        func->setRedeclaring(sz++);
         funcVec.push_back(func);
+      } else {
+        funcDec = func;
+      }
+    }
+  }
+
+  if (const StringToFunctionScopePtrVecMap *redec = fs->getRedecFunctions()) {
+    for (StringToFunctionScopePtrVecMap::const_iterator iter = redec->begin();
+         iter != redec->end(); ++iter) {
+      FunctionScopePtrVec::const_iterator i = iter->second.begin();
+      FunctionScopePtrVec::const_iterator e = iter->second.end();
+      FunctionScopePtr &funcDec = m_functionDecs[iter->first];
+      ASSERT(funcDec); // because the first one was in funcs above
+      FunctionScopePtrVec &funcVec = m_functionReDecs[iter->first];
+      int sz = funcVec.size();
+      if (!sz) {
+        funcDec->setRedeclaring(sz++);
+        funcVec.push_back(funcDec);
+      }
+      while (++i != e) { // we already added the first one
+        (*i)->setRedeclaring(sz++);
+        funcVec.push_back(*i);
       }
     }
   }
@@ -593,7 +598,6 @@ void AnalysisResult::analyzeProgram(bool system /* = false */) {
 
   // Analyze Includes
   Logger::Verbose("Analyzing Includes");
-  setPhase(AnalysisResult::AnalyzeInclude);
   sort(m_fileScopes.begin(), m_fileScopes.end(), by_filename); // fixed order
   unsigned int i = 0;
   for (i = 0; i < m_fileScopes.size(); i++) {
@@ -612,8 +616,6 @@ void AnalysisResult::analyzeProgram(bool system /* = false */) {
     }
   }
 
-  // I think we need one more round of checking, as new includes may bring in
-  // more classes.
   checkClassDerivations();
 
   // Analyze All
@@ -623,33 +625,49 @@ void AnalysisResult::analyzeProgram(bool system /* = false */) {
     m_fileScopes[i]->analyzeProgram(ar);
   }
 
-  // Collect methods
-  string cname;
+  /*
+    Note that cls->collectMethods() can add entries to m_classDecs,
+    which can invalidate iterators. So we have to create an array
+    and then iterate over that.
+    The new entries added to m_classDecs are always empty, so it
+    doesnt matter that we dont include them in the iteration
+  */
   ClassScopePtr cls;
+  std::vector<ClassScopePtr> classes;
+  classes.reserve(m_classDecs.size());
   for (StringToClassScopePtrVecMap::const_iterator iter = m_classDecs.begin();
        iter != m_classDecs.end(); ++iter) {
     BOOST_FOREACH(cls, iter->second) {
-      if (cls->isRedeclaring()) {
-        cls->setStaticDynamic(ar);
-      }
-      StringToFunctionScopePtrMap methods;
-      cls->collectMethods(ar, methods);
-      bool needAbstractMethodImpl =
-        (!cls->isAbstract() && !cls->isInterface());
-      for (StringToFunctionScopePtrMap::const_iterator iterMethod =
-           methods.begin(); iterMethod != methods.end(); ++iterMethod) {
-        FunctionScopePtr func = iterMethod->second;
-        if (!func->hasImpl() && needAbstractMethodImpl) {
-          FunctionScopePtr tmpFunc =
-            cls->findFunction(ar, func->getName(), true, true);
-          assert(!tmpFunc || !tmpFunc->hasImpl());
-          Compiler::Error(Compiler::MissingAbstractMethodImpl,
-                          func->getStmt(), cls->getStmt());
-        }
-        m_methodToClassDecs[iterMethod->first].push_back(cls);
-      }
+      classes.push_back(cls);
     }
   }
+
+  // Collect methods
+  BOOST_FOREACH(cls, classes) {
+    if (cls->isRedeclaring()) {
+      cls->setStaticDynamic(ar);
+    }
+    StringToFunctionScopePtrMap methods;
+    cls->collectMethods(ar, methods);
+    bool needAbstractMethodImpl =
+      (!cls->isAbstract() && !cls->isInterface() &&
+       !cls->derivesFromRedeclaring() &&
+       !cls->getAttribute(ClassScope::UsesUnknownTrait));
+    for (StringToFunctionScopePtrMap::const_iterator iterMethod =
+           methods.begin(); iterMethod != methods.end(); ++iterMethod) {
+      FunctionScopePtr func = iterMethod->second;
+      if (!func->hasImpl() && needAbstractMethodImpl) {
+        FunctionScopePtr tmpFunc =
+          cls->findFunction(ar, func->getName(), true, true);
+        assert(!tmpFunc || !tmpFunc->hasImpl());
+        Compiler::Error(Compiler::MissingAbstractMethodImpl,
+                        func->getStmt(), cls->getStmt());
+      }
+      m_methodToClassDecs[iterMethod->first].push_back(cls);
+    }
+  }
+
+  string cname;
   BOOST_FOREACH(tie(cname, cls), m_systemClasses) {
     StringToFunctionScopePtrMap methods;
     cls->collectMethods(ar, methods);
@@ -665,10 +683,17 @@ void AnalysisResult::analyzeProgram(bool system /* = false */) {
   }
 }
 
+void AnalysisResult::analyzeIncludes() {
+  AnalysisResultPtr ar = shared_from_this();
+  for (unsigned i = 0; i < m_fileScopes.size(); i++) {
+    m_fileScopes[i]->analyzeIncludes(ar);
+  }
+}
+
 static void addClassRootMethods(AnalysisResultPtr ar, ClassScopePtr cls,
                                 hphp_string_set &methods) {
-  const StringToFunctionScopePtrVecMap &funcs = cls->getFunctions();
-  for (StringToFunctionScopePtrVecMap::const_iterator iter =
+  const StringToFunctionScopePtrMap &funcs = cls->getFunctions();
+  for (StringToFunctionScopePtrMap::const_iterator iter =
          funcs.begin(); iter != funcs.end(); ++iter) {
     ClassScopePtrVec roots;
     cls->getRootParents(ar, iter->first, roots, cls);
@@ -680,13 +705,13 @@ static void addClassRootMethods(AnalysisResultPtr ar, ClassScopePtr cls,
 
 static void addClassRootMethods(AnalysisResultPtr ar, ClassScopePtr cls,
                                 StringToFunctionScopePtrVecMap &methods) {
-  const StringToFunctionScopePtrVecMap &funcs = cls->getFunctions();
-  for (StringToFunctionScopePtrVecMap::const_iterator iter =
+  const StringToFunctionScopePtrMap &funcs = cls->getFunctions();
+  for (StringToFunctionScopePtrMap::const_iterator iter =
          funcs.begin(); iter != funcs.end(); ++iter) {
     ClassScopePtr root = cls->getRootParent(ar, iter->first);
     string cluster = root->getName() + "::" + iter->first;
     FunctionScopePtrVec &fs = methods[cluster];
-    fs.insert(fs.end(), iter->second.begin(), iter->second.end());
+    fs.push_back(iter->second);
   }
 }
 
@@ -727,16 +752,18 @@ void AnalysisResult::analyzePerfectVirtuals() {
       continue;
     }
 
-    bool perfect = true;
-    for (unsigned int i = 1; i < funcs.size(); i++) {
-      if (!funcs[0]->matchParams(funcs[i])) {
-        perfect = false;
-        break;
+    if (!funcs[0]->isPrivate()) {
+      bool perfect = true;
+      for (unsigned int i = 1; i < funcs.size(); i++) {
+        if (funcs[i]->isPrivate() || !funcs[0]->matchParams(funcs[i])) {
+          perfect = false;
+          break;
+        }
       }
-    }
-    if (perfect) {
-      for (unsigned int i = 0; i < funcs.size(); i++) {
-        funcs[i]->setPerfectVirtual();
+      if (perfect) {
+        for (unsigned int i = 0; i < funcs.size(); i++) {
+          funcs[i]->setPerfectVirtual();
+        }
       }
     }
   }
@@ -814,39 +841,11 @@ void AnalysisResult::visitFiles(void (*cb)(AnalysisResultPtr,
   }
 }
 
-void AnalysisResult::getFuncScopesSet(BlockScopeRawPtrQueue &v,
-                                      FunctionContainerPtr fc) {
-  const StringToFunctionScopePtrVecMap &funcMap = fc->getFunctions();
-  for (StringToFunctionScopePtrVecMap::const_iterator
-         iter = funcMap.begin(), end = funcMap.end();
-       iter != end; ++iter) {
-    for (FunctionScopePtrVec::const_iterator it = iter->second.begin(),
-           e = iter->second.end(); it != e; ++it) {
-      FunctionScopePtr f = *it;
-      if (f->isUserFunction()) {
-        v.push_back(f);
-      }
-    }
-  }
-}
-
 void AnalysisResult::getScopesSet(BlockScopeRawPtrQueue &v) {
-  for (StringToClassScopePtrVecMap::iterator iter = m_classDecs.begin(),
-         end = m_classDecs.end(); iter != end; ++iter) {
-    for (ClassScopePtrVec::iterator it = iter->second.begin(),
-           e = iter->second.end(); it != e; ++it) {
-      ClassScopePtr cls = *it;
-      if (cls->isUserClass() && !cls->isTrait()) {
-        v.push_back(cls);
-        getFuncScopesSet(v, cls);
-      }
-    }
-  }
-
   for (StringToFileScopePtrMap::const_iterator iter = m_files.begin();
        iter != m_files.end(); ++iter) {
     FileScopePtr file = iter->second;
-    getFuncScopesSet(v, file);
+    file->getScopesSet(v);
   }
 }
 
@@ -1095,7 +1094,7 @@ typedef   OptWorker<Post>          PostOptWorker;
     if (threadCount <= 0) threadCount = 1; \
     this->m_data.m_dispatcher = \
       new JobQueueDispatcher<BlockScope *, worker >( \
-        threadCount, true, 0, this); \
+        threadCount, true, 0, false, this); \
   } while (0)
 
 #define IMPLEMENT_OPT_VISITOR_ENQUEUE(scope) \
@@ -1630,7 +1629,7 @@ void AnalysisResult::postOptimize() {
     if (threadCount <= 0) threadCount = 1;
 
     JobQueueDispatcher<FinalWorker::JobType, FinalWorker> dispatcher(
-      threadCount, true, 0, this);
+      threadCount, true, 0, false, this);
 
     processScopesParallel<Post>("PostOptimize", &dispatcher);
 
@@ -1768,7 +1767,7 @@ void AnalysisResult::outputCPPNamedScalarArrays(const std::string &file) {
       cg_printf("%s = %s[%d];\n", name.c_str(), prefix, id);
       if (m_namedScalarVarArrays.find(strings[i]) !=
           m_namedScalarVarArrays.end()) {
-        cg_printf("%s = %s;\n",
+        cg_printf("new (&%s) VarNR(%s);\n",
                   getScalarVarArrayName(hash, i).c_str(), name.c_str());
       }
     }
@@ -1796,9 +1795,9 @@ void AnalysisResult::outputCPPNamedScalarVarIntegers(const std::string &file) {
   }
   cg_printf("\n");
   cg.namespaceBegin();
-  if ((sizeof(VarNR) % sizeof(int64) != 0)) assert(false);
+  assert((sizeof(VarNR) % sizeof(int64) == 0));
   int multiple = (sizeof(VarNR) / sizeof(int64));
-  cg_indentBegin("static const int64 ivalues[] = {\n");
+  cg_indentBegin("static const uint64 ivalues[] = {\n");
   for (map<int, vector<string> >::const_iterator it =
        m_namedScalarVarIntegers.begin(); it != m_namedScalarVarIntegers.end();
        it++) {
@@ -1863,10 +1862,10 @@ void AnalysisResult::outputCPPNamedScalarVarDoubles(const std::string &file) {
   }
   cg_printf("\n");
   cg.namespaceBegin();
-  if ((sizeof(int64) != sizeof(double))) assert(false);
-  if ((sizeof(VarNR) % sizeof(double) != 0)) assert(false);
+  assert((sizeof(int64) == sizeof(double)));
+  assert((sizeof(VarNR) % sizeof(double) == 0));
   int multiple = (sizeof(VarNR) / sizeof(double));
-  cg_indentBegin("static const int64 dvalues[] = {\n");
+  cg_indentBegin("static const uint64 dvalues[] = {\n");
   for (map<int, vector<string> >::const_iterator it =
        m_namedScalarVarDoubles.begin(); it != m_namedScalarVarDoubles.end();
        it++) {
@@ -1901,6 +1900,11 @@ void AnalysisResult::outputCPPNamedScalarVarDoubles(const std::string &file) {
   }
   cg_printf("\n");
   cg.namespaceEnd();
+}
+
+void AnalysisResult::addInteger(int64 n) {
+  Lock lock(m_allIntegersMutex);
+  m_allIntegers.insert(n);
 }
 
 int AnalysisResult::checkScalarVarInteger(int64 val, int &index) {
@@ -1947,16 +1951,18 @@ string AnalysisResult::getScalarVarDoubleName(int hash, int index) {
 }
 
 string AnalysisResult::prepareFile(const char *root, const string &fileName,
-                                   bool chop) {
+                                   bool chop, bool stripPath /* = true */) {
   string fullPath = root;
   if (!fullPath.empty() && fullPath[fullPath.size() - 1] != '/') {
     fullPath += "/";
   }
 
   string file = fileName;
-  size_t npos = file.rfind('/');
-  if (npos != string::npos) {
-    file = file.substr(npos + 1);
+  if (stripPath) {
+    size_t npos = file.rfind('/');
+    if (npos != string::npos) {
+      file = file.substr(npos + 1);
+    }
   }
 
   if (chop && file.size() > 4 && file.substr(file.length() - 4) == ".php") {
@@ -1980,14 +1986,14 @@ AnalysisResult::forceClassVariants(
   if (curScope) {
     COND_TRY_LOCK(curScope, acquireLocks);
     curScope->getVariables()->forceVariants(
-      shared_from_this(), VariableTable::GetVarClassMask(true, doStatic));
+      shared_from_this(), VariableTable::GetVarClassMask(true, doStatic),
+      false);
   }
 
   ConditionalLock lock(getMutex(), acquireLocks);
   if (m_classForcedVariants[doStatic]) {
     return;
   }
-  m_classForcedVariants[doStatic] = true;
 
   AnalysisResultPtr ar = shared_from_this();
   for (StringToClassScopePtrVecMap::const_iterator iter = m_classDecs.begin();
@@ -1995,9 +2001,11 @@ AnalysisResult::forceClassVariants(
     BOOST_FOREACH(ClassScopePtr cls, iter->second) {
       COND_TRY_LOCK(cls, acquireLocks);
       cls->getVariables()->forceVariants(
-        ar, VariableTable::GetVarClassMask(false, doStatic));
+        ar, VariableTable::GetVarClassMask(false, doStatic), false);
     }
   }
+
+  m_classForcedVariants[doStatic] = true;
 }
 
 void AnalysisResult::forceClassVariants(
@@ -2142,7 +2150,7 @@ void AnalysisResult::repartitionCPP(const string &filename, int64 targetSize,
   snprintf(foutName, sizeof(foutName), "%s-%d.cpp", base.c_str(), seq);
   ofstream fout(foutName);
   while (getline(fin, line)) {
-    fout << line << endl;
+    fout << line << "\n";
 
     origLine++;
     newLine++;
@@ -2152,22 +2160,20 @@ void AnalysisResult::repartitionCPP(const string &filename, int64 targetSize,
     }
 
     current += line.length() + 1;
-    if (inPreface) preface.push_back(line);
-
     if (line.find(CodeGenerator::HASH_INCLUDE) == 0) {
       includes.push_back(line);
     } else if (line == "/* preface starts */") {
       inPreface = true;
-      preface.clear();
-      preface.push_back(line);
     } else if (line == "/* preface finishes */") {
       inPreface = false;
+    } else if (inPreface) {
+      preface.push_back(line);
     } else if (line == CodeGenerator::SPLITTER_MARKER) {
       // a possible cut point
       if (current > targetSize) {
         if (insideHPHP) {
           // namespace HPHP
-          fout << "}" << endl;
+          fout << "}" << "\n";
         }
 
         fout.close();
@@ -2177,17 +2183,19 @@ void AnalysisResult::repartitionCPP(const string &filename, int64 targetSize,
         newLine = 0;
         current = 0;
         for (unsigned int j = 0; j < includes.size(); j++) {
-          fout << includes[j] << endl;
+          fout << includes[j] << "\n";
           newLine++;
         }
         if (insideHPHP) {
-          fout << "namespace HPHP {" << endl;
+          fout << "namespace HPHP {\n";
           newLine++;
         }
+        fout << "/* preface starts */\n";
         for (unsigned int j = 0; j < preface.size(); j++) {
-          fout << preface[j] << endl;
+          fout << preface[j] << "\n";
           newLine++;
         }
+        fout << "/* preface finishes */\n";
       }
     }
   }
@@ -2299,6 +2307,8 @@ public:
       : m_ar(ar), m_root(root), m_output(output), m_compileDir(compileDir) {
   }
 
+  virtual ~OutputJob() {}
+
   void output() {
     outputImpl();
   }
@@ -2345,10 +2355,8 @@ public:
     BOOST_FOREACH(FileScopePtr fs, m_files) {
       string fileBase = fs->outputFilebase();
       string header = fileBase + ".h";
-      string fwheader = fileBase + ".fw.h";
       string fwsheader = fileBase + ".fws.h";
       string fileHeader = m_root + header;
-      string fwFileHeader = m_root + fwheader;
       string fwsFileHeader = m_root + fwsheader;
       {
         ofstream f(fileHeader.c_str());
@@ -2357,13 +2365,6 @@ public:
         f.close();
       }
       fs->outputCPPClassHeaders(m_ar, m_output);
-      fs->outputCPPForwardClassHeaders(cg, m_ar, m_output);
-      {
-        ofstream f(fwFileHeader.c_str());
-        CodeGenerator cg(&f, m_output);
-        fs->outputCPPForwardDeclHeader(cg, m_ar);
-        f.close();
-      }
       {
         ofstream f(fwsFileHeader.c_str());
         CodeGenerator cg(&f, m_output);
@@ -2429,7 +2430,6 @@ DECLARE_JOB(Main,         outputCPPMain());
 DECLARE_JOB(ScalarArrays, outputCPPScalarArrays(false));
 DECLARE_JOB(GlobalVarMeth,outputCPPGlobalVariablesMethods());
 DECLARE_JOB(GlobalState,  outputCPPGlobalState());
-DECLARE_JOB(FiberGlobal,  outputCPPFiberGlobalState());
 
 class RepartitionJob : public OutputJob {
 public:
@@ -2501,7 +2501,7 @@ void AnalysisResult::outputAllCPP(CodeGenerator::Output output,
   {
     vector<OutputJob*> jobs;
     JobQueueDispatcher<OutputJob*, OutputWorker>
-      dispatcher(threadCount, true, 0, NULL);
+      dispatcher(threadCount, true, 0, false, NULL);
 
     string root = getOutputPath() + "/";
     for (StringToFileScopePtrVecMap::const_iterator iter = clusters.begin();
@@ -2534,7 +2534,7 @@ void AnalysisResult::outputAllCPP(CodeGenerator::Output output,
   {
     vector<OutputJob*> jobs;
     JobQueueDispatcher<OutputJob*, OutputWorker>
-      dispatcher(threadCount, true, 0, NULL);
+      dispatcher(threadCount, true, 0, false, NULL);
 
     if (clusterCount > 0) {
       OutputJob *job = new RepartitionJob(ar, filenames, additionalCPPs);
@@ -2563,14 +2563,13 @@ void AnalysisResult::outputAllCPP(CodeGenerator::Output output,
       SCHEDULE_JOB(UtilDecl);
       SCHEDULE_JOB(UtilImpl);
     }
+    getVariables()->canonicalizeStaticGlobals();
     if (output != CodeGenerator::SystemCPP && Option::GenerateCPPMain) {
-      getVariables()->canonicalizeStaticGlobals();
       SCHEDULE_JOB(GlobalDecl);
       SCHEDULE_JOB(Main);
       SCHEDULE_JOB(ScalarArrays);
       SCHEDULE_JOB(GlobalVarMeth);
       SCHEDULE_JOB(GlobalState);
-      SCHEDULE_JOB(FiberGlobal);
     }
     dispatcher.run();
 
@@ -2581,7 +2580,7 @@ void AnalysisResult::outputAllCPP(CodeGenerator::Output output,
 
   // 3rd round code generation
   renameStaticNames(m_namedStringLiterals, "literal_strings_remap.h",
-                    Option::StaticStringPrefix);
+                    Option::StaticStringProxyPrefix);
   renameStaticNames(m_namedScalarArrays, "scalar_arrays_remap.h",
                     Option::StaticArrayPrefix);
   if (Option::UseScalarVariant && !Option::SystemGen) {
@@ -2619,7 +2618,7 @@ void AnalysisResult::outputCPPExtClassImpl(CodeGenerator &cg) {
        iter != m_systemClasses.end(); ++iter) {
     ClassScopePtr cls = iter->second;
     bool extension = cls->getAttribute(ClassScope::Extension);
-    if (cls->isInterface() || cls->isTrait()) continue;
+    if (cls->isInterface()) continue;
 
     classes.push_back(cls->getOriginalName().c_str());
     merged[cls->getName()].push_back(cls);
@@ -2638,13 +2637,14 @@ void AnalysisResult::outputCPPExtClassImpl(CodeGenerator &cg) {
     for (ClassScopePtrVec::const_iterator iter2 = iter->second.begin();
          iter2 != iter->second.end(); ++iter2) {
       ClassScopePtr cls = *iter2;
-      if (!cls->isInterface() && !cls->isTrait()) {
+      if (!cls->isInterface()) {
         classes.push_back(cls->getOriginalName().c_str());
         break;
       }
     }
   }
 
+  ClassScope::outputCPPHashTableClasses(cg, merged, classes);
   ClassScope::outputCPPClassVarInitImpl(cg, merged, classes);
   ClassScope::outputCPPDynamicClassCreateImpl(cg, merged, classes);
   ClassScope::outputCPPGetCallInfoStaticMethodImpl(cg, merged, classes);
@@ -2669,7 +2669,6 @@ void AnalysisResult::outputCPPClassMapFile() {
   cg_printf("\n");
 
   cg.printImplStarter();
-  cg_printf("using namespace std;\n");
   cg.namespaceBegin();
   outputCPPClassMap(cg);
   cg.namespaceEnd();
@@ -2863,7 +2862,7 @@ void AnalysisResult::outputCPPUtilImpl(CodeGenerator::Output output) {
     cg_printInclude(string(Option::SystemFilePrefix) + "cpputil.h");
   }
   cg_printInclude("<runtime/base/array/zend_array.h>");
-  cg_printInclude("<runtime/base/array/small_array.h>");
+  cg_printInclude("<runtime/base/array/vector_array.h>");
   cg_printInclude("<runtime/base/taint/taint_observer.h>");
   cg_printInclude("<runtime/base/taint/taint_data.h>");
   cg.printImplStarter();
@@ -2871,6 +2870,31 @@ void AnalysisResult::outputCPPUtilImpl(CodeGenerator::Output output) {
   if (Option::GenArrayCreate) {
     outputArrayCreateImpl(cg);
   }
+  cg_indentBegin("\nstatic const int64 pre_converted_integers[] = {\n");
+  for (set<int64>::const_iterator it = m_allIntegers.begin();
+       it != m_allIntegers.end(); it++) {
+    if (!String::HasConverted(*(it))) {
+      if (*(it) == LONG_MIN) {
+        cg_printf("(int64)0x%llxLL,\n", (uint64)LONG_MIN);
+      } else {
+        cg_printf("%lldLL,\n", *(it));
+      }
+    }
+  }
+  cg_indentEnd("};\n");
+
+  const char text[] =
+    "static int precompute_integers() {\n"
+    "  for (unsigned int i = 0;\n"
+    "       i < sizeof(pre_converted_integers)/sizeof(int64); i++) {\n"
+    "    String::PreConvertInteger(pre_converted_integers[i]);\n"
+    "  }\n"
+    "  return 0;\n"
+    "}\n"
+    "\n"
+    "static int ATTRIBUTE_UNUSED initIntegers = precompute_integers();\n";
+  cg_printf(text);
+
   cg.namespaceEnd();
 }
 
@@ -2886,14 +2910,14 @@ void AnalysisResult::outputArrayCreateDecl(CodeGenerator &cg) {
 void AnalysisResult::outputArrayCreateImpl(CodeGenerator &cg) {
   ASSERT(cg.getCurrentIndentation() == 0);
   const char text1[] =
+    "HOT_FUNC\n"
     "ArrayData *array_createvs(int64 n, ...) {\n"
     "  va_list ap;\n"
     "  va_start(ap, n);\n"
     "  ZendArray::Bucket *p[%d], **pp = p;\n"
-    "  SmartAllocator<HPHP::ZendArray::Bucket, SmartAllocatorImpl::Bucket,\n"
-    "    SmartAllocatorImpl::NoCallbacks> *a =\n"
+    "  SmartAllocator<HPHP::ZendArray::Bucket, SmartAllocatorImpl::Bucket> *a =\n"
     "      ZendArray::Bucket::AllocatorType::getNoCheck();\n"
-    "  for (int64 k = 0; k < n; k++) {\n"
+    "  for (int64 kk = 0; kk < n; kk++) {\n"
     "    const String *k = va_arg(ap, const String *);\n"
     "    const Variant *v = va_arg(ap, const Variant *);\n"
     "    *pp++ = new (a) ZendArray::Bucket(k->get(), *v);\n"
@@ -2903,12 +2927,20 @@ void AnalysisResult::outputArrayCreateImpl(CodeGenerator &cg) {
     "  return NEW(ZendArray)(n, 0, p);\n"
     "}\n";
   const char text2[] =
+    "HOT_FUNC\n"
     "ArrayData *array_createvi(int64 n, ...) {\n"
     "  va_list ap;\n"
     "  va_start(ap, n);\n"
+    "  if (enable_vector_array && RuntimeOption::UseVectorArray) {\n"
+    "    const Variant *p[%d], **pp = p;\n"
+    "    for (int64 k = 0; k < n; k++) {\n"
+    "      *pp++ = va_arg(ap, const Variant *);\n"
+    "    }\n"
+    "    va_end(ap);\n"
+    "    return NEW(VectorArray)(n, p);\n"
+    "  }\n"
     "  ZendArray::Bucket *p[%d], **pp = p;\n"
-    "  SmartAllocator<HPHP::ZendArray::Bucket, SmartAllocatorImpl::Bucket,\n"
-    "    SmartAllocatorImpl::NoCallbacks> *a =\n"
+    "  SmartAllocator<HPHP::ZendArray::Bucket, SmartAllocatorImpl::Bucket> *a =\n"
     "      ZendArray::Bucket::AllocatorType::getNoCheck();\n"
     "  for (int64 k = 0; k < n; k++) {\n"
     "    const Variant *v = va_arg(ap, const Variant *);\n"
@@ -2920,13 +2952,10 @@ void AnalysisResult::outputArrayCreateImpl(CodeGenerator &cg) {
     "}\n";
   if (m_arrayLitstrKeyMaxSize > 0) {
     cg_printf(text1,
-              m_arrayLitstrKeyMaxSize + 1,
-              m_arrayLitstrKeyMaxSize,
               m_arrayLitstrKeyMaxSize + 1);
   }
   if (m_arrayIntegerKeyMaxSize > 0) {
     cg_printf(text2,
-              m_arrayIntegerKeyMaxSize + 1,
               m_arrayIntegerKeyMaxSize,
               m_arrayIntegerKeyMaxSize + 1);
   }
@@ -2966,25 +2995,24 @@ void AnalysisResult::outputCPPDynamicTablesHeader
   cg.printImplStarter();
   if (!noNamespace) {
     cg_printf("\n");
-    cg_printf("using namespace std;\n");
     cg.namespaceBegin();
   }
 }
 
 void AnalysisResult::createGlobalFuncTable() {
   vector<const char *> funcs;
-  for (StringToFunctionScopePtrVecMap::const_iterator iter =
+  for (StringToFunctionScopePtrMap::const_iterator iter =
          m_functionDecs.begin(); iter != m_functionDecs.end(); ++iter) {
-    FunctionScopePtr func = iter->second[0];
+    FunctionScopePtr func = iter->second;
     if (func->isDynamic() || func->isRedeclaring()) {
-      funcs.push_back(iter->second[0]->getOriginalName().c_str());
+      funcs.push_back(iter->second->getOriginalName().c_str());
     }
   }
-  for (StringToFunctionScopePtrVecMap::const_iterator iter =
+  for (StringToFunctionScopePtrMap::const_iterator iter =
          m_functions.begin(); iter != m_functions.end(); ++iter) {
-    FunctionScopePtr func = iter->second[0];
+    FunctionScopePtr func = iter->second;
     if (func->isSepExtension()) {
-      funcs.push_back(iter->second[0]->getOriginalName().c_str());
+      funcs.push_back(func->getOriginalName().c_str());
     }
   }
   if (funcs.size() > 0) {
@@ -3023,12 +3051,16 @@ void AnalysisResult::outputCPPDefaultInvokeFile(CodeGenerator &cg,
                                                 const char *file) {
   FileScopePtr fs = findFileScope(file);
   cg_printf("if (s.empty()) return ");
-  if (fs->canUseDummyPseudoMain(shared_from_this())) {
-    cg_printf("dummy_pm(once, variables, get_globals());\n");
+  if (hhvm) {
+    cg_printf("vm_default_invoke_file(once);\n");
   } else {
-    cg_printf("%s%s(once, variables, get_globals());\n",
-              Option::PseudoMainPrefix,
-              Option::MangleFilename(file, true).c_str());
+    if (fs->canUseDummyPseudoMain(shared_from_this())) {
+      cg_printf("dummy_pm(once, variables, get_globals());\n");
+    } else {
+      cg_printf("%s%s(once, variables, get_globals());\n",
+                Option::PseudoMainPrefix,
+                Option::MangleFilename(file, true).c_str());
+    }
   }
 }
 
@@ -3049,7 +3081,7 @@ void AnalysisResult::outputCPPHashTableInvokeFile(
     "  hashNodeFile *next;\n"
     "};\n"
     "static hashNodeFile *fileMapTable[%d];\n"
-    "static hashNodeFile fileBuckets[%d];\n"
+    "static hashNodeFile fileBuckets[%zd];\n"
     "\n"
     "static class FileTableInitializer {\n"
     "  public: FileTableInitializer() {\n"
@@ -3092,6 +3124,7 @@ void AnalysisResult::outputCPPHashTableInvokeFile(
   cg_printf(text1, tableSize, entries.size());
   BOOST_FOREACH(FileScopePtr f, m_fileScopes) {
     if (!f->getPseudoMain()) continue;
+//    if (f->isPrivateInclude()) continue;
     cg_printf("      (const char *)\"%s\", (const char *)&",
               f->getName().c_str());
     if (f->canUseDummyPseudoMain(shared_from_this())) {
@@ -3107,8 +3140,12 @@ void AnalysisResult::outputCPPHashTableInvokeFile(
   cg_printf(text3);
   if (needEvalHook) outputCPPEvalHook(cg);
   if (entries.size() == 1) outputCPPDefaultInvokeFile(cg, entries[0]);
-  cg_indentEnd("");
+  cg_indentEnd();
   cg_printf(text4);
+
+  cg_printf("bool hphp_could_invoke_file(CStrRef s, void*) {\n"
+            "  return findFile(s.c_str(), s->hash());\n"
+            "}\n");
 }
 
 void AnalysisResult::outputCPPDynamicClassTables(
@@ -3129,18 +3166,18 @@ void AnalysisResult::outputCPPDynamicClassTables(
   ClassScopePtr cls;
   StringToClassScopePtrVecMap classScopes;
   for (StringToClassScopePtrVecMap::const_iterator iter =
-      m_classDecs.begin(); iter != m_classDecs.end(); ++iter) {
+         m_classDecs.begin(); iter != m_classDecs.end(); ++iter) {
     if (iter->second.size()) {
       for (ClassScopePtrVec::const_iterator iter2 = iter->second.begin();
-          iter2 != iter->second.end(); ++iter2) {
+           iter2 != iter->second.end(); ++iter2) {
         cls = *iter2;
-        if (cls->isUserClass() && !cls->isInterface() && !cls->isTrait()) {
+        if (cls->isUserClass() &&
+            (!cls->isInterface() || cls->checkHasPropTable(ar))) {
           classes.push_back(cls->getOriginalName().c_str());
           classScopes[cls->getName()].push_back(cls);
-          if (!system) {
-            cls->outputCPPDynamicClassDecl(cg);
+          if (!cls->isRedeclaring()) {
+            cls->outputCPPGlobalTableWrappersDecl(cg, ar);
           }
-          cls->outputCPPGlobalTableWrappersDecl(cg, ar);
           break;
         }
       }
@@ -3148,20 +3185,21 @@ void AnalysisResult::outputCPPDynamicClassTables(
   }
   if (system) {
     BOOST_FOREACH(tie(n, cls), m_systemClasses) {
-      if (!cls->isInterface() && !cls->isSepExtension() && !cls->isTrait()) {
+      if (!cls->isInterface() && !cls->isSepExtension()) {
         classes.push_back(cls->getOriginalName().c_str());
       }
     }
     outputCPPExtClassImpl(cg);
   } else {
     BOOST_FOREACH(tie(n, cls), m_systemClasses) {
-      if (!cls->isInterface() && cls->isSepExtension() && !cls->isTrait()) {
+      if (!cls->isInterface() && cls->isSepExtension()) {
         classes.push_back(cls->getOriginalName().c_str());
         cls->outputCPPDynamicClassDecl(cg);
         cls->outputCPPGlobalTableWrappersDecl(cg, ar);
         classScopes[cls->getName()].push_back(cls);
       }
     }
+    ClassScope::outputCPPHashTableClasses(cg, classScopes, classes);
     ClassScope::outputCPPClassVarInitImpl(cg, classScopes, classes);
     ClassScope::outputCPPDynamicClassCreateImpl(cg, classScopes, classes);
     ClassScope::outputCPPGetCallInfoStaticMethodImpl(cg, classScopes, classes);
@@ -3176,7 +3214,7 @@ void AnalysisResult::outputCPPHashTableGetConstant(
   CodeGenerator &cg,
   bool system,
   const map<string, TypePtr> &constMap,
-  const hphp_const_char_map<bool> &dyns) {
+  const hphp_string_map<bool> &dyns) {
   ASSERT(constMap.size() > 0);
   ASSERT(cg.getCurrentIndentation() == 0);
   const char text1[] =
@@ -3191,7 +3229,7 @@ void AnalysisResult::outputCPPHashTableGetConstant(
     "    case %d: case %d: case %d: case %d: case %d: case %d: case %d:\n"
     "      value = p;\n"
     "      break;\n"
-    "    default: assert(false);\n"
+    "    default: not_reached();\n"
     "    }\n"
     "  }\n"
     "  int64 hash;\n"
@@ -3202,7 +3240,7 @@ void AnalysisResult::outputCPPHashTableGetConstant(
     "  hashNodeCon *next;\n"
     "};\n"
     "static hashNodeCon *conMapTable[%d];\n"
-    "static hashNodeCon conBuckets[%d];\n"
+    "static hashNodeCon conBuckets[%zd];\n"
     "\n"
     "void init_%sconstant_table() {\n%s"
     "  const char *conMapData[] = {\n";
@@ -3265,7 +3303,7 @@ void AnalysisResult::outputCPPHashTableGetConstant(
     string escaped = CodeGenerator::EscapeLabel(name);
     string varName = string(Option::ConstantPrefix) +
                      CodeGenerator::FormatLabel(name);
-    hphp_const_char_map<bool>::const_iterator it = dyns.find(name);
+    hphp_string_map<bool>::const_iterator it = dyns.find(iter->first);
     bool dyn = it != dyns.end() && it->second;
     if (dyn) {
       const char *globals =
@@ -3297,7 +3335,7 @@ void AnalysisResult::outputCPPHashTableGetConstant(
         cg_printf("(const char *)&%s,\n", varName.c_str());
         break;
       case Type::KindOfObject:
-        if (!system) assert(false);
+        assert(system);
         if (strcmp(name, "STDERR") == 0) {
           cg_printf("(const char *)&BuiltinFiles::GetSTDERR,\n");
         } else if (strcmp(name, "STDIN") == 0) {
@@ -3305,7 +3343,7 @@ void AnalysisResult::outputCPPHashTableGetConstant(
         } else if (strcmp(name, "STDOUT") == 0) {
           cg_printf("(const char *)&BuiltinFiles::GetSTDOUT,\n");
         } else {
-          assert(false);
+          not_reached();
         }
         break;
       default:
@@ -3330,14 +3368,14 @@ void AnalysisResult::outputCPPDynamicConstantTable(
 
   outputCPPDynamicTablesHeader(cg, true, false);
   map<string, TypePtr> constMap;
-  hphp_const_char_map<bool> dyns;
+  hphp_string_map<bool> dyns;
   ConstantTablePtr ct = getConstants();
    vector<string> syms;
   ct->getSymbols(syms);
   BOOST_FOREACH(string sym, syms) {
     if (system || ct->isSepExtension(sym)) {
       constMap[sym] = ct->getSymbol(sym)->getFinalType();
-      dyns[sym.c_str()] = ct->isDynamic(sym);
+      dyns[sym] = ct->isDynamic(sym);
     }
   }
   BOOST_FOREACH(FileScopePtr fs, m_fileScopes) {
@@ -3352,7 +3390,7 @@ void AnalysisResult::outputCPPDynamicConstantTable(
         continue;
       }
       constMap[sym] = ct->getSymbol(sym)->getFinalType();
-      dyns[sym.c_str()] = ct->isDynamic(sym);
+      dyns[sym] = ct->isDynamic(sym);
     }
     ct->outputCPP(cg, ar);
   }
@@ -3368,7 +3406,7 @@ void AnalysisResult::outputCPPDynamicConstantTable(
     "  case %d: return *(StaticArray*)(p->value);\n"
     "  case %d: { CVarRef (*f)()=(CVarRef(*)())(p->value); return (*f)(); }\n"
     "  case %d: return *(Variant*)(p->value);\n"
-    "  default: assert(false);\n"
+    "  default: not_reached();\n"
     "  }\n"
     "}\n"
   };
@@ -3389,14 +3427,6 @@ void AnalysisResult::outputCPPDynamicConstantTable(
   cg_indentBegin("Variant get_%sconstant(CStrRef name, bool error) {\n",
       system ? "builtin_" : "");
   cg.printDeclareGlobals();
-
-  if (!system && Option::EnableEval == Option::FullEval) {
-    // See if there's an eval'd version
-    cg_indentBegin("{\n");
-    cg_printf("Variant r;\n");
-    cg_printf("if (eval_constant_hook(r, name)) return r;\n");
-    cg_indentEnd("}\n");
-  }
 
   if (useHashTable) {
     if (system) cg_printf("const char* s = name.data();\n");
@@ -3435,9 +3465,10 @@ void AnalysisResult::outputCPPDynamicConstantTable(
 void AnalysisResult::outputCPPDynamicTables(CodeGenerator::Output output) {
   AnalysisResultPtr ar = shared_from_this();
   bool system = output == CodeGenerator::SystemCPP;
+  bool useSwitch = false;
   {
     string tablePath = m_outputPath + "/" + Option::SystemFilePrefix +
-      (!system ? "dynamic_table_func.cpp" : "dynamic_table_func.no.cpp");
+      (!useSwitch ? "dynamic_table_func.cpp" : "dynamic_table_func.no.cpp");
     Util::mkdir(tablePath);
     ofstream fTable(tablePath.c_str());
     CodeGenerator cg(&fTable, output);
@@ -3447,22 +3478,23 @@ void AnalysisResult::outputCPPDynamicTables(CodeGenerator::Output output) {
     cg.printSection("Function Invoke Table");
     if (system) {
       bool needGlobals;
-      outputCPPJumpTableSupport(cg, ar, needGlobals);
-      outputCPPCodeInfoTable(cg, ar, true);
+      outputCPPJumpTableSupport(cg, ar, 0, needGlobals);
+      outputCPPCodeInfoTable(cg, ar, useSwitch, m_functions);
     } else {
       // For functions declared in separable extensions, generate CallInfo and
       // add to declaration list to be included it the table.
-      for (StringToFunctionScopePtrVecMap::const_iterator iter =
+      for (StringToFunctionScopePtrMap::const_iterator iter =
              m_functions.begin(); iter != m_functions.end(); ++iter) {
-        FunctionScopePtr func = iter->second[0];
+        FunctionScopePtr func = iter->second;
         if (func->isSepExtension()) {
           outputCPPJumpTableSupportMethod(cg, ar, func, Option::FunctionPrefix);
           func->outputCPPCallInfo(cg, ar);
-          FunctionScopePtrVec &funcVec = m_functionDecs[iter->first];
-          funcVec.push_back(func);
+          FunctionScopePtr &funcDec = m_functionDecs[iter->first];
+          ASSERT(!funcDec);
+          funcDec = func;
         }
       }
-      outputCPPCodeInfoTable(cg, ar, false, &m_functionDecs);
+      outputCPPCodeInfoTable(cg, ar, useSwitch, m_functionDecs);
     }
     cg.namespaceEnd();
     fTable.close();
@@ -3483,6 +3515,7 @@ void AnalysisResult::outputCPPDynamicTables(CodeGenerator::Output output) {
     vector<const char*> entries;
     BOOST_FOREACH(FileScopePtr f, m_fileScopes) {
       if (!f->getPseudoMain()) continue;
+//      if (f->isPrivateInclude()) continue;
       entries.push_back(f->getName().c_str());
       if (!f->canUseDummyPseudoMain(shared_from_this())) {
         cg_printf("Variant %s%s(bool incOnce, "
@@ -3511,111 +3544,6 @@ void AnalysisResult::getCPPClassDeclaredFlags
       symbols.insert(string("cdec_") + name);
     }
   }
-}
-
-void AnalysisResult::outputCPPHashTableClassDeclaredFlagsLookup(
-  CodeGenerator &cg) {
-  ASSERT(cg.getCurrentIndentation() == 0);
-  AnalysisResultPtr ar = shared_from_this();
-  vector <pair<const char *, const char *> > classes;
-  for (StringToClassScopePtrVecMap::const_iterator it = m_classDecs.begin();
-       it != m_classDecs.end(); ++it) {
-    const char *lowerName = it->first.c_str();
-    if (!it->second.size()) {
-      classes.push_back(pair<const char *, const char *>(lowerName, lowerName));
-    } else if (it->second[0]->isVolatile()) {
-      const char *originalName = it->second[0]->getOriginalName().c_str();
-      classes.push_back(pair<const char *, const char *>
-                        (lowerName, originalName));
-    }
-  }
-  const char text1[] =
-    "class hashNodeClassExists {\n"
-    "public:\n"
-    "  hashNodeClassExists() {}\n"
-    "  hashNodeClassExists(int64 h, const char *n, const void *s, int64 o) :\n"
-    "    hash(h), name(n), str(s), off(o), next(NULL) {}\n"
-    "  int64 hash;\n"
-    "  const char *name;\n"
-    "  const void *str;\n"
-    "  int64 off;\n"
-    "  hashNodeClassExists *next;\n"
-    "};\n"
-    "static hashNodeClassExists *classExistsMapTable[%d];\n"
-    "static hashNodeClassExists classExistsBuckets[%d];\n"
-    "\n"
-    "static class ClassExistsTableInitializer {\n"
-    "  public: ClassExistsTableInitializer() {\n"
-    "    const char *classExistsMapData[] = {\n";
-
-  const char text2[] =
-    "      NULL, NULL, NULL,\n"
-    "    };\n"
-    "    hashNodeClassExists *b = classExistsBuckets;\n"
-    "    for (const char **s = classExistsMapData; *s; s++, b++) {\n"
-    "      const char *name = *s++;\n"
-    "      const void *str = (const void *)(*s++);\n"
-    "      int64 off = (int64)(*s);\n"
-    "      int64 hash = hash_string(name, strlen(name));\n"
-    "      hashNodeClassExists *node = new(b) hashNodeClassExists\n"
-    "        (hash, name, str, off);\n"
-    "      int h = hash & %d;\n"
-    "      if (classExistsMapTable[h]) node->next = classExistsMapTable[h];\n"
-    "      classExistsMapTable[h] = node;\n"
-    "    }\n"
-    "  }\n"
-    "} class_exists_table_initializer;\n"
-    "\n"
-    "static inline const hashNodeClassExists *\n"
-    "findClassExists(const char *name, int64 hash) {\n"
-    "  for (const hashNodeClassExists *p = classExistsMapTable[hash & %d];\n"
-    "       p; p = p->next) {\n"
-    "    if (p->hash == hash) {\n"
-    "       const char *s = ((String*)(p->str))->data();\n"
-    "       if (s == name || strcasecmp(s, name) == 0) return p;\n"
-    "    }\n"
-    "  }\n"
-    "  return NULL;\n"
-    "}\n"
-    "\n";
-
-  const char text3[] =
-    "bool GlobalVariables::class_exists(CStrRef s) {\n"
-    "  const hashNodeClassExists *p = findClassExists(s.data(), s->hash());\n"
-    "  if (p) return *(bool *)((char *)this + p->off);\n"
-    "  return false;\n"
-    "}\n";
-
-  const char text4[] =
-    "bool GlobalVariables::class_exists(CStrRef s) {\n"
-    "  return false;\n"
-    "}\n";
-
-  if (classes.size() == 0) {
-    cg_printf(text4);
-    return;
-  }
-  int tableSize = Util::roundUpToPowerOfTwo(classes.size() * 2);
-  cg_printf(text1, tableSize, classes.size());
-  for (unsigned int i = 0; i < classes.size(); i++) {
-    const string &lowerFormatName =
-      CodeGenerator::FormatLabel(string(classes[i].first));
-    const char *originalName = classes[i].second;
-    const string &originalEscapedName =
-      CodeGenerator::EscapeLabel(string(originalName));
-    string varName = string("cdec_") + lowerFormatName;
-    cg_printf("      (const char *)\"%s\",\n", originalEscapedName.c_str());
-    cg_printf("      (const char *)&(");
-    cg_printString(originalName, ar, ar); // does escaping
-    cg_printf("),\n      (const char *)GET_GV_OFFSET(%s),\n",
-              varName.c_str());
-  }
-  cg_printf(text2, tableSize - 1, tableSize - 1);
-  cg_printf(text3);
-}
-
-void AnalysisResult::outputCPPClassDeclaredFlagsLookup(CodeGenerator &cg) {
-  outputCPPHashTableClassDeclaredFlagsLookup(cg);
 }
 
 void AnalysisResult::outputCPPSystem() {
@@ -3648,6 +3576,7 @@ void AnalysisResult::outputCPPSystem() {
   cg.setContext(CodeGenerator::CppImplementation);
   cg.useStream(CodeGenerator::ImplFile);
   cg_printf("\n");
+  cg.printBasicIncludes();
   cg_printInclude(filename.c_str());
   cg.namespaceBegin();
   outputCPPGlobalImplementations(cg);
@@ -3661,14 +3590,14 @@ void AnalysisResult::outputCPPSystem() {
 
 void AnalysisResult::getCPPRedeclaredFunctionDecl
 (CodeGenerator &cg, Type2SymbolSetMap &type2names) {
-  SymbolSet &symbols = type2names["CallInfo*"];
+  SymbolSet &symbols = type2names["RedeclaredCallInfoConst*"];
   SymbolSet &bools = type2names["bool"];
-  for (StringToFunctionScopePtrVecMap::const_iterator iter =
+  for (StringToFunctionScopePtrMap::const_iterator iter =
       m_functionDecs.begin(); iter != m_functionDecs.end(); ++iter) {
-    if (iter->second[0]->isVolatile()) {
+    if (iter->second->isVolatile()) {
       std::string fname = CodeGenerator::FormatLabel(iter->first);
       const char *name = fname.c_str();
-      if (iter->second[0]->isRedeclaring()) {
+      if (iter->second->isRedeclaring()) {
         symbols.insert(string("cim_") + name);
       }
       if (strcmp(name, "__autoload")) {
@@ -3693,7 +3622,7 @@ void AnalysisResult::getCPPRedeclaredClassDecl
 void AnalysisResult::outputCPPRedeclaredClassImpl(CodeGenerator &cg) {
   for (StringToClassScopePtrVecMap::const_iterator iter =
          m_classDecs.begin(); iter != m_classDecs.end(); ++iter) {
-    if (!iter->second.size() || iter->second[0]->isRedeclaring()) {
+    if (iter->second.size() != 1) {
       string s = CodeGenerator::EscapeLabel(iter->first);
       string l = CodeGenerator::FormatLabel(iter->first);
       const char *str = s.c_str();
@@ -3702,7 +3631,7 @@ void AnalysisResult::outputCPPRedeclaredClassImpl(CodeGenerator &cg) {
       cg_printf("static const RedeclaredObjectStaticCallbacks %s%s = {\n"
                 "  {\n"
                 "    coo_ObjectData,\n"
-                "    0,0,0,0,&s_%s,0,0,0,0\n"
+                "    0,0,0,0,&s_%s,0,0,0,0,0\n"
                 "  },\n"
                 "  -1\n"
                 "};\n",
@@ -3746,13 +3675,13 @@ void AnalysisResult::outputCPPScalarArrayDecl(CodeGenerator &cg) {
   const char *prefix = system ? Option::SystemScalarArrayName :
     Option::ScalarArrayName;
   if (m_scalarArrayIds.size() > 0) {
-    cg_printf("static StaticArray %s[%d];\n", prefix, m_scalarArrayIds.size());
+    cg_printf("static StaticArray %s[%lu];\n", prefix, m_scalarArrayIds.size());
   }
 }
 
 void AnalysisResult::outputHexBuffer(CodeGenerator &cg, const char *name,
                                      const char *buf, int len) {
-  cg_printf("static const char %s[%d] = {\n", name, len);
+  cg_printf("static const unsigned char %s[%d] = {\n", name, len);
   for (int i = 0; i < len; i++) {
     if (i % 10 == 0) cg_printf("  ");
     cg_printf("0x%02x, ", (unsigned char)buf[i]);
@@ -3794,7 +3723,7 @@ void AnalysisResult::outputCPPScalarArrayImpl(CodeGenerator &cg) {
   const char *prefix = system ? Option::SystemScalarArrayName :
     Option::ScalarArrayName;
 
-  cg_printf("StaticArray %s::%s[%d];\n",
+  cg_printf("StaticArray %s::%s[%lu];\n",
             clsname, prefix, m_scalarArrayIds.size());
 }
 
@@ -3849,7 +3778,7 @@ void AnalysisResult::outputCPPScalarArrayInit(CodeGenerator &cg, int fileCount,
       int numElems = expList->getCount();
       if (numElems <= Option::ScalarArrayOverflowLimit) {
         expList->outputCPP(cg, ar);
-        cg_printf(", NULL);\n");
+        cg_printf(");\n");
       } else {
         ExpressionListPtr subExpList =
           dynamic_pointer_cast<ExpressionList>(expList->clone());
@@ -3859,7 +3788,7 @@ void AnalysisResult::outputCPPScalarArrayInit(CodeGenerator &cg, int fileCount,
         cg.setInsideScalarArray(true);
         subExpList->outputCPP(cg, ar);
         cg.setInsideScalarArray(false);
-        cg_printf(", NULL);\n");
+        cg_printf(");\n");
         for (int i = Option::ScalarArrayOverflowLimit; i < numElems; i++) {
           ExpressionPtr elemExp = (*expList)[i];
           ArrayPairExpressionPtr pair =
@@ -3879,11 +3808,11 @@ void AnalysisResult::outputCPPScalarArrayInit(CodeGenerator &cg, int fileCount,
           }
           cg_printf("\n");
         }
-        cg_printf("%s[%d].setStatic();\n", prefix, exp.id);
       }
     } else {
       cg_printf("ArrayData::Create());\n");
     }
+    cg_printf("%s[%d].setEvalScalar();\n", prefix, exp.id);
   }
 }
 
@@ -3953,14 +3882,6 @@ void AnalysisResult::outputCPPGlobalDeclarations() {
     cg_printf("RVariableTable *get_variable_table();\n");
   }
 
-  for (StringToClassScopePtrVecMap::const_iterator iter =
-         m_classDecs.begin(); iter != m_classDecs.end(); ++iter) {
-    if (!iter->second.size() || iter->second[0]->isRedeclaring()) {
-      const string &name = CodeGenerator::FormatLabel(iter->first);
-      cg_printf("int %s%s();\n", Option::ClassStaticsIdGetterPrefix,
-                     name.c_str());
-    }
-  }
   cg.namespaceEnd();
   cg.headerEnd(filename);
   f.close();
@@ -3971,19 +3892,6 @@ void AnalysisResult::outputCPPGlobalImplementations(CodeGenerator &cg) {
   CodeGenerator::Context con = cg.getContext();
   cg.setContext(CodeGenerator::CppImplementation);
   getVariables()->outputCPP(cg, ar);
-
-  for (StringToClassScopePtrVecMap::const_iterator iter =
-         m_classDecs.begin(); iter != m_classDecs.end(); ++iter) {
-    if (!iter->second.size() || iter->second[0]->isRedeclaring()) {
-      const string &name = CodeGenerator::FormatLabel(iter->first);
-      cg_indentBegin("int %s%s() {\n", Option::ClassStaticsIdGetterPrefix,
-                     name.c_str());
-      cg.printDeclareGlobals();
-      cg_printf("return g->%s%s->getRedeclaringId();\n",
-                Option::ClassStaticsCallbackPrefix, name.c_str());
-      cg_indentEnd("}\n");
-    }
-  }
   cg.setContext(con);
 }
 
@@ -4050,6 +3958,10 @@ void AnalysisResult::outputCPPScalarArrays(bool system) {
     cg_printInclude("<runtime/base/hphp.h>");
     cg_printInclude(string(Option::SystemFilePrefix) +
                     (system ? "system_globals.h" : "global_variables.h"));
+    if (system) {
+      cg_printInclude(string(Option::SystemFilePrefix) +
+                      "literal_strings.h");
+    }
 
     cg_printf("\n");
     cg.printImplStarter();
@@ -4083,7 +3995,8 @@ void AnalysisResult::outputCPPScalarArrays(CodeGenerator &cg, int fileCount,
     if (m_scalarArrayIds.size() > 0) {
       if (Option::ScalarArrayCompression && !system) {
         ASSERT(m_scalarArrayCompressedTextSize > 0);
-        cg_printf("ArrayUtil::InitScalarArrays(%s, %d, sa_cdata, %d);\n",
+        cg_printf("ArrayUtil::InitScalarArrays(%s, %lu, "
+                  "reinterpret_cast<const char*>(sa_cdata), %d);\n",
                   prefix, m_scalarArrayIds.size(),
                   m_scalarArrayCompressedTextSize);
         cg_printf("%s::initializeNamed();\n", clsname);
@@ -4134,7 +4047,6 @@ void AnalysisResult::outputCPPGlobalVariablesMethods() {
   getVariables()->outputCPPGlobalVariablesDtorIncludes(cg, ar);
   cg_printf("\n");
   cg.printImplStarter();
-  cg_printf("using namespace std;\n");
   cg.namespaceBegin();
 
   CodeGenerator::Context con = cg.getContext();
@@ -4143,7 +4055,6 @@ void AnalysisResult::outputCPPGlobalVariablesMethods() {
             (Option::EnableEval > Option::NoEval) ? "true" : "false");
   getVariables()->outputCPPGlobalVariablesDtor(cg);
   getVariables()->outputCPPGlobalVariablesGetImpl(cg, ar);
-  outputCPPClassDeclaredFlagsLookup(cg);
   getVariables()->outputCPPGlobalVariablesExists  (cg, ar);
   getVariables()->outputCPPGlobalVariablesGetIndex(cg, ar);
   getVariables()->outputCPPGlobalVariablesMethods (cg, ar);
@@ -4169,7 +4080,6 @@ void AnalysisResult::outputCPPGlobalStateFileHeader(CodeGenerator &cg) {
   }
   cg_printf("\n");
   cg.printImplStarter();
-  cg_printf("using namespace std;\n");
   cg.namespaceBegin();
   cg_printf("namespace global_state {\n");
 }
@@ -4254,6 +4164,15 @@ void AnalysisResult::outputCPPGlobalState() {
   AnalysisResultPtr ar = shared_from_this();
   outputCPPGlobalStateFileHeader(cg);
 
+  if (!Option::GenGlobalState) {
+    cg_printf("}\n\nusing namespace global_state;\n\n");
+    cg_indentBegin("Array get_global_state() {\n");
+    cg_printf("return Array();\n");
+    cg_indentEnd("}\n\n");
+    cg.namespaceEnd();
+    f.close();
+    return;
+  }
   StringPairSetVec symbols(GlobalSymbolTypeCount);
   getVariables()->collectCPPGlobalSymbols(symbols, cg, ar);
   collectCPPGlobalSymbols(symbols, cg);
@@ -4302,9 +4221,6 @@ void AnalysisResult::outputCPPGlobalState() {
   f.close();
 }
 
-///////////////////////////////////////////////////////////////////////////////
-// fiber_marshal/unmarshal_global_state()
-
 void AnalysisResult::collectCPPGlobalSymbols(StringPairSetVec &symbols,
                                              CodeGenerator &cg) {
   AnalysisResultPtr ar = shared_from_this();
@@ -4330,12 +4246,12 @@ void AnalysisResult::collectCPPGlobalSymbols(StringPairSetVec &symbols,
 
   // redeclared functions
   names = &symbols[KindOfRedeclaredFunction];
-  for (StringToFunctionScopePtrVecMap::const_iterator iter =
+  for (StringToFunctionScopePtrMap::const_iterator iter =
          m_functionDecs.begin(); iter != m_functionDecs.end(); ++iter) {
-    if (iter->second[0]->isVolatile()) {
+    if (iter->second->isVolatile()) {
       std::string fname = CodeGenerator::FormatLabel(iter->first);
       const char *name = fname.c_str();
-      if (iter->second[0]->isRedeclaring()) {
+      if (iter->second->isRedeclaring()) {
         string varname = string("cim_") + name;
         names->insert(StringPair(varname, varname));
       }
@@ -4395,208 +4311,6 @@ void AnalysisResult::collectCPPGlobalSymbols(StringPairSetVec &symbols,
   }
 }
 
-void AnalysisResult::outputCPPFiberGlobalState() {
-  string filename = m_outputPath + "/" + Option::SystemFilePrefix +
-    "global_state_fiber.no.cpp";
-  Util::mkdir(filename);
-  ofstream f(filename.c_str());
-  CodeGenerator cg(&f, CodeGenerator::ClusterCPP);
-  AnalysisResultPtr ar = shared_from_this();
-
-  cg_printf("\n");
-  cg_printInclude("<runtime/base/hphp.h>");
-  cg_printInclude("<runtime/base/fiber_reference_map.h>");
-  cg_printInclude(string(Option::SystemFilePrefix) + "global_variables.h");
-  if (Option::GenArrayCreate) {
-    cg_printInclude(string(Option::SystemFilePrefix) + "cpputil.h");
-  }
-  cg_printf("\n");
-  cg.printImplStarter();
-  cg_printf("using namespace std;\n");
-  cg.namespaceBegin();
-
-  StringPairSetVec symbols(GlobalSymbolTypeCount);
-  getVariables()->collectCPPGlobalSymbols(symbols, cg, ar);
-  collectCPPGlobalSymbols(symbols, cg);
-
-  // generate a map from symbol name to its numeric index
-  int index = 0;
-  cg_printf("static hphp_const_char_map<int> s_gsmap;\n");
-  cg_indentBegin("class GlobalSymbolMapInitializer {\n");
-  cg_indentBegin("public: GlobalSymbolMapInitializer() {\n");
-
-  cg_indentBegin("static const char *names[] = {\n");
-  for (int i = 0; i < GlobalSymbolTypeCount; i++) {
-    StringPairSet &names = symbols[i];
-    for (StringPairSet::const_iterator iter = names.begin();
-         iter != names.end(); iter++) {
-      cg_printf("\"%s\",\n",
-                CodeGenerator::EscapeLabel(iter->first).c_str());
-      index++;
-    }
-  }
-  cg_printf("0\n");
-  cg_indentEnd("};\n");
-
-  cg_printf("int index = 0;\n");
-  cg_indentBegin("for (const char **p = names; *p; p++) {\n");
-  cg_printf("s_gsmap[*p] = index++;\n");
-  cg_indentEnd("}\n");
-
-  cg_indentEnd("}\n");
-  cg_indentEnd("};\n");
-  cg_printf("static GlobalSymbolMapInitializer s_gsmap_initializer;\n\n");
-
-  // generate fiber_marshal_global_state()
-  cg_indentBegin("void fiber_marshal_global_state"
-                 "(GlobalVariables *g1, GlobalVariables *g2,\n"
-                 " FiberReferenceMap &refMap) {\n");
-  cg_printf("g1->fiberMarshal(g2, refMap);\n");
-  for (int type = 0; type < GlobalSymbolTypeCount; type++) {
-    if (type == KindOfRedeclaredClassId) continue;
-
-    StringPairSet &names = symbols[type];
-    for (StringPairSet::const_iterator iter = names.begin();
-         iter != names.end(); iter++) {
-      const char *name = iter->second.c_str();
-      switch (type) {
-        case KindOfRedeclaredFunction:
-          cg_printf("if (g2->%s) g1->%s = g2->%s;\n", name, name, name);
-          break;
-        case KindOfRedeclaredClass:
-          if (strncmp(name, "cso_", 4)) {
-            cg_printf("if (g2->%s) g1->%s = g2->%s;\n", name, name, name);
-          } else {
-            cg_printf("if (g2->%s.get()) g1->%s = g2->%s;\n",
-                      name, name, name);
-          }
-          break;
-        case KindOfPseudoMain:
-        case KindOfVolatileClass:
-        case KindOfLazyStaticInitializer:
-          cg_printf("if (g2->%s) g1->%s = true;\n",
-                    name, name);
-          break;
-        default:
-          break;
-      }
-    }
-  }
-  for (int type = 0; type < GlobalSymbolTypeCount; type++) {
-    if (type == KindOfRedeclaredClassId) continue;
-
-    StringPairSet &names = symbols[type];
-    for (StringPairSet::const_iterator iter = names.begin();
-         iter != names.end(); iter++) {
-      const char *name = iter->second.c_str();
-      switch (type) {
-        case KindOfRedeclaredFunction:
-        case KindOfRedeclaredClass:
-        case KindOfPseudoMain:
-        case KindOfVolatileClass:
-        case KindOfLazyStaticInitializer:
-          break;
-        case KindOfMethodStaticVariable:
-          cg_indentBegin("if (toBoolean(g2->inited_%s)) {", name);
-          cg_printf("refMap.marshal(g1->inited_%s, g2->inited_%s);\n",
-                    name, name);
-          cg_printf("refMap.marshal(g1->%s, g2->%s);\n", name, name);
-          cg_indentEnd("}\n");
-          break;
-        default:
-          cg_printf("refMap.marshal(g1->%s, g2->%s);\n", name, name);
-          break;
-      }
-    }
-  }
-  cg_printf("refMap.marshal((Array&)(*g1), (Array&)(*g2));\n");
-  cg_indentEnd("}\n");
-
-  // generate fiber_unmarshal_global_state()
-  cg_indentBegin("void fiber_unmarshal_global_state"
-                 "(GlobalVariables *g1, GlobalVariables *g2,\n"
-                 " FiberReferenceMap &refMap, char default_strategy,\n"
-                 " const vector<pair<string, char> > &resolver) {\n");
-  cg_printf("g1->fiberUnmarshal(g2, refMap);\n");
-  cg_printf("hphp_string_map<char> strategies;\n");
-  cg_printf("char r[%d]; memset(r, default_strategy, sizeof(r));\n", index);
-  cg_indentBegin("for (unsigned int i = 0; i < resolver.size(); i++) {\n");
-  cg_printf("hphp_const_char_map<int>::const_iterator it =\n");
-  cg_printf("  s_gsmap.find(resolver[i].first.c_str());\n");
-  cg_printf("if (it != s_gsmap.end()) r[it->second] = resolver[i].second;\n");
-  cg_printf("else strategies[resolver[i].first] = resolver[i].second;\n");
-  cg_indentEnd("}\n");
-  cg_printf("\n");
-  index = 0;
-  for (int type = 0; type < GlobalSymbolTypeCount; type++) {
-    if (type == KindOfRedeclaredClassId) continue;
-
-    StringPairSet &names = symbols[type];
-    for (StringPairSet::const_iterator iter = names.begin();
-         iter != names.end(); iter++) {
-      const char *name = iter->second.c_str();
-      switch (type) {
-        case KindOfRedeclaredFunction:
-          cg_printf("if (g2->%s) g1->%s = g2->%s;\n", name, name, name);
-          break;
-        case KindOfRedeclaredClass:
-          if (strncmp(name, "cso_", 4)) {
-            cg_printf("if (g2->%s) g1->%s = g2->%s;\n", name, name, name);
-          } else {
-            cg_printf("if (g2->%s.get()) g1->%s = g2->%s;\n",
-                      name, name, name);
-          }
-          break;
-        case KindOfPseudoMain:
-        case KindOfVolatileClass:
-        case KindOfLazyStaticInitializer:
-          cg_printf("if (g2->%s) g1->%s = true;\n", name, name);
-          break;
-        default:
-          break;
-      }
-      index++;
-    }
-  }
-  index = 0;
-  for (int type = 0; type < GlobalSymbolTypeCount; type++) {
-    if (type == KindOfRedeclaredClassId) continue;
-
-    StringPairSet &names = symbols[type];
-    for (StringPairSet::const_iterator iter = names.begin();
-         iter != names.end(); iter++) {
-      const char *name = iter->second.c_str();
-      switch (type) {
-        case KindOfRedeclaredFunction:
-        case KindOfRedeclaredClass:
-        case KindOfPseudoMain:
-        case KindOfVolatileClass:
-        case KindOfLazyStaticInitializer:
-          break;
-        case KindOfMethodStaticVariable:
-          cg_indentBegin("if (toBoolean(g2->inited_%s)) {", name);
-          cg_printf("refMap.unmarshal(g1->%s, g2->%s, r[%d]);\n",
-                    name, name, index);
-          cg_printf("refMap.unmarshal(g1->inited_%s, g2->inited_%s, r[%d]);\n",
-                    name, name, index);
-          cg_indentEnd("}\n");
-          break;
-        default:
-          cg_printf("refMap.unmarshal(g1->%s, g2->%s, r[%d]);\n",
-                    name, name, index);
-      }
-      index++;
-    }
-  }
-  cg_printf("refMap.unmarshalDynamicGlobals((Array&)(*g1), (Array&)(*g2),"
-            " default_strategy, strategies);\n");
-  cg_indentEnd("}\n");
-
-
-  cg.namespaceEnd();
-  f.close();
-}
-
 ///////////////////////////////////////////////////////////////////////////////
 
 void AnalysisResult::outputCPPMain() {
@@ -4615,14 +4329,40 @@ void AnalysisResult::outputCPPMain() {
 
   cg_printf("\n");
   cg.printImplStarter();
-  cg_printf("using namespace std;\n");
   cg.namespaceBegin();
   outputCPPGlobalImplementations(cg);
+  cg_printf("HphpBinary::Type getHphpBinaryType() {\n"
+            "#if defined(HHVM_BINARY)\n"
+            "  return HphpBinary::hhvm;\n"
+            "#elif defined(HPHPI_BINARY)\n"
+            "  return HphpBinary::hphpi;\n"
+            "#else\n"
+            "  return HphpBinary::program;\n"
+            "#endif\n"
+            "}\n");
   cg.namespaceEnd();
+
+   /*
+    * The weird science with preserving argv[0] in case of failure
+    * is to avoid messing up dladdr, which we rely on for backtraces.
+    * Also realpath the executable so it doesn't look bizarre in top.
+    */
+  cg_indentBegin("void reExec(const char* pName, char* argv[]) {\n");
+  cg_printf("if (strlen(pName) <= 0) return;\n");
+  cg_printf("char* oldArgv0 = argv[0];\n");
+  cg_printf("char rpath[PATH_MAX];\n");
+  cg_printf("realpath(pName, rpath);\n");
+  cg_printf("argv[0] = rpath;\n");
+  cg_printf("execvp(rpath, argv);\n");
+  cg_printf("argv[0] = oldArgv0;\n");
+  cg_indentEnd("}\n");
 
   cg_printf("\n");
   cg_printf("#ifndef HPHP_BUILD_LIBRARY\n");
   cg_indentBegin("int main(int argc, char** argv) {\n");
+  cg_printf("#if defined(HPHPI_BINARY) && defined(THUNK_FILENAME)\n");
+  cg_printf("reExec(THUNK_FILENAME, argv);\n");
+  cg_printf("#endif\n");
   cg_printf("return HPHP::execute_program(argc, argv);\n");
   cg_indentEnd("}\n");
   cg_printf("#endif\n");
@@ -4665,15 +4405,17 @@ void AnalysisResult::outputCPPClassMap(CodeGenerator &cg) {
   cg_printf("(const char *)ClassInfo::IsSystem, NULL, \"\","
             " \"\", NULL, NULL,\n");
   cg_printf("NULL,\n"); // interfaces
-  for (StringToFunctionScopePtrVecMap::const_iterator iter =
+  for (StringToFunctionScopePtrMap::const_iterator iter =
          m_functions.begin(); iter != m_functions.end(); ++iter) {
-    FunctionScopePtr func = iter->second[0];
+    FunctionScopePtr func = iter->second;
     ASSERT(!func->isUserFunction());
     func->outputCPPClassMap(cg, ar);
   }
+
   cg_printf("NULL,\n"); // methods
   cg_printf("NULL,\n"); // properties
-  // system constants
+
+  // constants
   int len;
   string output = SymbolTable::getEscapedText(false, len);
   cg_printf("\"false\", (const char *)%d, \"%s\",\n",
@@ -4684,18 +4426,32 @@ void AnalysisResult::outputCPPClassMap(CodeGenerator &cg) {
   output = SymbolTable::getEscapedText(null, len);
   cg_printf("\"null\", (const char *)%d, \"%s\",\n",
             len, output.c_str());
-
   m_constants->outputCPPClassMap(cg, ar);
+
+  cg_printf("NULL,\n"); // attributes
 
   // user functions
   cg_printf("(const char *)ClassInfo::IsNothing, NULL, \"\","
             " \"\", NULL, NULL,\n");
   cg_printf("NULL,\n"); // interfaces
-  for (StringToFunctionScopePtrVecMap::const_iterator iter =
+  for (StringToFunctionScopePtrMap::const_iterator iter =
          m_functionDecs.begin(); iter != m_functionDecs.end(); ++iter) {
-    FunctionScopePtr func = iter->second[0];
+    FunctionScopePtr func = iter->second;
     if (func->isUserFunction()) {
-      func->outputCPPClassMap(cg, ar);
+      if (func->isRedeclaring()) {
+        cg_printf("(const char *)(ClassInfo::IsRedeclared), \"%s\", "
+                  "(const char *)offsetof(GlobalVariables, GCI(%s)),\n",
+                  CodeGenerator::EscapeLabel(iter->first).c_str(),
+                  CodeGenerator::FormatLabel(iter->first).c_str());
+        StringToFunctionScopePtrVecMap::const_iterator it =
+          m_functionReDecs.find(iter->first);
+        BOOST_FOREACH(func, it->second) {
+          func->outputCPPClassMap(cg, ar);
+        }
+        cg_printf("NULL,\n");
+      } else {
+        func->outputCPPClassMap(cg, ar);
+      }
     }
   }
   cg_printf("NULL,\n"); // methods
@@ -4707,6 +4463,8 @@ void AnalysisResult::outputCPPClassMap(CodeGenerator &cg) {
     constants->outputCPPClassMap(cg, ar, (i == (int)m_fileScopes.size() - 1));
   }
 
+  cg_printf("NULL,\n"); // attributes
+
   // system classes
   for (StringToClassScopePtrMap::const_iterator iter = m_systemClasses.begin();
        iter != m_systemClasses.end(); ++iter) {
@@ -4716,21 +4474,13 @@ void AnalysisResult::outputCPPClassMap(CodeGenerator &cg) {
   // user classes
   for (StringToClassScopePtrVecMap::const_iterator iter = m_classDecs.begin();
        iter != m_classDecs.end(); ++iter) {
-    bool redec = !iter->second.size() || iter->second[0]->isRedeclaring();
+    bool redec = iter->second.size() != 1;
     if (redec) {
-      bool isInterface = true;
-      for (size_t i = 0; i < iter->second.size(); i++) {
-        if (!iter->second[i]->isInterface()) {
-          isInterface = false;
-          break;
-        }
-      }
       cg_printf("(const char *)(ClassInfo::IsRedeclared | "
-                "ClassInfo::IsVolatile%s), \"%s\", "
-                "(const char *)%s%s,\n",
-                isInterface ? " | ClassInfo::IsInterface" : "",
+                "ClassInfo::IsVolatile), \"%s\", "
+                "(const char *)offsetof(GlobalVariables,%s%s),\n",
                 CodeGenerator::EscapeLabel(iter->first).c_str(),
-                Option::ClassStaticsIdGetterPrefix,
+                Option::ClassStaticsCallbackPrefix,
                 CodeGenerator::FormatLabel(iter->first).c_str());
     }
     BOOST_FOREACH(ClassScopePtr cls, iter->second) {
@@ -4749,14 +4499,15 @@ void AnalysisResult::outputCPPClusterImpl(CodeGenerator &cg,
                                           const FileScopePtrVec &files) {
   cg_printf("\n");
 
+  cg.printBasicIncludes();
   // includes
   map<string, FileScopePtr> toInclude;
   BOOST_FOREACH(FileScopePtr fs, files) {
     getTrueDeps(fs, toInclude);
   }
   BOOST_FOREACH(FileScopePtr fs, files) {
-    cg_printInclude(fs->outputFilebase());
     cg_printInclude(fs->outputFilebase() + ".fws");
+    cg_printInclude(fs->outputFilebase());
     toInclude.erase(fs->getName());
   }
   cg.printSection("Dependencies");
@@ -4806,7 +4557,7 @@ void AnalysisResult::preGenerateCPP(CodeGenerator::Output output,
   AnalysisResultPtr ar = shared_from_this();
   vector<PreGenerateCPPJob*> jobs;
   JobQueueDispatcher<OutputJob*, OutputWorker>
-    dispatcher(threadCount, true, 0, NULL);
+    dispatcher(threadCount, true, 0, false, NULL);
 
   m_pregenerating = true;
   BOOST_FOREACH(FileScopePtr fs, files) {
@@ -4918,11 +4669,23 @@ void AnalysisResult::outputHSFFIStubs() {
   cg_printf("module HphpStubs (");
   bool first = true;
   BOOST_FOREACH(FileScopePtr fs, m_fileScopes) {
-    const StringToFunctionScopePtrVecMap &fns = fs->getFunctions();
-    for (StringToFunctionScopePtrVecMap::const_iterator it = fns.begin();
+    const StringToFunctionScopePtrMap &fns = fs->getFunctions();
+    for (StringToFunctionScopePtrMap::const_iterator it = fns.begin();
          it != fns.end(); ++it) {
-      BOOST_FOREACH(FunctionScopePtr func, it->second) {
-        if (func->inPseudoMain()) continue;
+      FunctionScopePtr func = it->second;
+      if (func->inPseudoMain()) continue;
+      if (func->isLocalRedeclaring()) {
+        StringToFunctionScopePtrVecMap::const_iterator iter =
+          fs->getRedecFunctions()->find(it->first);
+        BOOST_FOREACH(FunctionScopePtr func, iter->second) {
+          if (first) {
+            first = false;
+          } else {
+            cg_printf(", ");
+          }
+          cg_printf("f_%s", func->getId().c_str());
+        }
+      } else {
         if (first) {
           first = false;
         } else {
@@ -5116,12 +4879,16 @@ void AnalysisResult::outputSwigFFIStubs() {
 /**
  * Literal string to String precomputation
  */
-string AnalysisResult::getLiteralStringName(int64 hash, int index) {
-  return getHashedName(hash, index, Option::StaticStringPrefix);
+string AnalysisResult::getLiteralStringName(int64 hash, int index,
+  bool iproxy /* = false */) {
+  return getHashedName(hash, index,
+    iproxy ? Option::StaticStringProxyPrefix : Option::StaticStringPrefix);
 }
 
-string AnalysisResult::getLitVarStringName(int64 hash, int index) {
-  return getHashedName(hash, index, Option::StaticVarStrPrefix);
+string AnalysisResult::getLitVarStringName(int64 hash, int index,
+  bool iproxy /* = false */) {
+  return getHashedName(hash, index,
+    iproxy ? Option::StaticVarStrProxyPrefix : Option::StaticVarStrPrefix);
 }
 
 int AnalysisResult::getLiteralStringId(const std::string &s, int &index) {
@@ -5184,13 +4951,23 @@ void AnalysisResult::addRTTIFunction(const std::string &id) {
   m_rttiFuncs.insert(id);
 }
 
-void AnalysisResult::cloneRTTIFuncs
-(ClassScopePtr cls, const StringToFunctionScopePtrVecMap &functions) {
-  for (StringToFunctionScopePtrVecMap::const_iterator iter =
-       functions.begin(); iter != functions.end(); ++iter) {
-    for (unsigned int j = 0; j < iter->second.size(); j++) {
-      FunctionScopePtr func = iter->second[j];
-      const string funcId = getFuncId(cls, func);
+void AnalysisResult::cloneRTTIFuncs(
+  const StringToFunctionScopePtrMap &functions,
+  const StringToFunctionScopePtrVecMap *redecFunctions) {
+  for (StringToFunctionScopePtrMap::const_iterator iter =
+         functions.begin(); iter != functions.end(); ++iter) {
+    FunctionScopePtr func = iter->second;
+    if (func->isRedeclaring()) {
+      ASSERT(redecFunctions);
+      BOOST_FOREACH(func, redecFunctions->find(iter->first)->second) {
+        const string funcId = getFuncId(func->getContainingClass(), func);
+        if (RTTIInfo::TheRTTIInfo.exists(funcId.c_str())) {
+          StatementPtr stmt = func->getStmt();
+          func->setStmtCloned(stmt->clone());
+        }
+      }
+    } else {
+      const string funcId = getFuncId(func->getContainingClass(), func);
       if (RTTIInfo::TheRTTIInfo.exists(funcId.c_str())) {
         StatementPtr stmt = func->getStmt();
         func->setStmtCloned(stmt->clone());
@@ -5205,7 +4982,8 @@ void AnalysisResult::cloneRTTIFuncs(const char *RTTIDirectory) {
 
   for (unsigned int i = 0; i < m_fileScopes.size(); i++) {
     // standalone rtti functions
-    cloneRTTIFuncs(ClassScopePtr(), m_fileScopes[i]->getFunctions());
+    cloneRTTIFuncs(m_fileScopes[i]->getFunctions(),
+                   m_fileScopes[i]->getRedecFunctions());
 
     // class rtti methods
     for (StringToClassScopePtrVecMap::const_iterator iter =
@@ -5213,7 +4991,7 @@ void AnalysisResult::cloneRTTIFuncs(const char *RTTIDirectory) {
          iter != m_fileScopes[i]->getClasses().end(); ++iter) {
       for (unsigned int j = 0; j < iter->second.size(); j++) {
         ClassScopePtr cls = iter->second[j];
-        cloneRTTIFuncs(cls, cls->getFunctions());
+        cloneRTTIFuncs(cls->getFunctions(), 0);
       }
     }
   }
@@ -5245,6 +5023,45 @@ void AnalysisResult::outputInitLiteralVarStrings(CodeGenerator &cg,
     cg_indentEnd("}\n");
     litVarStrFileIndices.push_back(fileIndex);
   }
+  litVarStrs.clear();
+}
+
+void AnalysisResult::outputStringProxyData(CodeGenerator &cg,
+  int fileIndex, vector<string> &lStrings,
+  vector<pair<string, int> > &bStrings) {
+  if (lStrings.size() + bStrings.size() > 0) {
+    cg_indentBegin("static const char *ss_data%d[] = {\n", fileIndex);
+    for (uint i = 0; i < lStrings.size(); i++) {
+      cg_printf("%s,\n", lStrings[i].c_str());
+    }
+    for (uint i = 0; i < bStrings.size(); i++) {
+      cg_printf("%s, (const char *)%lldLL,\n",
+                bStrings[i].first.c_str(), (int64)bStrings[i].second);
+    }
+    cg_indentEnd("};\n");
+    cg_printf("static int ATTRIBUTE_UNUSED initLiteralStrings%d = "
+              "StringUtil::InitLiteralStrings(ss_data%d, %ld, %ld);\n",
+              fileIndex, fileIndex, lStrings.size(), bStrings.size());
+    lStrings.clear();
+    bStrings.clear();
+  }
+}
+
+void AnalysisResult::outputVarStringProxyData(CodeGenerator &cg,
+  int fileIndex, vector<pair<int, int> > &litVarStrs) {
+  if (litVarStrs.empty()) return;
+  cg_indentBegin("static const char *svs_data%d[] = {\n", fileIndex);
+  for (unsigned int i = 0; i < litVarStrs.size(); i++) {
+    int hash = litVarStrs[i].first;
+    int index = litVarStrs[i].second;
+    cg_printf("(const char *)&%s, (const char *)&%s,\n",
+              getLitVarStringName(hash, index).c_str(),
+              getLiteralStringName(hash, index).c_str());
+  }
+  cg_indentEnd("};\n");
+  cg_printf("static int ATTRIBUTE_UNUSED initLiteralVarStrings%d = "
+            "StringUtil::InitLiteralVarStrings(svs_data%d, %lu);\n",
+            fileIndex, fileIndex, litVarStrs.size());
   litVarStrs.clear();
 }
 
@@ -5281,12 +5098,31 @@ void AnalysisResult::outputCPPNamedLiteralStrings(bool genStatic,
         cg_printString(strings[i], ar, BlockScopePtr(), false);
         cg_printf(");\n");
       } else {
-        cg_printf("extern StaticString %s;\n", name.c_str());
+        if (Option::UseStaticStringProxy) {
+          string proxyName = getLiteralStringName(hash, i, true);
+          cg_printf("extern StaticStringProxy %s;\n", proxyName.c_str());
+          cg_printf("#ifndef %s\n", name.c_str());
+          cg_printf("#define %s (*(StaticString *)(&%s))\n",
+                    name.c_str(), proxyName.c_str());
+          cg_printf("#endif\n");
+        } else {
+          cg_printf("extern StaticString %s;\n", name.c_str());
+        }
       }
       if (m_namedVarStringLiterals.find(name) !=
           m_namedVarStringLiterals.end()) {
-        cg_printf(genStatic ? "static " : "extern ");
-        cg_printf("VarNR %s;\n", getLitVarStringName(hash, i).c_str());
+        if (Option::UseStaticStringProxy) {
+          string name = getLitVarStringName(hash, i);
+          string proxyName = getLitVarStringName(hash, i, true);
+          cg_printf("extern VariantProxy %s;\n", proxyName.c_str());
+          cg_printf("#ifndef %s\n", name.c_str());
+          cg_printf("#define %s (*(Variant*)(&%s))\n",
+                    name.c_str(), proxyName.c_str());
+          cg_printf("#endif\n");
+        } else {
+          cg_printf(genStatic ? "static " : "extern ");
+          cg_printf("VarNR %s;\n", getLitVarStringName(hash, i).c_str());
+        }
       }
     }
     nstrings += strings.size();
@@ -5309,6 +5145,8 @@ void AnalysisResult::outputCPPNamedLiteralStrings(bool genStatic,
 
   vector<int> litVarStrFileIndices;
   vector<pair<int, int> > litVarStrs;
+  vector<string> lStrings;
+  vector<pair<string, int> > bStrings;
   int fileIndex = 0;
   for (map<int, vector<string> >::const_iterator it =
        m_namedStringLiterals.begin(); it != m_namedStringLiterals.end();
@@ -5319,8 +5157,13 @@ void AnalysisResult::outputCPPNamedLiteralStrings(bool genStatic,
       string name = getLiteralStringName(hash, i);
       if (count % chunkSize == 0) {
         if (count != 0) {
-          outputInitLiteralVarStrings(cg, fileIndex, litVarStrFileIndices,
-                                      litVarStrs);
+          outputStringProxyData(cg, fileIndex, lStrings, bStrings);
+          if (Option::UseStaticStringProxy) {
+            outputVarStringProxyData(cg, fileIndex, litVarStrs);
+          } else {
+            outputInitLiteralVarStrings(cg, fileIndex, litVarStrFileIndices,
+                                        litVarStrs);
+          }
           cg.namespaceEnd();
           f.close();
         }
@@ -5334,16 +5177,51 @@ void AnalysisResult::outputCPPNamedLiteralStrings(bool genStatic,
         } else {
           cg_printInclude("<sys/literal_strings_remap.h>");
         }
+        if (Option::UseStaticStringProxy) {
+          cg_printInclude("<runtime/base/string_util.h>");
+        }
         cg_printf("\n");
         cg.namespaceBegin();
       }
       count++;
-      cg_printf("StaticString %s(", name.c_str());
-      cg_printString(strings[i], ar, BlockScopePtr(), false);
-      cg_printf(");\n");
+      if (Option::UseStaticStringProxy) {
+        string proxyName = getLiteralStringName(hash, i, true);
+        cg_printf("StaticStringProxy %s;\n", proxyName.c_str());
+        cg_printf("#ifndef %s\n", name.c_str());
+        cg_printf("#define %s (*(StaticString *)(&%s))\n",
+                  name.c_str(), proxyName.c_str());
+        cg_printf("#endif\n");
+        bool isBinary = false;
+        string escaped = CodeGenerator::EscapeLabel(strings[i], &isBinary);
+        string out("(const char *)&");
+        out += proxyName;
+        out += ", (const char *)\"";
+        out += escaped;
+        out += "\"";
+        if (isBinary) {
+          bStrings.push_back(
+            pair<string, int>(out, (int)strings[i].size()));
+        } else {
+          lStrings.push_back(out);
+        }
+      } else {
+        cg_printf("StaticString %s(", name.c_str());
+        cg_printString(strings[i], ar, BlockScopePtr(), false);
+        cg_printf(");\n");
+      }
       if (m_namedVarStringLiterals.find(name) !=
           m_namedVarStringLiterals.end()) {
-        cg_printf("VarNR %s;\n", getLitVarStringName(hash, i).c_str());
+        if (Option::UseStaticStringProxy) {
+          string name = getLitVarStringName(hash, i);
+          string proxyName = getLitVarStringName(hash, i, true);
+          cg_printf("VariantProxy %s;\n", proxyName.c_str());
+          cg_printf("#ifndef %s\n", name.c_str());
+          cg_printf("#define %s (*(Variant*)(&%s))\n",
+                    name.c_str(), proxyName.c_str());
+          cg_printf("#endif\n");
+        } else {
+          cg_printf("VarNR %s;\n", getLitVarStringName(hash, i).c_str());
+        }
         litVarStrs.push_back(pair<int, int>(hash, i));
       }
     }
@@ -5360,8 +5238,13 @@ void AnalysisResult::outputCPPNamedLiteralStrings(bool genStatic,
                 (Option::SystemGen ? Option::SysPrefix : ""),
                 litVarStrFileIndices[i]);
     }
-    outputInitLiteralVarStrings(cg, fileIndex, litVarStrFileIndices,
-                                litVarStrs);
+    outputStringProxyData(cg, fileIndex, lStrings, bStrings);
+    if (Option::UseStaticStringProxy) {
+      outputVarStringProxyData(cg, fileIndex, litVarStrs);
+    } else {
+      outputInitLiteralVarStrings(cg, fileIndex, litVarStrFileIndices,
+                                  litVarStrs);
+    }
     cg_indentBegin("void %sinit_literal_varstrings() {\n",
                    Option::SystemGen ? Option::SysPrefix : "");
     if (!Option::SystemGen) {
@@ -5369,10 +5252,12 @@ void AnalysisResult::outputCPPNamedLiteralStrings(bool genStatic,
                 Option::SysPrefix);
       cg_printf("%sinit_literal_varstrings();\n", Option::SysPrefix);
     }
-    for (unsigned int i = 0; i < litVarStrFileIndices.size(); i++) {
-      cg_printf("%sinit_literal_varstrings_%d();\n",
-                (Option::SystemGen ? Option::SysPrefix : ""),
-                litVarStrFileIndices[i]);
+    if (!Option::UseStaticStringProxy) {
+      for (unsigned int i = 0; i < litVarStrFileIndices.size(); i++) {
+        cg_printf("%sinit_literal_varstrings_%d();\n",
+                  (Option::SystemGen ? Option::SysPrefix : ""),
+                  litVarStrFileIndices[i]);
+      }
     }
     cg_indentEnd("}\n");
   } else if (!Option::SystemGen) {
@@ -5454,7 +5339,6 @@ void AnalysisResult::outputCPPSepExtensionImpl(const std::string &filename) {
 
   cg_printf("\n");
   cg.printImplStarter();
-  cg_printf("using namespace std;\n");
   cg.namespaceBegin();
 
   for (StringToClassScopePtrMap::const_iterator iter = m_systemClasses.begin();
@@ -5470,6 +5354,6 @@ void AnalysisResult::outputCPPSepExtensionImpl(const std::string &filename) {
   cg.namespaceEnd();
   fTable.close();
   outputCPPNamedLiteralStrings(true, litstrFile);
-  if (m_scalarArrays.size()) assert(false);
+  assert(m_scalarArrays.size() == 0);
 }
 

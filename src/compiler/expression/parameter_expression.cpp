@@ -25,8 +25,6 @@
 #include <compiler/expression/constant_expression.h>
 
 using namespace HPHP;
-using namespace std;
-using namespace boost;
 
 ///////////////////////////////////////////////////////////////////////////////
 // constructors/destructors
@@ -34,10 +32,10 @@ using namespace boost;
 ParameterExpression::ParameterExpression
 (EXPRESSION_CONSTRUCTOR_PARAMETERS,
  const std::string &type, const std::string &name, bool ref,
- ExpressionPtr defaultValue)
+ ExpressionPtr defaultValue, ExpressionPtr attributeList)
   : Expression(EXPRESSION_CONSTRUCTOR_PARAMETER_VALUES(ParameterExpression)),
     m_originalType(type), m_name(name), m_ref(ref), m_hasRTTI(false),
-    m_defaultValue(defaultValue) {
+    m_defaultValue(defaultValue), m_attributeList(attributeList) {
   m_type = Util::toLower(type);
   if (m_defaultValue) {
     m_defaultValue->setContext(InParameterExpression);
@@ -48,6 +46,7 @@ ExpressionPtr ParameterExpression::clone() {
   ParameterExpressionPtr exp(new ParameterExpression(*this));
   Expression::deepCopy(exp);
   exp->m_defaultValue = Clone(m_defaultValue);
+  exp->m_attributeList = Clone(m_attributeList);
   return exp;
 }
 
@@ -55,20 +54,24 @@ ExpressionPtr ParameterExpression::clone() {
 // parser functions
 
 void ParameterExpression::parseHandler(ClassScopePtr cls) {
-  if (!m_type.empty()) {
-    if (m_type == "self") {
-      m_type = cls->getName();
-    } else if (m_type == "parent") {
-      if (!cls->getParent().empty()) {
-        m_type = cls->getParent();
-      }
+  // Trait has not been 'inlined' into using class so context is not available
+  if (!m_type.empty() && !cls->isTrait()) {
+    fixupSelfAndParentTypehints(cls);
+
+    if (m_defaultValue) {
+      compatibleDefault();
     }
   }
 }
 
-void ParameterExpression::defaultToNull(AnalysisResultPtr ar) {
-  ASSERT(!m_defaultValue);
-  m_defaultValue = CONSTANT("null");
+void ParameterExpression::fixupSelfAndParentTypehints(ClassScopePtr cls) {
+  if (m_type == "self") {
+    m_type = cls->getName();
+  } else if (m_type == "parent") {
+    if (!cls->getOriginalParent().empty()) {
+      m_type = Util::toLower(cls->getOriginalParent());
+    }
+  }
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -187,9 +190,11 @@ TypePtr ParameterExpression::inferTypes(AnalysisResultPtr ar, TypePtr type,
   }
 
   if (m_defaultValue && !m_ref) {
-    ret = m_defaultValue->inferAndCheck(ar, ret, false);
-    // TODO: emit compiler error when default value does not
-    // match the type spec (if we have a type spec)
+    TypePtr r = m_defaultValue->inferAndCheck(ar, Type::Some, false);
+    if (!m_defaultValue->is(KindOfConstantExpression) ||
+        !static_pointer_cast<ConstantExpression>(m_defaultValue)->isNull()) {
+      ret = Type::Coerce(ar, r, ret);
+    }
   }
 
   // parameters are like variables, but we need to remember these are
@@ -197,6 +202,75 @@ TypePtr ParameterExpression::inferTypes(AnalysisResultPtr ar, TypePtr type,
   // as declared variables.
   return variables->addParamLike(m_name, ret, ar, shared_from_this(),
                                  getScope()->isFirstPass());
+}
+
+void ParameterExpression::compatibleDefault() {
+  bool compat = true;
+  if (!m_defaultValue || !hasTypeHint()) return;
+
+  DataType defaultType = KindOfUninit;
+  if (m_defaultValue->isArray()) {
+    defaultType = KindOfArray;
+  } else if (m_defaultValue->isLiteralNull()) {
+    defaultType = KindOfNull;
+  } else {
+    Variant defaultValue;
+    if (m_defaultValue->getScalarValue(defaultValue)) {
+      defaultType = defaultValue.getType();
+    }
+  }
+
+  const char* msg = "Default value for parameter %s with type %s "
+                    "needs to have the same type as the type hint %s";
+  if (Option::EnableHipHopSyntax) {
+    // Normally a named type like 'int' is compatable with Int but not integer
+    // Since the default value's type is inferred from the value itself it is
+    // ok to compare against the lower case version of the type hint in hint
+    const char* hint = getTypeHint().c_str();
+    switch(defaultType) {
+    case KindOfBoolean:
+      compat = (!strcmp(hint, "bool") || !strcmp(hint, "boolean")); break;
+    case KindOfInt64:
+      compat = (!strcmp(hint, "int") || !strcmp(hint, "integer")); break;
+    case KindOfDouble:
+      compat = (!strcmp(hint, "float") || !strcmp(hint, "double")); break;
+    case KindOfString:  /* fall through */
+    case KindOfStaticString:
+      compat = !strcmp(hint, "string"); break;
+    case KindOfArray:
+      compat = !strcmp(hint, "array"); break;
+    case KindOfUninit:  /* fall through */
+    case KindOfNull:    compat = true; break;
+    /* KindOfClass is an hhvm internal type, can not occur here */
+    case KindOfObject:  /* fall through */
+    case KindOfRef: ASSERT(false /* likely parser bug */);
+    default:            compat = false; break;
+    }
+  } else {
+    msg = "Default value for parameter %s with a class type hint "
+          "can only be NULL";
+    switch(defaultType) {
+    case KindOfNull:
+      compat = true; break;
+    case KindOfArray:
+      compat = strcmp(getTypeHint().c_str(), "array") == 0; break;
+    default:
+      compat = false;
+      if (strcmp(getTypeHint().c_str(), "array") == 0) {
+        msg = "Default value for parameter %s with array type hint "
+              "can only be an array or NULL";
+      }
+      break;
+    }
+  }
+
+  if (!compat) {
+    string name = getName();
+    string tdefault = HPHP::tname(defaultType);
+    parseTimeFatal(Compiler::BadDefaultValueType, msg,
+                   name.c_str(), tdefault.c_str(),
+                   getOriginalTypeHint().c_str());
+  }
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -219,6 +293,8 @@ void ParameterExpression::outputCPPImpl(CodeGenerator &cg,
   Symbol *sym = variables->getSymbol(m_name);
   assert(sym && sym->isParameter());
 
+  bool inHeader = cg.isFileOrClassHeader();
+  cg.setFileOrClassHeader(true);
   CodeGenerator::Context context = cg.getContext();
   bool typedWrapper = (context == CodeGenerator::CppTypedParamsWrapperImpl ||
                        context == CodeGenerator::CppTypedParamsWrapperDecl);
@@ -306,4 +382,5 @@ void ParameterExpression::outputCPPImpl(CodeGenerator &cg,
       cg_printf("\n");
     }
   }
+  cg.setFileOrClassHeader(inHeader);
 }

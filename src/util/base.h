@@ -52,8 +52,7 @@
 #include <set>
 #include <deque>
 #include <exception>
-#include <ext/hash_map>
-#include <ext/hash_set>
+#include <tr1/functional>
 
 #include <boost/shared_ptr.hpp>
 #include <boost/enable_shared_from_this.hpp>
@@ -62,24 +61,115 @@
 #include <boost/foreach.hpp>
 #include <boost/tuple/tuple.hpp>
 #include <boost/filesystem/operations.hpp>
+#include <boost/type_traits.hpp>
+#include <boost/numeric/conversion/cast.hpp>
 
-#include <util/hash.h>
+#include "util/hash.h"
+#include "util/assert.h"
+
+#ifdef __INTEL_COMPILER
+#define va_copy __builtin_va_copy
+#endif
+
+#if (__GNUC__ > 4) || ((__GNUC__ == 4) && (__GNUC_MINOR__ >= 4)) || \
+  __INTEL_COMPILER
+
+#include <tr1/unordered_map>
+#include <tr1/unordered_set>
+
+#define hphp_hash     std::tr1::hash
+namespace std {
+namespace tr1 {
+template<>
+struct hash<const char*> {
+  size_t operator()(const char *s) const {
+    return HPHP::hash_string_cs(s, strlen(s));
+  }
+};
+}
+}
+
+namespace HPHP {
+template <class _T,class _U,
+          class _V = hphp_hash<_T>,class _W = std::equal_to<_T> >
+struct hphp_hash_map : std::tr1::unordered_map<_T,_U,_V,_W> {
+  hphp_hash_map() : std::tr1::unordered_map<_T,_U,_V,_W>(0) {}
+};
+
+template <class _T,
+          class _V = hphp_hash<_T>,class _W = std::equal_to<_T> >
+struct hphp_hash_set : std::tr1::unordered_set<_T,_V,_W> {
+  hphp_hash_set() : std::tr1::unordered_set<_T,_V,_W>(0) {}
+};
+}
+
+#else
+
+#include <ext/hash_map>
+#include <ext/hash_set>
+
+#define hphp_hash_map __gnu_cxx::hash_map
+#define hphp_hash_set __gnu_cxx::hash_set
+#define hphp_hash     __gnu_cxx::hash
+
+#endif
 
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
 // debugging
 
-#include <assert.h>
+static const bool debug =
+#ifdef DEBUG
+  true
+#else
+  false
+#endif
+  ;
 
-#ifdef RELEASE
-#ifndef ALWAYS_ASSERT
-#define ASSERT(x)
+static const bool hhvm =
+#ifdef HHVM
+  true
 #else
-#define ASSERT(x) assert(x)
+  false
 #endif
+  ;
+
+const bool hhvm_gc =
+#ifdef HHVM_GC
+  true
 #else
-#define ASSERT(x) assert(x)
+  false
 #endif
+  ;
+
+static const bool use_jemalloc =
+#ifdef USE_JEMALLOC
+  true
+#else
+  false
+#endif
+  ;
+
+static const bool enable_hphp_array =
+#ifdef ENABLE_HPHP_ARRAY
+  true
+#else
+  false
+#endif
+  ;
+
+static const bool enable_vector_array =
+#ifdef ENABLE_VECTOR_ARRAY
+  true
+#else
+  false
+#endif
+  ;
+
+/**
+ * Guard bug-for-bug hphpi compatibility code with this predicate.
+ */
+static const bool hphpiCompat = true;
 
 ///////////////////////////////////////////////////////////////////////////////
 // system includes
@@ -89,7 +179,7 @@ namespace HPHP {
 #endif
 
 typedef unsigned char uchar;
-typedef char int8;
+typedef signed char int8;
 typedef unsigned char uint8;
 typedef short int16;
 typedef unsigned short uint16;
@@ -104,10 +194,6 @@ typedef unsigned long long uint64;
 
 ///////////////////////////////////////////////////////////////////////////////
 // stl classes
-
-#define hphp_hash_map __gnu_cxx::hash_map
-#define hphp_hash_set __gnu_cxx::hash_set
-#define hphp_hash     __gnu_cxx::hash
 
 struct ltstr {
   bool operator()(const char *s1, const char *s2) const {
@@ -135,15 +221,24 @@ struct stdltistr {
 
 struct string_hash {
   size_t operator()(const std::string &s) const {
-    return __gnu_cxx::__stl_hash_string(s.c_str());
+    return hash_string_cs(s.c_str(), s.size());
   }
   size_t hash(const std::string &s) const {
     return operator()(s);
   }
-  bool equal(const std::string &lhs,
-             const std::string &rhs) const {
-    return lhs == rhs;
+};
+
+struct stringHashCompare {
+  bool equal(const std::string &s1, const std::string &s2) const {
+    return s1 == s2;
   }
+  size_t hash(const std::string &s) const {
+    return hash_string(s.c_str(), s.size());
+  }
+};
+
+template<class type, class T> struct hphp_string_hash_map :
+  public hphp_hash_map<std::string, type, string_hash> {
 };
 
 struct int64_hash {
@@ -160,14 +255,14 @@ struct int64_hash {
 
 template<typename T>
 struct pointer_hash {
-  size_t operator() (const T *const &p) const {
+  size_t operator() (const T *const p) const {
     return (size_t)hash_int64(intptr_t(p));
   }
-  size_t hash(const T *const &p) const {
+  size_t hash(const T *const p) const {
     return operator()(p);
   }
-  bool equal(const T *const &lhs,
-             const T *const &rhs) const {
+  bool equal(const T *const lhs,
+             const T *const rhs) const {
     return lhs == rhs;
   }
 };
@@ -187,39 +282,39 @@ struct smart_pointer_hash {
 
 template <class T> class hphp_raw_ptr {
 public:
-  hphp_raw_ptr() : ptr(0) {}
-  explicit hphp_raw_ptr(T *p) : ptr(p) {}
+  hphp_raw_ptr() : px(0) {}
+  explicit hphp_raw_ptr(T *p) : px(p) {}
 
-  hphp_raw_ptr(const boost::weak_ptr<T> &p) : ptr(p.lock().get()) {}
+  hphp_raw_ptr(const boost::weak_ptr<T> &p) : px(p.lock().get()) {}
 
   template <class S>
-  hphp_raw_ptr(const boost::shared_ptr<S> &p) : ptr(p.get()) {}
+  hphp_raw_ptr(const boost::shared_ptr<S> &p) : px(p.get()) {}
   template <class S>
-  hphp_raw_ptr(const boost::weak_ptr<S> &p) : ptr(p.lock().get()) {}
+  hphp_raw_ptr(const boost::weak_ptr<S> &p) : px(p.lock().get()) {}
   template <class S>
-  hphp_raw_ptr(const hphp_raw_ptr<S> &p) : ptr(p.get()) {}
+  hphp_raw_ptr(const hphp_raw_ptr<S> &p) : px(p.get()) {}
 
   boost::shared_ptr<T> lock() const {
-    return ptr ? boost::static_pointer_cast<T>(ptr->shared_from_this()) :
+    return px ? boost::static_pointer_cast<T>(px->shared_from_this()) :
       boost::shared_ptr<T>();
   }
   bool expired() const {
-    return !ptr;
+    return !px;
   }
 
   template <class S>
   operator boost::shared_ptr<S>() const {
-    S *s = ptr; // just to verify the implicit conversion T->S
-    return s ? boost::static_pointer_cast<S>(ptr->shared_from_this()) :
+    S *s = px; // just to verify the implicit conversion T->S
+    return s ? boost::static_pointer_cast<S>(px->shared_from_this()) :
       boost::shared_ptr<S>();
   }
 
-  T *operator->() const { ASSERT(ptr); return ptr; }
-  T *get() const { return ptr; }
+  T *operator->() const { ASSERT(px); return px; }
+  T *get() const { return px; }
   operator bool() const { return !expired(); }
-  void reset() { ptr = 0; }
+  void reset() { px = 0; }
 private:
-  T     *ptr;
+  T     *px;
 };
 
 #define IMPLEMENT_PTR_OPERATORS(A, B) \
@@ -264,6 +359,130 @@ typedef std::pair<std::string, std::string> StringPair;
 typedef std::set<std::pair<std::string, std::string> > StringPairSet;
 typedef std::vector<StringPairSet> StringPairSetVec;
 
+// Convenience functions to avoid boilerplate checks for set/map<>::end() after
+// set/map<>::find().
+
+template<typename Set>
+bool
+setContains(const Set& m,
+            const typename Set::key_type& k) {
+  return m.find(k) != m.end();
+}
+
+template<typename Map>
+bool
+mapContains(const Map& m,
+            const typename Map::key_type& k) {
+  return m.find(k) != m.end();
+}
+
+template<typename Map>
+typename Map::mapped_type
+mapGet(const Map& m,
+       const typename Map::key_type& k,
+       const typename Map::mapped_type& defaultVal =
+                      typename Map::mapped_type()) {
+  typename Map::const_iterator i = m.find(k);
+  if (i == m.end()) return defaultVal;
+  return i->second;
+}
+
+template<typename Map>
+bool
+mapGet(const Map& m,
+       const typename Map::key_type& k,
+       typename Map::mapped_type* outResult) {
+  typename Map::const_iterator i = m.find(k);
+  if (i == m.end()) return false;
+  if (outResult) *outResult = i->second;
+  return true;
+}
+
+template<typename Map>
+bool
+mapGetPtr(Map& m,
+          const typename Map::key_type& k,
+          typename Map::mapped_type** outResult) {
+  typename Map::iterator i = m.find(k);
+  if (i == m.end()) return false;
+  if (outResult) *outResult = &i->second;
+  return true;
+}
+
+template<typename Map>
+bool
+mapGetKey(Map& m,
+          const typename Map::key_type& k,
+          typename Map::key_type* key_ptr) {
+  typename Map::iterator i = m.find(k);
+  if (i == m.end()) return false;
+  if (key_ptr) *key_ptr = i->first;
+  return true;
+}
+
+template<typename Map>
+void
+mapInsert(Map& m,
+          const typename Map::key_type& k,
+          const typename Map::mapped_type& d) {
+  m.insert(typename Map::value_type(k, d));
+}
+
+// Known-unique insertion.
+template<typename Map>
+void
+mapInsertUnique(Map& m,
+                const typename Map::key_type& k,
+                const typename Map::mapped_type& d) {
+  ASSERT(!mapContains(m, k));
+  mapInsert(m, k, d);
+}
+
+// Deep-copy a container of dynamically allocated pointers. Assumes copy
+// constructors do the right thing.
+template<typename Container>
+void
+cloneMembers(Container& c) {
+  for (typename Container::iterator i = c.begin();
+       i != c.end(); ++i) {
+    typedef typename Container::value_type Pointer;
+    typedef typename boost::remove_pointer<Pointer>::type Inner;
+    *i = new Inner(**i);
+  }
+}
+
+// invoke operator delete on the contents of a container.
+template<typename Container>
+void
+destroyMembers(Container& c) {
+  for (typename Container::iterator i = c.begin();
+       i != c.end(); ++i) {
+    delete *i;
+  }
+}
+
+template<typename Container>
+void
+destroyMapValues(Container& c) {
+  for (typename Container::iterator i = c.begin();
+       i != c.end(); ++i) {
+    delete i->second;
+  }
+}
+
+// Arbitrary callback when a scope exits.
+struct ScopeGuard {
+  typedef std::tr1::function<void()> Callback;
+
+  ScopeGuard(void(*cbFptr)()) : m_cb(Callback(cbFptr)) { }
+  ScopeGuard(Callback cb) : m_cb(cb) { }
+  ~ScopeGuard() { m_cb(); }
+private:
+  Callback m_cb;
+};
+
+
+
 ///////////////////////////////////////////////////////////////////////////////
 // boost
 
@@ -282,13 +501,12 @@ typedef std::vector<StringPairSet> StringPairSetVec;
   typedef std::vector<classname ## Ptr> classname ## PtrVec;            \
   typedef std::set<classname ## Ptr> classname ## PtrSet;               \
   typedef std::list<classname ## Ptr> classname ## PtrList;             \
-  typedef std::deque<classname ## Ptr> classname ## PtrQueue;           \
-  typedef __gnu_cxx::hash_map<std::string, classname ## Ptr,            \
-    string_hash> StringTo ## classname ## PtrMap;                       \
-  typedef __gnu_cxx::hash_map<std::string, classname ## PtrVec,         \
-    string_hash> StringTo ## classname ## PtrVecMap;                    \
-  typedef __gnu_cxx::hash_map<std::string, classname ## PtrSet,         \
-    string_hash> StringTo ## classname ## PtrSetMap;                    \
+  typedef hphp_string_hash_map<classname ## Ptr, classname>             \
+      StringTo ## classname ## PtrMap;                                  \
+  typedef hphp_string_hash_map<classname ## PtrVec, classname>          \
+      StringTo ## classname ## PtrVecMap;                               \
+  typedef hphp_string_hash_map<classname ## PtrSet, classname>          \
+      StringTo ## classname ## PtrSetMap;                               \
 
 typedef boost::shared_ptr<FILE> FilePtr;
 
@@ -306,6 +524,14 @@ struct file_closer {
 ///////////////////////////////////////////////////////////////////////////////
 // Non-gcc compat
 #define ATTRIBUTE_UNUSED __attribute__((unused))
+#define ATTRIBUTE_NORETURN __attribute__((noreturn))
+#ifndef ATTRIBUTE_PRINTF
+#if __GNUC__ > 2 || __GNUC__ == 2 && __GNUC_MINOR__ > 6
+#define ATTRIBUTE_PRINTF(a1,a2) __attribute__((__format__ (__printf__, a1, a2)))
+#else
+#define ATTRIBUTE_PRINTF(a1,a2)
+#endif
+#endif
 #if (__GNUC__ == 4 && __GNUC_MINOR__ >= 3) || __ICC >= 1200 || __GNUC__ > 4
 #define ATTRIBUTE_COLD __attribute__((cold))
 #else
@@ -313,6 +539,31 @@ struct file_closer {
 #endif
 
 ///////////////////////////////////////////////////////////////////////////////
+
+/*
+ * DEBUG-only wrapper around boost::numeric_cast that converts any
+ * thrown exceptions to a failed assertion.
+ */
+template <typename To, typename From>
+To safe_cast(From val) {
+  if (debug) {
+    try {
+      return boost::numeric_cast<To>(val);
+    } catch (std::bad_cast& bce) {
+      std::cerr << "conversion of " << val << " failed in "
+                << __PRETTY_FUNCTION__ << " : "
+                << bce.what() << std::endl;
+      not_reached();
+    }
+  } else {
+    return static_cast<To>(val);
+  }
+}
+
+template<class T, size_t Sz>
+size_t array_size(T (&t)[Sz]) {
+  return Sz;
+}
 }
 
 namespace boost {
@@ -326,6 +577,19 @@ template <typename T, typename U>
 HPHP::hphp_raw_ptr<T> static_pointer_cast(HPHP::hphp_raw_ptr<U> p) {
   return HPHP::hphp_raw_ptr<T>(static_cast<T*>(p.get()));
 }
+}
+
+inline bool ptr_is_low_mem(void* ptr) {
+  static_assert(sizeof(void*) == 8, "Unexpected pointer size");
+  return !((uint64_t)ptr & 0xffffffff00000000ull);
+}
+
+namespace HPHP {
+  using std::string;
+  using std::vector;
+  using boost::lexical_cast;
+  using boost::dynamic_pointer_cast;
+  using boost::static_pointer_cast;
 }
 
 #endif // __BASE_H__

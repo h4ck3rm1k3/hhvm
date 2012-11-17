@@ -27,12 +27,14 @@ namespace HPHP {
 /////////////////////////////////////////////////////////////////////////////
 // constructor/destructor
 
-DynamicObjectData::DynamicObjectData(const char* pname,
+DynamicObjectData::DynamicObjectData(const ObjectStaticCallbacks *cb,
+                                     const char* pname,
                                      ObjectData* r /* = NULL */) :
-  root(r ? r : this) {
+    ObjectData(cb, r != this), root(r ? r : this) {
+  setId(r);
   if (pname) {
     CountableHelper h(root);
-    parent = create_object(pname, Array(), false, root);
+    parent = create_object_only(pname, root);
     setAttributes(parent.get());
   }
 }
@@ -47,7 +49,7 @@ DynamicObjectData::~DynamicObjectData() {
    */
   if (!parent.isNull()) {
     ObjectData *p = parent.detach();
-    ASSERT(!p->getCount());
+    ASSERT(p->getCount() == 1);
     delete p;
   }
 }
@@ -75,7 +77,8 @@ void DynamicObjectData::o_getArray(Array &props, bool pubOnly /* = false */)
 const {
   if (!parent.isNull()) {
     ClassInfo::GetArray(parent.get(), parent->o_getClassPropTable(),
-                        props, pubOnly);
+                        props, pubOnly ?
+                        ClassInfo::GetArrayPublic : ClassInfo::GetArrayAll);
   } else {
     ObjectData::o_getArray(props, pubOnly);
   }

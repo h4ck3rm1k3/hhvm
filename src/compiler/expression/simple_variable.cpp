@@ -25,8 +25,6 @@
 #include <util/parser/parser.h>
 
 using namespace HPHP;
-using namespace std;
-using namespace boost;
 
 ///////////////////////////////////////////////////////////////////////////////
 // constructors/destructors
@@ -39,8 +37,7 @@ SimpleVariable::SimpleVariable
     m_name(name), m_docComment(docComment),
     m_sym(NULL), m_originalSym(NULL),
     m_this(false), m_globals(false),
-    m_superGlobal(false), m_alwaysStash(false),
-    m_guardedThis(false) {
+    m_superGlobal(false), m_alwaysStash(false) {
   setContext(Expression::NoLValueWrapper);
 }
 
@@ -55,6 +52,15 @@ ExpressionPtr SimpleVariable::clone() {
 
 ///////////////////////////////////////////////////////////////////////////////
 // static analysis functions
+
+void SimpleVariable::setContext(Context context) {
+  m_context |= context;
+  if (m_this && context & (RefValue | RefAssignmentLHS)) {
+    if (FunctionScopePtr func = getFunctionScope()) {
+      func->setContainsBareThis(true, true);
+    }
+  }
+}
 
 int SimpleVariable::getLocalEffects() const {
   if (m_context == Declaration &&
@@ -115,10 +121,9 @@ bool SimpleVariable::canKill(bool isref) const {
     return isref && !getScope()->inPseudoMain();
   }
 
-  return isref || (
-    isReferencedValid() ?
-      !isReferenced() : !m_sym->isReferenced()
-    );
+  return
+    (isref && (m_sym->isHidden() || !getScope()->inPseudoMain())) ||
+    (isReferencedValid() ? !isReferenced() : !m_sym->isReferenced());
 }
 
 void SimpleVariable::analyzeProgram(AnalysisResultPtr ar) {
@@ -131,7 +136,9 @@ void SimpleVariable::analyzeProgram(AnalysisResultPtr ar) {
   } else if (m_name == "GLOBALS") {
     m_globals = true;
   } else {
-    m_sym = variables->addSymbol(m_name);
+    m_sym = variables->addDeclaredSymbol(
+      m_name, hhvm && Option::OutputHHBC ?
+      shared_from_this() : ConstructPtr());
   }
 
   if (ar->getPhase() == AnalysisResult::AnalyzeAll) {
@@ -140,7 +147,10 @@ void SimpleVariable::analyzeProgram(AnalysisResultPtr ar) {
         func->setContainsThis();
         m_this = true;
         if (!hasContext(ObjectContext)) {
-          func->setContainsBareThis();
+          func->setContainsBareThis(
+            true,
+            hasAnyContext(RefValue | RefAssignmentLHS) ||
+            m_sym->isRefClosureVar());
           if (variables->getAttribute(VariableTable::ContainsDynamicVariable)) {
             ClassScopePtr cls = getClassScope();
             TypePtr t = !cls || cls->isRedeclaring() ?
@@ -206,7 +216,7 @@ static inline TypePtr GetAssertedInType(AnalysisResultPtr ar,
                                         TypePtr ret) {
   ASSERT(assertedType);
   if (!ret) return assertedType;
-  TypePtr res = Type::Inferred(ar, assertedType, ret);
+  TypePtr res = Type::Inferred(ar, ret, assertedType);
   // if the asserted type and the symbol table type are compatible, then use
   // the result of Inferred() (which is at least as strict as assertedType).
   // otherwise, go with the asserted type
@@ -229,6 +239,15 @@ TypePtr SimpleVariable::inferAndCheck(AnalysisResultPtr ar, TypePtr type,
                    UnsetContext | InvokeArgument | OprLValue | DeepOprLValue)) {
     m_sym->setLvalParam();
   }
+
+  if (coerce && m_sym && type && type->is(Type::KindOfAutoSequence)) {
+    TypePtr t = m_sym->getType();
+    if (!t || t->is(Type::KindOfVoid) ||
+        t->is(Type::KindOfSome) || t->is(Type::KindOfArray)) {
+      type = Type::Array;
+    }
+  }
+
   if (m_this) {
     ret = Type::Object;
     ClassScopePtr cls = getOriginalClass();
@@ -237,6 +256,9 @@ TypePtr SimpleVariable::inferAndCheck(AnalysisResultPtr ar, TypePtr type,
     }
     if (!hasContext(ObjectContext) &&
         variables->getAttribute(VariableTable::ContainsDynamicVariable)) {
+      if (variables->getAttribute(VariableTable::ContainsLDynamicVariable)) {
+        ret = Type::Variant;
+      }
       ret = variables->add(m_sym, ret, true, ar,
                            construct, scope->getModifiers());
     }
@@ -303,40 +325,69 @@ void SimpleVariable::preOutputStash(CodeGenerator &cg, AnalysisResultPtr ar,
   if (hasCPPTemp()) return;
   VariableTablePtr vt(getScope()->getVariables());
   if (hasContext(InvokeArgument) && !hasContext(AccessContext) &&
-      (isLocalExprAltered() || hasEffect()) &&
+      (isLocalExprAltered() || (m_sym && m_sym->isReseated())) &&
       !m_globals /* $GLOBALS always has reference semantics */ &&
       hasAssignableCPPVariable()) {
-    Expression::preOutputStash(cg, ar, state);
-    const string &ref_temp  = cppTemp();
-    ASSERT(!ref_temp.empty());
-    const string &copy_temp = genCPPTemp(cg, ar);
-    const string &arg_temp  = genCPPTemp(cg, ar);
     const string &cppName   = getAssignableCPPVariable(ar);
     ASSERT(!cppName.empty());
-    cg_printf("const Variant %s = %s;\n",
-              copy_temp.c_str(),
-              cppName.c_str());
-    cg_printf("const Variant &%s = cit%d->isRef(%d) ? %s : %s;\n",
-              arg_temp.c_str(),
-              cg.callInfoTop(),
-              m_argNum,
-              ref_temp.c_str(),
-              copy_temp.c_str());
-    setCPPTemp(arg_temp);
+    if (m_sym && m_sym->isReseated()) {
+      const string &arg_temp  = genCPPTemp(cg, ar);
+      cg.wrapExpressionBegin();
+      cg_printf("const Variant %s = cit%d->isRef(%d) ? "
+                "Variant(strongBind(%s)) : %s;\n",
+                arg_temp.c_str(),
+                cg.callInfoTop(),
+                m_argNum,
+                cppName.c_str(),
+                cppName.c_str());
+
+      setCPPTemp(arg_temp);
+    } else {
+      Expression::preOutputStash(cg, ar, state);
+      const string &ref_temp  = cppTemp();
+      ASSERT(!ref_temp.empty());
+      const string &copy_temp = genCPPTemp(cg, ar);
+      const string &arg_temp  = genCPPTemp(cg, ar);
+      cg_printf("const Variant %s = %s;\n",
+                copy_temp.c_str(),
+                cppName.c_str());
+      cg_printf("const Variant &%s = cit%d->isRef(%d) ? %s : %s;\n",
+                arg_temp.c_str(),
+                cg.callInfoTop(),
+                m_argNum,
+                ref_temp.c_str(),
+                copy_temp.c_str());
+      setCPPTemp(arg_temp);
+    }
     return;
   }
-  if (getContext() & (LValue|RefValue|RefParameter)) return;
+  if (hasAnyContext(RefValue|RefParameter)) {
+    if (!hasAnyContext(InvokeArgument|AccessContext|
+                       AssignmentRHS|ReturnContext) &&
+        !m_globals && (!m_sym || m_sym->isReseated()) &&
+        hasAssignableCPPVariable()) {
+      cg.wrapExpressionBegin();
+      const string &cppName = getAssignableCPPVariable(ar);
+      ASSERT(!cppName.empty());
+      const string &tmp = genCPPTemp(cg, ar);
+      cg_printf("VRefParamValue %s((ref(%s)));\n",
+                tmp.c_str(), cppName.c_str());
+      setCPPTemp(tmp);
+      setContext(NoRefWrapper);
+    }
+    return;
+  } else if (hasContext(LValue)) {
+    return;
+  }
   if (!m_alwaysStash && !(state & StashVars)) return;
   Expression::preOutputStash(cg, ar, state);
 }
 
 bool SimpleVariable::hasAssignableCPPVariable() const {
+  if (!m_this) return true;
+  if (hasAnyContext(OprLValue | AssignmentLHS)) return false;
   VariableTablePtr variables = getScope()->getVariables();
-  if (m_this) {
-    return !hasAnyContext(OprLValue | AssignmentLHS) &&
-       variables->getAttribute(VariableTable::ContainsLDynamicVariable);
-  }
-  return true;
+  return variables->getAttribute(VariableTable::ContainsLDynamicVariable);
 }
 
 std::string SimpleVariable::getAssignableCPPVariable(AnalysisResultPtr ar)

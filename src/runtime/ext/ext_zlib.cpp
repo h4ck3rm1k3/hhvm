@@ -18,9 +18,12 @@
 #include <runtime/ext/ext_zlib.h>
 #include <runtime/base/file/zip_file.h>
 #include <util/compression.h>
+#include <util/logger.h>
 #ifdef HAVE_SNAPPY
 #include <snappy.h>
 #endif
+#include <lz4.h>
+#include <lz4hc.h>
 
 #define PHP_ZLIB_MODIFIER 1000
 
@@ -28,6 +31,161 @@ namespace HPHP {
 IMPLEMENT_DEFAULT_EXTENSION(zlib);
 ///////////////////////////////////////////////////////////////////////////////
 // zlib functions
+
+static Variant gzcompress(const char *data, int len, int level /* = -1 */) {
+  if (level < -1 || level > 9) {
+    throw_invalid_argument("level: %d", level);
+    return false;
+  }
+  unsigned long l2 = len + (len / PHP_ZLIB_MODIFIER) + 15;
+  String str(l2, ReserveString);
+  char *s2 = str.mutableSlice().ptr;
+
+  int status;
+  if (level >= 0) {
+    status = compress2((Bytef*)s2, &l2, (const Bytef*)data, len, level);
+  } else {
+    status = compress((Bytef*)s2, &l2, (const Bytef*)data, len);
+  }
+
+  if (status == Z_OK) {
+    return str.shrink(l2);
+  }
+
+  Logger::Warning("%s", zError(status));
+  return false;
+}
+
+static Variant gzuncompress(const char *data, int len, int limit /* = 0 */) {
+  if (limit < 0) {
+    Logger::Warning("length (%ld) must be greater or equal zero", limit);
+    return false;
+  }
+
+  unsigned long plength = limit;
+  unsigned long length;
+  unsigned int factor = 4, maxfactor = 16;
+  String str(std::max(plength, (unsigned long)StringData::MaxSmallSize),
+             ReserveString);
+  int status;
+  do {
+    length = plength ? plength : (unsigned long)len * (1 << factor++);
+    if (length > StringData::MaxSize) {
+      return false;
+    }
+    char* s2 = str.reserve(length).ptr;
+    status = uncompress((Bytef*)s2, &length, (const Bytef*)data, len);
+  } while ((status == Z_BUF_ERROR) && (!plength) && (factor < maxfactor));
+
+  if (status == Z_OK) {
+    return str.shrink(length);
+  }
+  Logger::Warning("%s", zError(status));
+  return false;
+}
+
+///////////////////////////////////////////////////////////////////////////////
+
+static Variant gzdeflate(const char *data, int len, int level /* = -1 */) {
+  if (level < -1 || level > 9) {
+    throw_invalid_argument("level: %d", level);
+    return false;
+  }
+  z_stream stream;
+  stream.data_type = Z_ASCII;
+  stream.zalloc = (alloc_func) Z_NULL;
+  stream.zfree  = (free_func) Z_NULL;
+  stream.opaque = (voidpf) Z_NULL;
+
+  stream.next_in = (Bytef *)data;
+  stream.avail_in = len;
+
+  stream.avail_out = len + (len / PHP_ZLIB_MODIFIER) + 15 + 1; // room for \0
+
+  String str(stream.avail_out, ReserveString);
+  char* s2 = str.mutableSlice().ptr;
+
+  stream.next_out = (Bytef*)s2;
+
+  /* init with -MAX_WBITS disables the zlib internal headers */
+  int status = deflateInit2(&stream, level, Z_DEFLATED, -MAX_WBITS,
+                            MAX_MEM_LEVEL, 0);
+  if (status == Z_OK) {
+    status = deflate(&stream, Z_FINISH);
+    if (status != Z_STREAM_END) {
+      deflateEnd(&stream);
+      if (status == Z_OK) {
+        status = Z_BUF_ERROR;
+      }
+    } else {
+      status = deflateEnd(&stream);
+    }
+  }
+
+  if (status == Z_OK) {
+    /* resize to buffer to the "right" size */
+    return str.shrink(stream.total_out);
+  }
+  Logger::Warning("%s", zError(status));
+  return false;
+}
+
+static Variant gzinflate(const char *data, int len, int limit /* = 0 */) {
+  if (len == 0) {
+    return false;
+  }
+
+  if (limit < 0) {
+    Logger::Warning("length (%ld) must be greater or equal zero", limit);
+    return false;
+  }
+  unsigned long plength = limit;
+
+  z_stream stream;
+  stream.zalloc = (alloc_func) Z_NULL;
+  stream.zfree = (free_func) Z_NULL;
+
+  unsigned long length;
+  int status;
+  unsigned int factor = 4, maxfactor = 16;
+  String str(std::max(plength, (unsigned long)StringData::MaxSmallSize),
+             ReserveString);
+  do {
+    length = plength ? plength : (unsigned long)len * (1 << factor++);
+    if (length > StringData::MaxSize) {
+      return false;
+    }
+    char* s2 = str.reserve(length).ptr;
+
+    stream.next_in = (Bytef *)data;
+    stream.avail_in = (uInt)len + 1; /* there is room for \0 */
+
+    stream.next_out = (Bytef*)s2;
+    stream.avail_out = (uInt)length;
+
+    /* init with -MAX_WBITS disables the zlib internal headers */
+    status = inflateInit2(&stream, -MAX_WBITS);
+    if (status == Z_OK) {
+      status = inflate(&stream, Z_FINISH);
+      if (status != Z_STREAM_END) {
+        inflateEnd(&stream);
+        if (status == Z_OK) {
+          status = Z_BUF_ERROR;
+        }
+      } else {
+        status = inflateEnd(&stream);
+      }
+    }
+  } while ((status == Z_BUF_ERROR) && (!plength) && (factor < maxfactor));
+
+  if (status == Z_OK) {
+    return str.shrink(stream.total_out);
+  }
+  Logger::Warning("%s", zError(status));
+  return false;
+}
+
+///////////////////////////////////////////////////////////////////////////////
 
 Variant f_readgzfile(CStrRef filename, bool use_include_path /* = false */) {
   Object stream = f_gzopen(filename, "rb", use_include_path);
@@ -52,47 +210,19 @@ Variant f_gzfile(CStrRef filename, bool use_include_path /* = false */) {
 }
 
 Variant f_gzcompress(CStrRef data, int level /* = -1 */) {
-  if (level < -1 || level > 9) {
-    throw_invalid_argument("level: %d", level);
-    return false;
-  }
-  int len = data.size();
-  char *ret = gzcompress(data.data(), len, level);
-  if (ret == NULL) {
-    return false;
-  }
-  return String(ret, len, AttachString);
+  return gzcompress(data.data(), data.size(), level);
 }
 
 Variant f_gzuncompress(CStrRef data, int limit /* = 0 */) {
-  int len = data.size();
-  char *ret = gzuncompress(data.data(), len, limit);
-  if (ret == NULL) {
-    return false;
-  }
-  return String(ret, len, AttachString);
+  return gzuncompress(data.data(), data.size(), limit);
 }
 
 Variant f_gzdeflate(CStrRef data, int level /* = -1 */) {
-  if (level < -1 || level > 9) {
-    throw_invalid_argument("level: %d", level);
-    return false;
-  }
-  int len = data.size();
-  char *ret = gzdeflate(data.data(), len, level);
-  if (ret == NULL) {
-    return false;
-  }
-  return String(ret, len, AttachString);
+  return gzdeflate(data.data(), data.size(), level);
 }
 
 Variant f_gzinflate(CStrRef data, int limit /* = 0 */) {
-  int len = data.size();
-  char *ret = gzinflate(data.data(), len, limit);
-  if (ret == NULL) {
-    return false;
-  }
-  return String(ret, len, AttachString);
+  return gzinflate(data.data(), data.size(), limit);
 }
 
 Variant f_gzencode(CStrRef data, int level /* = -1 */,
@@ -181,7 +311,8 @@ Variant f_qlzcompress(CStrRef data, int level /* = 1 */) {
     return false;
   }
 
-  char *compressed = (char*)malloc(data.size() + 401);
+  String str(data.size() + 400, ReserveString);
+  char* compressed = str.mutableSlice().ptr;
   size_t size;
 
   switch (level) {
@@ -208,10 +339,8 @@ Variant f_qlzcompress(CStrRef data, int level /* = 1 */) {
       break;
   }
 
-  ASSERT(size < (size_t)data.size() + 401);
-  compressed = (char *)realloc(compressed, size + 1);
-  compressed[size] = '\0';
-  return String(compressed, size, AttachString);
+  ASSERT(size <= (size_t)data.size() + 400);
+  return str.shrink(size);
 #endif
 }
 
@@ -237,7 +366,8 @@ Variant f_qlzuncompress(CStrRef data, int level /* = 1 */) {
     return false;
   }
 
-  char *decompressed = (char*)malloc(size + 1);
+  String s = String(size, ReserveString);
+  char *decompressed = s.mutableSlice().ptr;
   size_t dsize;
 
   switch (level) {
@@ -264,8 +394,7 @@ Variant f_qlzuncompress(CStrRef data, int level /* = 1 */) {
   }
 
   ASSERT(dsize == size);
-  decompressed[dsize] = '\0';
-  return String(decompressed, dsize, AttachString);
+  return s.setSize(dsize);
 #endif
 }
 
@@ -288,19 +417,133 @@ Variant f_snuncompress(CStrRef data) {
 #ifndef HAVE_SNAPPY
   throw NotSupportedException(__func__, "Snappy library cannot be found");
 #else
-  char *uncompressed;
   size_t dsize;
 
   snappy::GetUncompressedLength(data.data(), data.size(), &dsize);
-  uncompressed = (char *)malloc(dsize + 1);
+  String s = String(dsize, ReserveString);
+  char *uncompressed = s.mutableSlice().ptr;
 
   if (!snappy::RawUncompress(data.data(), data.size(), uncompressed)) {
-    free(uncompressed);
     return false;
   }
-  uncompressed[dsize] = '\0';
-  return String(uncompressed, dsize, AttachString);
+  return s.setSize(dsize);
 #endif
+}
+
+#define NZLIB_MAGIC 0x6e7a6c69 /* nzli */
+/* The new compression format stores a magic number and the size
+   of the uncompressed object.  The magic number is stored to make sure
+   bad values do not cause us to allocate bogus or extremely large amounts
+   of memory when encountering an object with the new format. */
+typedef struct nzlib_format_s {
+    uint32_t magic;
+    uint32_t uncompressed_sz;
+    Bytef buf[0];
+} nzlib_format_t;
+
+Variant f_nzcompress(CStrRef uncompressed) {
+  size_t len = compressBound(uncompressed.size());
+  String str(sizeof(nzlib_format_t) + len, ReserveString);
+  nzlib_format_t* format = (nzlib_format_t*)str.mutableSlice().ptr;
+
+  format->magic = htonl(NZLIB_MAGIC);
+  format->uncompressed_sz = htonl(uncompressed.size());
+
+  int rc = compress(format->buf, &len, (uint8_t*)uncompressed.data(),
+                    uncompressed.size());
+  if (rc == Z_OK) {
+    return str.shrink(len + sizeof(*format));
+  }
+  return false;
+}
+
+Variant f_nzuncompress(CStrRef compressed) {
+  if (compressed.size() < (ssize_t)sizeof(nzlib_format_t)) {
+    return false;
+  }
+
+  nzlib_format_t* format = (nzlib_format_t*)compressed.data();
+  if (ntohl(format->magic) != NZLIB_MAGIC) {
+    return false;
+  }
+
+  size_t len = ntohl(format->uncompressed_sz);
+  if (len == 0) {
+    return empty_string;
+  }
+
+  String str(len, ReserveString);
+  char* uncompressed = str.mutableSlice().ptr;
+  int rc = uncompress((Bytef*)uncompressed, &len, format->buf,
+                      compressed.size() - sizeof(*format));
+  if (rc != Z_OK) {
+    return false;
+  }
+
+  if (format->uncompressed_sz == 0) {
+    return str.shrink(len);
+  }
+  return str.setSize(len);
+}
+
+Variant f_lz4compress(CStrRef uncompressed) {
+  int bufsize = LZ4_compressBound(uncompressed.size());
+  if (bufsize < 0) {
+    return false;
+  }
+  bufsize += sizeof(int);  // for the header
+  String s = String(bufsize, ReserveString);
+  char *compressed = s.mutableSlice().ptr;
+
+  *((int*)compressed) = uncompressed.size();  // write the header
+
+  int csize = LZ4_compress(uncompressed.data(), compressed + sizeof(int),
+      uncompressed.size());
+  if (csize < 0) {
+    return false;
+  }
+  bufsize = csize + sizeof(int);
+  s.shrink(bufsize);
+  return s.setSize(bufsize);
+}
+
+Variant f_lz4hccompress(CStrRef uncompressed) {
+  int bufsize = LZ4_compressBound(uncompressed.size());
+  if (bufsize < 0) {
+    return false;
+  }
+  bufsize += sizeof(int);  // for the header
+  String s = String(bufsize, ReserveString);
+  char *compressed = s.mutableSlice().ptr;
+
+  *((int*)compressed) = uncompressed.size();  // write the header
+
+  int csize = LZ4_compressHC(uncompressed.data(),
+      compressed + sizeof(int), uncompressed.size());
+  if (csize < 0) {
+    return false;
+  }
+  bufsize = csize + sizeof(int);
+  return s.shrink(bufsize);
+}
+
+Variant f_lz4uncompress(CStrRef compressed) {
+  if (compressed.size() < (ssize_t)sizeof(int)) {
+    return false;
+  }
+  int dsize = *((int*)compressed.data());
+  if (dsize < 0) {
+    return false;
+  }
+
+  String s = String(dsize, ReserveString);
+  char *uncompressed = s.mutableSlice().ptr;
+  int ret = LZ4_uncompress(compressed.data() + sizeof(int), uncompressed, dsize);
+
+  if (ret <= 0) {
+    return false;
+  }
+  return s.setSize(dsize);
 }
 
 ///////////////////////////////////////////////////////////////////////////////

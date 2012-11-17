@@ -37,7 +37,7 @@ Variant f_call_user_func_array_rpc(CStrRef host, int port, CStrRef auth, int tim
 Variant f_call_user_func_rpc(int _argc, CStrRef host, int port, CStrRef auth, int timeout, CVarRef function, CArrRef _argv = null_array);
 Variant f_forward_static_call_array(CVarRef function, CArrRef params);
 Variant f_forward_static_call(int _argc, CVarRef function, CArrRef _argv = null_array);
-String f_get_called_class();
+Variant f_get_called_class();
 String f_create_function(CStrRef args, CStrRef code);
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -54,12 +54,13 @@ Variant func_get_arg(int num_args, CArrRef params, CArrRef args, int pos);
  * parameters to help the implementation.
  */
 Array f_func_get_args();
+Array hhvm_get_frame_args(const VM::ActRec* ar);
 Array func_get_args(int num_args, CArrRef params, CArrRef args);
 
 /**
  * HPHP actually inlines this function, so this is degenerated.
  */
-int f_func_num_args();
+int64 f_func_num_args();
 
 ///////////////////////////////////////////////////////////////////////////////
 

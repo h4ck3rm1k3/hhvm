@@ -14,11 +14,18 @@
    +----------------------------------------------------------------------+
 */
 
+#include <sstream>
+#include <iomanip>
+
+#include <runtime/eval/runtime/file_repository.h>
 #include <runtime/base/server/admin_request_handler.h>
 #include <runtime/base/server/http_server.h>
+#include <runtime/base/server/pagelet_server.h>
 #include <runtime/base/util/http_client.h>
 #include <runtime/base/server/server_stats.h>
 #include <runtime/base/runtime_option.h>
+#include <runtime/base/compiler_id.h>
+#include <runtime/base/preg.h>
 #include <util/process.h>
 #include <util/logger.h>
 #include <util/util.h>
@@ -30,7 +37,12 @@
 #include <runtime/base/memory/leak_detectable.h>
 #include <runtime/ext/mysql_stats.h>
 #include <runtime/base/shared/shared_store_stats.h>
+#include <runtime/vm/repo.h>
+#include <runtime/vm/translator/translator.h>
+#include <runtime/vm/translator/translator-deps.h>
+#include <runtime/vm/translator/translator-x64.h>
 #include <util/alloc.h>
+#include <util/timer.h>
 #include <runtime/ext/ext_fb.h>
 #include <runtime/ext/ext_apc.h>
 
@@ -41,8 +53,7 @@
 #include <google/heap-profiler.h>
 #endif
 
-using namespace std;
-using namespace boost;
+using std::endl;
 
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
@@ -57,7 +68,7 @@ AdminRequestHandler::AdminRequestHandler() {
 }
 
 // Helper machinery for jemalloc-stats-print command.
-#ifndef NO_JEMALLOC
+#ifdef USE_JEMALLOC
 struct malloc_write {
   char *s;
   size_t slen;
@@ -119,12 +130,17 @@ void AdminRequestHandler::handleRequest(Transport *transport) {
 #ifdef COMPILER_ID
         "/compiler-id:     returns the compiler id that built this app\n"
 #endif
-
+        "/repo-schema:     return the repo schema id used by this app\n"
         "/check-load:      how many threads are actively handling requests\n"
         "/check-queued:    how many http requests are queued waiting to be\n"
         "                  handled\n"
+        "/check-health:    return json containing basic load/usage stats\n"
+        "/check-ev:        how many http requests are active by libevent\n"
+        "/check-pl-load:   how many pagelet threads are actively handling\n"
+        "                  requests\n"
+        "/check-pl-queued: how many pagelet requests are queued waiting to\n"
+        "                  be handled\n"
         "/check-mem:       report memory quick statistics in log file\n"
-        "/check-apc:       report APC quick statistics\n"
         "/check-sql:       report SQL table statistics\n"
 
         "/status.xml:      show server status in XML\n"
@@ -169,10 +185,13 @@ void AdminRequestHandler::handleRequest(Transport *transport) {
         "    keysample     optional, only dump keys that belongs to the same\n"
         "                  group as <keysample>\n"
         "/const-ss:        get const_map_size\n"
+        "/static-strings:  get number of static strings\n"
         "/dump-apc:        dump all current value in APC to /tmp/apc_dump\n"
         "/dump-const:      dump all constant value in constant map to\n"
         "                  /tmp/const_map_dump\n"
         "/dump-file-repo:  dump file repository to /tmp/file_repo_dump\n"
+
+        "/pcre-cache-size: get pcre cache map size\n"
 
 #ifdef GOOGLE_CPU_PROFILER
         "/prof-cpu-on:     turn on CPU profiler\n"
@@ -191,17 +210,25 @@ void AdminRequestHandler::handleRequest(Transport *transport) {
 #ifdef EXECUTION_PROFILER
         "/prof-exe:        returns sampled execution profile\n"
 #endif
+#ifdef HHVM
+        "/vm-tcspace:      show space used by translator caches\n"
+        "/vm-dump-tc:      dump translation cache to /tmp/tc_dump_a and\n"
+        "                  /tmp/tc_dump_astub\n"
+        "/vm-preconsts:    show information about preconsts\n"
+        "/vm-tcreset:      throw away translations and start over\n"
+#endif
       ;
-#ifndef NO_TCMALLOC
+#ifdef USE_TCMALLOC
         if (MallocExtensionInstance) {
           usage.append(
               "/free-mem:        ask tcmalloc to release memory to system\n"
               "/tcmalloc-stats:  get internal tcmalloc stats\n"
+              "/tcmalloc-set-tc: set max mem tcmalloc thread-cache can use\n"
               );
         }
 #endif
 
-#ifndef NO_JEMALLOC
+#ifdef USE_JEMALLOC
         if (mallctl) {
           usage.append(
               "/jemalloc-stats:  get internal jemalloc stats\n"
@@ -253,6 +280,10 @@ void AdminRequestHandler::handleRequest(Transport *transport) {
       break;
     }
 #endif
+    if (cmd == "repo-schema") {
+      transport->sendString(VM::Repo::kSchemaId, 200);
+      break;
+    }
     if (cmd == "translate") {
       string buildId = transport->getParam("build-id");
       if (!buildId.empty() && buildId != RuntimeOption::BuildId) {
@@ -297,8 +328,23 @@ void AdminRequestHandler::handleRequest(Transport *transport) {
         handleConstSizeRequest(cmd, transport)) {
       break;
     }
+    if (strcmp(cmd.c_str(), "static-strings") == 0 &&
+        handleStaticStringsRequest(cmd, transport)) {
+      break;
+    }
+    if (strncmp(cmd.c_str(), "vm-", 3) == 0 &&
+        handleVMRequest(cmd, transport)) {
+      break;
+    }
 
-#ifndef NO_TCMALLOC
+    if (cmd == "pcre-cache-size") {
+      std::ostringstream size;
+      size << preg_pcre_cache_size() << endl;
+      transport->sendString(size.str());
+      break;
+    }
+
+#ifdef USE_TCMALLOC
     if (MallocExtensionInstance) {
       if (cmd == "free-mem") {
         MallocExtensionInstance()->ReleaseFreeMemory();
@@ -306,8 +352,11 @@ void AdminRequestHandler::handleRequest(Transport *transport) {
         break;
       }
       if (cmd == "tcmalloc-stats") {
-        ostringstream stats;
+        std::ostringstream stats;
         size_t user_allocated, heap_size, slack_bytes;
+        size_t pageheap_free, pageheap_unmapped;
+        size_t tc_max, tc_allocated;
+
         MallocExtensionInstance()->
           GetNumericProperty("generic.current_allocated_bytes",
               &user_allocated);
@@ -315,25 +364,56 @@ void AdminRequestHandler::handleRequest(Transport *transport) {
           GetNumericProperty("generic.heap_size", &heap_size);
         MallocExtensionInstance()->
           GetNumericProperty("tcmalloc.slack_bytes", &slack_bytes);
+        MallocExtensionInstance()->
+          GetNumericProperty("tcmalloc.pageheap_free_bytes", &pageheap_free);
+        MallocExtensionInstance()->
+          GetNumericProperty("tcmalloc.pageheap_unmapped_bytes",
+              &pageheap_unmapped);
+        MallocExtensionInstance()->
+          GetNumericProperty("tcmalloc.max_total_thread_cache_bytes",
+              &tc_max);
+        MallocExtensionInstance()->
+          GetNumericProperty("tcmalloc.current_total_thread_cache_bytes",
+              &tc_allocated);
         stats << "<tcmalloc-stats>" << endl;
         stats << "  <user_allocated>" << user_allocated << "</user_allocated>"
           << endl;
         stats << "  <heap_size>" << heap_size << "</heap_size>" << endl;
         stats << "  <slack_bytes>" << slack_bytes << "</slack_bytes>" << endl;
+        stats << "  <pageheap_free>" << pageheap_free
+          << "</pageheap_free>" << endl;
+        stats << "  <pageheap_unmapped>" << pageheap_unmapped
+          << "</pageheap_unmapped>" << endl;
+        stats << "  <thread_cache_max>" << tc_max
+          << "</thread_cache_max>" << endl;
+        stats << "  <thread_cache_allocated>" << tc_allocated
+          << "</thread_cache_allocated>" << endl;
         stats << "</tcmalloc-stats>" << endl;
         transport->sendString(stats.str());
+        break;
+      }
+      if (cmd == "tcmalloc-set-tc") {
+        size_t tc_max;
+
+        MallocExtensionInstance()->
+          GetNumericProperty("tcmalloc.max_total_thread_cache_bytes", &tc_max);
+
+        size_t tcache = transport->getInt64Param("s");
+        bool retval = MallocExtensionInstance()->
+          SetNumericProperty("tcmalloc.max_total_thread_cache_bytes", tcache);
+        transport->sendString(retval == true ? "OK\n" : "FAILED\n");
         break;
       }
     }
 #endif
 
-#ifndef NO_JEMALLOC
+#ifdef USE_JEMALLOC
     if (mallctl) {
       if (cmd == "free-mem") {
         // Purge all dirty unused pages.
         int err = mallctl("arenas.purge", NULL, NULL, NULL, 0);
         if (err) {
-          ostringstream estr;
+          std::ostringstream estr;
           estr << "Error " << err << " in mallctl(\"arenas.purge\", ...)"
             << endl;
           transport->sendString(estr.str());
@@ -357,7 +437,7 @@ void AdminRequestHandler::handleRequest(Transport *transport) {
         size_t mapped = 0;
         mallctl("stats.mapped", &mapped, &sz, NULL, 0);
 
-        ostringstream stats;
+        std::ostringstream stats;
         stats << "<jemalloc-stats>" << endl;
         stats << "  <allocated>" << allocated << "</allocated>" << endl;
         stats << "  <active>" << active << "</active>" << endl;
@@ -385,7 +465,7 @@ void AdminRequestHandler::handleRequest(Transport *transport) {
         bool active = true;
         int err = mallctl("prof.active", NULL, NULL, &active, sizeof(bool));
         if (err) {
-          ostringstream estr;
+          std::ostringstream estr;
           estr << "Error " << err << " in mallctl(\"prof.active\", ...)"
             << endl;
           transport->sendString(estr.str());
@@ -398,7 +478,7 @@ void AdminRequestHandler::handleRequest(Transport *transport) {
         bool active = false;
         int err = mallctl("prof.active", NULL, NULL, &active, sizeof(bool));
         if (err) {
-          ostringstream estr;
+          std::ostringstream estr;
           estr << "Error " << err << " in mallctl(\"prof.active\", ...)"
             << endl;
           transport->sendString(estr.str());
@@ -414,7 +494,7 @@ void AdminRequestHandler::handleRequest(Transport *transport) {
           int err = mallctl("prof.dump", NULL, NULL, (void *)&s,
               sizeof(char *));
           if (err) {
-            ostringstream estr;
+            std::ostringstream estr;
             estr << "Error " << err << " in mallctl(\"prof.dump\", ..., \"" << f
               << "\", ...)" << endl;
             transport->sendString(estr.str());
@@ -423,7 +503,7 @@ void AdminRequestHandler::handleRequest(Transport *transport) {
         } else {
           int err = mallctl("prof.dump", NULL, NULL, NULL, 0);
           if (err) {
-            ostringstream estr;
+            std::ostringstream estr;
             estr << "Error " << err << " in mallctl(\"prof.dump\", ...)"
               << endl;
             transport->sendString(estr.str());
@@ -485,21 +565,51 @@ bool AdminRequestHandler::handleCheckRequest(const std::string &cmd,
     transport->sendString(lexical_cast<string>(count));
     return true;
   }
+  if (cmd == "check-ev") {
+    int count =
+      HttpServer::Server->getPageServer()->getLibEventConnectionCount();
+    transport->sendString(lexical_cast<string>(count));
+    return true;
+  }
   if (cmd == "check-queued") {
     int count = HttpServer::Server->getPageServer()->getQueuedJobs();
     transport->sendString(lexical_cast<string>(count));
     return true;
   }
+  if (cmd == "check-health") {
+    std::stringstream out;
+    bool first = true;
+    out << "{" << endl;
+    auto appendStat = [&](const char* name, int64 value) {
+       out << (!first ? "," : "") << "  \"" << name << "\":" << value << endl;
+       first = false;
+    };
+    ServerPtr server = HttpServer::Server->getPageServer();
+    appendStat("load", server->getActiveWorker());
+    appendStat("queued", server->getQueuedJobs());
+    if (hhvm) {
+      VM::Transl::Translator* tx = VM::Transl::Translator::Get();
+      appendStat("tc-size", tx->getCodeSize());
+      appendStat("tc-stubsize", tx->getStubSize());
+      appendStat("targetcache", tx->getTargetCacheSize());
+      appendStat("units", Eval::FileRepository::getLoadedFiles());
+    }
+    out << "}" << endl;
+    transport->sendString(out.str());
+    return true;
+  }
+  if (cmd == "check-pl-load") {
+    int count = PageletServer::GetActiveWorker();
+    transport->sendString(lexical_cast<string>(count));
+    return true;
+  }
+  if (cmd == "check-pl-queued") {
+    int count = PageletServer::GetQueuedJobs();
+    transport->sendString(lexical_cast<string>(count));
+    return true;
+  }
   if (cmd == "check-mem") {
     return toggle_switch(transport, RuntimeOption::CheckMemory);
-  }
-  if (cmd == "check-apc") {
-    string stats = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n";
-    stats += "<APC>\n";
-    stats += SharedStores::ReportStats(1);
-    stats += "</APC>\n";
-    transport->sendString(stats);
-    return true;
   }
   if (cmd == "check-sql") {
     string stats = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n";
@@ -651,33 +761,6 @@ bool AdminRequestHandler::handleProfileRequest(const std::string &cmd,
   return false;
 }
 
-#if (defined(GOOGLE_CPU_PROFILER) || defined(GOOGLE_HEAP_PROFILER))
-
-// call pprof to generate outputs
-static void pprof(const std::string &file, const char *extra = NULL) {
-  string program = Process::GetAppName();
-  const char *formats[] = {"--pdf", "--gif", "--callgrind"};
-  const char *argv[] = {"", NULL, program.c_str(), file.c_str(), extra, NULL};
-  String now = DateTime::Current()->toString("YmdHis");
-  for (unsigned int i = 0; i < sizeof(formats)/sizeof(formats[0]); i++) {
-    argv[1] = formats[i];
-    string out, err;
-    if (Process::Exec("pprof", argv, "", out, &err) && !out.empty()) {
-      char filename[PATH_MAX];
-      snprintf(filename, sizeof(filename), "%s.%s.%s", file.c_str(),
-               now.data(), formats[i] + 2 /* skipping -- */);
-      FILE *f = fopen(filename, "w");
-      if (f) {
-        fwrite(out.c_str(), 1, out.size(), f);
-        fclose(f);
-        Logger::Info("pprof generated %s", filename);
-      }
-    }
-  }
-}
-
-#endif
-
 #ifdef GOOGLE_CPU_PROFILER
 bool AdminRequestHandler::handleCPUProfilerRequest(const std::string &cmd,
                                                    Transport *transport) {
@@ -697,7 +780,6 @@ bool AdminRequestHandler::handleCPUProfilerRequest(const std::string &cmd,
     ProfilerStop();
     ProfilerFlush();
     transport->sendString("OK\n");
-    pprof(file);
     return true;
   }
   return false;
@@ -755,7 +837,6 @@ bool AdminRequestHandler::handleHeapProfilerRequest(const std::string &cmd,
       if (out.size() > 1) {
         string base = "--base=";
         base += out[0];
-        pprof(out[out.size() - 1], base.c_str());
       } else {
         Logger::Error("Unable to find heap profiler output");
       }
@@ -851,10 +932,86 @@ bool AdminRequestHandler::handleConstSizeRequest (const std::string &cmd,
     return true;
   }
   if (cmd == "const-ss") {
-    ostringstream result;
+    std::ostringstream result;
     size_t size = get_const_map_size();
     result << "{ \"hphp.const_map.size\":" << size << "}\n";
     transport->sendString(result.str());
+    return true;
+  }
+  return false;
+}
+
+bool AdminRequestHandler::handleStaticStringsRequest(const std::string& cmd,
+                                                     Transport* transport) {
+  std::ostringstream result;
+  result << StringData::GetStaticStringCount();
+  transport->sendString(result.str());
+  return true;
+}
+
+namespace {
+struct PCInfo {
+  PCInfo() : count(0), unique(0) {}
+  int count;
+  int unique;
+};
+typedef std::map<int, PCInfo> InfoMap;
+}
+
+bool AdminRequestHandler::handleVMRequest(const std::string &cmd,
+                                          Transport *transport) {
+  if (!hhvm) return false;
+
+  if (cmd == "vm-tcspace") {
+    transport->sendString(VM::Transl::Translator::Get()->getUsage());
+    return true;
+  }
+  if (cmd == "vm-preconsts") {
+    InfoMap counts;
+    using namespace HPHP::VM::Transl;
+    for (PreConstDepMap::iterator i = gPreConsts.begin(); i != gPreConsts.end();
+         ++i) {
+      PreConstDep& dep = i->second;
+      PCInfo& info = counts[dep.preConsts.size()];
+      info.count++;
+      if (preConstVecHasUnique(dep.preConsts)) {
+        info.unique++;
+      }
+    }
+
+    using std::setw;
+    using std::right;
+    using std::setfill;
+    std::stringstream out;
+    const int width = 10;
+    out << setfill(' ') << right;
+    out << setw(width) << "size" << setw(width) << "count"
+        << setw(width) << "unique" << endl;
+    for (InfoMap::iterator i = counts.begin(); i != counts.end(); ++i) {
+      out << setw(width) << i->first << setw(width) << i->second.count
+          << setw(width) << i->second.unique << endl;
+    }
+    transport->sendString(out.str());
+    return true;
+  }
+  if (cmd == "vm-dump-tc") {
+    if (HPHP::VM::Transl::tc_dump()) {
+      transport->sendString("Done");
+    } else {
+      transport->sendString("Error dumping the translation cache");
+    }
+    return true;
+  }
+  if (cmd == "vm-tcreset") {
+    int64 start = Timer::GetCurrentTimeMicros();
+    if (HPHP::VM::Transl::tx64->replace()) {
+      string msg;
+      Util::string_printf(msg, "Done %ld ms",
+                          (Timer::GetCurrentTimeMicros() - start) / 1000);
+      transport->sendString(msg);
+    } else {
+      transport->sendString("Failed");
+    }
     return true;
   }
   return false;
@@ -884,7 +1041,17 @@ bool AdminRequestHandler::handleDumpCacheRequest(const std::string &cmd,
       transport->sendString("No APC\n");
       return true;
     }
-    apc_dump("/tmp/apc_dump");
+    string keyOnlyParam = transport->getParam("keyonly");
+    bool keyOnly = false;
+    if (keyOnlyParam == "true" || keyOnlyParam == "1") {
+      keyOnly = true;
+    }
+    int waitSeconds = transport->getIntParam("waitseconds");
+    if (!waitSeconds) {
+      waitSeconds = RuntimeOption::RequestTimeoutSeconds > 0 ?
+                    RuntimeOption::RequestTimeoutSeconds : 10;
+    }
+    apc_dump("/tmp/apc_dump", keyOnly, waitSeconds);
     transport->sendString("Done");
     return true;
   }

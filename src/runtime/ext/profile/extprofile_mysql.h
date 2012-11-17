@@ -87,6 +87,11 @@ inline Variant x_mysql_error(CVarRef link_identifier = null) {
   return f_mysql_error(link_identifier);
 }
 
+inline Variant x_mysql_warning_count(CVarRef link_identifier = null) {
+  FUNCTION_INJECTION_BUILTIN(mysql_warning_count);
+  return f_mysql_warning_count(link_identifier);
+}
+
 inline String x_mysql_get_client_info() {
   FUNCTION_INJECTION_BUILTIN(mysql_get_client_info);
   return f_mysql_get_client_info();
@@ -157,6 +162,26 @@ inline bool x_mysql_set_timeout(int query_timeout_ms = -1, CVarRef link_identifi
 inline Variant x_mysql_query(CStrRef query, CVarRef link_identifier = null) {
   FUNCTION_INJECTION_BUILTIN(mysql_query);
   return f_mysql_query(query, link_identifier);
+}
+
+inline Variant x_mysql_multi_query(CStrRef query, CVarRef link_identifier = null) {
+  FUNCTION_INJECTION_BUILTIN(mysql_multi_query);
+  return f_mysql_multi_query(query, link_identifier);
+}
+
+inline bool x_mysql_next_result(CVarRef link_identifier = null) {
+  FUNCTION_INJECTION_BUILTIN(mysql_next_result);
+  return f_mysql_next_result(link_identifier);
+}
+
+inline bool x_mysql_more_results(CVarRef link_identifier = null) {
+  FUNCTION_INJECTION_BUILTIN(mysql_more_results);
+  return f_mysql_more_results(link_identifier);
+}
+
+inline Variant x_mysql_fetch_result(CVarRef link_identifier = null) {
+  FUNCTION_INJECTION_BUILTIN(mysql_fetch_result);
+  return f_mysql_fetch_result(link_identifier);
 }
 
 inline Variant x_mysql_unbuffered_query(CStrRef query, CVarRef link_identifier = null) {

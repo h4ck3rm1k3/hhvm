@@ -22,8 +22,6 @@
 #include <runtime/base/array/array_iterator.h>
 #include <runtime/base/builtin_functions.h>
 
-using namespace std;
-
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
 // manipulations
@@ -31,8 +29,12 @@ namespace HPHP {
 String StringUtil::ToLower(CStrRef input) {
   if (input.empty()) return input;
   int len = input.size();
-  char *ret = string_to_lower(input.data(), len);
-  return String(ret, len, AttachString);
+  String str(len, ReserveString);
+  char* out = str.mutableSlice().ptr;
+  for (const char *in = input.data(), *end = in + len; in < end; in++) {
+    *out++ = tolower(*in);
+  }
+  return str.setSize(len);
 }
 
 String StringUtil::ToUpper(CStrRef input, ToUpperType type /*= ToUpperAll */) {
@@ -63,6 +65,9 @@ String StringUtil::Trim(CStrRef input, TrimType type  /* = TrimBoth */,
   int len = input.size();
   char *ret = string_trim(input.data(), len,
                           charlist.data(), charlist.length(), type);
+  if (!ret) {
+      return input;
+  }
   return String(ret, len, AttachString);
 }
 
@@ -207,20 +212,20 @@ String StringUtil::Implode(CArrRef items, CStrRef delim) {
   int size = items.size();
   if (size == 0) return "";
 
-  vector<String> sitems;
-  sitems.reserve(size);
+  String* sitems = (String*)smart_malloc(size * sizeof(String));
   int len = 0;
   int lenDelim = delim.size();
+  int i = 0;
   for (ArrayIter iter(items); iter; ++iter) {
-    String item = iter.second().toString();
-    sitems.push_back(item);
-    len += lenDelim;
-    len += item.size();
+    new (&sitems[i]) String(iter.second().toString());
+    len += sitems[i].size() + lenDelim;
+    i++;
   }
   len -= lenDelim; // always one delimiter less than count of items
-  ASSERT((int)sitems.size() == size);
+  ASSERT(i == size);
 
-  char *buffer = (char *)malloc(len + 1);
+  String s = String(len, ReserveString);
+  char *buffer = s.mutableSlice().ptr;
   const char *sdelim = delim.data();
   char *p = buffer;
   for (int i = 0; i < size; i++) {
@@ -234,10 +239,11 @@ String StringUtil::Implode(CArrRef items, CStrRef delim) {
       memcpy(p, item.data(), lenItem);
       p += lenItem;
     }
+    sitems[i].~String();
   }
-  *p = '\0';
+  smart_free(sitems);
   ASSERT(p - buffer == len);
-  return String(buffer, len, AttachString);
+  return s.setSize(len);
 }
 
 Variant StringUtil::Split(CStrRef str, int split_length /* = 1 */) {
@@ -335,6 +341,91 @@ String StringUtil::HtmlEncode(CStrRef input, QuoteStyle quoteStyle,
   int len = input.size();
   char *ret = string_html_encode(input, len, quoteStyle != NoQuotes,
                                  quoteStyle == BothQuotes, utf8, nbsp);
+  if (!ret) {
+    raise_error("HtmlEncode called on too large input (%d)", len);
+  }
+  return String(ret, len, AttachString);
+}
+
+#define A1(v, ch) ((v)|((ch) & 64 ? 0 : 1uLL<<((ch)&63)))
+#define A2(v, ch) ((v)|((ch) & 64 ? 1uLL<<((ch)&63) : 0))
+
+static const AsciiMap mapNoQuotes = {
+  {   A1(A1(A1(A1(A1(A1(0, '<'), '>'), '&'), '{'), '}'), '@'),
+      A2(A2(A2(A2(A2(A2(0, '<'), '>'), '&'), '{'), '}'), '@') }
+};
+
+static const AsciiMap mapDoubleQuotes = {
+  {   A1(A1(A1(A1(A1(A1(A1(0, '<'), '>'), '&'), '{'), '}'), '@'), '"'),
+      A2(A2(A2(A2(A2(A2(A2(0, '<'), '>'), '&'), '{'), '}'), '@'), '"') }
+};
+
+static const AsciiMap mapBothQuotes = {
+  { A1(A1(A1(A1(A1(A1(A1(A1(0, '<'), '>'), '&'), '{'), '}'), '@'), '"'), '\''),
+    A2(A2(A2(A2(A2(A2(A2(A2(0, '<'), '>'), '&'), '{'), '}'), '@'), '"'), '\'') }
+};
+
+static const AsciiMap mapNothing = {};
+
+String StringUtil::HtmlEncodeExtra(CStrRef input, QuoteStyle quoteStyle,
+                                   const char *charset, bool nbsp,
+                                   Array extra) {
+  if (input.empty()) return input;
+
+  ASSERT(charset);
+  int flags = STRING_HTML_ENCODE_UTF8;
+  if (nbsp) {
+    flags |= STRING_HTML_ENCODE_NBSP;
+  }
+  if (RuntimeOption::Utf8izeReplace) {
+    flags |= STRING_HTML_ENCODE_UTF8IZE_REPLACE;
+  }
+  if (!*charset || strcasecmp(charset, "UTF-8") == 0) {
+  } else if (strcasecmp(charset, "ISO-8859-1") == 0) {
+    flags &= ~STRING_HTML_ENCODE_UTF8;
+  } else {
+    throw NotImplementedException(charset);
+  }
+
+  const AsciiMap *am;
+  AsciiMap tmp;
+
+  switch (quoteStyle) {
+    case FBUtf8Only:
+      am = &mapNothing;
+      flags |= STRING_HTML_ENCODE_HIGH;
+      break;
+    case FBUtf8:
+      am = &mapBothQuotes;
+      flags |= STRING_HTML_ENCODE_HIGH;
+      break;
+    case BothQuotes:
+      am = &mapBothQuotes;
+      break;
+    case DoubleQuotes:
+      am = &mapDoubleQuotes;
+      break;
+    case NoQuotes:
+      am = &mapNoQuotes;
+      break;
+    default:
+      am = &mapNothing;
+      raise_error("Unknown quote style: %d", (int)quoteStyle);
+  }
+
+  if (quoteStyle != FBUtf8Only && extra.toBoolean()) {
+    tmp = *am;
+    am = &tmp;
+    for (ArrayIter iter(extra); iter; ++iter) {
+      String item = iter.second().toString();
+      char c = item.data()[0];
+      tmp.map[c & 64 ? 1 : 0] |= 1uLL << (c & 63);
+    }
+  }
+
+  int len = input.size();
+  char *ret = string_html_encode_extra(input, len,
+                                       (StringHtmlEncoding)flags, am);
   if (!ret) {
     raise_error("HtmlEncode called on too large input (%d)", len);
   }
@@ -490,11 +581,11 @@ String StringUtil::SHA1(CStrRef input, bool raw /* = false */) {
 }
 
 void StringUtil::InitLiteralStrings(StaticString literalStrings[],
-                                    int nliteralStrings,
-                                    const char *literalStringBuf,
-                                    int literalStringBufSize,
-                                    const char *literalStringLen,
-                                    int literalStringLenSize) {
+                                   int nliteralStrings,
+                                   const char *literalStringBuf,
+                                   int literalStringBufSize,
+                                   const char *literalStringLen,
+                                   int literalStringLenSize) {
   int bufSize = literalStringBufSize;
   int lenSize = literalStringLenSize;
   static char *uncompressedBuf; // permanently allocated
@@ -532,6 +623,33 @@ void StringUtil::InitLiteralStrings(StaticString literalStrings[],
     throw Exception("Bad literalStringLen %p", literalStringLen);
   }
   free(uncompressedLen);
+}
+
+int StringUtil::InitLiteralStrings(const char *input[], int nls, int nbs) {
+  assert(sizeof(StaticStringProxy) == sizeof(StaticString));
+  for (int i = 0; i < nls; i++) {
+    StaticString *ss = (StaticString *)input[2 * i];
+    const char *str = input[2 * i + 1];
+    new (ss) StaticString(str);
+  }
+  const char **binput = input + 2 * nls;
+  for (int i = 0; i < nbs; i++) {
+    StaticString *ss = (StaticString *)binput[3 * i];
+    const char *str = binput[3 * i + 1];
+    int64 length = (int64)binput[3 * i + 2];
+    new (ss) StaticString(str, length);
+  }
+  return 0;
+}
+
+int StringUtil::InitLiteralVarStrings(const char *input[], int count) {
+  assert(sizeof(VariantProxy) == sizeof(Variant));
+  for (int i = 0; i < count; i++) {
+    Variant *v = (Variant *)input[2 * i];
+    StaticString *s = (StaticString *)input[2 * i + 1];
+    new (v) Variant(*s);
+  }
+  return 0;
 }
 
 ///////////////////////////////////////////////////////////////////////////////

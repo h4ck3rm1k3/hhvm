@@ -93,19 +93,21 @@ public:
     return m_data.str->size();
   }
 
-  int64 stringHash() const {
+  strhash_t stringHash() const {
     ASSERT(is(KindOfString) || is(KindOfStaticString));
     return m_data.str->hash();
   }
 
-  size_t arrSize() const;
-  int getIndex(CVarRef key);
-  int getIndex(CStrRef key);
-  int getIndex(litstr key);
+  size_t arrSize() const {
+    ASSERT(is(KindOfArray));
+    if (getIsVector()) return m_data.vec->size;
+    return m_data.map->size();
+  }
   int getIndex(int64 key);
+  int getIndex(const StringData* key);
 
   void loadElems(ArrayData *&elems, const SharedMap &sharedMap,
-                         bool keepRef = false);
+                 bool keepRef = false, bool mapInit = false);
 
   Variant getKey(ssize_t pos) const;
 
@@ -225,8 +227,8 @@ private:
 
 class SharedVariantStats {
  public:
-  int64 dataSize;
-  int64 dataTotalSize;
+  int32 dataSize;
+  int32 dataTotalSize;
   int32 variantCount;
 
   void initStats() {

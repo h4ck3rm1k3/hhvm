@@ -19,6 +19,8 @@
 
 #include <runtime/base/types.h>
 #include <runtime/base/util/string_buffer.h>
+#include <runtime/vm/class.h>
+#include <runtime/vm/unit.h>
 
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
@@ -59,6 +61,11 @@ public:
    * Top level entry function called by f_ functions.
    */
   String serialize(CVarRef v, bool ret);
+  String serializeValue(CVarRef v, bool limit);
+
+  // Serialize with limit size of output, always return the serialized string.
+  // It does not work with Serialize, JSON, APCSerialize, DebuggerSerialize.
+  String serializeWithLimit(CVarRef v, int limit);
 
   /**
    * Type specialized output functions.
@@ -71,7 +78,6 @@ public:
   void write(double  v);
   void write(const char *v, int len = -1, bool isArrayKey = false);
   void write(CStrRef v);
-  void write(CArrRef v);
   void write(CObjRef v);
   void write(CVarRef v, bool isArrayKey = false);
 
@@ -80,10 +86,10 @@ public:
   void writeOverflow(void* ptr, bool isObject = false);
   void writeRefCount(); // for DebugDump only
 
-  void writeArrayHeader(const ArrayData *arr, int size);
-  void writeArrayKey(const ArrayData *arr, Variant key);
-  void writeArrayValue(const ArrayData *arr, CVarRef value);
-  void writeArrayFooter(const ArrayData *arr);
+  void writeArrayHeader(int size, bool isVectorData);
+  void writeArrayKey(Variant key);
+  void writeArrayValue(CVarRef value);
+  void writeArrayFooter();
   void writeSerializableObject(CStrRef clsname, CStrRef serialized);
 
   /**
@@ -95,7 +101,7 @@ public:
   void incMaxCount() { m_maxCount++; }
   bool incNestedLevel(void *ptr, bool isObject = false);
   void decNestedLevel(void *ptr);
-  void setObjectInfo(CStrRef objClass, int objId);
+  void setObjectInfo(CStrRef objClass, int objId, char objCode);
   void setResourceInfo(CStrRef rsrcName, int rsrcId);
   void getResourceInfo(String &rsrcName, int &rsrcId);
   Type getType() const { return m_type; }
@@ -110,16 +116,15 @@ private:
   bool m_referenced;             // mark current array element as reference
   int m_refCount;                // current variable's reference count
   String m_objClass;             // for object serialization
-  String m_rsrcName;             // for resource serialization
   int m_objId;                   // for object serialization
+  char m_objCode;                // for object serialization
+  String m_rsrcName;             // for resource serialization
   int m_rsrcId;                  // for resource serialization
   int m_maxCount;                // for max recursive levels
-  int64 m_outputLimit;           // Maximum size of output
   int m_levelDebugger;           // keep track of levels for DebuggerSerialize
   int m_maxLevelDebugger;        // for max level of DebuggerSerialize
 
   struct ArrayInfo {
-    const ClassInfo *class_info; // The class info if an object
     bool is_object;     // nested arrays or objects
     bool is_vector;     // whether current array is a vector
     bool first_element; // whether this is first array element
@@ -127,8 +132,7 @@ private:
   };
   std::vector<ArrayInfo> m_arrayInfos;
 
-  void writePropertyPrivacy(CStrRef prop, const ClassInfo *cls);
-  void writeSerializedProperty(CStrRef prop, const ClassInfo *cls);
+  void writePropertyKey(CStrRef prop);
 };
 
 ///////////////////////////////////////////////////////////////////////////////

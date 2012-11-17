@@ -18,8 +18,6 @@
 #include <runtime/base/complex_types.h>
 
 using namespace HPHP;
-using namespace std;
-using namespace boost;
 
 ///////////////////////////////////////////////////////////////////////////////
 // constructors/destructors
@@ -152,7 +150,7 @@ void BreakStatement::outputCPPImpl(CodeGenerator &cg, AnalysisResultPtr ar) {
         labelId = labelIds[i];
         labelId &= ~CodeGenerator::BreakScopeBitMask;
         cg_printf("case %d: goto %s%d;\n",
-                  labelIds.size() - i, m_name, labelId);
+                  int(labelIds.size() - i), m_name, labelId);
         cg.addLabelId(m_name, labelId);
       }
       cg_printf("default:\n");

@@ -19,6 +19,8 @@
 #include <runtime/base/util/request_local.h>
 #include <runtime/base/ini_setting.h>
 
+#include <system/lib/systemlib.h>
+
 #define MMC_SERIALIZED 1
 #define MMC_COMPRESSED 2
 
@@ -77,8 +79,9 @@ bool ini_on_update_hash_function(CStrRef value, void *p) {
 ///////////////////////////////////////////////////////////////////////////////
 // methods
 
-c_Memcache::c_Memcache() : m_memcache(), m_compress_threshold(0),
-                           m_min_compress_savings(0.2) {
+c_Memcache::c_Memcache(const ObjectStaticCallbacks *cb) :
+    ExtObjectData(cb), m_memcache(), m_compress_threshold(0),
+    m_min_compress_savings(0.2) {
   memcached_create(&m_memcache);
 
   if (MEMCACHEG(hash_strategy) == "consistent") {
@@ -401,7 +404,7 @@ bool c_Memcache::t_setoptimeout(int64 timeoutms) {
   return true;
 }
 
-int c_Memcache::t_getserverstatus(CStrRef host, int port /* = 0 */) {
+int64 c_Memcache::t_getserverstatus(CStrRef host, int port /* = 0 */) {
   INSTANCE_METHOD_INJECTION_BUILTIN(Memcache, Memcache::getserverstatus);
   /* intentionally doing nothing for now */
   return 1;
@@ -430,7 +433,8 @@ Array static memcache_build_stats(const memcached_st *ptr,
                                 memcached_stat_st *memc_stat,
                                 memcached_return_t *ret) {
   char **curr_key;
-  char **stat_keys = memcached_stat_get_keys(ptr, memc_stat, ret);
+  char **stat_keys = memcached_stat_get_keys(const_cast<memcached_st*>(ptr),
+                                             memc_stat, ret);
 
   if (*ret != MEMCACHED_SUCCESS) {
     if (stat_keys) {
@@ -648,7 +652,7 @@ bool f_memcache_setoptimeout(CObjRef memcache, int timeoutms) {
   return memcache_obj->t_setoptimeout(timeoutms);
 }
 
-int f_memcache_get_server_status(CObjRef memcache, CStrRef host,
+int64 f_memcache_get_server_status(CObjRef memcache, CStrRef host,
                                  int port /* = 0 */) {
   c_Memcache *memcache_obj = memcache.getTyped<c_Memcache>();
   return memcache_obj->t_getserverstatus(host, port);

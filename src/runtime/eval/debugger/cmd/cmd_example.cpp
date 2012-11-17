@@ -16,8 +16,6 @@
 
 #include <runtime/eval/debugger/cmd/cmd_example.h>
 
-using namespace std;
-
 namespace HPHP { namespace Eval {
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -61,7 +59,7 @@ bool CmdExample::onClient(DebuggerClient *client) {
     return help(client);
   }
 
-  m_input = client->argRest(2);
+  m_input = client->lineRest(2);
   CmdExamplePtr res = client->xend<CmdExample>(this);
   client->output("%d", res->m_output);
   return true;

@@ -25,6 +25,8 @@
 #include <vector>
 #include <queue>
 
+#include <system/lib/systemlib.h>
+
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -443,7 +445,8 @@ void ImageFromHTTP::completed() {
 
 // PHP accessible classes/functions
 
-c_ImageSprite::c_ImageSprite() {
+c_ImageSprite::c_ImageSprite(const ObjectStaticCallbacks *cb) :
+    ExtObjectData(cb) {
   m_image_string_buffer = null_string;
   m_image = NULL;
   m_current = false;

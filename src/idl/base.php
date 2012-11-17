@@ -125,6 +125,7 @@ define('IsFinal',                        1 <<  5);
 define('IsPublic',                       1 <<  6);
 define('IsProtected',                    1 <<  7);
 define('IsPrivate',                      1 <<  8);
+define('IgnoreRedefinition',             1 <<  8);
 define('IsStatic',                       1 <<  9);
 define('HasDocComment',                  1 << 14);
 define('HipHopSpecific',                 1 << 16);
@@ -139,12 +140,11 @@ define('AllowIntercept',                 1 << 24);
 define('NoProfile',                      1 << 25);
 define('ContextSensitive',               1 << 26);
 define('NoDefaultSweep',                 1 << 27);
-
 // Mask for checking the flags related to variable arguments
 define('VarArgsMask', (VariableArguments | RefVariableArguments |
                        MixedVariableArguments));
 
-function get_flag_names($arr, $name) {
+function get_flag_names($arr, $name, $global_func) {
   $flag = 0;
   if (!empty($arr[$name])) {
     $flag |= $arr[$name];
@@ -156,7 +156,11 @@ function get_flag_names($arr, $name) {
   if ($flag & IsFinal               ) $ret .= ' | IsFinal'               ;
   if ($flag & IsPublic              ) $ret .= ' | IsPublic'              ;
   if ($flag & IsProtected           ) $ret .= ' | IsProtected'           ;
-  if ($flag & IsPrivate             ) $ret .= ' | IsPrivate'             ;
+  if ($global_func) {
+    if ($flag & IgnoreRedefinition  ) $ret .= ' | IgnoreRedefinition'    ;
+  } else {
+    if ($flag & IsPrivate           ) $ret .= ' | IsPrivate'             ;
+  }
   if ($flag & IsStatic              ) $ret .= ' | IsStatic'              ;
   if ($flag & HasDocComment         ) $ret .= ' | HasDocComment'         ;
   if ($flag & HipHopSpecific        ) $ret .= ' | HipHopSpecific'        ;
@@ -181,11 +185,15 @@ function get_flag_names($arr, $name) {
 ///////////////////////////////////////////////////////////////////////////////
 // schema functions that will be used (and only used) by schemas
 
-$current_class = '';
-$preamble = '';
-$funcs = array();
-$classes = array();
-$constants = array();
+function ResetSchema() {
+  global $current_class, $preamble, $funcs, $classes, $constants;
+  $current_class = '';
+  $preamble = '';
+  $funcs = array();
+  $classes = array();
+  $constants = array();
+}
+ResetSchema();
 
 function DefinePreamble($p) {
   global $preamble;
@@ -223,21 +231,14 @@ function EndClass() {
   global $classes, $current_class;
 
   $have_ctor = false;
-  $have_dtor = false;
   foreach ($classes[$current_class]['methods'] as $method) {
     if ($method['name'] == '__construct') $have_ctor = true;
-    if ($method['name'] == '__destruct') $have_dtor = true;
   }
 
   // We don't have the information to autogenerate a ctor def,
   // so make the user do it.
   if (!$have_ctor) {
     throw new Exception("No constructor defined for class $current_class");
-  }
-  // Generate the appropriate IDL for the dtor, if it doesn't exist.
-  if (!$have_dtor) {
-    DefineFunction(array('name' => '__destruct',
-                         'return' => array('type' => Variant)));
   }
 
   $current_class = '';
@@ -346,31 +347,35 @@ function typename($type, $prefix = true) {
   return 'void';
 }
 
+function typeidlname($type, $null = '') {
+  global $TYPENAMES;
+  if ($type === null) {
+    return $null;
+  }
+  if (is_string($type)) {
+    return "'$type'";
+  }
+  if ($type & Reference) {
+    return $TYPENAMES[$type & ~Reference]['idlname'];
+  }
+  return $TYPENAMES[$type]['idlname'];
+}
+
 function param_typename($arg, $forceRef = false) {
   $type = $arg['type'];
-  $ref = idx($arg, 'ref') ?
-    ($forceRef === null ?
-     "wrap" : ($forceRef === true ? "var" : true)) :
-    ($forceRef === true ? "var" : false);
-
   if (is_string($type)) {
     return 'p_' . $type;
   }
-
   global $REFNAMES;
   $name = typename($type);
-  if ($ref && $name == "Variant") {
-    if ($ref === "wrap")
-      return "VRefParam";
-    else if ($ref === "var")
-      return "Variant";
-    else
-      return "VRefParam";
+  $ref = idx($arg, 'ref');
+  if (idx($arg, 'ref')) {
+    return ($name === "Variant") ? "VRefParam" : $name;
   }
-  if ($ref || !isset($REFNAMES[$name])) {
+  if ($forceRef) {
     return $name;
   }
-  return $REFNAMES[$name];
+  return isset($REFNAMES[$name]) ? $REFNAMES[$name] : $name;
 }
 
 function typeenum($type) {
@@ -405,7 +410,8 @@ function get_serialized_default($s) {
   if (preg_match('/^".*"$/', $s) ||
       preg_match('/^[\-0-9.]+$/', $s) ||
       preg_match('/^0x[0-9a-fA-F]+$/', $s) ||
-      preg_match('/^(true|false|null)$/', $s)
+      preg_match('/^(true|false|null)$/', $s) ||
+      $s == 'Array()'
      ) {
     return serialize(eval("return $s;"));
   }
@@ -416,7 +422,7 @@ function get_serialized_default($s) {
     $s = preg_replace('/k_/', '', $s);
     return serialize(eval("return $s;"));
   }
-  if (preg_match('/^q_([A-Za-z]+)_(\w+)$/', $s, $m)) {
+  if (preg_match('/^q_([A-Za-z]+)\$\$(\w+)$/', $s, $m)) {
     $class = $m[1];
     $constant = $m[2];
     return serialize(eval("return $class::$constant;"));
@@ -547,7 +553,7 @@ function generateFuncArgsCPPHeader($func, $f, $forceRef = false,
   fprintf($f, ")");
 }
 
-function generateFuncArgsCall($func, $f, $forceRef = false) {
+function generateFuncArgsCall($func, $f) {
   $var_arg = ($func['flags'] & VarArgsMask);
   $args = $func['args'];
   if ($var_arg) fprintf($f, '_argc');
@@ -562,26 +568,41 @@ function generateFuncArgsCall($func, $f, $forceRef = false) {
   }
 }
 
-function generateFuncCPPHeader($func, $f, $method = false, $forceref = false,
+function generateFuncCPPForwardDeclarations($func, $f) {
+  if (is_string($func['return'])) {
+    fprintf($f, "FORWARD_DECLARE_CLASS_BUILTIN(%s);\n",
+            typename($func['return'], false));
+  }
+
+  foreach ($func['args'] as $arg) {
+    if (is_string($arg['type'])) {
+      fprintf($f, "FORWARD_DECLARE_CLASS_BUILTIN(%s);\n",
+              typename($arg['type'], false));
+    }
+  }
+}
+
+function generateFuncCPPHeader($func, $f, $method = false, $forceRef = false,
                                $static = false, $class = false) {
   if ($method) {
     fprintf($f, '%s%s %s_%s', $static ? 'static ' : '',
             typename($func['return']), $static ? "ti" : "t",
             strtolower($func['name']));
   } else {
+    generateFuncCPPForwardDeclarations($func, $f);
     fprintf($f, '%s f_%s', typename($func['return']), $func['name']);
   }
-  generateFuncArgsCPPHeader($func, $f, $forceref, $static);
+  generateFuncArgsCPPHeader($func, $f, $forceRef, $static);
   fprintf($f, ";\n");
 
   if ($static && $method) {
     fprintf($f, '  public: static %s t_%s', typename($func['return']),
             strtolower($func['name']));
     // for the actual static call there is no class name needed
-    generateFuncArgsCPPHeader($func, $f, $forceref, false);
+    generateFuncArgsCPPHeader($func, $f, $forceRef, false);
     fprintf($f, " {\n    return ti_%s(\"%s\"", strtolower($func['name']),
             strtolower($class['name']));
-    generateFuncArgsCall($func, $f, $forceref);
+    generateFuncArgsCall($func, $f);
     fprintf($f, ");\n  }\n");
   }
 }
@@ -591,7 +612,7 @@ function generateFuncProfileHeader($func, $f) {
   $args = $func['args'];
 
   fprintf($f, 'inline %s x_%s', typename($func['return']), $func['name']);
-  generateFuncArgsCPPHeader($func, $f, null);
+  generateFuncArgsCPPHeader($func, $f);
   fprintf($f, " {\n");
 
   if (($func['flags'] & NoProfile)) {
@@ -647,7 +668,7 @@ function generateClassCPPHeader($class, $f) {
     if ($name == 'String') {
       $name = 'StaticString';
     }
-    fprintf($f, "extern const %s q_%s_%s;\n", $name, $clsname, $k['name']);
+    fprintf($f, "extern const %s q_%s\$\$%s;\n", $name, $clsname, $k['name']);
   }
 
   fprintf($f,
@@ -663,6 +684,9 @@ EOT
   fprintf($f, "FORWARD_DECLARE_CLASS_BUILTIN(%s);\n", $clsname);
   foreach ($class['properties'] as $p) {
     generatePropertyCPPForwardDeclarations($p, $f);
+  }
+  foreach ($class['methods'] as $m) {
+    generateFuncCPPForwardDeclarations($m, $f);
   }
 
   fprintf($f, "class c_%s", $clsname);
@@ -714,7 +738,8 @@ EOT
     fprintf($f, "  // constructor must call setAttributes(%s)\n",
             implode('|', $flags));
   }
-  fprintf($f, "  public: c_%s();\n", $class['name']);
+  fprintf($f, "  public: c_%s(const ObjectStaticCallbacks *cb = &cw_%s);\n",
+          $class['name'], $class['name']);
   fprintf($f, "  public: ~c_%s();\n", $class['name']);
   foreach ($class['methods'] as $m) {
     generateMethodCPPHeader($m, $class, $f);
@@ -725,6 +750,10 @@ EOT
   foreach ($class['methods'] as $m) {
     generatePreImplemented($m, $class, $f);
   }
+  if (!empty($class['properties']) ||
+      !empty($class['consts'])) {
+    fprintf($f, "  public: static const ClassPropTable os_prop_table;\n");
+  }
   if (!empty($class['footer'])) {
     fprintf($f, $class['footer']);
   }
@@ -733,14 +762,7 @@ EOT
 
 function generateMethodCPPHeader($method, $class, $f) {
   global $MAGIC_METHODS;
-  if ($method['flags'] & IsPrivate) {
-    $vis = "private";
-  } else if ($method['flags'] & IsProtected) {
-    $vis = "protected";
-  } else {
-    $vis = "public";
-  }
-  fprintf($f, "  %s: ", $vis);
+  fprintf($f, "  public: ");
   generateFuncCPPHeader($method, $f, true,
                         isset($MAGIC_METHODS[$method['name']]),
                         $method['flags'] & IsStatic, $class);
@@ -966,6 +988,7 @@ function format_doc_desc($arr, $clsname) {
   } else {
     $clsname = preg_replace('#_#', '-', strtolower($clsname));
     $name = preg_replace('#_#', '-', strtolower($arr['name']));
+    $name = preg_replace('#^--#', '', $name);
     $url = "http://php.net/manual/en/$clsname.$name.php";
     $desc = "( excerpt from $url )\n";
   }
@@ -1054,6 +1077,7 @@ function phpnet_clean($text) {
   $text = preg_replace('# ?<> ?#', "\n\n", $text);
   $text = preg_replace('/&#039;/', "'", $text);
   $text = trim(html_entity_decode($text));
+  $text = preg_replace('/[^\t\n -~]/', '', $text);
   return $text;
 }
 

@@ -96,7 +96,8 @@ inline int64 toInt64(short   v) { return v;}
 inline int64 toInt64(int     v) { return v;}
 inline int64 toInt64(int64   v) { return v;}
 inline int64 toInt64(double  v) {
-  return ((v > LONG_MAX) ? (uint64)v : (int64)v);
+  return (v >= 0 ? v > std::numeric_limits<uint64>::max() ? 0u :
+          (uint64)v : (int64)v);
 }
 inline int64 toInt64(litstr  v) { return StringData(v).toInt64();}
 inline int64 toInt64(const StringData *v) { return v ? v->toInt64() : 0;}
@@ -167,7 +168,7 @@ inline Object toObject(int     v) { return Variant(v).toObject();}
 inline Object toObject(int64   v) { return Variant(v).toObject();}
 inline Object toObject(double  v) { return Variant(v).toObject();}
 inline Object toObject(litstr  v) { return Variant(v).toObject();}
-inline Object toObject(const StringData *v) { return Variant(v).toObject();}
+inline Object toObject(const StringData *v) { return Variant(StrNR(v)).toObject();}
 inline Object toObject(CStrRef v) { return Variant(v).toObject();}
 Object toObject(ArrayData *v);
 inline Object toObject(CArrRef v) { return toObject(v.get());}
@@ -175,7 +176,7 @@ Object toObject(ObjectData *v);
 inline Object toObject(CObjRef v) { return toObject(v.get());}
 inline Object toObject(CVarRef v) { return v.toObject();}
 
-inline const String *const toSPOD(CStrRef v) { return &v;}
+inline const String *toSPOD(CStrRef v) { return &v;}
 inline const Variant *toVPOD(CVarRef v) { return &v;}
 inline const Object *toOPOD(CObjRef v) { return &v;}
 

@@ -30,8 +30,6 @@
 
 #include <system/lib/systemlib.h>
 
-using namespace std;
-
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -73,7 +71,7 @@ MySQLResult::~MySQLResult() {
     m_fields = NULL;
   }
   if (m_rows) {
-    for (list<vector<Variant *> >::const_iterator it = m_rows->begin();
+    for (std::list<vector<Variant *> >::const_iterator it = m_rows->begin();
          it != m_rows->end(); it++) {
       for (unsigned int i = 0; i < it->size(); i++) {
         DELETE(Variant)((*it)[i]);
@@ -176,6 +174,9 @@ int MySQL::GetDefaultPort() {
 }
 
 String MySQL::GetDefaultSocket() {
+  if (!RuntimeOption::MySQLSocket.empty()) {
+    return RuntimeOption::MySQLSocket;
+  }
   return MYSQL_UNIX_ADDR;
 }
 
@@ -230,7 +231,7 @@ static MYSQL *create_new_conn() {
 MySQL::MySQL(const char *host, int port, const char *username,
              const char *password, const char *database)
     : m_port(port), m_last_error_set(false), m_last_errno(0),
-      m_xaction_count(0) {
+      m_xaction_count(0), m_multi_query(false) {
   if (host) m_host = host;
   if (username) m_username = username;
   if (password) m_password = password;
@@ -688,10 +689,23 @@ Variant f_mysql_error(CVarRef link_identifier /* = null */) {
   return false;
 }
 
+Variant f_mysql_warning_count(CVarRef link_identifier /* = null */) {
+  MySQL *mySQL = MySQL::Get(link_identifier);
+  if (!mySQL) {
+    raise_warning("supplied argument is not a valid MySQL-Link resource");
+    return false;
+  }
+  MYSQL *conn = mySQL->get();
+  if (conn) {
+    return (int64)mysql_warning_count(conn);
+  }
+  return false;
+}
+
 ///////////////////////////////////////////////////////////////////////////////
 // query functions
 
-static Variant mysql_makevalue(CStrRef data, MYSQL_FIELD *mysql_field) {
+Variant mysql_makevalue(CStrRef data, MYSQL_FIELD *mysql_field) {
   switch (mysql_field->type) {
   case MYSQL_TYPE_DECIMAL:
   case MYSQL_TYPE_TINY:
@@ -764,7 +778,7 @@ static bool php_mysql_read_rows(MYSQL *mysql, CVarRef result) {
 }
 
 static Variant php_mysql_localize_result(MYSQL *mysql) {
-#if MYSQL_VERSION_ID < 50500
+#if MYSQL_VERSION_ID <= 50138
   mysql = mysql->last_used_con;
 #endif
 
@@ -776,7 +790,7 @@ static Variant php_mysql_localize_result(MYSQL *mysql) {
   mysql->status = MYSQL_STATUS_READY;
   Variant result = Object(NEWOBJ(MySQLResult)(NULL, true));
   if (!php_mysql_read_rows(mysql, result)) {
-    return true;
+    return false;
   }
 
   // clean up
@@ -862,6 +876,13 @@ static Variant php_mysql_do_query_general(CStrRef query, CVarRef link_id,
                   "runtime/ext_mysql: slow query", query.data());
   IOStatusHelper io("mysql::query", rconn->m_host.c_str(), rconn->m_port);
   unsigned long tid = mysql_thread_id(conn);
+
+  // disable explicitly
+  MySQL *mySQL = MySQL::Get(link_id);
+  if (mySQL->m_multi_query && !mysql_set_server_option(conn, MYSQL_OPTION_MULTI_STATEMENTS_OFF)) {
+    mySQL->m_multi_query = false;
+  }
+
   if (mysql_real_query(conn, query.data(), query.size())) {
     raise_notice("runtime/ext_mysql: failed executing [%s] [%s]", query.data(),
                  mysql_error(conn));
@@ -886,7 +907,7 @@ static Variant php_mysql_do_query_general(CStrRef query, CVarRef link_id,
           if (connected) {
             string killsql = "KILL " + boost::lexical_cast<string>(tid);
             if (mysql_real_query(connected, killsql.c_str(), killsql.size())) {
-              raise_warning("Unable to kill thread %llu", tid);
+              raise_warning("Unable to kill thread %lu", tid);
             }
           }
           mysql_close(new_conn);
@@ -933,6 +954,57 @@ static Variant php_mysql_do_query_general(CStrRef query, CVarRef link_id,
 
 Variant f_mysql_query(CStrRef query, CVarRef link_identifier /* = null */) {
   return php_mysql_do_query_general(query, link_identifier, true);
+}
+
+Variant f_mysql_multi_query(CStrRef query, CVarRef link_identifier /* = null */) {
+  MYSQL *conn = MySQL::GetConn(link_identifier);
+  MySQL *mySQL = MySQL::Get(link_identifier);
+  if (!mySQL->m_multi_query && !mysql_set_server_option(conn, MYSQL_OPTION_MULTI_STATEMENTS_ON)) {
+    mySQL->m_multi_query = true;
+  }
+
+  if (mysql_real_query(conn, query.data(), query.size())) {
+    raise_notice("runtime/ext_mysql: failed executing [%s] [%s]", query.data(),
+                  mysql_error(conn));
+      // turning this off clears the errors
+      if (!mysql_set_server_option(conn, MYSQL_OPTION_MULTI_STATEMENTS_OFF)) {
+        mySQL->m_multi_query = false;
+      }
+      return false;
+  }
+  return true;
+}
+
+bool f_mysql_next_result(CVarRef link_identifier /* = null */) {
+  MYSQL *conn = MySQL::GetConn(link_identifier);
+  if (!mysql_more_results(conn)) {
+    raise_strict_warning("There is no next result set. "
+      "Please, call mysql_more_results() to check "
+      "whether to call this function/method");
+  }
+  return !mysql_next_result(conn);
+}
+
+bool f_mysql_more_results(CVarRef link_identifier /* = null */) {
+  MYSQL *conn = MySQL::GetConn(link_identifier);
+  return mysql_more_results(conn);
+}
+
+Variant f_mysql_fetch_result(CVarRef link_identifier /* = null */) {
+    MYSQL *conn = MySQL::GetConn(link_identifier);
+    MYSQL_RES *mysql_result;
+
+    mysql_result = mysql_store_result(conn);
+
+    if (!mysql_result) {
+      if (mysql_field_count(conn) > 0) {
+        raise_warning("Unable to save result set");
+        return false;
+      }
+      return true;
+    }
+
+    return Object(NEWOBJ(MySQLResult)(mysql_result));
 }
 
 Variant f_mysql_unbuffered_query(CStrRef query,
@@ -1064,7 +1136,7 @@ Variant f_mysql_fetch_object(CVarRef result,
                              CArrRef params /* = null */) {
   Variant properties = php_mysql_fetch_hash(result, MYSQL_ASSOC);
   if (!same(properties, false)) {
-    Object obj = create_object(class_name.data(), params);
+    Object obj = create_object(class_name, params);
     ClassInfo::SetArray(obj.get(), obj->o_getClassPropTable(), properties);
 
     return obj;
@@ -1122,7 +1194,7 @@ Variant f_mysql_result(CVarRef result, int row,
   } else {
     mysql_result = res->get();
     if (row < 0 || row >= (int)mysql_num_rows(mysql_result)) {
-      raise_warning("Unable to jump to row %ld on MySQL result index %ld",
+      raise_warning("Unable to jump to row %d on MySQL result index %d",
                       row, result.toObject()->o_getId());
       return false;
     }
@@ -1166,7 +1238,7 @@ Variant f_mysql_result(CVarRef result, int row,
         i++;
       }
       if (!found) { /* no match found */
-        raise_warning("%s%s%s not found in MySQL result index %ld",
+        raise_warning("%s%s%s not found in MySQL result index %d",
                         table_name.data(), (table_name.empty() ? "" : "."),
                         field_name.data(), result.toObject()->o_getId());
         return false;
@@ -1344,7 +1416,7 @@ int64 MySQLResult::getRowCount() const {
 
 bool MySQLResult::seekRow(int64 row) {
   if (row < 0 || row >= getRowCount()) {
-    raise_warning("Unable to jump to row %ld on MySQL result index %ld",
+    raise_warning("Unable to jump to row %lld on MySQL result index %d",
                     row, o_getId());
     return false;
   }
@@ -1370,7 +1442,7 @@ bool MySQLResult::fetchRow() {
 
 bool MySQLResult::seekField(int64 field) {
   if (field < 0 || field >= getFieldCount()) {
-    raise_warning("Field %ld is invalid for MySQL result index %ld",
+    raise_warning("Field %lld is invalid for MySQL result index %d",
                     field, o_getId());
     return false;
   }

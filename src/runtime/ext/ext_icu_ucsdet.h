@@ -42,7 +42,7 @@ class c_EncodingDetector : public ExtObjectData {
   DECLARE_CLASS(EncodingDetector, EncodingDetector, ObjectData)
 
   // need to implement
-  public: c_EncodingDetector();
+  public: c_EncodingDetector(const ObjectStaticCallbacks *cb = &cw_EncodingDetector);
   public: ~c_EncodingDetector();
   public: void t___construct();
   DECLARE_METHOD_INVOKE_HELPERS(__construct);
@@ -54,14 +54,15 @@ class c_EncodingDetector : public ExtObjectData {
   DECLARE_METHOD_INVOKE_HELPERS(detect);
   public: Array t_detectall();
   DECLARE_METHOD_INVOKE_HELPERS(detectall);
-  public: Variant t___destruct();
-  DECLARE_METHOD_INVOKE_HELPERS(__destruct);
 
   // implemented by HPHP
   public: c_EncodingDetector *create();
 
 
-  private: UCharsetDetector *m_encoding_detector;
+ private:
+  UCharsetDetector *m_encoding_detector;
+  String m_text;
+  String m_declaredencoding;
 };
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -73,7 +74,7 @@ class c_EncodingMatch : public ExtObjectData {
   DECLARE_CLASS(EncodingMatch, EncodingMatch, ObjectData)
 
   // need to implement
-  public: c_EncodingMatch();
+  public: c_EncodingMatch(const ObjectStaticCallbacks *cb = &cw_EncodingMatch);
   public: ~c_EncodingMatch();
   public: void t___construct();
   DECLARE_METHOD_INVOKE_HELPERS(__construct);
@@ -81,14 +82,12 @@ class c_EncodingMatch : public ExtObjectData {
   DECLARE_METHOD_INVOKE_HELPERS(isvalid);
   public: String t_getencoding();
   DECLARE_METHOD_INVOKE_HELPERS(getencoding);
-  public: int t_getconfidence();
+  public: int64 t_getconfidence();
   DECLARE_METHOD_INVOKE_HELPERS(getconfidence);
   public: String t_getlanguage();
   DECLARE_METHOD_INVOKE_HELPERS(getlanguage);
   public: String t_getutf8();
   DECLARE_METHOD_INVOKE_HELPERS(getutf8);
-  public: Variant t___destruct();
-  DECLARE_METHOD_INVOKE_HELPERS(__destruct);
 
   // implemented by HPHP
   public: c_EncodingMatch *create();

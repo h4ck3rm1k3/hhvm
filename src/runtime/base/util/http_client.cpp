@@ -23,8 +23,6 @@
 #include <util/logger.h>
 #include <util/ssl_init.h>
 
-using namespace std;
-
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -182,6 +180,30 @@ int HttpClient::impl(const char *url, const char *data, int size,
     m_responseHeaders = responseHeaders;
     curl_easy_setopt(cp, CURLOPT_HEADERFUNCTION, curl_header);
     curl_easy_setopt(cp, CURLOPT_WRITEHEADER, (void*)this);
+  }
+
+  if (m_stream_context_options["ssl"].isArray()) {
+    const Array ssl = m_stream_context_options["ssl"].toArray();
+    if (ssl["verify_peer"].toBoolean()) {
+      curl_easy_setopt(cp, CURLOPT_SSL_VERIFYPEER, 1);
+    }
+    if (ssl.exists("capath")) {
+      curl_easy_setopt(cp, CURLOPT_CAPATH,
+                       ssl["capath"].toString().data());
+    }
+    if (ssl.exists("cafile")) {
+      curl_easy_setopt(cp, CURLOPT_CAINFO,
+                       ssl["cafile"].toString().data());
+    }
+    if (ssl.exists("local_cert")) {
+      curl_easy_setopt(cp, CURLOPT_SSLKEY,
+                       ssl["local_cert"].toString().data());
+      curl_easy_setopt(cp, CURLOPT_SSLKEYTYPE, "PEM");
+    }
+    if (ssl.exists("passphrase")) {
+      curl_easy_setopt(cp, CURLOPT_KEYPASSWD,
+                       ssl["passphrase"].toString().data());
+    }
   }
 
   long code = 0;

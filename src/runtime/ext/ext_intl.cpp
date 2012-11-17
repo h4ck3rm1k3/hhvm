@@ -29,6 +29,8 @@
 #include <unicode/utypes.h>
 #include <unicode/unorm.h>
 
+#include <system/lib/systemlib.h>
+
 namespace HPHP {
 IMPLEMENT_DEFAULT_EXTENSION(idn);
 ///////////////////////////////////////////////////////////////////////////////
@@ -82,7 +84,8 @@ const int64 q_Collator$$UPPER_FIRST = UCOL_UPPER_FIRST;
 
 ///////////////////////////////////////////////////////////////////////////////
 
-c_Collator::c_Collator() : m_locale(), m_ucoll(NULL), m_errcode() {
+c_Collator::c_Collator(const ObjectStaticCallbacks *cb) :
+    ExtObjectData(cb), m_locale(), m_ucoll(NULL), m_errcode() {
 }
 
 c_Collator::~c_Collator() {
@@ -464,11 +467,6 @@ bool c_Collator::t_sort(VRefParam arr,
   return ret;
 }
 
-Variant c_Collator::t___destruct() {
-  INSTANCE_METHOD_INJECTION_BUILTIN(Collator, Collator::__destruct);
-  return null;
-}
-
 ///////////////////////////////////////////////////////////////////////////////
 
 #define CHECK_COLL(obj)                                    \
@@ -549,18 +547,13 @@ const int64 q_Locale$$VALID_LOCALE = 1;
 
 ///////////////////////////////////////////////////////////////////////////////
 
-c_Locale::c_Locale() {
+c_Locale::c_Locale(const ObjectStaticCallbacks *cb) : ExtObjectData(cb) {
 }
 
 c_Locale::~c_Locale() {
 }
 
 void c_Locale::t___construct() {
-}
-
-Variant c_Locale::t___destruct() {
-  INSTANCE_METHOD_INJECTION_BUILTIN(Locale, Locale::__destruct);
-  return null;
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -577,18 +570,13 @@ const int64 q_Normalizer$$NFKC     = UNORM_NFKC;
 
 ///////////////////////////////////////////////////////////////////////////////
 
-c_Normalizer::c_Normalizer() {
+c_Normalizer::c_Normalizer(const ObjectStaticCallbacks *cb) : ExtObjectData(cb) {
 }
 
 c_Normalizer::~c_Normalizer() {
 }
 
 void c_Normalizer::t___construct() {
-}
-
-Variant c_Normalizer::t___destruct() {
-  INSTANCE_METHOD_INJECTION_BUILTIN(Normalizer, Normalizer::__destruct);
-  return null;
 }
 
 ///////////////////////////////////////////////////////////////////////////////

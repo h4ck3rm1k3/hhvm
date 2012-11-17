@@ -24,19 +24,28 @@ bool TestExtDatetime::RunTests(const std::string &which) {
   bool ret = true;
 
   RUN_TEST(test_checkdate);
+  RUN_TEST(test_date_add);
+  RUN_TEST(test_date_create_from_format);
   RUN_TEST(test_date_create);
   RUN_TEST(test_date_date_set);
   RUN_TEST(test_date_default_timezone_get);
   RUN_TEST(test_date_default_timezone_set);
+  RUN_TEST(test_date_diff);
   RUN_TEST(test_date_format);
+  RUN_TEST(test_date_get_last_errors);
+  RUN_TEST(test_date_interval_create_from_date_string);
+  RUN_TEST(test_date_interval_format);
   RUN_TEST(test_date_isodate_set);
   RUN_TEST(test_date_modify);
   RUN_TEST(test_date_offset_get);
   RUN_TEST(test_date_parse);
+  RUN_TEST(test_date_sub);
   RUN_TEST(test_date_sun_info);
   RUN_TEST(test_date_sunrise);
   RUN_TEST(test_date_sunset);
   RUN_TEST(test_date_time_set);
+  RUN_TEST(test_date_timestamp_get);
+  RUN_TEST(test_date_timestamp_set);
   RUN_TEST(test_date_timezone_get);
   RUN_TEST(test_date_timezone_set);
   RUN_TEST(test_date);
@@ -55,16 +64,24 @@ bool TestExtDatetime::RunTests(const std::string &which) {
   RUN_TEST(test_time);
   RUN_TEST(test_timezone_abbreviations_list);
   RUN_TEST(test_timezone_identifiers_list);
+  RUN_TEST(test_timezone_location_get);
   RUN_TEST(test_timezone_name_from_abbr);
   RUN_TEST(test_timezone_name_get);
   RUN_TEST(test_timezone_offset_get);
   RUN_TEST(test_timezone_open);
   RUN_TEST(test_timezone_transitions_get);
+  RUN_TEST(test_timezone_version_get);
 
   return ret;
 }
 
 #define VDT(dt, s) VS(f_date_format(dt, "Y-m-d H:i:s"), s)
+
+/* Ignore unimplemented datetime features when timelib is old */
+#define TIMELIB_TEST_UNIMPL(minver, exp) try { exp } \
+  catch (NotImplementedException e) { \
+    return Count(f_timezone_version_get().toDouble() < minver); \
+  }
 
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -72,6 +89,24 @@ bool TestExtDatetime::test_checkdate() {
   VERIFY(f_checkdate(12, 31, 2000));
   VERIFY(!f_checkdate(2, 29, 2001));
   return Count(true);
+}
+
+bool TestExtDatetime::test_date_add() {
+  TIMELIB_TEST_UNIMPL(2011.1,
+    Object datetime = f_date_create("2010-08-16");
+    Object interval = f_date_interval_create_from_date_string("2 weeks");
+    Object dt2 = f_date_add(datetime, interval);
+    VDT(dt2, "2010-08-30 00:00:00");
+    return Count(true);
+  );
+}
+
+bool TestExtDatetime::test_date_create_from_format() {
+  TIMELIB_TEST_UNIMPL(2011.1,
+    Object dt = f_date_create_from_format("d/m/Y H:i:s", "16/08/2012 00:00:00");
+    VDT(dt, "2012-08-16 00:00:00");
+    return Count(true);
+  );
 }
 
 bool TestExtDatetime::test_date_create() {
@@ -100,6 +135,16 @@ bool TestExtDatetime::test_date_default_timezone_set() {
   return Count(true);
 }
 
+bool TestExtDatetime::test_date_diff() {
+  TIMELIB_TEST_UNIMPL(2011.1,
+    Object dt1 = f_date_create("2010-08-02");
+    Object dt2 = f_date_create("2010-08-30");
+    Object interval = f_date_diff(dt1, dt2, true);
+    VS(f_date_interval_format(interval, "%d"), "28");
+    return Count(true);
+  );
+}
+
 bool TestExtDatetime::test_date_format() {
   Object dt = f_date_create("@1170288001");
   VS(f_date_format(dt, "Y-m-d\\TH:i:s\\Z"), "2007-02-01T00:00:01Z");
@@ -108,6 +153,37 @@ bool TestExtDatetime::test_date_format() {
      "Wed, 14-Oct-2009 04:21:12 GMT");
   return Count(true);
 }
+
+bool TestExtDatetime::test_date_get_last_errors() {
+  Object dt = f_date_create("asdfasdf");
+  Array errs = f_date_get_last_errors();
+  VS(errs.size(), 4);
+
+  VS(errs["warning_count"], 1);
+  Array err_warnings = errs["warnings"];
+  VS(err_warnings.size(), 1);
+  VS(err_warnings[6], "Double timezone specification");
+
+  VS(errs["error_count"], 1);
+  Array err_errors = errs["errors"];
+  VS(err_errors.size(), 1);
+  VS(err_errors[0], "The timezone could not be found in the database");
+
+  return Count(true);
+}
+
+bool TestExtDatetime::test_date_interval_create_from_date_string() {
+  TIMELIB_TEST_UNIMPL(2011.1,
+    Object interval = f_date_interval_create_from_date_string("2 weeks");
+    VS(f_date_interval_format(interval, "%d"), "14");
+    return Count(true);
+  );
+}
+
+bool TestExtDatetime::test_date_interval_format() {
+  // Covered by test_date_interval_create_from_string, above
+  return Count(true);
+} 
 
 bool TestExtDatetime::test_date_isodate_set() {
   Object dt = f_date_create("2008-08-08 00:00:00");
@@ -141,12 +217,28 @@ bool TestExtDatetime::test_date_parse() {
      "    [second] => 0\n"
      "    [fraction] => 0.5\n"
      "    [warning_count] => 0\n"
-     "    [warnings] => \n"
+     "    [warnings] => Array\n"
+     "        (\n"
+     "        )\n"
+     "\n"
      "    [error_count] => 0\n"
-     "    [errors] => \n"
+     "    [errors] => Array\n"
+     "        (\n"
+     "        )\n"
+     "\n"
      "    [is_localtime] => \n"
      ")\n");
   return Count(true);
+}
+
+bool TestExtDatetime::test_date_sub() {
+  TIMELIB_TEST_UNIMPL(2011.1,
+    Object datetime = f_date_create("2010-08-16");
+    Object interval = f_date_interval_create_from_date_string("2 weeks");
+    Object dt2 = f_date_sub(datetime, interval);
+    VS(f_date_format(dt2, "Y-m-d"), "2010-08-02");
+    return Count(true);
+  );
 }
 
 bool TestExtDatetime::test_date_sun_info() {
@@ -197,6 +289,21 @@ bool TestExtDatetime::test_date_time_set() {
   Object dt = f_date_create("2006-12-12 12:34:56");
   f_date_time_set(dt, 23, 45, 12);
   VDT(dt, "2006-12-12 23:45:12");
+  return Count(true);
+}
+
+bool TestExtDatetime::test_date_timestamp_get() {
+  Object tz = f_timezone_open("America/Los_Angeles");
+  Object dt = f_date_create("2008-08-08 12:34:56", tz);
+  VS(f_date_timestamp_get(dt), 1218224096);
+  return Count(true);
+}
+
+bool TestExtDatetime::test_date_timestamp_set() {
+  Object tz = f_timezone_open("America/Los_Angeles");
+  Object dt = f_date_create("2008-08-08 12:34:56", tz);
+  f_date_timestamp_set(dt, 1000000000);
+  VS(f_date_format(dt, "Y-m-d H:i:s"), "2001-09-08 18:46:40");
   return Count(true);
 }
 
@@ -401,6 +508,8 @@ bool TestExtDatetime::test_mktime() {
   VS(f_date("M-d-Y", f_mktime(0, 0, 0, 13, 1, 1997)),  "Jan-01-1998");
   VS(f_date("M-d-Y", f_mktime(0, 0, 0, 1, 1, 1998)),   "Jan-01-1998");
   VS(f_date("M-d-Y", f_mktime(0, 0, 0, 1, 1, 98)),     "Jan-01-1998");
+  VS(f_date("M-d-Y", f_mktime(0, 0, 0, 1, 1, 1900)),   "Jan-01-1900");
+  VS(f_date("M-d-Y", f_mktime(0, 0, 0, 1, 1, 2100)),   "Jan-01-2100");
 
   VS(f_mktime(), time(NULL));
 
@@ -506,6 +615,10 @@ bool TestExtDatetime::test_strtotime() {
 }
 
 bool TestExtDatetime::test_time() {
+  // XXX This test fails between 12:00AM and 12:59AM on 10/31/11 - 11/6/11
+  // and between 11:00PM and 11:59PM on 3/6/11 - 3/12/11, we should fix this.
+  // This issue appears to have something to do with how strtotime() handles
+  // daylight savings time.
   int nextWeek = f_time() + (7 * 24 * 60 * 60);
   VS(f_date("Y-m-d", nextWeek),
      f_date("Y-m-d", f_strtotime("+1 week")));
@@ -522,6 +635,19 @@ bool TestExtDatetime::test_timezone_identifiers_list() {
   //f_var_dump(TimeZone::GetNames());
   VERIFY(!TimeZone::GetNames().empty());
   return Count(true);
+}
+
+bool TestExtDatetime::test_timezone_location_get() {
+  TIMELIB_TEST_UNIMPL(2011.1,
+    Object tz = f_timezone_open("Europe/Prague");
+    Array loc = f_timezone_location_get(tz);
+    VS(loc.size(), 4);
+    VS(loc["country_code"].toString(), "CZ");
+    VS((int)(loc["latitude"].toDoubleVal() * 100), 5008);
+    VS((int)(loc["longitude"].toDoubleVal() * 100), 1443);
+    VS(loc["comments"].toString(), "");
+    return Count(true);
+  );
 }
 
 bool TestExtDatetime::test_timezone_name_from_abbr() {
@@ -566,5 +692,10 @@ bool TestExtDatetime::test_timezone_transitions_get() {
   VS(transitions[0]["offset"], 7200);
   VS(transitions[0]["isdst"], true);
   VS(transitions[0]["abbr"], "CEST");
+  return Count(true);
+}
+
+bool TestExtDatetime::test_timezone_version_get() {
+  VS(f_timezone_version_get().toBoolean(), true);
   return Count(true);
 }

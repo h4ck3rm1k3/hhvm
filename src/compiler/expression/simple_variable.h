@@ -42,6 +42,8 @@ public:
                                 bool coerce);
 
   virtual bool canonCompare(ExpressionPtr e) const;
+  virtual void setContext(Context context);
+
   const std::string &getName() const { return m_name;}
   const std::string &getDocComment() const {
     return m_docComment;
@@ -57,8 +59,6 @@ public:
   bool getAlwaysStash() const { return m_alwaysStash; }
   void setAlwaysStash() { m_alwaysStash = true; }
   void updateSymbol(SimpleVariablePtr src);
-  void setGuardedThis() { m_guardedThis = true; }
-  bool isGuardedThis() const { return m_guardedThis; }
   void coalesce(SimpleVariablePtr other);
 
   bool hasAssignableCPPVariable() const;
@@ -78,7 +78,6 @@ private:
   unsigned m_globals : 1; // whether is is $GLOBAL
   unsigned m_superGlobal : 1;
   unsigned m_alwaysStash : 1;
-  unsigned m_guardedThis : 1;
 };
 
 ///////////////////////////////////////////////////////////////////////////////

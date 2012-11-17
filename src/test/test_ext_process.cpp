@@ -22,11 +22,7 @@
 #include <runtime/base/runtime_option.h>
 #include <util/light_process.h>
 
-using namespace std;
-
 ///////////////////////////////////////////////////////////////////////////////
-
-static const char *php_path = "/usr/local/php/bin/php";
 
 bool TestExtProcess::RunTests(const std::string &which) {
   bool ret = true;
@@ -59,7 +55,8 @@ bool TestExtProcess::RunTests(const std::string &which) {
   RUN_TEST(test_escapeshellcmd);
 
   LightProcess::Initialize(RuntimeOption::LightProcessFilePrefix,
-                           RuntimeOption::LightProcessCount);
+                           RuntimeOption::LightProcessCount,
+                           std::vector<int>());
   RUN_TEST(test_pcntl_alarm);
   //RUN_TEST(test_pcntl_exec); // this has to run manually
   RUN_TEST(test_pcntl_fork);

@@ -23,8 +23,6 @@ CXX_SOURCES += $(filter-out $(TEST_SOURCES), $(wildcard *.cpp))
 CXXFLAGS += -DSEP_EXTENSION
 INTERMEDIATE_FILES += $(OUT_DIR)schema.so
 
-HPHP = $(PROJECT_ROOT)/src/hphp/hphp
-
 include $(PROJECT_ROOT)/src/rules.mk
 TARGETS = $(if $(EXT),$(OUT_DIR)lib$(EXT).so $(OUT_TOP)test_$(EXT)) $(OUT_DIR)lib$(EXT).a
 
@@ -55,6 +53,7 @@ $(OUT_DIR)lib$(EXT).so: $(if $(EXT),$(OUT_DIR)extmap_$(EXT).pic.o)
 $(OUT_DIR)lib$(EXT).a: $(OBJECTS) $(OUT_DIR)extimpl_$(EXT).o
 	@echo 'Linking $@ ...'
 	$(V)$(AR_CMD) $@ $(OBJECTS) $^
+	@touch $(dir $@)../remake_ext_hhvm
 
 $(OUT_TOP)test_$(EXT): $(TEST_OBJECTS) $(OUT_DIR)lib$(EXT).a
 	$(LINK_OBJECTS) $(OUT_DIR)lib$(EXT).a \

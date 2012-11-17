@@ -35,7 +35,7 @@ public:
       : DebuggerCommand(KindOfInterrupt),
         m_interrupt(interrupt), m_program(program ? program : ""),
         m_site(site), m_pendingJump(false) {
-    m_threadId = Process::GetThreadId();
+    m_threadId = (int64)Process::GetThreadId();
     if (error) m_errorMsg = error;
   }
 
@@ -45,13 +45,14 @@ public:
   std::string error() const { return m_errorMsg;}
 
   virtual bool onClient(DebuggerClient *client);
+  virtual void setClientOutput(DebuggerClient *client);
   virtual bool onServer(DebuggerProxy *proxy);
 
   virtual void sendImpl(DebuggerThriftBuffer &thrift);
   virtual void recvImpl(DebuggerThriftBuffer &thrift);
 
   bool shouldBreak(const BreakPointInfoPtrVec &bps);
-  FrameInjection *getFrame() { return m_site ? m_site->getFrame() : NULL;}
+  FrameInjection *getFrame();
   std::string getFileLine() const;
 
   InterruptSite *getSite() { return m_site;}

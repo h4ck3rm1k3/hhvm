@@ -36,8 +36,6 @@
 #include <runtime/base/builtin_functions.h>
 
 using namespace HPHP;
-using namespace std;
-using namespace boost;
 
 ///////////////////////////////////////////////////////////////////////////////
 // constructors/destructors
@@ -123,15 +121,16 @@ void AssignmentExpression::analyzeProgram(AnalysisResultPtr ar) {
       VariableTablePtr variables = getScope()->getVariables();
       variables->addUsed(name);
     }
+  } else if (ar->getPhase() == AnalysisResult::AnalyzeFinal) {
     if (m_variable->is(Expression::KindOfConstantExpression)) {
       ConstantExpressionPtr exp =
         dynamic_pointer_cast<ConstantExpression>(m_variable);
       if (!m_value->isScalar()) {
-        getScope()->getConstants()->setDynamic(ar, exp->getName());
+        getScope()->getConstants()->setDynamic(ar, exp->getName(), false);
       }
+    } else {
+      CheckNeeded(m_variable, m_value);
     }
-  } else if (ar->getPhase() == AnalysisResult::AnalyzeFinal) {
-    CheckNeeded(m_variable, m_value);
   }
 }
 
@@ -164,6 +163,26 @@ void AssignmentExpression::setNthKid(int n, ConstructPtr cp) {
       ASSERT(false);
       break;
   }
+}
+
+bool AssignmentExpression::isSimpleGlobalAssign(StringData **name,
+                                                TypedValue *tv) const {
+  if (!m_variable->is(KindOfArrayElementExpression)) return false;
+  ArrayElementExpressionPtr ae(
+    static_pointer_cast<ArrayElementExpression>(m_variable));
+  if (!ae->isSuperGlobal() || ae->isDynamicGlobal()) return false;
+  Variant v;
+  if (!m_value->getScalarValue(v) || v.is(KindOfArray)) return false;
+  if (name) {
+    *name = StringData::GetStaticString(ae->getGlobalName());
+  }
+  if (tv) {
+    if (v.isString()) {
+      v = StringData::GetStaticString(v.toCStrRef().get());
+    }
+    *tv = *v.asTypedValue();
+  }
+  return true;
 }
 
 ExpressionPtr AssignmentExpression::optimize(AnalysisResultConstPtr ar) {
@@ -356,6 +375,10 @@ void AssignmentExpression::preOutputStash(CodeGenerator &cg,
 
 bool AssignmentExpression::preOutputCPP(CodeGenerator &cg, AnalysisResultPtr ar,
                                         int state) {
+  if (hasContext(RefValue) && !m_ref) {
+    if (!cg.inExpression()) return true;
+    state |= FixOrder | ForceTemp;
+  }
   if (m_variable->is(Expression::KindOfArrayElementExpression)) {
     ExpressionPtr exp = m_value;
     ExpressionPtr vv(
@@ -470,9 +493,17 @@ void AssignmentExpression::outputCPPImpl(CodeGenerator &cg,
     return;
   }
 
-  if (m_variable->is(Expression::KindOfSimpleVariable) &&
-      m_value->isLiteralNull()) {
-    setNull = true;
+  if (m_value->isLiteralNull()) {
+    if (m_variable->is(Expression::KindOfSimpleVariable)) {
+      setNull = true;
+    } else {
+      TypePtr t = m_variable->getCPPType();
+      if (t && (t->is(Type::KindOfArray) ||
+                t->is(Type::KindOfObject) ||
+                t->is(Type::KindOfString))) {
+        setNull = true;
+      }
+    }
   }
 
   bool wrapped = true;
@@ -488,6 +519,9 @@ void AssignmentExpression::outputCPPImpl(CodeGenerator &cg,
       wrapped = true;
       ref = false;
     } else {
+      if (m_variable->getCPPType()->isExactType()) {
+        ref = false;
+      }
       if ((wrapped = !isUnused())) {
         cg_printf("(");
       }

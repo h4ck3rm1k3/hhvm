@@ -269,9 +269,10 @@ DefineFunction(
 BeginClass(
   array(
     'name'   => "SimpleXMLElement",
+    'bases'  => array('Sweepable'),
     'ifaces' => array('ArrayAccess', 'IteratorAggregate', 'Countable'),
     'desc'   => "Represents an element in an XML document.",
-    'flags'  =>  HasDocComment,
+    'flags'  =>  HasDocComment | NoDefaultSweep,
     'footer' => <<<EOT
 
  public:
@@ -677,15 +678,6 @@ DefineFunction(
     ),
   ));
 
-DefineFunction(
-  array(
-    'name'   => "__destruct",
-    'flags'  =>  HasDocComment,
-    'return' => array(
-      'type'   => Variant,
-    ),
-  ));
-
 EndClass(
 );
 
@@ -707,15 +699,6 @@ DefineFunction(
     ),
   ));
 
-DefineFunction(
-  array(
-    'name'   => "__destruct",
-    'flags'  =>  HasDocComment,
-    'return' => array(
-      'type'   => Variant,
-    ),
-  ));
-
 EndClass(
 );
 
@@ -727,7 +710,7 @@ BeginClass(
     'ifaces' => array('Iterator'),
     'bases'  => array('Sweepable'),
     'desc'   => "",
-    'flags'  =>  HasDocComment,
+    'flags'  =>  HasDocComment | NoDefaultSweep,
     'footer' => <<<EOT
 
 public:
@@ -789,15 +772,6 @@ DefineFunction(
 DefineFunction(
   array(
     'name'   => "valid",
-    'flags'  =>  HasDocComment,
-    'return' => array(
-      'type'   => Variant,
-    ),
-  ));
-
-DefineFunction(
-  array(
-    'name'   => "__destruct",
     'flags'  =>  HasDocComment,
     'return' => array(
       'type'   => Variant,

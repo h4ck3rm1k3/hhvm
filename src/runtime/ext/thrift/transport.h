@@ -24,7 +24,7 @@
 #include <sys/types.h>
 #include <netinet/in.h>
 #include <unistd.h>
-#if defined(__FREEBSD__)
+#if defined(__FreeBSD__)
 # include <sys/endian.h>
 #elif defined(__APPLE__)
 # include <machine/endian.h>
@@ -36,7 +36,9 @@
 #include <stdexcept>
 
 #if __BYTE_ORDER == __LITTLE_ENDIAN
-# if defined(__FREEBSD__)
+# define htolell(x) (x)
+# define letohll(x) (x)
+# if defined(__FreeBSD__)
 #  define htonll(x) bswap64(x)
 #  define ntohll(x) bswap64(x)
 # elif defined(__APPLE__)
@@ -47,8 +49,18 @@
 #  define ntohll(x) bswap_64(x)
 # endif
 #else
-# define htonll(x) x
-# define ntohll(x) x
+# if defined(__FreeBSD__)
+#  define htolell(x) bswap64(x)
+#  define letohll(x) bswap64(x)
+# elif defined(__APPLE__)
+#  define htolell(x) OSSwapInt64(x)
+#  define letohll(x) OSSwapInt64(x)
+# else
+#  define htolell(x) bswap_64(x)
+#  define letohll(x) bswap_64(x)
+# endif
+# define htonll(x) (x)
+# define ntohll(x) (x)
 #endif
 
 namespace HPHP {

@@ -19,6 +19,7 @@
 #include <runtime/base/memory/memory_manager.h>
 #include <runtime/base/server/server_stats.h>
 #include <runtime/base/server/http_protocol.h>
+#include <runtime/eval/debugger/debugger.h>
 #include <util/compatibility.h>
 #include <util/logger.h>
 
@@ -135,13 +136,15 @@ void LibEventWorker::onThreadEnter() {
   ASSERT(m_opaque);
   LibEventServer *server = (LibEventServer*)m_opaque;
   server->onThreadEnter();
+  if (RuntimeOption::EnableDebugger) {
+    Eval::Debugger::RegisterThread();
+  }
 }
 
 void LibEventWorker::onThreadExit() {
   ASSERT(m_opaque);
   LibEventServer *server = (LibEventServer*)m_opaque;
   server->onThreadExit(m_handler);
-  MemoryManager::TheMemoryManager().getNoCheck()->cleanup();
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -156,6 +159,7 @@ LibEventServer::LibEventServer(const std::string &address, int port,
     m_timeoutThread(&m_timeoutThreadData, &TimeoutThread::run),
     m_dispatcher(thread, RuntimeOption::ServerThreadRoundRobin,
                  RuntimeOption::ServerThreadDropCacheTimeoutSeconds,
+                 RuntimeOption::ServerThreadDropStack,
                  this, RuntimeOption::ServerThreadJobLIFO),
     m_dispatcherThread(this, &LibEventServer::dispatch) {
   m_eventBase = event_base_new();
@@ -194,6 +198,10 @@ int LibEventServer::getAcceptSocket() {
   }
   m_accept_sock = ret;
   return 0;
+}
+
+int LibEventServer::getLibEventConnectionCount() {
+  return evhttp_get_connection_count(m_server);
 }
 
 void LibEventServer::start() {
@@ -271,6 +279,39 @@ void LibEventServer::stop() {
   Lock lock(m_mutex);
   if (getStatus() != RUNNING || m_server == NULL) return;
 
+#define SHUT_FBLISTEN 3
+  /*
+   * Modifications to the Linux kernel to support shutting down a listen
+   * socket for new connections only, but anything which has completed 
+   * the TCP handshake will still be accepted.  This allows for un-accepted
+   * connections to be queued and then wait until all queued requests are
+   * actively being processed.
+   */
+  if (RuntimeOption::ServerShutdownListenWait > 0 &&
+      m_accept_sock != -1 && shutdown(m_accept_sock, SHUT_FBLISTEN) == 0) {
+    int noWorkCount = 0;
+    for (int i = 0; i < RuntimeOption::ServerShutdownListenWait; i++) {
+      // Give the acceptor thread time to clean out all requests
+      Logger::Info(
+          "LibEventServer stopping port %d: [%d/%d] a/q/e %d/%d/%d",
+          m_port, i, RuntimeOption::ServerShutdownListenWait,
+          getActiveWorker(), getQueuedJobs(), getLibEventConnectionCount());
+      sleep(1);
+
+      // If we're not doing anything, break out quickly
+      noWorkCount += (getQueuedJobs() == 0 && getActiveWorker() == 0);
+      if (RuntimeOption::ServerShutdownListenNoWork > 0 &&
+          noWorkCount >= RuntimeOption::ServerShutdownListenNoWork)
+        break;
+      if (getLibEventConnectionCount() == 0 &&
+          getQueuedJobs() == 0 && getActiveWorker() == 0)
+        break;
+    }
+    Logger::Info("LibEventServer stopped port %d: a/q/e %d/%d/%d",
+        m_port, getActiveWorker(), getQueuedJobs(),
+        getLibEventConnectionCount());
+  }
+
   // inform LibEventServer::onRequest() to stop queuing
   setStatus(STOPPING);
 
@@ -283,6 +324,11 @@ void LibEventServer::stop() {
     // an error occured but we're in shutdown already, so ignore
   }
   m_dispatcherThread.waitForEnd();
+
+  // wait for the timeout thread to stop
+  m_timeoutThreadData.stop();
+  m_timeoutThread.waitForEnd();
+
   evhttp_free(m_server);
   m_server = NULL;
 }
@@ -348,6 +394,12 @@ void LibEventServer::onResponse(int worker, evhttp_request *request,
                                 int code, LibEventTransport *transport) {
   int nwritten = 0;
   bool skip_sync = false;
+
+  if (request->evcon == NULL) {
+    evhttp_request_free(request);
+    return;
+  }
+
 #ifdef _EVENT_USE_OPENSSL
   skip_sync = evhttp_is_connection_ssl(request->evcon);
 #endif
@@ -478,6 +530,11 @@ void PendingResponseQueue::process() {
     Response &res = *responses[i];
     evhttp_request *request = res.request;
     int code = res.code;
+
+    if (request->evcon == NULL) {
+      evhttp_request_free(request);
+      continue;
+    }
 
     bool skip_sync = false;
 #ifdef _EVENT_USE_OPENSSL

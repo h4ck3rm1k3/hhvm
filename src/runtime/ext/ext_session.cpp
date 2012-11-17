@@ -35,8 +35,6 @@
 #include <fcntl.h>
 #include <dirent.h>
 
-using namespace std;
-
 namespace HPHP {
 IMPLEMENT_DEFAULT_EXTENSION(session);
 ///////////////////////////////////////////////////////////////////////////////
@@ -420,8 +418,8 @@ public:
       return true;
     }
 
-    char *val = (char*)malloc(m_st_size + 1);
-    val[m_st_size] = '\0';
+    String s = String(m_st_size, ReserveString);
+    char *val = s.mutableSlice().ptr;
 
 #if defined(HAVE_PREAD)
     long n = pread(m_fd, val, m_st_size, 0);
@@ -431,7 +429,6 @@ public:
 #endif
 
     if (n != (int)m_st_size) {
-      free(val);
       if (n == -1) {
         raise_warning("read failed: %s (%d)", strerror(errno), errno);
       } else {
@@ -440,7 +437,7 @@ public:
       return false;
     }
 
-    value = String(val, n, AttachString);
+    value = s.setSize(m_st_size);
     return true;
   }
 

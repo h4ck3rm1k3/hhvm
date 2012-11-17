@@ -38,9 +38,7 @@ public:
   static bool Load(AnalysisResultPtr ar, bool extOnly = false);
 
   static void LoadFunctions(AnalysisResultPtr ar,
-                            StringToFunctionScopePtrVecMap &functions);
-  static void LoadHelperFunctions(AnalysisResultPtr ar,
-                                  StringToFunctionScopePtrVecMap &functions);
+                            StringToFunctionScopePtrMap &functions);
   static void LoadClasses(AnalysisResultPtr ar,
                           StringToClassScopePtrMap &classes);
   static void LoadVariables(AnalysisResultPtr ar,
@@ -55,6 +53,7 @@ public:
   static TypePtr GetSuperGlobalType(const std::string &name);
 
   static bool IsDeclaredDynamic(const std::string& name);
+  static void LoadSuperGlobals();
 
   static StringToFunctionScopePtrMap s_functions;
   static StringToFunctionScopePtrMap s_helperFunctions;
@@ -73,7 +72,6 @@ private:
   static AnalysisResultPtr LoadGlobalSymbols(const char *fileName);
 
   static StringToTypePtrMap s_superGlobals;
-  static void LoadSuperGlobals();
 
   static std::set<std::string> s_declaredDynamic;
 

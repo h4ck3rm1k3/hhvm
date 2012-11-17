@@ -32,14 +32,12 @@
 #include "compiler/statement/switch_statement.h"
 #include "compiler/statement/break_statement.h"
 #include "compiler/statement/try_statement.h"
+#include "compiler/statement/finally_statement.h"
 #include "compiler/statement/label_statement.h"
 #include "compiler/statement/goto_statement.h"
 #include "compiler/statement/case_statement.h"
 
 #include <boost/graph/depth_first_search.hpp>
-
-using namespace std;
-using namespace boost;
 
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
@@ -66,8 +64,8 @@ typedef hphp_hash_map<ConstructRawPtr, ControlBlock*,
 
 class ControlFlowBuilder : public FunctionWalker {
 public:
-  ControlFlowBuilder(ControlFlowGraph *g) :
-      m_graph(g), m_pass(0), m_cur(0), m_head(0) {}
+  ControlFlowBuilder(ControlFlowGraph *g, bool isGenerator) :
+      m_graph(g), m_pass(0), m_isGenerator(isGenerator), m_cur(0), m_head(0) {}
 
   int before(ConstructRawPtr cp);
   int after(ConstructRawPtr cp);
@@ -117,6 +115,17 @@ private:
     cfi(cp).m_noFallThrough = true;
   }
 
+  void setEdge(ConstructRawPtr cp_from, ConstructLocation l_from,
+               ConstructRawPtr cp_to, ConstructLocation l_to) {
+    assert(cp_from);
+    assert(cp_to);
+    assert(l_from < 2);
+
+    ControlFlowInfo &from(cfi(cp_from));
+    from.m_targets[l_from].clear();
+    addEdge(cp_from, l_from, cp_to, l_to);
+  }
+
   ControlFlowInfo       *get(ConstructRawPtr cp) {
     ConstructCFIMap::iterator it = m_ccfiMap.find(cp);
     return it == m_ccfiMap.end() ? NULL : &it->second;
@@ -152,7 +161,7 @@ private:
   ControlFlowGraph               *m_graph;
   AstWalkerStateVec              m_state;
   int                            m_pass;
-
+  bool                           m_isGenerator;
   ControlBlock                   *m_cur;
   ControlBlock                   *m_head;
 
@@ -233,21 +242,20 @@ int ControlFlowBuilder::before(ConstructRawPtr cp) {
   if (ret == WalkContinue) {
     if (m_pass == 1) {
       if (StatementPtr s = dynamic_pointer_cast<Statement>(cp)) {
-        if (FunctionWalker::SkipRecurse(s)) assert(false);
+        if (FunctionWalker::SkipRecurse(s)) not_reached();
         Statement::KindOf stype = s->getKindOf();
         switch (stype) {
           case Statement::KindOfUseTraitStatement:
           case Statement::KindOfTraitPrecStatement:
           case Statement::KindOfTraitAliasStatement:
-            assert(false);
-            break;
+            not_reached();
+
           case Statement::KindOfStaticStatement:
             addEdge(s, BeforeConstruct, s, AfterConstruct);
             break;
 
           case Statement::KindOfClassVariable:
-            assert(false);
-            break;
+            not_reached();
 
           case Statement::KindOfClassConstant:
           case Statement::KindOfGlobalStatement:
@@ -261,12 +269,17 @@ int ControlFlowBuilder::before(ConstructRawPtr cp) {
             TryStatementPtr t = static_pointer_cast<TryStatement>(s);
             StatementListPtr catches = t->getCatches();
             StatementPtr body = t->getBody();
+            FinallyStatementPtr finally = static_pointer_cast<FinallyStatement>(t->getFinally());
             if (body) {
               for (int n = catches->getCount(), j = 0; j < n; ++j) {
                 addEdge(body, BeforeConstruct,
                         (*catches)[j], BeforeConstruct);
                 addEdge(body, AfterConstruct,
                         (*catches)[j], BeforeConstruct);
+              }
+              if (finally) {
+                addEdge(body, BeforeConstruct, finally, BeforeConstruct);
+                addEdge(body, AfterConstruct, finally, BeforeConstruct);
               }
               addEdge(body, AfterConstruct, t, AfterConstruct);
               noFallThrough(body);
@@ -288,6 +301,9 @@ int ControlFlowBuilder::before(ConstructRawPtr cp) {
             }
             break;
           }
+
+          case Statement::KindOfFinallyStatement:
+            break;
 
           case Statement::KindOfCatchStatement:
             break;
@@ -397,8 +413,8 @@ int ControlFlowBuilder::before(ConstructRawPtr cp) {
           }
 
           case Statement::KindOfReturnStatement:
-            addEdge(s, AfterConstruct, root(), AfterConstruct);
-            noFallThrough(s);
+            setEdge(s, AfterConstruct, root(), AfterConstruct);
+            if (!m_isGenerator) noFallThrough(s);
             break;
 
           case Statement::KindOfBreakStatement:
@@ -455,7 +471,7 @@ int ControlFlowBuilder::before(ConstructRawPtr cp) {
             break;
 
           default:
-            assert(false);
+            not_reached();
         }
       } else {
         ExpressionPtr e(dynamic_pointer_cast<Expression>(cp));
@@ -780,14 +796,15 @@ void ControlBlock::dump(int spc, AnalysisResultConstPtr ar,
 
   {
     ControlFlowGraph::graph_traits::in_edge_iterator i, end;
-    for (tie(i, end) = in_edges(this, *graph); i != end; ++i) {
+    for (boost::tie(i, end) = in_edges(this, *graph); i != end; ++i) {
       ControlBlock *t = source(*i, *graph);
       printf("    <- %08llx\n", (unsigned long long)t);
     }
   }
   {
     ControlFlowGraph::graph_traits::out_edge_iterator i, end;
-    for (tie(i, end) = out_edges(this, *graph); i != end; ++i) {
+    for (boost::tie(i, end) = out_edges(this, *graph);
+        i != end; ++i) {
       ControlBlock *t = target(*i, *graph);
       printf("    -> %08llx\n", (unsigned long long)t);
     }
@@ -816,11 +833,11 @@ ControlFlowGraph *ControlFlowGraph::buildControlFlow(MethodStatementPtr m) {
   ControlFlowGraph *graph = new ControlFlowGraph;
 
   graph->m_stmt = m;
-  ControlFlowBuilder cfb(graph);
+  ControlFlowBuilder cfb(graph, m->getOrigGeneratorFunc());
   cfb.run(m->getStmts());
   graph->m_nextDfn = 1;
   depth_first_visit(*graph, cfb.head(),
-                    dfn_assign(), get(vertex_color, *graph));
+                    dfn_assign(), get(boost::vertex_color, *graph));
   return graph;
 }
 
@@ -858,7 +875,7 @@ void ControlFlowGraph::dfnAdd(ControlBlock *cb) {
 void ControlFlowGraph::allocateDataFlow(size_t width, int rows, int *rowIds) {
   m_bitSetVec.alloc(m_nextDfn, width, rows, rowIds);
   graph_traits::vertex_iterator i,e;
-  for (tie(i, e) = vertices(*this); i != e; ++i) {
+  for (boost::tie(i, e) = vertices(*this); i != e; ++i) {
     ControlBlock *cb = *i;
     cb->setBlock(m_bitSetVec.getBlock(cb->getDfn()));
   }
@@ -866,5 +883,6 @@ void ControlFlowGraph::allocateDataFlow(size_t width, int rows, int *rowIds) {
 
 void ControlFlowGraph::dump(AnalysisResultConstPtr ar) {
   printf("Dumping control flow: %s\n", m_stmt->getName().c_str());
-  depth_first_search(*this, dfs_dump(ar), get(vertex_color, *this));
+  boost::depth_first_search(*this, dfs_dump(ar),
+    get(boost::vertex_color, *this));
 }

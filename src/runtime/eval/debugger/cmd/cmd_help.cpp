@@ -16,15 +16,13 @@
 
 #include <runtime/eval/debugger/cmd/cmd_help.h>
 
-using namespace std;
-
 namespace HPHP { namespace Eval {
 ///////////////////////////////////////////////////////////////////////////////
 
 void CmdHelp::HelpAll(DebuggerClient *client) {
   client->helpCmds(
     "Session Commands", "",
-    "[m]achine",    "connects to an HPHPi server",
+    "[m]achine",    "connects to an HHVM server",
     "[t]hread",     "switches between different threads",
     "[q]uit",       "quits debugger",
 
@@ -122,11 +120,11 @@ void CmdHelp::HelpStarted(DebuggerClient *client) {
     "\n"
     "The command to run a script normally looks like this,\n"
     "\n"
-    "  ./hphpi -f myscript.php\n"
+    "  ./hhvm -f myscript.php\n"
     "\n"
     "Simply add \"-m debug\" to run the script in debugger,\n"
     "\n"
-    "  ./hphpi -m debug -f myscript.php\n"
+    "  ./hhvm -m debug -f myscript.php\n"
     "\n"
     "Once started, set breakpoints like this,\n"
     "\n"
@@ -172,9 +170,9 @@ void CmdHelp::HelpStarted(DebuggerClient *client) {
   client->helpBody(
     "3. Debugging sandbox\n"
     "\n"
-    "Connect to an HPHPi server from command line,\n"
+    "Connect to an HHVM server from command line,\n"
     "\n"
-    "  ./hphpi -m debug --debug-host mymachine.com\n"
+    "  ./hhvm -m debug --debug-host mymachine.com\n"
     "\n"
     "Or, connect from within debugger,\n"
     "\n"
@@ -295,6 +293,7 @@ bool CmdHelp::onClient(DebuggerClient *client) {
     if (!processTutorial(client)) {
       return help(client);
     }
+    return true;
   }
 
   client->swapHelp();

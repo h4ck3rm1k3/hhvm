@@ -22,8 +22,6 @@
 #include <util/util.h>
 #include <util/compression.h>
 
-using namespace std;
-
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -57,7 +55,7 @@ void StaticContentCache::load() {
   // get a list of all files, one for each extension
   Logger::Info("searching all files under source root...");
   int count = 0;
-  map<string, vector<string> > ext2files;
+  std::map<string, vector<string> > ext2files;
   {
     const char *argv[] = {"", (char*)RuntimeOption::SourceRoot.c_str(),
                           "-type", "f", NULL};
@@ -88,7 +86,7 @@ void StaticContentCache::load() {
     for (unsigned int i = 0; i < out.size(); i++) {
       ResourceFilePtr f(new ResourceFile());
 
-      StringBufferPtr sb(new StringBuffer(out[i].c_str()));
+      CstrBufferPtr sb(new CstrBuffer(out[i].c_str()));
       if (sb->valid() && sb->size() > 0) {
         string url = out[i].substr(rootSize + 1);
         f->file = sb;
@@ -99,8 +97,8 @@ void StaticContentCache::load() {
           int len = sb->size();
           char *data = gzencode(sb->data(), len, 9, CODING_GZIP);
           if (data) {
-            if (len < sb->size()) {
-              f->compressed = StringBufferPtr(new StringBuffer(data, len));
+            if (unsigned(len) < sb->size()) {
+              f->compressed = CstrBufferPtr(new CstrBuffer(data, len));
             } else {
               free(data);
             }

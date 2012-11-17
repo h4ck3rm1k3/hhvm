@@ -22,11 +22,15 @@
 #include <runtime/base/comparisons.h>
 #include <runtime/base/time/datetime.h>
 #include <runtime/base/array/array_init.h>
+#include <runtime/base/compiler_id.h>
 #include <util/json.h>
 #include <util/compatibility.h>
+#include <util/hardware_counter.h>
 
-using namespace std;
-using namespace boost;
+using std::list;
+using std::set;
+using std::map;
+using std::ostream;
 
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
@@ -645,6 +649,10 @@ int64 ServerStats::Get(const string &name) {
   return ServerStats::s_logger->get(name);
 }
 
+void ServerStats::Reset() {
+  ServerStats::s_logger->reset();
+}
+
 void ServerStats::Clear() {
   Lock lock(s_lock, false);
   for (unsigned int i = 0; i < s_loggers.size(); i++) {
@@ -696,7 +704,7 @@ void ServerStats::Report(string &out, Format format, int64 from, int64 to,
 void ServerStats::Report(string &output, Format format,
                          const list<TimeSlot*> &slots,
                          const std::string &prefix) {
-  ostringstream out;
+  std::ostringstream out;
   if (format == KVP) {
     bool first = true;
     for (list<TimeSlot*>::const_iterator iter = slots.begin();
@@ -760,7 +768,7 @@ void ServerStats::Report(string &output, Format format,
         w->beginObject("slot");
         w->writeEntry("time", s->m_time * RuntimeOption::StatsSlotDuration);
       }
-      w->beginObject("pages");
+      w->beginList("pages");
       for (PageStatsMap::const_iterator piter = s->m_pages.begin();
            piter != s->m_pages.end(); ++piter) {
         const PageStats &ps = piter->second;
@@ -778,7 +786,7 @@ void ServerStats::Report(string &output, Format format,
 
         w->endObject("page");
       }
-      w->endObject("pages");
+      w->endList("pages");
       if (s->m_time) {
         w->endObject("slot");
       }
@@ -792,11 +800,12 @@ void ServerStats::Report(string &output, Format format,
   output = out.str();
 }
 
-static std::string format_duration(int64 duration) {
+static std::string format_duration(timeval &duration) {
   string ret;
-  if (duration > 0) {
-    int seconds = duration % 60;
-    int minutes = duration / 60;
+  if (duration.tv_sec > 0 || duration.tv_usec > 0) {
+    int milliseconds = duration.tv_usec / 1000;
+    double seconds = duration.tv_sec % 60 + milliseconds * .001;
+    int minutes = duration.tv_sec / 60;
     int hours = minutes / 60;
     minutes = minutes % 60;
     if (hours) {
@@ -808,17 +817,20 @@ static std::string format_duration(int64 duration) {
       ret += (minutes == 1) ? " " : "s ";
     }
     if (seconds || minutes || hours) {
-      ret += lexical_cast<string>(seconds) + " second";
+      char buf[7];
+      snprintf(buf, sizeof(buf), "%.3f", seconds);
+      buf[sizeof(buf) - 1] = '\0';
+      ret += lexical_cast<string>(buf) + " second";
       ret += (seconds == 1) ? "" : "s";
     }
-  } else if (duration == 0) {
-    ret = "0 seconds";
+  } else {
+   ret = "0 seconds";
   }
   return ret;
 }
 
 void ServerStats::ReportStatus(std::string &output, Format format) {
-  ostringstream out;
+  std::ostringstream out;
   Writer *w;
   if (format == XML) {
     w = new XMLWriter(out);
@@ -854,11 +866,14 @@ void ServerStats::ReportStatus(std::string &output, Format format) {
   w->writeEntry("hotprofiler", "no");
 #endif
 
+  timeval up;
+  up.tv_sec = now - HttpServer::StartTime;
+  up.tv_usec = 0;
   w->writeEntry("now", DateTime(now).
                 toString(DateTime::DateFormatCookie).data());
   w->writeEntry("start", DateTime(HttpServer::StartTime).
                 toString(DateTime::DateFormatCookie).data());
-  w->writeEntry("up", format_duration(now - HttpServer::StartTime));
+  w->writeEntry("up", format_duration(up));
   w->endObject("process");
 
   w->beginList("threads");
@@ -866,10 +881,17 @@ void ServerStats::ReportStatus(std::string &output, Format format) {
   for (unsigned int i = 0; i < s_loggers.size(); i++) {
     ThreadStatus &ts = s_loggers[i]->m_threadStatus;
 
-    int64 duration = 0;
-    if (ts.m_done > ts.m_start) {
-      duration = ts.m_done - ts.m_start;
+    timeval duration;
+    if (ts.m_start.tv_sec > 0 && ts.m_done.tv_sec > 0) {
+      timersub(&ts.m_done, &ts.m_start, &duration);
+    } else if (ts.m_start.tv_sec > 0) {
+      timeval current;
+      gettimeofday(&current, 0);
+      timersub(&current, &ts.m_start, &duration);
+    } else {
+      memset(&duration, 0, sizeof(duration));
     }
+
     const char *mode = "(unknown)";
     switch (ts.m_mode) {
     case Idling:         mode = "idle";    break;
@@ -883,9 +905,19 @@ void ServerStats::ReportStatus(std::string &output, Format format) {
     w->writeEntry("id", (int64)ts.m_threadId);
     w->writeEntry("req", ts.m_requestCount);
     w->writeEntry("bytes", ts.m_writeBytes);
-    w->writeEntry("start", DateTime(ts.m_start).
+    w->writeEntry("start", DateTime(ts.m_start.tv_sec).
                   toString(DateTime::DateFormatCookie).data());
     w->writeEntry("duration", format_duration(duration));
+    if (ts.m_requestCount > 0 && ts.m_mm->isEnabled()) {
+      MemoryUsageStats stats;
+      ts.m_mm->getStatsSafe(stats);
+      w->beginObject("memory");
+      w->writeEntry("current usage", stats.usage);
+      w->writeEntry("current alloc", stats.alloc);
+      w->writeEntry("peak usage", stats.peakUsage);
+      w->writeEntry("peak alloc", stats.peakAlloc);
+      w->endObject("memory");
+    }
     w->writeEntry("io", ts.m_ioInProcess);
 
     // Only in the event that we are currently in the process of an io, will
@@ -947,9 +979,10 @@ Array ServerStats::EndNetworkProfile() {
 ///////////////////////////////////////////////////////////////////////////////
 
 ServerStats::ThreadStatus::ThreadStatus()
-    : m_requestCount(0), m_writeBytes(0), m_start(0), m_done(0),
-      m_mode(Idling), m_ioInProcess(false) {
+    : m_requestCount(0), m_writeBytes(0), m_mode(Idling), m_ioInProcess(false) {
   m_threadId = Process::GetThreadId();
+  memset(&m_start, 0, sizeof(m_start));
+  memset(&m_done, 0, sizeof(m_done));
   memset(m_ioName, 0, sizeof(m_ioName));
   memset(m_ioLogicalName, 0, sizeof(m_ioLogicalName));
   memset(m_ioAddr, 0, sizeof(m_ioAddr));
@@ -1027,7 +1060,6 @@ void ServerStats::logPage(const string &url, int code) {
     Merge(ps.m_values, m_values);
   }
 
-  m_values.clear();
   m_last = now;
   if (m_min == 0) {
     m_min = now;
@@ -1037,7 +1069,11 @@ void ServerStats::logPage(const string &url, int code) {
   }
 
   m_threadStatus.m_mode = Idling;
-  m_threadStatus.m_done = time(0);
+  gettimeofday(&m_threadStatus.m_done, 0);
+}
+
+void ServerStats::reset() {
+  m_values.clear();
 }
 
 void ServerStats::clear() {
@@ -1080,8 +1116,10 @@ static void safe_copy(char *dest, const char *src, int max) {
 void ServerStats::startRequest(const char *url, const char *clientIP,
                                const char *vhost) {
   ++m_threadStatus.m_requestCount;
-  m_threadStatus.m_start = time(0);
-  m_threadStatus.m_done = 0;
+
+  m_threadStatus.m_mm = ThreadInfo::s_threadInfo->m_mm;
+  gettimeofday(&m_threadStatus.m_start, 0);
+  memset(&m_threadStatus.m_done, 0, sizeof(m_threadStatus.m_done));
   m_threadStatus.m_mode = Processing;
   m_threadStatus.m_ioStatuses.clear();
 
@@ -1191,11 +1229,14 @@ Array ServerStats::getThreadIOStatuses() {
 ///////////////////////////////////////////////////////////////////////////////
 
 ServerStatsHelper::ServerStatsHelper(const char *section,
-                                     bool trackMem /* = false */)
-  : m_section(section), m_trackMemory(trackMem) {
+                                     uint32 track /* = false */)
+  : m_section(section), m_instStart(0), m_track(track) {
   if (RuntimeOption::EnableStats && RuntimeOption::EnableWebStats) {
     gettime(CLOCK_MONOTONIC, &m_wallStart);
     gettime(CLOCK_THREAD_CPUTIME_ID, &m_cpuStart);
+    if (m_track & TRACK_HWINST) {
+      m_instStart = Util::HardwareCounter::GetInstructionCount();
+    }
   }
 }
 
@@ -1208,10 +1249,15 @@ ServerStatsHelper::~ServerStatsHelper() {
     logTime("page.wall.", m_wallStart, wallEnd);
     logTime("page.cpu.", m_cpuStart, cpuEnd);
 
-    if (m_trackMemory) {
-      MemoryManager *mm = MemoryManager::TheMemoryManager().getNoCheck();
+    if (m_track & TRACK_MEMORY) {
+      MemoryManager *mm = MemoryManager::TheMemoryManager();
       int64 mem = mm->getStats(true).peakUsage;
       ServerStats::Log(string("mem.") + m_section, mem);
+    }
+
+    if (m_track & TRACK_HWINST) {
+      int64 instEnd = Util::HardwareCounter::GetInstructionCount();
+      logTime("page.inst.", m_instStart, instEnd);
     }
   }
 }
@@ -1219,6 +1265,11 @@ ServerStatsHelper::~ServerStatsHelper() {
 void ServerStatsHelper::logTime(const std::string &prefix,
                                 const timespec &start, const timespec &end) {
   ServerStats::Log(prefix + m_section, gettime_diff_us(start, end));
+}
+
+void ServerStatsHelper::logTime(const std::string &prefix,
+                                const int64 &start, const int64 &end) {
+  ServerStats::Log(prefix + m_section, end - start);
 }
 
 ///////////////////////////////////////////////////////////////////////////////

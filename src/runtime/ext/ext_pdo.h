@@ -117,7 +117,7 @@ class c_PDO : public ExtObjectData, public Sweepable {
   DECLARE_CLASS(PDO, PDO, ObjectData)
 
   // need to implement
-  public: c_PDO();
+  public: c_PDO(const ObjectStaticCallbacks *cb = &cw_PDO);
   public: ~c_PDO();
   public: void t___construct(CStrRef dsn, CStrRef username = null_string, CStrRef password = null_string, CArrRef options = null_array);
   DECLARE_METHOD_INVOKE_HELPERS(__construct);
@@ -154,8 +154,6 @@ class c_PDO : public ExtObjectData, public Sweepable {
     return ti_getavailabledrivers("pdo");
   }
   DECLARE_METHOD_INVOKE_HELPERS(getavailabledrivers);
-  public: Variant t___destruct();
-  DECLARE_METHOD_INVOKE_HELPERS(__destruct);
 
   // implemented by HPHP
   public: c_PDO *create(String dsn, String username = null_string, String password = null_string, Array options = null_array);
@@ -174,7 +172,7 @@ class c_PDOStatement : public ExtObjectData, public Sweepable {
   DECLARE_CLASS(PDOStatement, PDOStatement, ObjectData)
 
   // need to implement
-  public: c_PDOStatement();
+  public: c_PDOStatement(const ObjectStaticCallbacks *cb = &cw_PDOStatement);
   public: ~c_PDOStatement();
   public: void t___construct();
   DECLARE_METHOD_INVOKE_HELPERS(__construct);
@@ -230,8 +228,6 @@ class c_PDOStatement : public ExtObjectData, public Sweepable {
   DECLARE_METHOD_INVOKE_HELPERS(__wakeup);
   public: Variant t___sleep();
   DECLARE_METHOD_INVOKE_HELPERS(__sleep);
-  public: Variant t___destruct();
-  DECLARE_METHOD_INVOKE_HELPERS(__destruct);
 
   // implemented by HPHP
   public: c_PDOStatement *create();

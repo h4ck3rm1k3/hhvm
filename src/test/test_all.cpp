@@ -23,6 +23,7 @@
 void Test::RunTestsImpl(bool &allPassed, std::string &suite,
                         std::string &which, std::string &set) {
   // individual test suites
+  s_suite = suite;
   if (suite == "TestCodeRun") {
     RUN_TESTSUITE(TestCodeRun);
     return;
@@ -33,19 +34,45 @@ void Test::RunTestsImpl(bool &allPassed, std::string &suite,
     RUN_TESTSUITE(TestCodeRun);
     return;
   }
-  if (suite == "TestCodeRunEval") {
-    suite = "TestCodeRun";
-    Option::EnableEval = Option::FullEval;
-    RUN_TESTSUITE(TestCodeRun);
+  if (suite == "TestDebugger" || suite == "TestDebuggerJit") {
+    if (suite == "TestDebuggerJit") {
+      RuntimeOption::EvalJit = true;
+    } else {
+      RuntimeOption::EvalJit = false;
+    }
+    suite = "TestDebugger";
+    RUN_TESTSUITE(TestDebugger);
     return;
+  }
+  if (hhvm) {
+    const char *vmFilter = 0;
+
+    if (suite == "TestCodeRunVM" || suite == "TestCodeRunRepo") {
+      suite = "TestCodeRun";
+      Option::EnableEval = Option::FullEval;
+      RuntimeOption::EvalJit = false;
+      TestCodeRun::Filter = vmFilter;
+      RUN_TESTSUITE(TestCodeRun);
+      return;
+    }
+    if (suite == "TestCodeRunJit" || suite == "TestCodeRunRepoJit" ||
+        suite == "TestCodeRunJitIR" || suite == "TestCodeRunRepoJitIR") {
+      suite = "TestCodeRun";
+      Option::EnableEval = Option::FullEval;
+      RuntimeOption::EvalJit = true;
+      if (suite == "TestCodeRunJitIR" || suite == "TestCodeRunRepoJitIR") {
+        RuntimeOption::EvalJitUseIR = true;
+      }
+      TestCodeRun::Filter = vmFilter;
+      RUN_TESTSUITE(TestCodeRun);
+      return;
+    }
+  }
+  if (hhvm) {
+    fprintf(stderr, "%s is not supported with USE_HHVM=1\n", suite.c_str());
+    exit(-1);
   }
   if (suite == "TestServer") {
-    RUN_TESTSUITE(TestServer);
-    return;
-  }
-  if (suite == "TestServerEval") {
-    suite = "TestServer";
-    Option::EnableEval = Option::FullEval;
     RUN_TESTSUITE(TestServer);
     return;
   }

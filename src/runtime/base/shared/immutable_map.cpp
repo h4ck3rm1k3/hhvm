@@ -34,6 +34,7 @@ ImmutableMap::ImmutableMap(int num) : m_curPos(0) {
   m_buckets = (Bucket*)malloc(sizeof(Bucket) * capacity);
 }
 
+HOT_FUNC
 ImmutableMap::~ImmutableMap() {
   for (int i = 0; i < m_curPos; i++) {
     m_buckets[i].key->decRef();
@@ -43,6 +44,7 @@ ImmutableMap::~ImmutableMap() {
   free(m_hash);
 }
 
+HOT_FUNC
 void ImmutableMap::add(SharedVariant *key, SharedVariant *val) {
   // NOTE: no check on duplication because we assume the original array has no
   // duplication
@@ -62,9 +64,10 @@ void ImmutableMap::add(SharedVariant *key, SharedVariant *val) {
   }
 }
 
-int ImmutableMap::indexOf(StringData* key) {
-  int64 hash = key->hash();
-  size_t hash_pos = hash & (int64)m_capacity_mask;
+HOT_FUNC
+int ImmutableMap::indexOf(const StringData* key) {
+  strhash_t hash = key->hash();
+  size_t hash_pos = hash & m_capacity_mask;
   for (int bucket = m_hash[hash_pos]; bucket != -1;
        bucket = m_buckets[bucket].next) {
     if ((m_buckets[bucket].key->is(KindOfString) ||
@@ -76,6 +79,7 @@ int ImmutableMap::indexOf(StringData* key) {
   return -1;
 }
 
+HOT_FUNC
 int ImmutableMap::indexOf(int64 key) {
   size_t hash_pos = (int64)key & (int64)m_capacity_mask;
   for (int bucket = m_hash[hash_pos]; bucket != -1;

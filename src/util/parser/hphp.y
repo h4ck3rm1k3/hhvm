@@ -104,7 +104,7 @@ using namespace HPHP::HPHP_PARSER_NS;
 
 static void no_gap(Parser *_p) {
   if (_p->scanner().hasGap()) {
-    HPHP_PARSER_ERROR("XHP: bad spacing: %s", _p->getMessage(true).c_str());
+    HPHP_PARSER_ERROR("XHP: bad spacing", _p);
   }
 }
 
@@ -149,18 +149,24 @@ static void on_constant(Parser *_p, Token &out, Token *stmts,
 ///////////////////////////////////////////////////////////////////////////////
 // continuation transformations
 
-static void on_yield_assign(Parser *_p, Token &out, Token &var, Token *expr) {
-  Token yield;    _p->onYield(yield, expr, true);
-  Token rhs;
-  {
+static void prepare_continuation_call(Parser* _p, Token& rhs, const char* cname) {
+  if (HPHP::hhvm) {
+    Token fname;  fname.setText(std::string("hphp_continuation_") + cname);
+    Token empty;
+    _p->onCall(rhs, false, fname, empty, NULL, true);
+  } else {
     Token name;   name.setText(CONTINUATION_OBJECT_NAME);
     Token var;    _p->onSynthesizedVariable(var, name);
-    Token pn;     pn.setText("receive");
+    Token pn;     pn.setText(cname);
     Token pname;  _p->onName(pname, pn, Parser::VarName);
-                  _p->pushObject(var); _p->appendProperty(pname);
-    Token empty;  empty = 1; _p->appendMethodParams(empty);
-                  _p->popObject(rhs);
+    Token empty;  empty = 1;
+                  _p->onObjectMethodCall(rhs, var, pname, empty);
   }
+}
+
+static void on_yield_assign(Parser *_p, Token &out, Token &var, Token *expr) {
+  Token yield;    _p->onYield(yield, expr, true);
+  Token rhs;      prepare_continuation_call(_p, rhs, "receive");
   Token assign;   _p->onAssign(assign, var, rhs, 0);
   Token stmt;     _p->onExpStatement(stmt, assign);
 
@@ -174,16 +180,7 @@ static void on_yield_assign(Parser *_p, Token &out, Token &var, Token *expr) {
 static void on_yield_list_assign(Parser *_p, Token &out, Token &var,
                                  Token *expr) {
   Token yield;    _p->onYield(yield, expr, true);
-  Token rhs;
-  {
-    Token name;   name.setText(CONTINUATION_OBJECT_NAME);
-    Token var;    _p->onSynthesizedVariable(var, name);
-    Token pn;     pn.setText("receive");
-    Token pname;  _p->onName(pname, pn, Parser::VarName);
-                  _p->pushObject(var); _p->appendProperty(pname);
-    Token empty;  empty = 1; _p->appendMethodParams(empty);
-                  _p->popObject(rhs);
-  }
+  Token rhs;      prepare_continuation_call(_p, rhs, "receive");
   Token assign;   _p->onListAssignment(assign, var, &rhs);
   Token stmt;     _p->onExpStatement(stmt, assign);
 
@@ -198,6 +195,7 @@ void prepare_generator(Parser *_p, Token &stmt, Token &params, int count) {
   // 1. add prologue and epilogue to original body and store it back to "stmt"
   {
     Token scall;
+    Token switchExp;
     {
       // hphp_unpack_continuation(v___cont__)
       Token name;    name.setText(CONTINUATION_OBJECT_NAME);
@@ -205,19 +203,24 @@ void prepare_generator(Parser *_p, Token &stmt, Token &params, int count) {
       Token param1;  _p->onCallParam(param1, NULL, var, false);
 
       Token cname;   cname.setText("hphp_unpack_continuation");
-      Token call;    _p->onCall(call, false, cname, param1, NULL);
-      _p->onExpStatement(scall, call);
+      Token call;    _p->onCall(call, false, cname, param1, NULL, true);
+
+      if (HPHP::hhvm) {
+        switchExp = call;
+      } else {
+        _p->onExpStatement(scall, call);
+        Token name;    name.setText(CONTINUATION_OBJECT_NAME);
+        Token var;     _p->onSynthesizedVariable(var, name);
+        Token pn;      pn.setText("getLabel");
+        Token pname;   _p->onName(pname, pn, Parser::VarName);
+        Token mcall;
+        Token empty;   empty = 1;
+                       _p->onObjectMethodCall(mcall, var, pname, empty);
+        switchExp = mcall;
+      }
     }
     Token sswitch;
     {
-      Token name;    name.setText(CONTINUATION_OBJECT_NAME);
-      Token var;     _p->onSynthesizedVariable(var, name);
-      Token pn;      pn.setText("getLabel");
-      Token pname;   _p->onName(pname, pn, Parser::VarName);
-      Token mcall;   _p->pushObject(var); _p->appendProperty(pname);
-      Token empty;   empty = 1; _p->appendMethodParams(empty);
-                     _p->popObject(mcall);
-
       _p->pushLabelScope();
       {
         Token cases;
@@ -237,19 +240,13 @@ void prepare_generator(Parser *_p, Token &stmt, Token &params, int count) {
           Token scase;   _p->onCase(scase, cases, &num, stmts);
           cases = scase;
         }
-        _p->onSwitch(sswitch, mcall, cases);
+        _p->onSwitch(sswitch, switchExp, cases);
       }
       _p->popLabelScope();
     }
     Token sdone;
     {
-      Token name;    name.setText(CONTINUATION_OBJECT_NAME);
-      Token var;     _p->onSynthesizedVariable(var, name);
-      Token pn;      pn.setText("done");
-      Token pname;   _p->onName(pname, pn, Parser::VarName);
-      Token mcall;   _p->pushObject(var); _p->appendProperty(pname);
-      Token empty;   empty = 1; _p->appendMethodParams(empty);
-                     _p->popObject(mcall);
+      Token mcall;  prepare_continuation_call(_p, mcall, "done");
       _p->onExpStatement(sdone, mcall);
     }
     {
@@ -269,7 +266,7 @@ void prepare_generator(Parser *_p, Token &stmt, Token &params, int count) {
     Token type;    type.setText("Continuation");
     Token var;     var.setText(CONTINUATION_OBJECT_NAME);
     params.reset();
-    _p->onParam(params, NULL, type, var, false, NULL);
+    _p->onParam(params, NULL, type, var, false, NULL, NULL);
   }
 }
 
@@ -277,18 +274,27 @@ void prepare_generator(Parser *_p, Token &stmt, Token &params, int count) {
 void create_generator(Parser *_p, Token &out, Token &params,
                       Token &name, const std::string &closureName,
                       const char *clsname, Token *modifiers, bool getArgs,
-                      Token &origGenFunc) {
+                      Token &origGenFunc, bool isHhvm, Token *attr) {
   _p->pushFuncLocation();
   if (clsname) {
-    _p->onMethodStart(name, *modifiers);
+    _p->onMethodStart(name, *modifiers, false);
   } else {
-    _p->onFunctionStart(name);
+    _p->onFunctionStart(name, false);
   }
 
   Token scont;
   {
-    Token cn;      cn.setText(clsname ? clsname : "");
-    Token cname;   _p->onScalar(cname, T_CONSTANT_ENCAPSED_STRING, cn);
+    Token cname;
+    if (isHhvm) {
+      Token cn;    cn.setText(clsname ? "__CLASS__" : "");
+                   _p->onScalar(
+                     cname,
+                     clsname ? T_CLASS_C : T_CONSTANT_ENCAPSED_STRING,
+                     cn);
+    } else {
+      Token cn;    cn.setText(clsname ? clsname : "");
+                   _p->onScalar(cname, T_CONSTANT_ENCAPSED_STRING, cn);
+    }
 
     Token fn;      fn.setText(closureName);
     Token fname;   _p->onScalar(fname, T_CONSTANT_ENCAPSED_STRING, fn);
@@ -308,7 +314,7 @@ void create_generator(Parser *_p, Token &out, Token &params,
     }
 
     Token cname0;  cname0.setText("hphp_create_continuation");
-    Token call;    _p->onCall(call, false, cname0, param1, NULL);
+    Token call;    _p->onCall(call, false, cname0, param1, NULL, true);
     Token ret;     _p->onReturn(ret, &call);
 
     Token stmts0;  _p->onStatementListStart(stmts0);
@@ -321,7 +327,7 @@ void create_generator(Parser *_p, Token &out, Token &params,
   ret.setCheck();
   if (clsname) {
     Token closure;
-    _p->onMethod(closure, *modifiers, ret, ref, name, params, scont);
+    _p->onMethod(closure, *modifiers, ret, ref, name, params, scont, attr);
     origGenFunc = closure;
 
     Token stmts0;  _p->onStatementListStart(stmts0);
@@ -330,7 +336,7 @@ void create_generator(Parser *_p, Token &out, Token &params,
     _p->finishStatement(out, stmts2); out = 1;
   } else {
     out.reset();
-    _p->onFunction(out, ret, ref, name, params, scont);
+    _p->onFunction(out, ret, ref, name, params, scont, attr);
     origGenFunc = out;
   }
 }
@@ -339,7 +345,7 @@ void transform_yield(Parser *_p, Token &stmts, int index,
                      Token *expr, bool assign) {
   Token update;
   {
-    // hphp_pack_contination(v___cont__, label, value)
+    // hphp_pack_continuation(v___cont__, label, value)
 
     Token name;    name.setText(CONTINUATION_OBJECT_NAME);
     Token var;     _p->onSynthesizedVariable(var, name);
@@ -357,7 +363,7 @@ void transform_yield(Parser *_p, Token &stmts, int index,
     }
 
     Token cname;   cname.setText("hphp_pack_continuation");
-    Token call;    _p->onCall(call, false, cname, param1, NULL);
+    Token call;    _p->onCall(call, false, cname, param1, NULL, true);
     _p->onExpStatement(update, call);
   }
 
@@ -369,15 +375,8 @@ void transform_yield(Parser *_p, Token &stmts, int index,
   Token stmts0;  _p->onStatementListStart(stmts0);
 
   if (!expr) {
-    Token name;    name.setText(CONTINUATION_OBJECT_NAME);
-    Token var;     _p->onSynthesizedVariable(var, name);
-    Token pn;      pn.setText("done");
-    Token pname;   _p->onName(pname, pn, Parser::VarName);
-    Token mcall;   _p->pushObject(var); _p->appendProperty(pname);
-    Token empty;   empty = 1; _p->appendMethodParams(empty);
-                   _p->popObject(mcall);
+    Token mcall;   prepare_continuation_call(_p, mcall, "done");
     Token sdone;   _p->onExpStatement(sdone, mcall);
-
     Token tmp;     _p->addStatement(tmp, stmts0, sdone);
     stmts0 = tmp;
   }
@@ -390,19 +389,9 @@ void transform_yield(Parser *_p, Token &stmts, int index,
   if (assign) {
     _p->finishStatement(stmts, stmts3); stmts = 1;
   } else {
-    Token raised;
-    {
-      Token name;   name.setText(CONTINUATION_OBJECT_NAME);
-      Token var;    _p->onSynthesizedVariable(var, name);
-      Token pn;     pn.setText("raised");
-      Token pname;  _p->onName(pname, pn, Parser::VarName);
-      _p->pushObject(var); _p->appendProperty(pname);
-      Token empty;  empty = 1; _p->appendMethodParams(empty);
-      _p->popObject(raised);
-    }
-    Token stmt;     _p->onExpStatement(stmt, raised);
-
-    Token stmts4;   _p->addStatement(stmts4, stmts3, stmt);
+    Token fcall;  prepare_continuation_call(_p, fcall, "raised");
+    Token fstmt;  _p->onExpStatement(fstmt, fcall);
+    Token stmts4; _p->addStatement(stmts4, stmts3, fstmt);
     _p->finishStatement(stmts, stmts4); stmts = 1;
   }
 
@@ -428,7 +417,18 @@ void transform_foreach(Parser *_p, Token &out, Token &arr, Token &name,
     Token lname;    lname.setText(loopvar);
     Token var;      _p->onSynthesizedVariable(var, lname);
     Token assign;   _p->onAssign(assign, var, call, false);
-    _p->onExprListElem(init, NULL, assign);
+
+    if (byRef) {
+      // hphp_get_mutable_iterator will reset the array's internal pointer.
+      _p->onExprListElem(init, NULL, assign);
+    } else {
+      // We have to reset the iterator's pointer ourselves.
+      Token rname;    rname.setText("rewind");
+      Token empty;    empty = 1;
+      Token rcall;    _p->onObjectMethodCall(rcall, assign, rname, empty);
+
+      _p->onExprListElem(init, NULL, rcall);
+    }
   }
 
   Token cond;
@@ -438,8 +438,7 @@ void transform_foreach(Parser *_p, Token &out, Token &arr, Token &name,
     Token pn;       pn.setText("valid");
     Token pname;    _p->onName(pname, pn, Parser::VarName);
     Token empty;    empty = 1;
-    Token valid;    _p->pushObject(var); _p->appendProperty(pname);
-                    _p->appendMethodParams(empty); _p->popObject(valid);
+    Token valid;    _p->onObjectMethodCall(valid, var, pname, empty);
     _p->onExprListElem(cond, NULL, valid);
   }
 
@@ -450,8 +449,7 @@ void transform_foreach(Parser *_p, Token &out, Token &arr, Token &name,
     Token pn;       pn.setText("next");
     Token pname;    _p->onName(pname, pn, Parser::VarName);
     Token empty;    empty = 1;
-    Token next;     _p->pushObject(var); _p->appendProperty(pname);
-                    _p->appendMethodParams(empty); _p->popObject(next);
+    Token next;     _p->onObjectMethodCall(next, var, pname, empty);
     _p->onExprListElem(step, NULL, next);
   }
 
@@ -466,8 +464,7 @@ void transform_foreach(Parser *_p, Token &out, Token &arr, Token &name,
         Token pn;     pn->setText("key");
         Token pname;  _p->onName(pname, pn, Parser::VarName);
         Token empty;  empty = 1;
-        Token call;   _p->pushObject(var); _p->appendProperty(pname);
-                      _p->appendMethodParams(empty); _p->popObject(call);
+        Token call;   _p->onObjectMethodCall(call, var, pname, empty);
         Token kset;   _p->onAssign(kset, name, call, false);
         _p->onExpStatement(skset, kset);
       }
@@ -480,8 +477,7 @@ void transform_foreach(Parser *_p, Token &out, Token &arr, Token &name,
         Token pn;     pn.setText(byRef ? "currentRef" : "current");
         Token pname;  _p->onName(pname, pn, Parser::VarName);
         Token empty;  empty = 1;
-        Token call;   _p->pushObject(var); _p->appendProperty(pname);
-                      _p->appendMethodParams(empty); _p->popObject(call);
+        Token call;   _p->onObjectMethodCall(call, var, pname, empty);
         Token vset;   _p->onAssign(vset, value, call, byRef);
         _p->onExpStatement(svset, vset);
       }
@@ -498,8 +494,7 @@ void transform_foreach(Parser *_p, Token &out, Token &arr, Token &name,
         Token pn;     pn.setText(byRef ? "currentRef" : "current");
         Token pname;  _p->onName(pname, pn, Parser::VarName);
         Token empty;  empty = 1;
-        Token call;   _p->pushObject(var); _p->appendProperty(pname);
-                      _p->appendMethodParams(empty); _p->popObject(call);
+        Token call;   _p->onObjectMethodCall(call, var, pname, empty);
         Token vset;   _p->onAssign(vset, name, call, byRef);
         _p->onExpStatement(svset, vset);
       }
@@ -516,6 +511,34 @@ void transform_foreach(Parser *_p, Token &out, Token &arr, Token &name,
 
 ///////////////////////////////////////////////////////////////////////////////
 
+static void user_attribute_check(Parser *_p) {
+  if (!_p->enableHipHopSyntax()) {
+    HPHP_PARSER_ERROR("User attributes are not enabled", _p);
+  }
+}
+
+static void finally_statement(Parser *_p) {
+  if (!_p->enableFinallyStatement()) {
+    HPHP_PARSER_ERROR("Finally statement is not enabled", _p);
+  }
+}
+
+static void constant_ae(Parser *_p, Token &out, Token &value) {
+  const std::string& valueStr = value.text();
+  if (valueStr.size() < 3 || valueStr.size() > 5 ||
+      (strcasecmp("true", valueStr.c_str()) != 0 &&
+       strcasecmp("false", valueStr.c_str()) != 0 &&
+       strcasecmp("null", valueStr.c_str()) != 0 &&
+       strcasecmp("inf", valueStr.c_str()) != 0 &&
+       strcasecmp("nan", valueStr.c_str()) != 0)) {
+    HPHP_PARSER_ERROR("User-defined constants are not allowed in user "
+                      "attribute expressions", _p);
+  }
+  _p->onConstantValue(out, value);
+}
+
+///////////////////////////////////////////////////////////////////////////////
+
 /**
  * XHP functions: They are defined here, so different parsers don't have to
  * handle XHP rules at all.
@@ -523,13 +546,12 @@ void transform_foreach(Parser *_p, Token &out, Token &arr, Token &name,
 
 static void xhp_tag(Parser *_p, Token &out, Token &label, Token &body) {
   if (!_p->enableXHP()) {
-    HPHP_PARSER_ERROR("XHP: not enabled: %s", _p->getMessage(true).c_str());
+    HPHP_PARSER_ERROR("XHP: not enabled", _p);
   }
 
   if (!body.text().empty() && body.text() != label.text()) {
-    HPHP_PARSER_ERROR("XHP: mismatched tag: '%s' not the same as '%s': %s",
-                      body.text().c_str(), label.text().c_str(),
-                      _p->getMessage(true).c_str());
+    HPHP_PARSER_ERROR("XHP: mismatched tag: '%s' not the same as '%s'",
+                      _p, body.text().c_str(), label.text().c_str());
   }
 
   label.xhpLabel();
@@ -590,7 +612,7 @@ static void xhp_attribute_list(Parser *_p, Token &out, Token *list,
 
 static void xhp_attribute_stmt(Parser *_p, Token &out, Token &attributes) {
   if (!_p->enableXHP()) {
-    HPHP_PARSER_ERROR("XHP: not enabled: %s", _p->getMessage(true).c_str());
+    HPHP_PARSER_ERROR("XHP: not enabled", _p);
   }
 
   Token modifiers;
@@ -679,7 +701,7 @@ static void xhp_attribute_stmt(Parser *_p, Token &out, Token &attributes) {
   }
   {
     Token params, ret, ref; ref = 1;
-    _p->onMethod(out, modifiers, ret, ref, fname, params, stmt, false);
+    _p->onMethod(out, modifiers, ret, ref, fname, params, stmt, 0, false);
   }
 }
 
@@ -696,7 +718,7 @@ static void xhp_collect_attributes(Parser *_p, Token &out, Token &stmts) {
 
 static void xhp_category_stmt(Parser *_p, Token &out, Token &categories) {
   if (!_p->enableXHP()) {
-    HPHP_PARSER_ERROR("XHP: not enabled: %s", _p->getMessage(true).c_str());
+    HPHP_PARSER_ERROR("XHP: not enabled", _p);
   }
 
   Token fname;     fname.setText("__xhpCategoryDeclaration");
@@ -733,7 +755,7 @@ static void xhp_category_stmt(Parser *_p, Token &out, Token &categories) {
   }
   {
     Token params, ret, ref; ref = 1;
-    _p->onMethod(out, modifiers, ret, ref, fname, params, stmt, false);
+    _p->onMethod(out, modifiers, ret, ref, fname, params, stmt, 0, false);
   }
 }
 
@@ -747,8 +769,7 @@ static void xhp_children_decl_tag(Parser *_p, Token &arr, Token &tag) {
   } else if (tag.num() >= 0) {
     scalar_null(_p, name);
   } else {
-    HPHP_PARSER_ERROR("XHP: unknown children declaration: %s",
-                      _p->getMessage(true).c_str());
+    HPHP_PARSER_ERROR("XHP: unknown children declaration", _p);
   }
   Token arr2; _p->onArrayPair(arr2, &arr1, 0, name, 0);
   arr = arr2;
@@ -782,7 +803,7 @@ static void xhp_children_paren(Parser *_p, Token &out, Token exp, int op) {
 
 static void xhp_children_stmt(Parser *_p, Token &out, Token &children) {
   if (!_p->enableXHP()) {
-    HPHP_PARSER_ERROR("XHP: not enabled: %s", _p->getMessage(true).c_str());
+    HPHP_PARSER_ERROR("XHP: not enabled", _p);
   }
 
   Token fname;     fname.setText("__xhpChildrenDeclaration");
@@ -804,8 +825,7 @@ static void xhp_children_stmt(Parser *_p, Token &out, Token &children) {
     } else if (children.num() >= 0) {
       scalar_num(_p, arr, children.num());
     } else {
-      HPHP_PARSER_ERROR("XHP: XHP unknown children declaration: %s",
-                        _p->getMessage(true).c_str());
+      HPHP_PARSER_ERROR("XHP: XHP unknown children declaration", _p);
     }
     Token var;     var.set(T_VARIABLE, "_");
     Token decl;    _p->onStaticVariable(decl, 0, var, &arr);
@@ -827,7 +847,15 @@ static void xhp_children_stmt(Parser *_p, Token &out, Token &children) {
   }
   {
     Token params, ret, ref; ref = 1;
-    _p->onMethod(out, modifiers, ret, ref, fname, params, stmt, false);
+    _p->onMethod(out, modifiers, ret, ref, fname, params, stmt, 0, false);
+  }
+}
+
+/* This is called from strict-mode productions (sm_*) to throw an
+ * error if we're not in strict mode */
+static void only_in_strict_mode(Parser *_p) {
+  if (!_p->scanner().isStrictMode()) {
+    HPHP_PARSER_ERROR("Syntax only allowed in strict mode", _p);
   }
 }
 
@@ -838,7 +866,7 @@ static int yylex(YYSTYPE *token, HPHP::Location *loc, Parser *_p) {
 }
 %}
 
-%expect 14
+%expect 2
 %define api.pure
 %parse-param {HPHP::HPHP_PARSER_NS::Parser *_p}
 
@@ -958,6 +986,12 @@ static int yylex(YYSTYPE *token, HPHP::Location *loc, Parser *_p) {
 %token T_INSTEADOF
 %token T_TRAIT_C
 
+%token T_VARARG
+%token T_STRICT_INT_MAP
+%token T_STRICT_STR_MAP
+%token T_STRICT_ERROR
+%token T_FINALLY
+
 %%
 
 start:
@@ -1021,9 +1055,9 @@ class_namespace_string:
 ;
 constant_declaration:
     constant_declaration ','
-    T_STRING '=' static_scalar         { $3.setText(_p->nsDecl($3.text()));
+    sm_name_with_type '=' static_scalar { $3.setText(_p->nsDecl($3.text()));
                                          on_constant(_p,$$,&$1,$3,$5);}
-  | T_CONST T_STRING '=' static_scalar { $2.setText(_p->nsDecl($2.text()));
+  | T_CONST sm_name_with_type '=' static_scalar { $2.setText(_p->nsDecl($2.text()));
                                          on_constant(_p,$$,  0,$2,$4);}
 ;
 
@@ -1036,29 +1070,19 @@ inner_statement:
     statement                          { $$ = $1;}
   | function_declaration_statement     { $$ = $1;}
   | class_declaration_statement        { $$ = $1;}
+  | trait_declaration_statement        { $$ = $1;}
 ;
 statement:
-   expr ';'                            { _p->onExpStatement($$, $1);}
- | statement_without_expr              { $$ = $1;}
- | T_STRING ':'                        { _p->onLabel($$, $1);
-                                         _p->addLabel($1.text(),
-                                                      _p->getLocation(),
-                                                      &$$); }
-;
-statement_without_expr:
     '{' inner_statement_list '}'       { _p->onBlock($$, $2);}
-
   | T_IF '(' expr ')'
     statement
     elseif_list
     else_single                        { _p->onIf($$,$3,$5,$6,$7);}
-
   | T_IF '(' expr ')' ':'
     inner_statement_list
     new_elseif_list
     new_else_single
     T_ENDIF ';'                        { _p->onIf($$,$3,$6,$7,$8);}
-
   | T_WHILE '(' expr ')'               { _p->pushLabelScope();}
     while_statement                    { _p->popLabelScope();
                                          _p->onWhile($$,$3,$6);}
@@ -1066,75 +1090,60 @@ statement_without_expr:
   | T_DO                               { _p->pushLabelScope();}
     statement T_WHILE '(' expr ')' ';' { _p->popLabelScope();
                                          _p->onDo($$,$3,$6);}
-
   | T_FOR '(' for_expr ';'
     for_expr ';' for_expr ')'          { _p->pushLabelScope();}
     for_statement                      { _p->popLabelScope();
                                          _p->onFor($$,$3,$5,$7,$10);}
-
   | T_SWITCH '(' expr ')'              { _p->pushLabelScope();}
     switch_case_list                   { _p->popLabelScope();
                                          _p->onSwitch($$,$3,$6);}
-
   | T_BREAK ';'                        { _p->onBreak($$, NULL);}
   | T_BREAK expr ';'                   { _p->onBreak($$, &$2);}
-
   | T_CONTINUE ';'                     { _p->onContinue($$, NULL);}
   | T_CONTINUE expr ';'                { _p->onContinue($$, &$2);}
-
   | T_RETURN ';'                       { _p->onReturn($$, NULL);}
-  | T_RETURN expr_without_variable ';' { _p->onReturn($$, &$2);}
-  | T_RETURN variable ';'              { _p->onReturn($$, &$2);}
-
+  | T_RETURN expr ';'                  { _p->onReturn($$, &$2);}
   | T_YIELD T_BREAK ';'                { _p->onYield($$, NULL, false);}
-  | T_YIELD expr_without_variable ';'  { _p->onYield($$, &$2, false);}
-  | T_YIELD variable ';'               { _p->onYield($$, &$2, false);}
-  | variable '='
-    T_YIELD expr_without_variable ';'  { on_yield_assign(_p, $$, $1, &$4);}
-  | variable '=' T_YIELD variable ';'  { on_yield_assign(_p, $$, $1, &$4);}
-  | T_LIST '(' assignment_list ')' '='
-    T_YIELD expr_without_variable ';'  { on_yield_list_assign(_p, $$, $3, &$7);}
-  | T_LIST '(' assignment_list ')' '='
-    T_YIELD variable ';'               { on_yield_list_assign(_p, $$, $3, &$7);}
-
+  | T_YIELD expr ';'                   { _p->onYield($$, &$2, false);}
+  | variable '=' T_YIELD expr ';'      { on_yield_assign(_p, $$, $1, &$4);}
+  | T_LIST '(' assignment_list ')'
+    '=' T_YIELD expr ';'               { on_yield_list_assign(_p, $$, $3, &$7);}
   | T_GLOBAL global_var_list ';'       { _p->onGlobal($$, $2);}
   | T_STATIC static_var_list ';'       { _p->onStatic($$, $2);}
-  | non_empty_type_decl var_list ';'   { _p->onTypeDecl($$, $1, $2);}
-  | T_ECHO echo_expr_list ';'          { _p->onEcho($$, $2, 0);}
-  | T_UNSET '(' unset_variables ')'
-    ';'                                { _p->onUnset($$, $3);}
+  | T_ECHO expr_list ';'               { _p->onEcho($$, $2, 0);}
+  | T_UNSET '(' variable_list ')' ';'  { _p->onUnset($$, $3);}
   | ';'                                { $$.reset();}
-
   | T_INLINE_HTML                      { _p->onEcho($$, $1, 1);}
-
-  | T_FOREACH '(' variable
+  | T_FOREACH '(' expr
     T_AS foreach_variable
-    foreach_optional_arg ')'           { _p->pushLabelScope();}
-    foreach_statement                  { _p->popLabelScope();
-                                         _p->onForEach($$,$3,$5,$6,$9);}
-
-  | T_FOREACH '(' expr_without_variable
-    T_AS variable
     foreach_optional_arg ')'           { _p->pushLabelScope();}
     foreach_statement                  { _p->popLabelScope();
                                          _p->onForEach($$,$3,$5,$6,$9);}
 
   | T_DECLARE '(' declare_list ')'
     declare_statement                  { _p->onBlock($$, $5); $$ = T_DECLARE;}
-
   | T_TRY '{'
     inner_statement_list '}'
     T_CATCH '('
     fully_qualified_class_name
     T_VARIABLE ')' '{'
     inner_statement_list '}'
-    additional_catches                 { _p->onTry($$,$3,$7,$8,$11,$13);}
-
+    additional_catches
+    optional_finally                   { _p->onTry($$,$3,$7,$8,$11,$13,$14);}
+  | T_TRY '{'
+    inner_statement_list '}'
+    finally                            { _p->onTry($$, $3, $5);}
   | T_THROW expr ';'                   { _p->onThrow($$, $2);}
   | T_GOTO T_STRING ';'                { _p->onGoto($$, $2, true);
                                          _p->addGoto($2.text(),
                                                      _p->getLocation(),
                                                      &$$); }
+  | expr ';'                           { _p->onExpStatement($$, $1);}
+  | T_STRING ':'                       { _p->onLabel($$, $1);
+                                         _p->addLabel($1.text(),
+                                                      _p->getLocation(),
+                                                      &$$); }
+;
 
 additional_catches:
     additional_catches
@@ -1146,12 +1155,15 @@ additional_catches:
   |                                    { $$.reset();}
 ;
 
-unset_variables:
-    unset_variable                     { _p->onExprListElem($$, NULL, $1);}
-  | unset_variables ',' unset_variable { _p->onExprListElem($$, &$1, $3);}
+finally:
+                                       { finally_statement(_p);}
+    T_FINALLY '{'
+    inner_statement_list '}'           { _p->onFinally($$, $4);}
 ;
-unset_variable:
-    variable                           { $$ = $1;}
+
+optional_finally:
+    finally
+  |                                    { $$.reset();}
 ;
 
 is_reference:
@@ -1162,45 +1174,118 @@ is_reference:
 function_loc:
     T_FUNCTION                         { _p->pushFuncLocation();}
 ;
+
 function_declaration_statement:
-    type_decl function_loc
-    is_reference T_STRING              { $4.setText(_p->nsDecl($4.text()));
+    function_loc
+    is_reference sm_name_with_typevar  { $3.setText(_p->nsDecl($3.text()));
+                                         _p->onFunctionStart($3);
+                                         _p->pushLabelInfo();}
+    '(' parameter_list ')'
+    sm_opt_return_type
+    '{' inner_statement_list '}'       { Token t; t.reset();
+                                         _p->onFunction($$,t,$2,$3,$6,$10,0);
+                                         _p->popLabelInfo();
+                                         _p->popTypeScope();}
+  | non_empty_user_attributes function_loc
+    is_reference sm_name_with_typevar  { $4.setText(_p->nsDecl($4.text()));
                                          _p->onFunctionStart($4);
                                          _p->pushLabelInfo();}
     '(' parameter_list ')'
-    '{' inner_statement_list '}'       { _p->onFunction($$,$1,$3,$4,$7,$10);
-                                         _p->popLabelInfo();}
+    sm_opt_return_type
+    '{' inner_statement_list '}'       { Token t; t.reset();
+                                         _p->onFunction($$,t,$3,$4,$7,$11,&$1);
+                                         _p->popLabelInfo();
+                                         _p->popTypeScope();}
 ;
 
 class_declaration_statement:
-    class_entry_type T_STRING
-    extends_from                       { $2.setText(_p->nsDecl($2.text()));
-                                         _p->onClassStart($1.num(), $2, &$3);}
-    implements_list '{'
-    class_statement_list '}'           { _p->onClass($$,$1.num(),$2,$3,$5,$7);}
-
-  | class_entry_type T_XHP_LABEL
-    extends_from                       { $2.xhpLabel();
-                                         $2.setText(_p->nsDecl($2.text()));
-                                         _p->onClassStart($1.num(), $2, &$3);}
-    implements_list '{'                { _p->scanner().xhpStatement();}
-    xhp_class_statement_list '}'       { xhp_collect_attributes(_p, $9, $8);
-                                         _p->onClass($$,$1.num(),$2,$3,$5,$9);
-                                         _p->xhpResetAttributes();
-                                         _p->scanner().xhpReset();}
-
-  | T_INTERFACE T_STRING               { $2.setText(_p->nsDecl($2.text()));
-                                         _p->onClassStart(T_INTERFACE, $2, 0);}
+    class_entry_type
+    class_decl_name                    { $2.setText(_p->nsDecl($2.text()));
+                                         _p->onClassStart($1.num(),$2);}
+    extends_from implements_list '{'   { if (_p->peekClass())
+                                           _p->scanner().xhpStatement();}
+    class_statement_list '}'           { Token stmts;
+                                         if (_p->peekClass()) {
+                                           xhp_collect_attributes(_p,stmts,$8);
+                                         } else {
+                                           stmts = $8;
+                                         }
+                                         _p->onClass($$,$1.num(),$2,$4,$5,
+                                                     stmts,0);
+                                         if (_p->peekClass()) {
+                                           _p->xhpResetAttributes();
+                                           _p->scanner().xhpReset();
+                                         }
+                                         _p->popClass();
+                                         _p->popTypeScope();}
+  | non_empty_user_attributes
+    class_entry_type
+    class_decl_name                    { $3.setText(_p->nsDecl($3.text()));
+                                         _p->onClassStart($2.num(),$3);}
+    extends_from implements_list '{'   { if (_p->peekClass())
+                                           _p->scanner().xhpStatement();}
+    class_statement_list '}'           { Token stmts;
+                                         if (_p->peekClass()) {
+                                           xhp_collect_attributes(_p,stmts,$9);
+                                         } else {
+                                           stmts = $9;
+                                         }
+                                         _p->onClass($$,$2.num(),$3,$5,$6,
+                                                     stmts,&$1);
+                                         if (_p->peekClass()) {
+                                           _p->xhpResetAttributes();
+                                           _p->scanner().xhpReset();
+                                         }
+                                         _p->popClass();
+                                         _p->popTypeScope();}
+  | T_INTERFACE
+    interface_decl_name                { $2.setText(_p->nsDecl($2.text()));
+                                         _p->onClassStart(T_INTERFACE,$2);}
     interface_extends_list '{'
-    class_statement_list '}'           { _p->onInterface($$,$2,$4,$6);}
+    class_statement_list '}'           { _p->onInterface($$,$2,$4,$6,0);
+                                         _p->popClass();
+                                         _p->popTypeScope();}
+  | non_empty_user_attributes
+    T_INTERFACE
+    interface_decl_name                { $3.setText(_p->nsDecl($3.text()));
+                                         _p->onClassStart(T_INTERFACE,$3);}
+    interface_extends_list '{'
+    class_statement_list '}'           { _p->onInterface($$,$3,$5,$7,&$1);
+                                         _p->popClass();
+                                         _p->popTypeScope();}
 ;
+
 trait_declaration_statement:
-    T_TRAIT T_STRING                   { $2.setText(_p->nsDecl($2.text()));
-                                         _p->onClassStart(T_TRAIT, $2, 0);}
+    T_TRAIT
+    trait_decl_name                    { $2.setText(_p->nsDecl($2.text()));
+                                         _p->onClassStart(T_TRAIT, $2);}
     '{' class_statement_list '}'       { Token t_ext, t_imp;
                                          t_ext.reset(); t_imp.reset();
                                          _p->onClass($$,T_TRAIT,$2,t_ext,t_imp,
-                                                     $5);}
+                                                     $5, 0);
+                                         _p->popClass();
+                                         _p->popTypeScope();}
+  | non_empty_user_attributes
+    T_TRAIT
+    trait_decl_name                    { $3.setText(_p->nsDecl($3.text()));
+                                         _p->onClassStart(T_TRAIT, $3);}
+    '{' class_statement_list '}'       { Token t_ext, t_imp;
+                                         t_ext.reset(); t_imp.reset();
+                                         _p->onClass($$,T_TRAIT,$3,t_ext,t_imp,
+                                                     $6, &$1);
+                                         _p->popClass();
+                                         _p->popTypeScope();}
+;
+class_decl_name:
+    sm_name_with_typevar               { _p->pushClass(false); $$ = $1;}
+  | T_XHP_LABEL                        { $1.xhpLabel(); _p->pushTypeScope();
+                                         _p->pushClass(true); $$ = $1;}
+;
+interface_decl_name:
+    sm_name_with_typevar               { _p->pushClass(false); $$ = $1;}
+;
+trait_decl_name:
+    sm_name_with_typevar               { _p->pushClass(false); $$ = $1;}
 ;
 class_entry_type:
     T_CLASS                            { $$ = T_CLASS;}
@@ -1307,35 +1392,38 @@ new_else_single:
 ;
 
 parameter_list:
-    non_empty_parameter_list           { $$ = $1;}
+    non_empty_parameter_list ',' T_VARARG
+                                       { only_in_strict_mode(_p); $$ = $1; }
+  | non_empty_parameter_list           { $$ = $1;}
+  | T_VARARG                           { only_in_strict_mode(_p); $$.reset(); }
   |                                    { $$.reset();}
 ;
+
 non_empty_parameter_list:
-    type_decl T_VARIABLE               { _p->onParam($$,NULL,$1,$2,0,NULL);}
-  | type_decl '&' T_VARIABLE           { _p->onParam($$,NULL,$1,$3,1,NULL);}
-  | type_decl '&' T_VARIABLE
-    '=' static_scalar                  { _p->onParam($$,NULL,$1,$3,1,&$5);}
-  | type_decl T_VARIABLE
-    '=' static_scalar                  { _p->onParam($$,NULL,$1,$2,0,&$4);}
+    optional_user_attributes
+    sm_type_opt T_VARIABLE             { _p->onParam($$,NULL,$2,$3,0,NULL,&$1);}
+  | optional_user_attributes
+    sm_type_opt '&' T_VARIABLE         { _p->onParam($$,NULL,$2,$4,1,NULL,&$1);}
+  | optional_user_attributes
+    sm_type_opt '&' T_VARIABLE
+    '=' static_scalar                  { _p->onParam($$,NULL,$2,$4,1,&$6,&$1);}
+  | optional_user_attributes
+    sm_type_opt T_VARIABLE
+    '=' static_scalar                  { _p->onParam($$,NULL,$2,$3,0,&$5,&$1);}
   | non_empty_parameter_list ','
-    type_decl T_VARIABLE               { _p->onParam($$,&$1,$3,$4,0,NULL);}
+    optional_user_attributes
+    sm_type_opt T_VARIABLE             { _p->onParam($$,&$1,$4,$5,0,NULL,&$3);}
   | non_empty_parameter_list ','
-    type_decl '&' T_VARIABLE           { _p->onParam($$,&$1,$3,$5,1,NULL);}
+    optional_user_attributes
+    sm_type_opt '&' T_VARIABLE         { _p->onParam($$,&$1,$4,$6,1,NULL,&$3);}
   | non_empty_parameter_list ','
-    type_decl '&' T_VARIABLE
-    '=' static_scalar                  { _p->onParam($$,&$1,$3,$5,1,&$7);}
+    optional_user_attributes
+    sm_type_opt '&' T_VARIABLE
+    '=' static_scalar                  { _p->onParam($$,&$1,$4,$6,1,&$8,&$3);}
   | non_empty_parameter_list ','
-    type_decl T_VARIABLE
-    '=' static_scalar                  { _p->onParam($$,&$1,$3,$4,0,&$6);}
-;
-non_empty_type_decl:
-    T_STRING                           { $$ = $1;}
-  | T_ARRAY                            { $$.setText("array");}
-  | T_XHP_LABEL                        { $1.xhpLabel(); $$ = $1;}
-;
-type_decl:
-    non_empty_type_decl                { $$ = $1;}
-  |                                    { $$.reset();}
+    optional_user_attributes
+    sm_type_opt T_VARIABLE
+    '=' static_scalar                  { _p->onParam($$,&$1,$4,$5,0,&$7,&$3);}
 ;
 
 function_call_parameter_list:
@@ -1343,15 +1431,12 @@ function_call_parameter_list:
   |                                    { $$.reset();}
 ;
 non_empty_fcall_parameter_list:
-    expr_without_variable              { _p->onCallParam($$,NULL,$1,0);}
-  | variable                           { _p->onCallParam($$,NULL,$1,0);}
-  | '&' w_variable                     { _p->onCallParam($$,NULL,$2,1);}
+    expr                               { _p->onCallParam($$,NULL,$1,0);}
+  | '&' variable                       { _p->onCallParam($$,NULL,$2,1);}
   | non_empty_fcall_parameter_list ','
-    expr_without_variable              { _p->onCallParam($$,&$1,$3,0);}
+    expr                               { _p->onCallParam($$,&$1,$3,0);}
   | non_empty_fcall_parameter_list ','
-    variable                           { _p->onCallParam($$,&$1,$3,0);}
-  | non_empty_fcall_parameter_list ','
-    '&' w_variable                     { _p->onCallParam($$,&$1,$4,1);}
+    '&' variable                       { _p->onCallParam($$,&$1,$4,1);}
 ;
 
 global_var_list:
@@ -1360,7 +1445,7 @@ global_var_list:
 ;
 global_var:
     T_VARIABLE                         { $$ = $1;}
-  | '$' r_variable                     { $$ = $2; $$ = 1;}
+  | '$' variable                       { $$ = $2; $$ = 1;}
   | '$' '{' expr '}'                   { $$ = $3; $$ = 1;}
 ;
 
@@ -1372,22 +1457,11 @@ static_var_list:
   | T_VARIABLE '=' static_scalar       { _p->onStaticVariable($$,0,$1,&$3);}
 ;
 
-var_list:
-    var_list ',' T_VARIABLE            { _p->onTypedVariable($$,&$1,$3,0);}
-  | var_list ',' T_VARIABLE '=' expr   { _p->onTypedVariable($$,&$1,$3,&$5);}
-  | T_VARIABLE                         { _p->onTypedVariable($$,0,$1,0);}
-  | T_VARIABLE '=' expr                { _p->onTypedVariable($$,0,$1,&$3);}
-;
-
 class_statement_list:
     class_statement_list
-    class_statement                    { _p->onClassStatement($$, $1, $2);}
-  |                                    { $$.reset();}
-;
-xhp_class_statement_list:
-    xhp_class_statement_list
     class_statement                    { _p->onClassStatement($$, $1, $2);
-                                         _p->scanner().xhpStatement();}
+                                         if (_p->peekClass())
+                                           _p->scanner().xhpStatement();}
   |                                    { $$.reset();}
 ;
 class_statement:
@@ -1395,17 +1469,34 @@ class_statement:
     class_variable_declaration ';'     { _p->onClassVariableStart
                                          ($$,&$1,$3,NULL);}
   | non_empty_member_modifiers
-    non_empty_type_decl                { _p->onClassVariableModifer($1);}
+    sm_type                            { _p->onClassVariableModifer($1);}
     class_variable_declaration ';'     { _p->onClassVariableStart
                                          ($$,&$1,$4,&$2);}
   | class_constant_declaration ';'     { _p->onClassVariableStart
                                          ($$,NULL,$1,NULL);}
-  | method_modifiers
-    type_decl function_loc
-    is_reference T_STRING '('          { _p->onMethodStart($5, $1);
+  | method_modifiers function_loc
+    is_reference sm_name_with_typevar '('
+                                       { _p->onMethodStart($4, $1);
                                          _p->pushLabelInfo();}
-    parameter_list ')' method_body     { _p->onMethod($$,$1,$2,$4,$5,$8,$10);
-                                         _p->popLabelInfo();}
+    parameter_list ')'
+    sm_opt_return_type
+    method_body
+                                       { Token t; t.reset();
+                                         _p->onMethod($$,$1,t,$3,$4,$7,$10,0);
+                                         _p->popLabelInfo();
+                                         _p->popTypeScope();}
+  | non_empty_user_attributes
+    method_modifiers function_loc
+    is_reference sm_name_with_typevar '('
+                                       { _p->onMethodStart($5, $2);
+                                         _p->pushLabelInfo();}
+    parameter_list ')'
+    sm_opt_return_type
+    method_body
+                                       { Token t; t.reset();
+                                         _p->onMethod($$,$2,t,$4,$5,$8,$11,&$1);
+                                         _p->popLabelInfo();
+                                         _p->popTypeScope();}
   | T_XHP_ATTRIBUTE                    { _p->scanner().xhpAttributeDecl();}
     xhp_attribute_stmt ';'             { _p->xhpSetAttributes($3);}
   | T_XHP_CATEGORY
@@ -1571,25 +1662,25 @@ class_variable_declaration:
 ;
 class_constant_declaration:
     class_constant_declaration ','
-    T_STRING '=' static_scalar         { _p->onClassConstant($$,&$1,$3,$5);}
-  | T_CONST T_STRING '=' static_scalar { _p->onClassConstant($$,0,$2,$4);}
+    sm_name_with_type '=' static_scalar { _p->onClassConstant($$,&$1,$3,$5);}
+  | T_CONST sm_name_with_type '=' static_scalar { _p->onClassConstant($$,0,$2,$4);}
 ;
 
-echo_expr_list:
-    echo_expr_list ',' expr            { _p->onExprListElem($$, &$1, $3);}
+expr_list:
+    expr_list ',' expr                 { _p->onExprListElem($$, &$1, $3);}
   | expr                               { _p->onExprListElem($$, NULL, $1);}
 ;
 
 for_expr:
-    non_empty_for_expr                 { $$ = $1;}
+    expr_list                          { $$ = $1;}
   |                                    { $$.reset();}
 ;
-non_empty_for_expr:
-    non_empty_for_expr ',' expr        { _p->onExprListElem($$, &$1, $3);}
-  | expr                               { _p->onExprListElem($$, NULL, $1);}
-;
 
-expr_without_variable:
+expr:
+    expr_no_variable                   { $$ = $1;}
+  | variable                           { $$ = $1;}
+
+expr_no_variable:
     T_LIST '(' assignment_list ')'
     '=' expr                           { _p->onListAssignment($$, $3, &$6);}
   | variable '=' expr                  { _p->onAssign($$, $1, $3, 0);}
@@ -1611,10 +1702,10 @@ expr_without_variable:
   | variable T_XOR_EQUAL expr          { BEXP($$,$1,$3,T_XOR_EQUAL);}
   | variable T_SL_EQUAL expr           { BEXP($$,$1,$3,T_SL_EQUAL);}
   | variable T_SR_EQUAL expr           { BEXP($$,$1,$3,T_SR_EQUAL);}
-  | rw_variable T_INC                  { UEXP($$,$1,T_INC,0);}
-  | T_INC rw_variable                  { UEXP($$,$2,T_INC,1);}
-  | rw_variable T_DEC                  { UEXP($$,$1,T_DEC,0);}
-  | T_DEC rw_variable                  { UEXP($$,$2,T_DEC,1);}
+  | variable T_INC                     { UEXP($$,$1,T_INC,0);}
+  | T_INC variable                     { UEXP($$,$2,T_INC,1);}
+  | variable T_DEC                     { UEXP($$,$1,T_DEC,0);}
+  | T_DEC variable                     { UEXP($$,$2,T_DEC,1);}
   | expr T_BOOLEAN_OR expr             { BEXP($$,$1,$3,T_BOOLEAN_OR);}
   | expr T_BOOLEAN_AND expr            { BEXP($$,$1,$3,T_BOOLEAN_AND);}
   | expr T_LOGICAL_OR expr             { BEXP($$,$1,$3,T_LOGICAL_OR);}
@@ -1647,7 +1738,7 @@ expr_without_variable:
                                               T_IS_GREATER_OR_EQUAL);}
   | expr T_INSTANCEOF
     class_name_reference               { BEXP($$,$1,$3,T_INSTANCEOF);}
-  | '(' expr ')'                       { $$ = $2;}
+  | '(' expr_no_variable ')'           { $$ = $2;}
   | expr '?' expr ':' expr             { _p->onQOp($$, $1, &$3, $5);}
   | expr '?' ':' expr                  { _p->onQOp($$, $1,   0, $4);}
   | internal_functions                 { $$ = $1;}
@@ -1661,17 +1752,35 @@ expr_without_variable:
   | T_EXIT exit_expr                   { UEXP($$,$2,T_EXIT,1);}
   | '@' expr                           { UEXP($$,$2,'@',1);}
   | scalar                             { $$ = $1;}
-  | T_ARRAY  '(' array_pair_list ')'   { _p->onArray($$,$3,T_ARRAY);}
+  | array_literal                      { $$ = $1;}
   | '`' backticks_expr '`'             { _p->onEncapsList($$,'`',$2);}
   | T_PRINT expr                       { UEXP($$,$2,T_PRINT,1);}
-  | type_decl function_loc
-    is_reference '('                   { Token t; _p->onFunctionStart(t);
+  | function_loc is_reference '('      { Token t; _p->onFunctionStart(t);
                                          _p->pushLabelInfo();}
-    parameter_list ')' lexical_vars
-    '{' inner_statement_list '}'       { _p->onClosure($$,$1,$3,$6,$8,$10);
+    parameter_list ')'
+    sm_opt_return_type lexical_vars
+    '{' inner_statement_list '}'       { Token u; u.reset();
+                                         _p->onClosure($$,u,$2,$5,$8,$10);
                                          _p->popLabelInfo();}
-  | expr '[' dim_offset ']'            { _p->onRefDim($$, $1, $3);}
   | xhp_tag                            { $$ = $1;}
+  | dim_expr                           { $$ = $1;}
+;
+
+array_literal:
+    T_ARRAY '(' array_pair_list ')'    { _p->onArray($$,$3,T_ARRAY);}
+;
+
+dim_expr:
+    dim_expr
+    '[' dim_offset ']'                 { _p->onRefDim($$, $1, $3);}
+  | dim_expr_base
+    '[' dim_offset ']'                 { _p->onRefDim($$, $1, $3);}
+;
+
+dim_expr_base:
+    array_literal                      { $$ = $1;}
+  | class_constant                     { $$ = $1;}
+  | '(' expr_no_variable ')'           { $$ = $2;}
 ;
 
 lexical_vars:
@@ -1690,29 +1799,23 @@ xhp_tag:
     '<' xhp_label xhp_tag_body '>'     { no_gap(_p); xhp_tag(_p,$$,$2,$3);}
 ;
 xhp_tag_body:
-    '/'                                { Token t1; _p->onArray(t1,$1);
-                                         Token t2; _p->onArray(t2,$1);
-                                         _p->onCallParam($1,NULL,t1,0);
-                                         _p->onCallParam($$, &$1,t2,0);
-                                         $$.setText("");
-                                         _p->scanner().xhpCloseTag();}
-  | xhp_attributes '/'                 { _p->scanner().xhpCloseTag();}
-    xhp_end_tag                        { Token t1; _p->onArray(t1,$1);
+    xhp_attributes '/'                 { _p->scanner().xhpCloseTag();
+                                         Token t1; _p->onArray(t1,$1);
                                          Token t2; _p->onArray(t2,$2);
                                          _p->onCallParam($1,NULL,t1,0);
                                          _p->onCallParam($$, &$1,t2,0);
-                                         $$.setText($4);}
+                                         $$.setText("");}
   | xhp_attributes '>'                 { _p->scanner().xhpChild();}
     xhp_children '<' '/'               { _p->scanner().xhpCloseTag();}
-    xhp_end_tag                        { _p->onArray($5,$1);
+    xhp_opt_end_label                  { _p->onArray($5,$1);
                                          _p->onArray($6,$4);
                                          _p->onCallParam($2,NULL,$5,0);
                                          _p->onCallParam($$, &$2,$6,0);
-                                         $$.setText($8);}
+                                         $$.setText($8.text());}
 ;
-xhp_end_tag:
-    T_XHP_LABEL                        { $$ = $1;}
-  |                                    { $$.reset();}
+xhp_opt_end_label:
+                                       { $$.reset(); $$.setText("");}
+  | T_XHP_LABEL                        { $$.reset(); $$.setText($1);}
 ;
 xhp_attributes:
     xhp_attributes
@@ -1768,6 +1871,7 @@ xhp_bareword:
   | T_YIELD                            { $$ = $1;}
   | T_TRY                              { $$ = $1;}
   | T_CATCH                            { $$ = $1;}
+  | T_FINALLY                          { $$ = $1;}
   | T_THROW                            { $$ = $1;}
   | T_IF                               { $$ = $1;}
   | T_ELSEIF                           { $$ = $1;}
@@ -1834,50 +1938,37 @@ xhp_bareword:
   | T_TRAIT_C                          { $$ = $1;}
 ;
 
-function_call:
+simple_function_call:
     namespace_string '('
     function_call_parameter_list ')'   { _p->onCall($$,0,$1,$3,NULL);}
-  | variable_without_objects '('
-    function_call_parameter_list ')'   { _p->onCall($$,1,$1,$3,NULL);}
-  | static_class_name
-    T_PAAMAYIM_NEKUDOTAYIM
-    T_STRING '('
-    function_call_parameter_list ')'   { _p->onCall($$,0,$3,$5,&$1);}
-  | static_class_name
-    T_PAAMAYIM_NEKUDOTAYIM
-    variable_without_objects '('
-    function_call_parameter_list ')'   { _p->onCall($$,1,$3,$5,&$1);}
 ;
+
 static_class_name:
-    fully_qualified_class_name         { _p->onName($$,$1,Parser::StringName);}
+    fully_qualified_class_name_no_typeargs
+                                       { _p->onName($$,$1,Parser::StringName);}
   | T_STATIC                           { _p->onName($$,$1,Parser::StaticName);}
   | reference_variable                 { _p->onName($$,$1,
                                          Parser::StaticClassExprName);}
 ;
 fully_qualified_class_name:
+    class_namespace_string sm_typeargs_opt { $$ = $1;}
+  | T_XHP_LABEL                        { $1.xhpLabel(); $$ = $1;}
+;
+fully_qualified_class_name_no_typeargs:
     class_namespace_string             { $$ = $1;}
   | T_XHP_LABEL                        { $1.xhpLabel(); $$ = $1;}
 ;
 class_name_reference:
-    class_namespace_string             { _p->onName($$,$1,Parser::StringName);}
+    variable_no_calls                  { _p->onName($$,$1,Parser::ExprName);}
+  | T_STATIC                           { _p->onName($$,$1,Parser::StaticName);}
   | T_XHP_LABEL                        { $1.xhpLabel();
                                          _p->onName($$,$1,Parser::StringName);}
-  | dynamic_class_name_reference       { _p->onName($$,$1,Parser::ExprName);}
-  | T_STATIC                           { _p->onName($$,$1,Parser::StaticName);}
-;
-dynamic_class_name_reference:
-    base_variable                      { _p->pushObject($1);}
-    T_OBJECT_OPERATOR object_property
-    object_properties                  { _p->popObject($$);}
-  | base_variable                      { $$ = $1;}
-;
-object_properties:
-    object_properties
-    dynamic_class_name_variable_prop   { }
-  |                                    { }
-;
-dynamic_class_name_variable_prop:
-    T_OBJECT_OPERATOR object_property  { }
+  | namespace_name                     { $1.setText(_p->resolve($1.text(),1));
+                                         _p->onName($$,$1,Parser::StringName);}
+  | T_NS_SEPARATOR namespace_name      { _p->onName($$,$2,Parser::StringName);}
+  | T_NAMESPACE T_NS_SEPARATOR
+    namespace_name                     { $3.setText(_p->nsDecl($3.text()));
+                                         _p->onName($$,$3,Parser::StringName);}
 ;
 
 exit_expr:
@@ -1965,40 +2056,147 @@ non_empty_static_array_pair_list:
   | static_scalar                      { _p->onArrayPair($$,  0,  0,$1,0);}
 ;
 
-expr:
-    r_variable                         { $$ = $1;}
-  | expr_without_variable              { $$ = $1;}
+common_scalar_ae:
+    T_LNUMBER                          { _p->onScalar($$, T_LNUMBER,  $1);}
+  | T_DNUMBER                          { _p->onScalar($$, T_DNUMBER,  $1);}
+  | T_CONSTANT_ENCAPSED_STRING         { _p->onScalar($$,
+                                         T_CONSTANT_ENCAPSED_STRING,  $1);}
+  | T_START_HEREDOC
+    T_ENCAPSED_AND_WHITESPACE
+    T_END_HEREDOC                      { _p->onScalar($$, T_CONSTANT_ENCAPSED_STRING, $2);}
+  | T_START_HEREDOC
+    T_END_HEREDOC                      { $$.setText(""); _p->onScalar($$, T_CONSTANT_ENCAPSED_STRING, $$);}
 ;
-r_variable:
-    variable                           { $$ = $1;}
+static_numeric_scalar_ae:
+    T_LNUMBER                          { _p->onScalar($$,T_LNUMBER,$1);}
+  | T_DNUMBER                          { _p->onScalar($$,T_DNUMBER,$1);}
+  | T_STRING                           { constant_ae(_p,$$,$1);}
 ;
-w_variable:
-    variable                           { $$ = $1;}
+static_scalar_ae:
+    common_scalar_ae                   { $$ = $1;}
+  | T_STRING                           { constant_ae(_p,$$,$1);}
+  | '+' static_numeric_scalar_ae       { UEXP($$,$2,'+',1);}
+  | '-' static_numeric_scalar_ae       { UEXP($$,$2,'-',1);}
+  | T_ARRAY '('
+    static_array_pair_list_ae ')'      { _p->onArray($$,$3,T_ARRAY);}
+  | '[' static_array_pair_list_ae ']'  { _p->onArray($$,$2,T_ARRAY);}
 ;
-rw_variable:
-    variable                           { $$ = $1;}
+static_array_pair_list_ae:
+    non_empty_static_array_pair_list_ae
+    possible_comma                     { $$ = $1;}
+  |                                    { $$.reset();}
+;
+non_empty_static_array_pair_list_ae:
+    non_empty_static_array_pair_list_ae
+    ',' static_scalar_ae T_DOUBLE_ARROW
+    static_scalar_ae                   { _p->onArrayPair($$,&$1,&$3,$5,0);}
+  | non_empty_static_array_pair_list_ae
+    ',' static_scalar_ae               { _p->onArrayPair($$,&$1,  0,$3,0);}
+  | static_scalar_ae T_DOUBLE_ARROW
+    static_scalar_ae                   { _p->onArrayPair($$,  0,&$1,$3,0);}
+  | static_scalar_ae                   { _p->onArrayPair($$,  0,  0,$1,0);}
+;
+non_empty_static_scalar_list_ae:
+    non_empty_static_scalar_list_ae
+    ',' static_scalar_ae               { _p->onArrayPair($$,&$1,  0,$3,0);}
+  | static_scalar_ae                   { _p->onArrayPair($$,  0,  0,$1,0);}
+;
+static_scalar_list_ae:
+    non_empty_static_scalar_list_ae
+    possible_comma                     { $$ = $1;}
+  |                                    { $$.reset();}
+;
+attribute_static_scalar_list:
+    '(' static_scalar_list_ae ')'      { _p->onArray($$,$2,T_ARRAY);}
+  |                                    { Token t; t.reset();
+                                         _p->onArray($$,t,T_ARRAY);}
+;
+non_empty_user_attribute_list:
+    non_empty_user_attribute_list
+    ',' T_STRING
+    attribute_static_scalar_list       { _p->onUserAttribute($$,&$1,$3,$4);}
+  | T_STRING
+    attribute_static_scalar_list       { _p->onUserAttribute($$,  0,$1,$2);}
+;
+user_attribute_list:
+                                       { user_attribute_check(_p);}
+    non_empty_user_attribute_list
+    possible_comma                     { $$ = $2;}
+;
+non_empty_user_attributes:
+    T_SL user_attribute_list T_SR      { $$ = $2;}
+;
+optional_user_attributes:
+    non_empty_user_attributes          { $$ = $1;}
+  |                                    { $$.reset();}
 ;
 variable:
-    base_variable_with_function_calls  { _p->pushObject($1);}
-    T_OBJECT_OPERATOR object_property
-    method_or_not                      { _p->appendMethodParams($5);}
-    variable_properties                { _p->popObject($$);}
-  | base_variable_with_function_calls  { _p->pushObject($1);
-                                         _p->popObject($$);}
+    variable_without_objects           { $$ = $1;}
+  | simple_function_call               { $$ = $1;}
+  | object_method_call                 { $$ = $1;}
+  | class_method_call                  { $$ = $1;}
+  | dimmable_variable
+    '[' dim_offset ']'                 { _p->onRefDim($$, $1, $3);}
+  | dimmable_variable '{' expr '}'     { _p->onRefDim($$, $1, $3);}
+  | variable T_OBJECT_OPERATOR
+    T_STRING                           { _p->onObjectProperty($$,$1,$3);}
+  | variable T_OBJECT_OPERATOR
+    variable_without_objects           { _p->onObjectProperty($$,$1,$3);}
+  | variable T_OBJECT_OPERATOR
+    '{' expr '}'                       { _p->onObjectProperty($$,$1,$4);}
+  | static_class_name
+    T_PAAMAYIM_NEKUDOTAYIM
+    variable_without_objects           { _p->onStaticMember($$,$1,$3);}
+  | callable_variable '('
+    function_call_parameter_list ')'   { _p->onCall($$,1,$1,$3,NULL);}
+  | '(' variable ')'                   { $$ = $2;}
 ;
-variable_properties:
-    variable_properties
-    variable_property                  { }
-  |                                    { }
+
+dimmable_variable:
+    simple_function_call               { $$ = $1;}
+  | object_method_call                 { $$ = $1;}
+  | class_method_call                  { $$ = $1;}
+  | dimmable_variable
+    '[' dim_offset ']'                 { _p->onRefDim($$,$1,$3);}
+  | dimmable_variable '{' expr '}'     { _p->onRefDim($$,$1,$3);}
+  | variable T_OBJECT_OPERATOR
+    T_STRING                           { _p->onObjectProperty($$,$1,$3);}
+  | variable T_OBJECT_OPERATOR
+    '{' expr '}'                       { _p->onObjectProperty($$,$1,$4);}
+  | callable_variable '('
+    function_call_parameter_list ')'   { _p->onCall($$,1,$1,$3,NULL);}
+  | '(' variable ')'                   { $$ = $2;}
 ;
-variable_property:
-    T_OBJECT_OPERATOR object_property
-    method_or_not                      { _p->appendMethodParams($3);}
+
+callable_variable:
+    variable_without_objects           { $$ = $1;}
+  | dimmable_variable
+    '[' dim_offset ']'                 { _p->onRefDim($$, $1, $3);}
+  | dimmable_variable '{' expr '}'     { _p->onRefDim($$, $1, $3);}
+  | '(' variable ')'                   { $$ = $2;}
 ;
-method_or_not:
-    '('
-    function_call_parameter_list ')'   { $$ = $2; $$ = 1;}
-  |                                    { $$.reset();}
+
+object_method_call:
+    variable T_OBJECT_OPERATOR
+    T_STRING '('
+    function_call_parameter_list ')'   { _p->onObjectMethodCall($$,$1,$3,$5);}
+  | variable T_OBJECT_OPERATOR
+    variable_without_objects '('
+    function_call_parameter_list ')'   { _p->onObjectMethodCall($$,$1,$3,$5);}
+  | variable T_OBJECT_OPERATOR
+    '{' expr '}' '('
+    function_call_parameter_list ')'   { _p->onObjectMethodCall($$,$1,$4,$7);}
+;
+
+class_method_call:
+    static_class_name
+    T_PAAMAYIM_NEKUDOTAYIM
+    T_STRING '('
+    function_call_parameter_list ')'   { _p->onCall($$,0,$3,$5,&$1);}
+  | static_class_name
+    T_PAAMAYIM_NEKUDOTAYIM
+    variable_without_objects '('
+    function_call_parameter_list ')'   { _p->onCall($$,1,$3,$5,&$1);}
 ;
 
 variable_without_objects:
@@ -2006,22 +2204,7 @@ variable_without_objects:
   | simple_indirect_reference
     reference_variable                 { _p->onIndirectRef($$,$1,$2);}
 ;
-static_member:
-    static_class_name
-    T_PAAMAYIM_NEKUDOTAYIM
-    variable_without_objects           { _p->onStaticMember($$,$1,$3);}
-;
 
-base_variable_with_function_calls:
-    base_variable                      { $$ = $1;}
-  | function_call                      { $$ = $1;}
-;
-base_variable:
-    reference_variable                 { $$ = $1;}
-  | simple_indirect_reference
-    reference_variable                 { _p->onIndirectRef($$,$1,$2);}
-  | static_member                      { $$ = $1; $$ = 2;}
-;
 reference_variable:
     reference_variable
     '[' dim_offset ']'                 { _p->onRefDim($$, $1, $3);}
@@ -2037,23 +2220,39 @@ dim_offset:
   |                                    { $$.reset();}
 ;
 
-object_property:
-    object_dim_list                    { }
-  | variable_without_objects           { _p->appendProperty($1);}
-;
-object_dim_list:
-    object_dim_list '[' dim_offset ']' { _p->appendRefDim($3);}
-  | object_dim_list '{' expr '}'       { _p->appendRefDim($3);}
-  | variable_name                      { _p->appendProperty($1);}
-;
-variable_name:
-    T_STRING                           {_p->onName($$,$1,Parser::VarName);}
-  | '{' expr '}'                       {_p->onName($$,$2,Parser::ExprName);}
-;
-
 simple_indirect_reference:
     '$'                                { $$ = 1;}
   | simple_indirect_reference '$'      { $$++;}
+;
+
+variable_no_calls:
+    variable_without_objects           { $$ = $1;}
+  | dimmable_variable_no_calls
+    '[' dim_offset ']'                 { _p->onRefDim($$, $1, $3);}
+  | dimmable_variable_no_calls
+    '{' expr '}'                       { _p->onRefDim($$, $1, $3);}
+  | variable_no_calls T_OBJECT_OPERATOR
+    T_STRING                           { _p->onObjectProperty($$,$1,$3);}
+  | variable_no_calls T_OBJECT_OPERATOR
+    variable_without_objects           { _p->onObjectProperty($$,$1,$3);}
+  | variable_no_calls T_OBJECT_OPERATOR
+    '{' expr '}'                       { _p->onObjectProperty($$,$1,$4);}
+  | static_class_name
+    T_PAAMAYIM_NEKUDOTAYIM
+    variable_without_objects           { _p->onStaticMember($$,$1,$3);}
+  | '(' variable ')'                   { $$ = $2;}
+;
+
+dimmable_variable_no_calls:
+    dimmable_variable_no_calls
+    '[' dim_offset ']'                 { _p->onRefDim($$, $1, $3);}
+  | dimmable_variable_no_calls
+    '{' expr '}'                       { _p->onRefDim($$, $1, $3);}
+  | variable_no_calls T_OBJECT_OPERATOR
+    T_STRING                           { _p->onObjectProperty($$,$1,$3);}
+  | variable_no_calls T_OBJECT_OPERATOR
+    '{' expr '}'                       { _p->onObjectProperty($$,$1,$4);}
+  | '(' variable ')'                   { $$ = $2;}
 ;
 
 assignment_list:
@@ -2079,11 +2278,11 @@ non_empty_array_pair_list:
   | expr                               { _p->onArrayPair($$,  0,  0,$1,0);}
   | non_empty_array_pair_list
     ',' expr T_DOUBLE_ARROW
-    '&' w_variable                     { _p->onArrayPair($$,&$1,&$3,$6,1);}
+    '&' variable                       { _p->onArrayPair($$,&$1,&$3,$6,1);}
   | non_empty_array_pair_list ','
-    '&' w_variable                     { _p->onArrayPair($$,&$1,  0,$4,1);}
-  | expr T_DOUBLE_ARROW '&' w_variable { _p->onArrayPair($$,  0,&$1,$4,1);}
-  | '&' w_variable                     { _p->onArrayPair($$,  0,  0,$2,1);}
+    '&' variable                       { _p->onArrayPair($$,&$1,  0,$4,1);}
+  | expr T_DOUBLE_ARROW '&' variable   { _p->onArrayPair($$,  0,&$1,$4,1);}
+  | '&' variable                       { _p->onArrayPair($$,  0,  0,$2,1);}
 ;
 
 encaps_list:
@@ -2115,7 +2314,7 @@ encaps_var_offset:
 ;
 
 internal_functions:
-    T_ISSET '(' isset_variables ')'    { UEXP($$,$3,T_ISSET,1);}
+    T_ISSET '(' variable_list ')'      { UEXP($$,$3,T_ISSET,1);}
   | T_EMPTY '(' variable ')'           { UEXP($$,$3,T_EMPTY,1);}
   | T_INCLUDE expr                     { UEXP($$,$2,T_INCLUDE,1);}
   | T_INCLUDE_ONCE expr                { UEXP($$,$2,T_INCLUDE_ONCE,1);}
@@ -2124,16 +2323,104 @@ internal_functions:
   | T_REQUIRE_ONCE expr                { UEXP($$,$2,T_REQUIRE_ONCE,1);}
 ;
 
-isset_variables:
+variable_list:
     variable                           { _p->onExprListElem($$, NULL, $1);}
-  | isset_variables ',' variable       { _p->onExprListElem($$, &$1, $3);}
+  | variable_list ',' variable         { _p->onExprListElem($$, &$1, $3);}
 ;
 
 class_constant:
   static_class_name
   T_PAAMAYIM_NEKUDOTAYIM T_STRING      { _p->onClassConst($$, $1, $3, 0);}
 ;
+
+/* strict-mode productions -- these allow some extra stuff in strict
+ * mode, but simplify down to the original thing
+ */
+
+sm_name_with_type:  /* foo -> int foo */
+    T_STRING                           { $$ = $1; }
+  | sm_type T_STRING                   { only_in_strict_mode(_p); $$ = $2; }
+;
+
+sm_name_with_typevar:  /* foo -> foo<X,Y>; this adds a typevar scope
+                        * and must be followed by a call to
+                        * popTypeScope() */
+    T_STRING                           { _p->pushTypeScope(); $$ = $1; }
+  | T_STRING '<' sm_typevar_list '>'   { _p->pushTypeScope(); $$ = $1;
+                                         only_in_strict_mode(_p); }
+;
+
+sm_typeargs_opt: /* -> <bar<baz>> */
+    '<' sm_type_list_gt                { only_in_strict_mode(_p); $$ = $2; }
+  |                                    { $$.reset(); }
+;
+
+/* this is just  sm_type_list '>'  with a little hack to avoid adding more lexer state */
+sm_type_list_gt:
+    T_STRING '<' sm_type_list T_SR
+  | sm_type '>'
+  | sm_type ',' sm_type_list_gt
+;
+
+sm_type_list:
+    sm_type
+  | sm_type ',' sm_type_list
+;
+
+sm_opt_return_type:
+                                       { $$.reset(); }
+  | ':' sm_type                        { only_in_strict_mode(_p); $$ = $2; }
+;
+
+sm_typevar_list:
+    T_STRING ',' sm_typevar_list       { _p->addTypeVar($1.text()); }
+ |  T_STRING                           { _p->addTypeVar($1.text()); }
+ |  T_STRING T_AS T_STRING ','
+    sm_typevar_list                    { _p->addTypeVar($1.text()); }
+ |  T_STRING T_AS T_STRING             { _p->addTypeVar($1.text()); }
+
+;
+
+/* extends non_empty_type_decl with some more types */
+sm_type:
+    /* double-optional types will be rejected by the typechecker; we
+     * already allow plenty of nonsense types anyway */
+    '?' sm_type                        { only_in_strict_mode(_p); $$.reset(); }
+  | '@' sm_type                        { only_in_strict_mode(_p); $$.reset(); }
+  | T_STRING sm_typeargs_opt           { $$ = $1;
+                                         /* if the type annotation is a bound
+                                            typevar we have to strip it */
+                                         if (_p->scanner().isStrictMode() &&
+                                             (_p->isTypeVar($$.text()) ||
+                                              !$$.text().compare("mixed") ||
+                                              !$$.text().compare("this")
+                                             )) {
+                                           $$.reset();
+                                         }
+                                       }
+  | T_ARRAY                            { $$.setText("array"); }
+  | T_XHP_LABEL                        { $1.xhpLabel(); $$ = $1; }
+  | '(' T_FUNCTION '(' sm_type_list ')' ':' sm_type ')'
+                                       { only_in_strict_mode(_p); $$.reset(); }
+  | '(' T_FUNCTION sm_cast_fix ':' sm_type ')'
+                                       { only_in_strict_mode(_p); $$.reset(); }
+  | '(' sm_type ',' sm_type_list ')'   { only_in_strict_mode(_p); $$.setText("array"); }
+;
+
+/* required, because (int) gets lexed as T_INT_CAST */
+sm_cast_fix:
+  T_BOOL_CAST                          { $$ = 1;}
+| T_INT_CAST                           { $$ = 1;}
+| T_DOUBLE_CAST                        { $$ = 1;}
+| T_ARRAY_CAST                         { $$ = 1;}
+| T_STRING_CAST                        { $$ = 1;}
+
+sm_type_opt:
+    sm_type                            { $$ = $1; }
+  |                                    { $$.reset(); }
+;
+
 %%
-bool Parser::parse() {
+bool Parser::parseImpl() {
   return yyparse(this) == 0;
 }

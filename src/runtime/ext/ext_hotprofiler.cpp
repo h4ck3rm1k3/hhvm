@@ -21,7 +21,9 @@
 #include <runtime/base/zend/zend_math.h>
 #include <runtime/base/server/server_stats.h>
 #include <runtime/base/ini_setting.h>
+#include <runtime/vm/event_hook.h>
 #include <util/alloc.h>
+#include <util/vdso.h>
 
 #ifdef __FreeBSD__
 # include <sys/resource.h>
@@ -303,14 +305,23 @@ tv_to_cycles(const struct timeval& tv, int64 MHz)
 }
 
 static inline uint64
-to_usec(int64 cycles, int64 MHz)
+to_usec(int64 cycles, int64 MHz, bool cpu_time = false)
 {
+  static int64 vdso_usable =
+    Util::Vdso::ClockGetTimeNS(CLOCK_THREAD_CPUTIME_ID);
+
+  if (cpu_time && vdso_usable >= 0)
+    return cycles / 1000;
   return (cycles + MHz/2) / MHz;
 }
 
 static esyscall vtsc_syscall("vtsc");
 
 static inline uint64 vtsc(int64 MHz) {
+  int64 rval = Util::Vdso::ClockGetTimeNS(CLOCK_THREAD_CPUTIME_ID);
+  if (rval >= 0) {
+    return rval;
+  }
   if (vtsc_syscall.num > 0) {
     return syscall(vtsc_syscall.num);
   }
@@ -320,7 +331,7 @@ static inline uint64 vtsc(int64 MHz) {
     tv_to_cycles(usage.ru_utime, MHz) + tv_to_cycles(usage.ru_stime, MHz);
 }
 
-#ifndef NO_JEMALLOC
+#ifdef USE_JEMALLOC
 
 #define JEMALLOC_STAT_MIB_LEN 2
 size_t mallctl_mib_len = JEMALLOC_STAT_MIB_LEN;
@@ -354,7 +365,7 @@ mallctl_mib_init()
 uint64
 get_allocs()
 {
-#ifndef NO_JEMALLOC
+#ifdef USE_JEMALLOC
   if (mallctl) {
     if (!mallctl_alloc_mib) {
       if (!mallctl_mib_init()) {
@@ -370,7 +381,7 @@ get_allocs()
     return stat;
   }
 #endif
-#ifndef NO_TCMALLOC
+#ifdef USE_TCMALLOC
   if (MallocExtensionInstance) {
     size_t stat;
     MallocExtensionInstance()->GetNumericProperty(
@@ -384,7 +395,7 @@ get_allocs()
 uint64
 get_frees()
 {
-#ifndef NO_JEMALLOC
+#ifdef USE_JEMALLOC
   if (mallctl) {
     if (!mallctl_free_mib) {
       if (!mallctl_mib_init()) {
@@ -400,7 +411,7 @@ get_frees()
     return stat;
   }
 #endif
-#ifndef NO_TCMALLOC
+#ifdef USE_TCMALLOC
   if (MallocExtensionInstance) {
     size_t stat;
     MallocExtensionInstance()->GetNumericProperty(
@@ -496,7 +507,7 @@ enum Flag {
   TrackCPU              = 0x2,
   TrackMemory           = 0x4,
   TrackVtsc             = 0x8,
-  Trace                 = 0x10,
+  XhpTrace              = 0x10,
   MeasureXhprofDisable  = 0x20,
   GetTrace              = 0x40,
   TrackMalloc           = 0x80,
@@ -568,7 +579,7 @@ public:
     arr.set("ct",  counts.count);
     arr.set("wt",  to_usec(counts.wall_time, MHz));
     if (flags & TrackCPU) {
-      arr.set("cpu", to_usec(counts.cpu, MHz));
+      arr.set("cpu", to_usec(counts.cpu, MHz, true));
     }
     if (flags & TrackMemory) {
       arr.set("mu",  counts.memory);
@@ -706,7 +717,7 @@ private:
     int64 tsc;
     int64 vtsc;
   };
-  typedef __gnu_cxx::hash_map<std::string, CountMap, string_hash> StatsMap;
+  typedef hphp_hash_map<std::string, CountMap, string_hash> StatsMap;
   StatsMap m_stats; // outcome
 
 public:
@@ -750,7 +761,7 @@ private:
       snprintf(buf, sizeof(buf),
                ",\"ct\": %lld,\"wt\": %lld,\"ut\": %lld,\"st\": 0",
                counts.count, to_usec(counts.tsc, m_MHz),
-               to_usec(counts.vtsc, m_MHz));
+               to_usec(counts.vtsc, m_MHz, true));
       print(buf);
 
       print("},\n");
@@ -774,7 +785,7 @@ private:
     int64 memory;
     int64 peak_memory;
   };
-  typedef __gnu_cxx::hash_map<std::string, CountMap, string_hash> StatsMap;
+  typedef hphp_hash_map<std::string, CountMap, string_hash> StatsMap;
   StatsMap m_stats; // outcome
 
 public:
@@ -791,7 +802,7 @@ public:
     }
 
     if (m_flags & TrackMemory) {
-      MemoryManager *mm = MemoryManager::TheMemoryManager().getNoCheck();
+      MemoryManager *mm = MemoryManager::TheMemoryManager();
       const MemoryUsageStats &stats = mm->getStats(true);
       m_stack->m_mu_start  = stats.usage;
       m_stack->m_pmu_start = stats.peakUsage;
@@ -813,7 +824,7 @@ public:
     }
 
     if (m_flags & TrackMemory) {
-      MemoryManager *mm = MemoryManager::TheMemoryManager().getNoCheck();
+      MemoryManager *mm = MemoryManager::TheMemoryManager();
       const MemoryUsageStats &stats = mm->getStats(true);
       int64 mu_end = stats.usage;
       int64 pmu_end = stats.peakUsage;
@@ -832,8 +843,6 @@ public:
 private:
   uint32 m_flags;
 };
-
-using namespace std;
 
 template <class TraceIt, class Stats>
 class walkTraceClass {
@@ -868,7 +877,7 @@ public:
       arc_buff_len *= 2;
       arc_buff = (char *)realloc(arc_buff, arc_buff_len);
       if (arc_buff == NULL) {
-        throw bad_alloc();
+        throw std::bad_alloc();
       }
     }
   }
@@ -893,7 +902,7 @@ public:
     memcpy(cp, caller.trace->symbol.ptr, caller.len);
     cp += caller.len;
     if (caller.level >= 1) {
-      pair<char *, int>& lvl = recursion[caller.level];
+      std::pair<char *, int>& lvl = recursion[caller.level];
       memcpy(cp, lvl.first, lvl.second);
       cp += lvl.second;
     }
@@ -902,7 +911,7 @@ public:
     memcpy(cp, callee.trace->symbol.ptr, callee.len);
     cp += callee.len;
     if (callee.level >= 1) {
-      pair<char *, int>& lvl = recursion[callee.level];
+      std::pair<char *, int>& lvl = recursion[callee.level];
       memcpy(cp, lvl.first, lvl.second);
       cp += lvl.second;
     }
@@ -912,12 +921,12 @@ public:
   }
 
   void walk(TraceIt begin, TraceIt end, Stats& stats,
-            map<const char *, unsigned> &functionLevel)
+            std::map<const char *, unsigned> &functionLevel)
   {
     if (begin == end) {
       return;
     }
-    recursion.push_back(make_pair((char *)NULL, 0));
+    recursion.push_back(std::make_pair((char *)NULL, 0));
     while (begin != end && !begin->symbol.ptr) {
       ++begin;
     }
@@ -927,7 +936,8 @@ public:
         if (level >= recursion.size()) {
           char *level_string = new char[8];
           sprintf(level_string, "@%u", level);
-          recursion.push_back(make_pair(level_string, strlen(level_string)));
+          recursion.push_back(std::make_pair(level_string,
+            strlen(level_string)));
         }
         Frame fr;
         fr.trace = begin;
@@ -1068,7 +1078,7 @@ public:
     int64 count;
     CountMap() : count(0)  { clear(); }
   };
-  typedef __gnu_cxx::hash_map<std::string, CountMap, string_hash> StatsMap;
+  typedef hphp_hash_map<std::string, CountMap, string_hash> StatsMap;
   StatsMap m_stats; // outcome
 
   TraceProfiler(int flags) : Profiler(), nTrace(0),
@@ -1124,7 +1134,7 @@ public:
       te.cpu = vtsc(m_MHz);
     }
     if (m_flags & TrackMemory) {
-      MemoryManager *mm = MemoryManager::TheMemoryManager().getNoCheck();
+      MemoryManager *mm = MemoryManager::TheMemoryManager();
       const MemoryUsageStats &stats = mm->getStats(true);
       te.memory = stats.usage;
       te.peak_memory = stats.peakUsage;
@@ -1152,7 +1162,7 @@ public:
   }
 
   virtual void writeStats(Array &ret) {
-    map<const char *, unsigned>fmap;
+    std::map<const char *, unsigned>fmap;
     TraceData my_begin;
     collectStats(my_begin);
     walkTrace(s_trace, s_trace + nTrace, m_stats, fmap);
@@ -1287,9 +1297,10 @@ public:
 
     int output_length;
     char *output = 0;
+    String s;
 
     if (sscanf(input, xhprof_trace_header, &output_length) != 1) {
-      return String("", 0, AttachLiteral);
+      return empty_string;
     }
     const char *zipped_begin;
     if (!(zipped_begin = strchr(input, '\n'))
@@ -1311,7 +1322,8 @@ public:
       goto error2_out;
     }
 
-    output = (char *)malloc(output_length);
+    s = String(output_length, ReserveString);
+    output = s.mutableSlice().ptr;
 
     strm.avail_in = input_length - (zipped_begin - input);
     strm.next_in = (Bytef*)zipped_begin;
@@ -1328,12 +1340,12 @@ public:
     }
     inflateEnd(&strm);
 
-    return String(output, output_length, AttachString);
+    return s.setSize(output_length);
   error_out:
     free(output);
     inflateEnd(&strm);
   error2_out:
-    return String("", 0, AttachLiteral);
+    return empty_string;
   }
 
 
@@ -1353,8 +1365,8 @@ pthread_mutex_t TraceProfiler::s_in_use = PTHREAD_MUTEX_INITIALIZER;
  */
 class SampleProfiler : public Profiler {
 private:
-  typedef __gnu_cxx::hash_map<std::string, int64, string_hash> CountMap;
-  typedef __gnu_cxx::hash_map<std::string, CountMap, string_hash> StatsMap;
+  typedef hphp_hash_map<std::string, int64, string_hash> CountMap;
+  typedef hphp_hash_map<std::string, CountMap, string_hash> StatsMap;
   StatsMap m_stats; // outcome
 
 public:
@@ -1491,6 +1503,9 @@ public:
     if (!RuntimeOption::EnableHotProfiler) {
       return;
     }
+    if (hhvm) {
+      HPHP::VM::EventHook::Enable();
+    }
     if (m_profiler == NULL) {
       switch (level) {
       case Simple:
@@ -1591,6 +1606,24 @@ Variant f_phprof_disable() {
 #endif
 }
 
+void f_fb_setprofile(CVarRef callback) {
+  if (!hhvm) {
+    return;
+  }
+#ifdef HOTPROFILER
+  if (ThreadInfo::s_threadInfo->m_profiler != NULL) {
+    // phpprof is enabled, don't let PHP code override it
+    return;
+  }
+#endif
+  g_vmContext->m_setprofileCallback = callback;
+  if (callback.isNull()) {
+    HPHP::VM::EventHook::Disable();
+  } else {
+    HPHP::VM::EventHook::Enable();
+  }
+}
+
 void f_xhprof_frame_begin(CStrRef name) {
 #ifdef HOTPROFILER
   Profiler *prof = ThreadInfo::s_threadInfo->m_profiler;
@@ -1613,12 +1646,14 @@ void f_xhprof_frame_end() {
 void f_xhprof_enable(int flags/* = 0 */,
                      CArrRef args /* = null_array */) {
 #ifdef HOTPROFILER
-  if (vtsc_syscall.num <= 0) {
-    flags &= ~TrackVtsc; }
+  if (vtsc_syscall.num <= 0 &&
+      Util::Vdso::ClockGetTimeNS(CLOCK_THREAD_CPUTIME_ID) == -1) {
+    flags &= ~TrackVtsc;
+  }
   if (flags & TrackVtsc) {
     flags |= TrackCPU;
   }
-  if (flags & Trace) {
+  if (flags & XhpTrace) {
     s_factory->start(ProfilerFactory::Trace, flags);
   } else {
     s_factory->start(ProfilerFactory::Hierarchical, flags);
@@ -1693,7 +1728,7 @@ Variant f_xhprof_run_trace(CStrRef packedTrace, int flags) {
     }
   }
 
-  map<const char *, unsigned>fmap;
+  std::map<const char *, unsigned>fmap;
   Array result;
   TraceProfiler::StatsMap stats;
   walkTrace(&*begin, &*end, stats, fmap);
@@ -1710,7 +1745,7 @@ const int64 k_XHPROF_FLAGS_NO_BUILTINS = TrackBuiltins;
 const int64 k_XHPROF_FLAGS_CPU = TrackCPU;
 const int64 k_XHPROF_FLAGS_MEMORY = TrackMemory;
 const int64 k_XHPROF_FLAGS_VTSC = TrackVtsc;
-const int64 k_XHPROF_FLAGS_TRACE = Trace;
+const int64 k_XHPROF_FLAGS_TRACE = XhpTrace;
 const int64 k_XHPROF_FLAGS_MEASURE_XHPROF_DISABLE = MeasureXhprofDisable;
 const int64 k_XHPROF_FLAGS_GET_TRACE = GetTrace;
 const int64 k_XHPROF_FLAGS_MALLOC = TrackMalloc;

@@ -34,13 +34,13 @@ namespace HPHP {
 /**
  * Invoking an arbitrary user-defined function.
  */
-Variant invoke(const char *function, CArrRef params, int64 hash = -1,
+Variant invoke(const char *function, CArrRef params, strhash_t hash = -1,
     bool tryInterp = true, bool fatal = true);
 
 /**
  * Invoking an arbitrary system function. This is the fallback for invoke.
  */
-Variant invoke_builtin(const char *s, const Array &params, int64 hash,
+Variant invoke_builtin(const char *s, const Array &params, strhash_t hash,
     bool fatal);
 
 /**
@@ -56,9 +56,7 @@ extern const ObjectStaticCallbacks *
  * Getting a static property
  */
 extern Variant get_static_property(CStrRef s, const char *prop);
-extern Variant get_builtin_static_property(CStrRef s, const char *prop);
 extern Variant *get_static_property_lv(CStrRef s, const char *prop);
-extern Variant *get_builtin_static_property_lv(CStrRef s, const char *prop);
 
 // defined in builtin_functions.cpp
 Variant &get_static_property_lval(CStrRef s, const char *prop);
@@ -67,7 +65,6 @@ Variant &get_static_property_lval(CStrRef s, const char *prop);
  * Getting the init value of a class variable
  */
 extern Variant get_class_var_init(CStrRef s, const char *var);
-extern Variant get_builtin_class_var_init(CStrRef s, const char *var);
 
 /**
  * Getting a constant
@@ -86,21 +83,18 @@ extern ConstantType check_constant(CStrRef name);
  * Getting a class constant
  */
 extern Variant get_class_constant(CStrRef s, const char *prop,
-                                  bool fatal = true);
-extern Variant get_builtin_class_constant(CStrRef s, const char *prop,
-                                          bool fatal = true);
+                                  int fatal = true);
 
 /**
  * Getting function info
  */
 extern bool get_call_info(const CallInfo *&ci, void *&extra,
-                          const char *s, int64 hash = -1);
+                          const char *s, strhash_t hash = -1);
 extern bool get_call_info_no_eval(const CallInfo *&ci, void *&extra,
-                                  const char *s, int64 hash = -1);
+                                  const char *s, strhash_t hash = -1);
 extern bool get_call_info_builtin(const CallInfo *&ci, void *&extra,
-    const char *s, int64 hash = -1);
+    const char *s, strhash_t hash = -1);
 extern bool get_call_info_static_method(MethodCallPackage &info);
-extern bool get_call_info_static_method_builtin(MethodCallPackage &info);
 
 /**
  * Class/function meta info entirely encoded here as a const char * array.
@@ -136,6 +130,7 @@ class LVariableTable;
 extern Variant invoke_file(CStrRef file, bool once = false,
                            LVariableTable* variables = NULL,
                            const char *currentDir = NULL);
+extern bool hphp_could_invoke_file(CStrRef file, void*);
 
 /**
  * Initializes constant strings and scalar arrays.
@@ -157,14 +152,9 @@ extern GlobalVariables *get_global_variables_check();
 extern void init_global_variables();
 extern void init_literal_varstrings();
 extern void free_global_variables();
+extern void free_global_variables_after_sweep();
 extern Array get_global_array_wrapper();
 extern Array get_global_state();
-
-extern void fiber_marshal_global_state
-(GlobalVariables *g1, GlobalVariables *g2, FiberReferenceMap &refMap);
-extern void fiber_unmarshal_global_state
-(GlobalVariables *g1, GlobalVariables *g2, FiberReferenceMap &refMap,
- char defstrategy, const std::vector<std::pair<std::string, char> > &resolver);
 
 /**
  * Returns a thread local global variable table pointer.

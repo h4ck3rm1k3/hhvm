@@ -29,7 +29,6 @@
 #include <boost/scoped_array.hpp>
 
 using namespace HPHP;
-using namespace std;
 
 ///////////////////////////////////////////////////////////////////////////////
 // statics
@@ -126,10 +125,19 @@ void CodeGenerator::indentBegin(const char *fmt, ...) {
   m_indentation[m_curStream]++;
 }
 
+void CodeGenerator::indentBegin() {
+  m_indentation[m_curStream]++;
+}
+
 void CodeGenerator::indentEnd(const char *fmt, ...) {
   ASSERT(m_indentation[m_curStream]);
   m_indentation[m_curStream]--;
   va_list ap; va_start(ap, fmt); print(fmt, ap); va_end(ap);
+}
+
+void CodeGenerator::indentEnd() {
+  ASSERT(m_indentation[m_curStream]);
+  m_indentation[m_curStream]--;
 }
 
 bool CodeGenerator::wrapExpressionBegin() {
@@ -434,7 +442,7 @@ void CodeGenerator::printSubstring(const char *start, int length) {
   const int BUF_LEN = 0x100;
   char buf[BUF_LEN];
   while (length > 0) {
-    int curLength = min(length, BUF_LEN - 1);
+    int curLength = std::min(length, BUF_LEN - 1);
     memcpy(buf, start, curLength);
     buf[curLength] = '\0';
     *m_out << buf;
@@ -492,7 +500,7 @@ void CodeGenerator::pushBreakScope(int labelId,
                                    bool loopCounter /* = true */) {
   m_breakScopes.push_back(labelId);
   if (loopCounter) {
-    printf("LOOP_COUNTER(%d);\n", labelId & ~BreakScopeBitMask);
+    printf("LOOP_COUNTER(%d);\n", int(labelId & ~BreakScopeBitMask));
   }
 }
 
@@ -547,11 +555,12 @@ bool CodeGenerator::findLabelId(const char *name, int labelId) {
 int CodeGenerator::checkLiteralString(const std::string &str, int &index,
                                       AnalysisResultPtr ar, BlockScopePtr bs,
                                       bool scalarVariant /* = false */) {
-  if (getContext() == CodeGenerator::CppConstantsDecl ||
-      getContext() == CodeGenerator::CppClassConstantsImpl) {
-    assert(false);
-  }
+  assert(getContext() != CodeGenerator::CppConstantsDecl &&
+         getContext() != CodeGenerator::CppClassConstantsImpl);
   int stringId = ar->getLiteralStringId(str, index);
+  if (m_literalScope) {
+    bs = m_literalScope;
+  }
   if (bs && bs != ar) {
     FileScopePtr fs = bs->getContainingFile();
     if (fs) {
@@ -569,6 +578,7 @@ int CodeGenerator::checkLiteralString(const std::string &str, int &index,
       }
     }
   }
+
   return stringId;
 }
 
@@ -597,9 +607,9 @@ string CodeGenerator::printString(const string &str, AnalysisResultPtr ar,
   if (isBinary) {
     if (stringWrapper) {
       printf("String(\"%s\", %d, AttachLiteral)",
-             escaped.c_str(), str.length());
+             escaped.c_str(), (int)str.length());
     } else {
-      printf("\"%s\", %d", escaped.c_str(), str.length());
+      printf("\"%s\", %d", escaped.c_str(), (int)str.length());
     }
   } else {
     printf("\"%s\"", escaped.c_str());
@@ -614,7 +624,7 @@ string CodeGenerator::printString(const std::string &str, AnalysisResultPtr ar,
 }
 
 void CodeGenerator::beginHoistedClasses() {
-  m_hoistedClasses = new set<string>();
+  m_hoistedClasses = new std::set<string,stdltistr>();
   m_collectHoistedClasses = true;
 }
 
@@ -641,4 +651,11 @@ bool CodeGenerator::checkHoistedClass(const string &cls) {
     addHoistedClass(cls);
   }
   return false;
+}
+
+int CodeGenerator::ClassScopeCompare::cmp(const ClassScopeRawPtr &p1,
+                                          const ClassScopeRawPtr &p2) const {
+  int d = p1->getRedeclaringId() - p2->getRedeclaringId();
+  if (d) return d;
+  return strcasecmp(p1->getName().c_str(), p2->getName().c_str());
 }

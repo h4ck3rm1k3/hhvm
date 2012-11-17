@@ -36,7 +36,7 @@
 #include <runtime/base/execution_context.h>
 
 using namespace HPHP;
-using namespace std;
+using std::set;
 
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -173,7 +173,7 @@ FileCachePtr Package::getFileCache() {
     }
   }
 
-  for (map<string,string>::const_iterator
+  for (std::map<string,string>::const_iterator
          iter = m_discoveredStaticFiles.begin();
        iter != m_discoveredStaticFiles.end(); ++iter) {
     const char *file = iter->first.c_str();
@@ -206,6 +206,10 @@ public:
     } catch (Exception &e) {
       Logger::Error("%s", e.getMessage().c_str());
       ret = false;
+    } catch (...) {
+      Logger::Error("Fatal: An unexpected exception was thrown");
+      m_ret = false;
+      return;
     }
     if (!ret && job.second) {
       Logger::Error("Fatal: Unable to stat/parse %s", job.first);
@@ -221,7 +225,7 @@ void Package::addSourceFile(const char *fileName, bool check /* = false */) {
     if (inserted && m_dispatcher) {
       ((JobQueueDispatcher<ParserWorker::JobType,
         ParserWorker>*)m_dispatcher)->enqueue(
-          make_pair(m_files.add(fileName), check));
+          std::make_pair(m_files.add(fileName), check));
     }
   }
 }
@@ -238,7 +242,7 @@ bool Package::parse(bool check) {
   if (threadCount <= 0) threadCount = 1;
 
   JobQueueDispatcher<ParserWorker::JobType, ParserWorker>
-    dispatcher(threadCount, true, 0, this);
+    dispatcher(threadCount, true, 0, false, this);
 
   m_dispatcher = &dispatcher;
 
@@ -294,18 +298,9 @@ bool Package::parseImpl(const char *fileName) {
   int lines = 0;
   try {
     Logger::Verbose("parsing %s ...", fullPath.c_str());
-    Scanner scanner(fullPath.c_str(), Option::ScannerType);
+    Scanner scanner(fullPath.c_str(), Option::ScannerType, hhvm);
     Compiler::Parser parser(scanner, fileName, m_ar, sb.st_size);
-    try {
-      if (!parser.parse()) {
-        throw Exception("Unable to parse file: %s %s", fullPath.c_str(),
-                        parser.getMessage().c_str());
-      }
-    } catch (...) {
-      parser.failed();
-      throw;
-    }
-
+    parser.parse();
     lines = parser.line1();
   } catch (FileOpenException &e) {
     Logger::Error("%s", e.getMessage().c_str());
@@ -332,7 +327,7 @@ bool Package::parseImpl(const char *fileName) {
 ///////////////////////////////////////////////////////////////////////////////
 
 void Package::saveStatsToFile(const char *filename, int totalSeconds) const {
-  ofstream f(filename);
+  std::ofstream f(filename);
   if (f) {
     JSON::CodeError::OutputStream o(f, m_ar);
     JSON::CodeError::MapStream ms(o);
@@ -375,7 +370,7 @@ int Package::saveStatsToDB(ServerDataPtr server, int totalSeconds,
   std::map<std::string, int> counts;
   SymbolTable::CountTypes(counts);
   m_ar->countReturnTypes(counts);
-  ostringstream sout;
+  std::ostringstream sout;
   JSON::CodeError::OutputStream o(sout, m_ar);
   o << counts;
 

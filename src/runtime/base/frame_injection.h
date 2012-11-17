@@ -20,11 +20,42 @@
 #include <util/thread_local.h>
 #include <runtime/base/types.h>
 #include <runtime/base/complex_types.h>
+#include <runtime/base/execution_context.h>
 
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
 
 class VariableEnvironment;
+
+// The FrameInjectionVM class is used instead of real FrameInjection
+// classes (see macros.h) for the few remaining cases where a
+// FrameInjection object is needed for calling methods. All of the
+// methods just not_reached() but they are needed for successful
+// compilation without even more #ifdefs.
+class FrameInjectionVM {
+ public:
+  FrameInjectionVM () {}
+
+  ObjectData *getThis() const {
+    not_reached();
+  }
+
+  ObjectData *getThisForArrow() {
+    not_reached();
+  }
+
+  void setLine(int n) {
+    not_reached();
+  }
+
+  void setStaticClassName(CStrRef cls) {
+    not_reached();
+  }
+
+  ThreadInfo* getThreadInfo() const {
+    not_reached();
+  }
+};
 
 class FrameInjection {
 public:
@@ -32,13 +63,12 @@ public:
     PseudoMain      =  1 << 0,
     BuiltinFunction =  1 << 1,
     BreakPointHit   =  1 << 2,
-    EvalFrame       =  1 << 3,
-    Function        =  1 << 4,
-    StaticMethod    =  1 << 5,
-    ObjectMethod    =  1 << 6,
-    ParserFrame     =  1 << 7
- };
+    Function        =  1 << 3,
+    StaticMethod    =  1 << 4,
+    ObjectMethod    =  1 << 5
+  };
 
+  static ObjectData *GetObjectV(const FrameInjection *fi);
   static CStrRef GetClassName(bool skip = false);
   static CStrRef GetParentClassName(bool skip = false);
   static ObjectData *GetThis(bool skip = false);
@@ -46,12 +76,12 @@ public:
   static Array GetBacktrace(bool skip = false, bool withSelf = false,
                             bool withThis = true);
   static Array GetCallerInfo(bool skip = false);
-  static Eval::VariableEnvironment *GetVariableEnvironment(bool skip = false);
   static int GetLine(bool skip = false);
 
   // what does "static::" resolve to?
   static CStrRef GetStaticClassName(ThreadInfo *info);
   static const String *SetStaticClassName(ThreadInfo *info, CStrRef cls) {
+    const_assert(!hhvm);
     ASSERT(info);
     FrameInjection *t = info->m_top;
     if (t) {
@@ -62,6 +92,7 @@ public:
     return NULL;
   }
   static void ResetStaticClassName(ThreadInfo *info) {
+    const_assert(!hhvm);
     ASSERT(info);
     FrameInjection *t = info->m_top;
     if (t) t->m_staticClass = NULL;
@@ -91,6 +122,7 @@ protected:
     : m_name(name),
       m_staticClass(NULL),
       m_line(0), m_flags(fs) {
+    const_assert(!hhvm);
     m_info = ThreadInfo::s_threadInfo.getNoCheck();
     initCommon();
     // NOTE: hot profiler needs to be called by subclasses
@@ -120,7 +152,9 @@ public:
    * Simple accessors
    */
   CStrRef getClassName() const;
-  ObjectData *getObjectV() const;
+  ObjectData *getObjectV() const {
+    return GetObjectV(this);
+  }
   const char *getFunction() const { return m_name;}
   FrameInjection *getPrev() const { return m_prev;}
   int getFlags() const { return m_flags;}
@@ -129,8 +163,6 @@ public:
   void setBreakPointHit() { m_flags |= BreakPointHit;}
   ThreadInfo* getThreadInfo() const { return m_info;}
 
-  bool isEvalFrame() const { return m_flags & EvalFrame; }
-  bool isParserFrame() const { return m_flags & ParserFrame; }
   bool isFunctionFrame() const { return m_flags & Function; }
   bool isStaticMethodFrame() const { return m_flags & StaticMethod; }
   bool isObjectMethodFrame() const { return m_flags & ObjectMethod; }
@@ -140,7 +172,7 @@ public:
   void resetStaticClassName() { m_staticClass = NULL; }
 
   /**
-   * Complex accessors. EvalFrameInjection overwrites these.
+   * Complex accessors.
    */
   String getFileName();
   Array getArgs();

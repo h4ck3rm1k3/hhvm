@@ -25,6 +25,8 @@
 #include <runtime/base/macros.h>
 #include <runtime/base/memory/memory_manager.h>
 
+#include <boost/static_assert.hpp>
+
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
 // forward declarations of all data types
@@ -43,6 +45,7 @@ class Object;
 template<typename T> class SmartObject;
 class Variant;
 class VarNR;
+class RefData;
 typedef Variant Numeric;
 typedef Variant Primitive;
 typedef Variant PlusOperand;
@@ -52,19 +55,29 @@ typedef Variant Sequence;
  * Macros related to Variant that are needed by StringData, ObjectData,
  * and ArrayData.
  */
-extern const Variant &null_variant;
-extern const VarNR &null_varNR;
-extern const VarNR &true_varNR;
-extern const VarNR &false_varNR;
-extern const VarNR &INF_varNR;
-extern const VarNR &NEGINF_varNR;
-extern const VarNR &NAN_varNR;
+extern const Variant null_variant;
+extern const Variant init_null_variant;
+extern const VarNR null_varNR;
+extern const VarNR true_varNR;
+extern const VarNR false_varNR;
+extern const VarNR INF_varNR;
+extern const VarNR NEGINF_varNR;
+extern const VarNR NAN_varNR;
 extern const String null_string;
 extern const Array null_array;
-#if defined(__GNUC__) && defined(WORDSIZE_IS_64)
-#define FAST_REFCOUNT_FOR_VARIANT
-#define FAST_REFCOUNT_OFFSET (sizeof(void*))
-#endif
+
+/*
+ * All TypedValue-compatible types have their reference count field at
+ * the same offset in the object.
+ *
+ * This offset assumes there will be no padding after the initial
+ * pointer member in some of these types, and that the object/array
+ * vtable is implemented with a single pointer at the front of the
+ * object.  All this should be true pretty much anywhere you might
+ * want to use hphp (if it's not, you'll hit compile-time assertions
+ * in the relevant classes and may have to fiddle with this).
+ */
+const size_t FAST_REFCOUNT_OFFSET = sizeof(void*);
 
 /**
  * These are underlying data structures for the above complex data types. Since
@@ -93,7 +106,6 @@ struct FullPos;
 
 class VariableSerializer;
 class VariableUnserializer;
-class FiberReferenceMap;
 
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -113,41 +125,112 @@ class FiberReferenceMap;
  */
 
 enum DataType {
+  // Self and Parent are defined here for use by class TypeConstraint.
+  // KindOfSelf/Parent are not used by TypedValue
+  KindOfSelf             = -9,
+  KindOfParent           = -8,
+
+  MinDataType            = -7,
+
+  // Values below zero are not PHP values, but runtime-internal.
+  KindOfAny              = -7,
+  KindOfUnboxedUncounted = -6,
+  KindOfUnboxedCounted   = -5,
+  KindOfBoxedUncounted   = -4,
+  KindOfBoxedCounted     = -3,
+
+  KindOfClass            = -2,
+  KindOfInvalid          = -1,
+  KindOfUnknown          = KindOfInvalid,
+
   /**
-   * Beware if you change the order, as we may have a few type checks in the
-   * code that depend on the order.
+   * Beware if you change the order, as we may have a few type checks
+   * in the code that depend on the order.  Also beware of adding to
+   * the number of bits needed to represent this.  (Known dependency
+   * in unwind-x64.h.)
    */
-  KindOfUninit  = 0,
-  KindOfNull    = 1,
-  KindOfBoolean = 2,
-  KindOfInt32   = 3,
-  KindOfInt64   = 4,
-  KindOfDouble  = 5,
-  KindOfStaticString  = 6,
-  KindOfString  = 7,
-  KindOfArray   = 8,
-  KindOfObject  = 9,
-  KindOfVariant = 10,
+  KindOfUninit           = 0,
+  KindOfNull             = 1,
+  KindOfBoolean          = 2,
+  KindOfInt64            = 3,
+  KindOfDouble           = 4,
 
-  MaxNumDataTypes = 11, // marker, not a valid type
+  // Note: KindOfStringBit must be set in KindOfStaticString and KindOfString,
+  //       and it must be 0 in any other real DataType.
+  KindOfStringBit        = 8,
 
-  MaxDataType   = 0x7fffffff // Allow KindOf* > 11 in HphpArray.
+  KindOfStaticString     = 14,
+  KindOfString           = 15,
+
+  KindOfArray            = 16,
+  KindOfObject           = 17,
+  KindOfRef              = 18,
+  KindOfIndirect         = 19,
+
+  MaxNumDataTypes        = 20, // marker, not a valid type
+
+
+  MaxDataType            = 0x7fffffff // Allow KindOf* > 11 in HphpArray.
 };
+BOOST_STATIC_ASSERT((sizeof(DataType) == 4));
+
+BOOST_STATIC_ASSERT(KindOfString       & KindOfStringBit);
+BOOST_STATIC_ASSERT(KindOfStaticString & KindOfStringBit);
+BOOST_STATIC_ASSERT(!(KindOfUninit     & KindOfStringBit));
+BOOST_STATIC_ASSERT(!(KindOfNull       & KindOfStringBit));
+BOOST_STATIC_ASSERT(!(KindOfBoolean    & KindOfStringBit));
+BOOST_STATIC_ASSERT(!(KindOfInt64      & KindOfStringBit));
+BOOST_STATIC_ASSERT(!(KindOfDouble     & KindOfStringBit));
+BOOST_STATIC_ASSERT(!(KindOfArray      & KindOfStringBit));
+BOOST_STATIC_ASSERT(!(KindOfObject     & KindOfStringBit));
+BOOST_STATIC_ASSERT(!(KindOfRef        & KindOfStringBit));
+BOOST_STATIC_ASSERT(!(KindOfIndirect   & KindOfStringBit));
+
+const unsigned int kDataTypeMask = 31;
+BOOST_STATIC_ASSERT(MaxNumDataTypes - 1 <= kDataTypeMask);
+
+// All DataTypes greater than this value are refcounted.
+const DataType KindOfRefCountThreshold = KindOfStaticString;
+
+enum DataTypeCategory {
+  DataTypeGeneric,
+  DataTypeCountness,
+  DataTypeSpecific
+};
+
+std::string tname(DataType t);
 
 inline int getDataTypeIndex(DataType t) {
   return t;
 }
 
+// Assumption used in IS_STRING_TYPE below:
+BOOST_STATIC_ASSERT((KindOfString & ~1) == KindOfStaticString);
+
 // Helper macro for checking if a given type is refcounted
-#define IS_REFCOUNTED_TYPE(t) ((t) > KindOfStaticString)
+#define IS_REFCOUNTED_TYPE(t) ((t) > KindOfRefCountThreshold)
+// Helper macro for checking if a type is KindOfString or KindOfStaticString.
+#define IS_STRING_TYPE(t) (((t) & ~1) == KindOfStaticString)
+// Check if a type is KindOfUninit or KindOfNull
+#define IS_NULL_TYPE(t) (unsigned(t) <= 1)
+// Other type check macros
+#define IS_INT_TYPE(t) ((t) == KindOfInt64)
+#define IS_ARRAY_TYPE(t) ((t) == KindOfArray)
+#define IS_BOOL_TYPE(t) ((t) == KindOfBoolean)
+#define IS_DOUBLE_TYPE(t) ((t) == KindOfDouble)
 
-enum StringDataMode {
-  AttachLiteral, // const char * points to a literal string
-  AttachString,  // const char * points to a malloc-ed string
-  CopyString,    // make a real copy of the string
+#define IS_REAL_TYPE(t) \
+  ((t) >= KindOfUninit && (t) < MaxNumDataTypes || (t) == KindOfClass)
 
-  StringDataModeCount
+namespace Collection {
+enum Type {
+  InvalidType = 0,
+  VectorType = 1,
+  MapType = 2,
+  StableMapType = 3,
+  MaxNumTypes = 4
 };
+}
 
 /**
  * Some of these typedefs are for platform independency, including "int64".
@@ -165,7 +248,6 @@ typedef const class VRefParamValue    &VRefParam;
 typedef const class RefResultValue    &RefResult;
 typedef const class VariantStrongBind &CVarStrongBind;
 typedef const class VariantWithRefBind&CVarWithRefBind;
-typedef VRefParam                     VRefParamWrap;
 
 inline CVarStrongBind
 strongBind(CVarRef v)     { return *(VariantStrongBind*)&v; }
@@ -194,36 +276,69 @@ inline RefResult ref(CVarRef v) {
   return *(RefResultValue*)&v;
 }
 
+inline RefResult ref(Variant& v) {
+  return *(RefResultValue*)&v;
+}
+
+namespace VM {
+  class Class;
+}
+
 ///////////////////////////////////////////////////////////////////////////////
 // code injection classes
 
 class RequestInjectionData {
 public:
-  static const ssize_t MemExceededFlag = 1;
-  static const ssize_t TimedOutFlag = 2;
-  static const ssize_t SignaledFlag = 4;
+  static const ssize_t MemExceededFlag = 1 << 0;
+  static const ssize_t TimedOutFlag    = 1 << 1;
+  static const ssize_t SignaledFlag    = 1 << 2;
+  static const ssize_t EventHookFlag   = 1 << 3;
+  static const ssize_t LastFlag        = EventHookFlag;
 
   RequestInjectionData()
-    : conditionFlags(0), started(0), timeoutSeconds(-1), debugger(false),
-      debuggerIdle(0) {
+    : conditionFlags(0), surprisePage(NULL), started(0), timeoutSeconds(-1),
+      debugger(false), debuggerIdle(0), dummySandbox(false),
+      debuggerIntr(false), coverage(false) {
   }
-  
-  volatile ssize_t conditionFlags; // condition flags can indicate if a thread
-                                   // has exceeded the memory limit, timed out,
-                                   // or received a signal
+
+  inline volatile ssize_t* getConditionFlags() {
+    if (hhvm) {
+      ASSERT(cflagsPtr);
+      return cflagsPtr;
+    } else {
+      return &conditionFlags;
+    }
+  }
+
+  union {
+    volatile ssize_t conditionFlags; // condition flags can indicate if a
+                                     // thread has exceeded the memory limit,
+                                     // timed out, or received a signal
+    ssize_t* cflagsPtr;              // under hhvm, this will point to the real
+                                     // condition flags, somewhere in the
+                                     // thread's targetcache
+  };
+  void *surprisePage;              // beginning address of page to
+                                   // protect for error conditions
+  Mutex surpriseLock;              // mutex controlling access to surprisePage
 
   time_t started;      // when a request was started
   int timeoutSeconds;  // how many seconds to timeout
 
   bool debugger;       // whether there is a DebuggerProxy attached to me
   int  debuggerIdle;   // skipping this many interrupts while proxy is idle
+  bool dummySandbox;   // indicating it is from a dummy sandbox thread
+  bool debuggerIntr;   // indicating we should force interrupt for debugger
   std::stack<void *> interrupts;   // CmdInterrupts this thread's handling
+  bool coverage;       // is coverage being collected
 
   void reset();
-  
+
   void setMemExceededFlag();
   void setTimedOutFlag();
   void setSignaledFlag();
+  void setEventHookFlag();
+  void clearEventHookFlag();
   ssize_t fetchAndClearFlags();
 
   void onSessionInit();
@@ -233,6 +348,10 @@ class FrameInjection;
 class ObjectAllocatorBase;
 class Profiler;
 class GlobalVariables;
+class CodeCoverage;
+
+int object_alloc_size_to_index(size_t);
+size_t object_alloc_index_to_size(int);
 
 // implemented in runtime/base/thread_info
 DECLARE_BOOST_TYPES(Array);
@@ -251,12 +370,18 @@ public:
 public:
   static DECLARE_THREAD_LOCAL_NO_CHECK(ThreadInfo, s_threadInfo);
 
+  std::vector<ObjectAllocatorBase *> m_allocators;
   FrameInjection *m_top;
   RequestInjectionData m_reqInjectionData;
 
-  // For infinite recursion detection
-  size_t m_stacksize;
+  // For infinite recursion detection.  m_stacklimit is the lowest
+  // address the stack can grow to.
   char *m_stacklimit;
+
+  // Either null, or populated by initialization of ThreadInfo as an
+  // approximation of the highest address of the current thread's
+  // stack.
+  static __thread char* t_stackbase;
 
   // This is the amount of "slack" in stack usage checks - if the
   // stack pointer gets within this distance from the end (minus
@@ -267,6 +392,7 @@ public:
 
   // This pointer is set by ProfilerFactory
   Profiler *m_profiler;
+  CodeCoverage *m_coverage;
 
   GlobalVariables *m_globals;
   Executing m_executing;
@@ -280,40 +406,68 @@ public:
   void onSessionInit();
   void onSessionExit();
   void clearPendingException();
+  ObjectAllocatorBase* instanceSizeAllocator(size_t size) {
+    const_assert(hhvm);
+    int index = object_alloc_size_to_index(size);
+    ASSERT_NOT_IMPLEMENTED(index != -1);
+    return m_allocators[index];
+  }
+
+  ObjectAllocatorBase* instanceIdxAllocator(int index) {
+    const_assert(hhvm);
+    return m_allocators[index];
+  }
+
+  static bool valid(ThreadInfo* info);
 };
 
 extern void throw_infinite_recursion_exception();
-extern void throw_call_non_object() ATTRIBUTE_COLD __attribute__((noreturn));
+extern void throw_call_non_object() ATTRIBUTE_COLD ATTRIBUTE_NORETURN;
+
+inline void* stack_top_ptr() { // x64 specific
+  register void* rsp asm("rsp");
+  return rsp;
+}
+
+inline bool stack_in_bounds(ThreadInfo *&info) {
+  return stack_top_ptr() >= info->m_stacklimit;
+}
+
+inline bool is_stack_ptr(void* p) {
+  return p > stack_top_ptr() && ThreadInfo::t_stackbase >= p;
+}
 
 // The ThreadInfo pointer itself must be from the current stack frame.
 inline void check_recursion(ThreadInfo *&info) {
-  if ((char *)&info < info->m_stacklimit) {
+  if (!stack_in_bounds(info)) {
     throw_infinite_recursion_exception();
   }
 }
 
 // implemented in runtime/base/builtin_functions.cpp
-extern void pause_and_exit() ATTRIBUTE_COLD __attribute__((noreturn));
+extern void pause_forever() ATTRIBUTE_COLD ATTRIBUTE_NORETURN;
 extern void check_request_surprise(ThreadInfo *info) ATTRIBUTE_COLD;
 
 extern bool SegFaulting;
 
 inline void check_request_timeout(ThreadInfo *info) {
-  if (SegFaulting) pause_and_exit();
+  const_assert(!hhvm);
+  if (SegFaulting) pause_forever();
   info->m_mm->refreshStats();
   if (info->m_reqInjectionData.conditionFlags) check_request_surprise(info);
 }
 
 inline void check_request_timeout_nomemcheck(ThreadInfo *info) {
-  if (SegFaulting) pause_and_exit();
+  const_assert(!hhvm);
+  if (SegFaulting) pause_forever();
   if (info->m_reqInjectionData.conditionFlags) check_request_surprise(info);
 }
 
 void throw_pending_exception(ThreadInfo *info) ATTRIBUTE_COLD
-                                               __attribute__((noreturn));
+  ATTRIBUTE_NORETURN;
 
 void check_request_timeout_info(ThreadInfo *info, int lc);
-void check_request_timeout_ex(const FrameInjection &fi, int lc);
+void check_request_timeout_ex(int lc);
 
 // implemented in runtime/ext/ext_hotprofiler.cpp
 extern void begin_profiler_frame(Profiler *p, const char *symbol);
@@ -352,9 +506,11 @@ public:
     Error = 1,
     CheckExist = 2,
     Key = 4,
+    NoHipHop = 8,
 
     Error_Key = Error | Key,
-    CheckExist_Key = CheckExist | Key
+    CheckExist_Key = CheckExist | Key,
+    Error_NoHipHop = Error | NoHipHop,
   };
   static Type IsKey(bool s) { return s ? Key : None; }
   static Type IsError(bool e) { return e ? Error : None; }
@@ -362,6 +518,17 @@ public:
 
 #define ACCESSPARAMS_DECL AccessFlags::Type flags = AccessFlags::None
 #define ACCESSPARAMS_IMPL AccessFlags::Type flags
+
+namespace HphpBinary {
+  enum Type {
+    hphpc,
+    hphpi,
+    hhvm,
+    program,
+    test
+  };
+}
+
 ///////////////////////////////////////////////////////////////////////////////
 }
 

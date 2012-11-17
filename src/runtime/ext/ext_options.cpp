@@ -26,13 +26,12 @@
 #include <runtime/base/runtime_error.h>
 #include <runtime/base/zend/zend_functions.h>
 #include <runtime/base/zend/zend_string.h>
-#include <runtime/eval/runtime/eval_state.h>
 #include <util/process.h>
 #include <sys/utsname.h>
 #include <pwd.h>
 #include <system/gen/php/globals/constants.h>
 
-using namespace std;
+#include <runtime/vm/request_arena.h>
 
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
@@ -104,7 +103,7 @@ Variant f_assert(CVarRef assertion) {
   return null;
 }
 
-int f_dl(CStrRef library) {
+int64 f_dl(CStrRef library) {
   return 0;
 }
 
@@ -163,19 +162,19 @@ String f_set_include_path(CStrRef new_include_path) {
 }
 
 Array f_get_included_files() {
-  return Eval::RequestEvalState::GetIncludes()["included"];
+  return Array::Create();
 }
 
 Array f_inclued_get_data() {
-  return Eval::RequestEvalState::GetIncludes()["inclued"];
+  return Array::Create();
 }
 
-int f_get_magic_quotes_gpc() {
+int64 f_get_magic_quotes_gpc() {
   return RuntimeOption::EnableMagicQuotesGpc ? 1 : 0;
 }
 
-int f_get_magic_quotes_runtime() {
-  throw NotSupportedException(__func__, "not using magic quotes");
+int64 f_get_magic_quotes_runtime() {
+  return 0;
 }
 
 Array f_get_required_files() {
@@ -190,23 +189,23 @@ Variant f_getenv(CStrRef varname) {
   return false;
 }
 
-int f_getlastmod() {
+int64 f_getlastmod() {
   throw NotSupportedException(__func__, "page modified time not supported");
 }
 
-int f_getmygid() {
+int64 f_getmygid() {
   return getgid();
 }
 
-int f_getmyinode() {
+int64 f_getmyinode() {
   throw NotSupportedException(__func__, "not exposing operating system info");
 }
 
-int f_getmypid() {
+int64 f_getmypid() {
   return getpid();
 }
 
-int f_getmyuid() {
+int64 f_getmyuid() {
   return getuid();
 }
 
@@ -610,15 +609,11 @@ bool f_clock_getres(int clk_id, VRefParam sec, VRefParam nsec) {
 }
 
 bool f_clock_gettime(int clk_id, VRefParam sec, VRefParam nsec) {
-#if defined(__APPLE__)
-  throw NotSupportedException(__func__, "feature not supported on OSX");
-#else
   struct timespec ts;
-  int ret = clock_gettime(clk_id, &ts);
+  int ret = gettime(clk_id, &ts);
   sec = (int64)ts.tv_sec;
   nsec = (int64)ts.tv_nsec;
   return ret == 0;
-#endif
 }
 
 bool f_clock_settime(int clk_id, int64 sec, int64 nsec) {
@@ -656,9 +651,23 @@ String f_ini_set(CStrRef varname, CStrRef newvalue) {
   return oldvalue;
 }
 
+int64 f_memory_get_allocation() {
+  if (RuntimeOption::EnableMemoryManager) {
+    MemoryManager *mm = MemoryManager::TheMemoryManager();
+    const MemoryUsageStats &stats = mm->getStats(true);
+    int64 ret = stats.totalAlloc;
+#ifdef HHVM
+    ret -= VM::request_arena().slackEstimate() +
+           VM::varenv_arena().slackEstimate();
+#endif
+    return ret;
+  }
+  return 0;
+}
+
 int64 f_memory_get_peak_usage(bool real_usage /* = false */) {
   if (RuntimeOption::EnableMemoryManager) {
-    MemoryManager *mm = MemoryManager::TheMemoryManager().getNoCheck();
+    MemoryManager *mm = MemoryManager::TheMemoryManager();
     const MemoryUsageStats &stats = mm->getStats(true);
     return real_usage ? stats.peakUsage : stats.peakAlloc;
   }
@@ -667,9 +676,14 @@ int64 f_memory_get_peak_usage(bool real_usage /* = false */) {
 
 int64 f_memory_get_usage(bool real_usage /* = false */) {
   if (RuntimeOption::EnableMemoryManager) {
-    MemoryManager *mm = MemoryManager::TheMemoryManager().getNoCheck();
+    MemoryManager *mm = MemoryManager::TheMemoryManager();
     const MemoryUsageStats &stats = mm->getStats(true);
-    return real_usage ? stats.usage : stats.alloc;
+    int64 ret = real_usage ? stats.usage : stats.alloc;
+#ifdef HHVM
+    ret -= VM::request_arena().slackEstimate() +
+           VM::varenv_arena().slackEstimate();
+#endif
+    return ret;
   }
   return (int64)Process::GetProcessRSS(Process::GetProcessId()) * 1024 * 1024;
 }
@@ -746,6 +760,10 @@ void f_set_time_limit(int seconds) {
   TimeoutThread::DeferTimeout(seconds);
   // Just for ini_get
   g_context->setRequestTimeLimit(seconds);
+  if (RuntimeOption::clientExecutionMode() &&
+      seconds != 0) {
+    raise_warning("set_time_limit is not supported in client mode");
+  }
 }
 
 String f_sys_get_temp_dir() {
@@ -758,7 +776,7 @@ String f_zend_logo_guid() {
   throw NotSupportedException(__func__, "not zend anymore");
 }
 
-int f_zend_thread_id() {
+int64 f_zend_thread_id() {
   throw NotSupportedException(__func__, "not zend anymore");
 }
 
@@ -961,6 +979,26 @@ Variant f_version_compare(CStrRef version1, CStrRef version2,
     return compare != 0;
   }
   return null;
+}
+
+bool f_gc_enabled() {
+  return false;
+}
+
+void f_gc_enable() {
+  raise_warning("HipHop currently does not support circular reference "
+                "collection");
+}
+
+void f_gc_disable() {
+  raise_warning("HipHop currently does not support circular reference "
+                "collection");
+}
+
+int64 f_gc_collect_cycles() {
+  raise_warning("HipHop currently does not support circular reference "
+                "collection");
+  return 0;
 }
 
 ///////////////////////////////////////////////////////////////////////////////

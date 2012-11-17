@@ -210,7 +210,7 @@ DefineFunction(
     'desc'   => "This will return the length of the contents in the output buffer.",
     'flags'  =>  HasDocComment,
     'return' => array(
-      'type'   => Int32,
+      'type'   => Int64,
       'desc'   => "Returns the length of the output buffer contents or FALSE if no buffering is active.",
     ),
     'taint_observer' => array(
@@ -225,7 +225,7 @@ DefineFunction(
     'desc'   => "Returns the nesting level of the output buffering mechanism.",
     'flags'  =>  HasDocComment,
     'return' => array(
-      'type'   => Int32,
+      'type'   => Int64,
       'desc'   => "Returns the level of nested output buffering handlers or zero if output buffering is not active.",
     ),
     'taint_observer' => array(
@@ -353,33 +353,6 @@ DefineFunction(
     'return' => array(
       'type'   => Boolean,
       'desc'   => "Returns TRUE on success or FALSE on failure.",
-    ),
-    'taint_observer' => array(
-      'set_mask'   => "TAINT_BIT_NONE",
-      'clear_mask' => "TAINT_BIT_NONE",
-    ),
-  ));
-
-DefineFunction(
-  array(
-    'name'   => "hphp_log",
-    'desc'   => "Write a message to a file and keep it open afterwards, so we can continue to write to it efficiently as a log file.",
-    'flags'  =>  HasDocComment | HipHopSpecific,
-    'return' => array(
-      'type'   => Boolean,
-      'desc'   => "Returns TRUE on success or FALSE on failure.",
-    ),
-    'args'   => array(
-      array(
-        'name'   => "filename",
-        'type'   => String,
-        'desc'   => "Which file to write to.",
-      ),
-      array(
-        'name'   => "message",
-        'type'   => String,
-        'desc'   => "Message to write to the log.",
-      ),
     ),
     'taint_observer' => array(
       'set_mask'   => "TAINT_BIT_NONE",
@@ -559,6 +532,65 @@ DefineFunction(
     ),
   ));
 
+DefineFunction(
+  array(
+    'name'   => "hphp_instruction_counter",
+    'flags'  =>  NoInjection | HipHopSpecific,
+    'return' => array(
+      'type'   => Int64,
+      'desc'   => "Returns the current instruction counter value."
+    ),
+    'taint_observer' => array(
+      'set_mask'   => "TAINT_BIT_NONE",
+      'clear_mask' => "TAINT_BIT_NONE",
+    ),
+  ));
+
+DefineFunction(
+  array(
+    'name'   => "hphp_get_hardware_counters",
+    'flags'  =>  NoInjection | HipHopSpecific,
+    'return' => array(
+      'type'   => Variant,
+      'desc'   => "An array of hardware counters",
+    ),
+    'taint_observer' => array(
+      'set_mask'   => "TAINT_BIT_NONE",
+      'clear_mask' => "TAINT_BIT_NONE",
+    ),
+  ));
+
+DefineFunction(
+  array(
+    'name'   => "hphp_set_hardware_events",
+    'flags'  => NoInjection | HipHopSpecific,
+    'return' => array(
+      'type'   => Boolean,
+      'desc'   => "returns TRUE on success and FALSE on failure",
+    ),
+    'args'   => array(
+      array(
+        'name'   => "events",
+        'type'   => String,
+        'value'  => "null",
+        'desc'   => "comma separated list of hardware events",
+      ),
+    ),
+    'taint_observer' => array(
+      'set_mask'   => "TAINT_BIT_NONE",
+      'clear_mask' => "TAINT_BIT_NONE",
+    ),
+  ));
+
+DefineFunction(
+  array(
+    'name'    => "hphp_clear_hardware_events",
+    'flags'   => NoInjection | HipHopSpecific,
+    'taint_observer' => array(
+      'set_mask'   => "TAINT_BIT_NONE",
+      'clear_mask' => "TAINT_BIT_NONE",
+    ),
+  ));
 
 ///////////////////////////////////////////////////////////////////////////////
 // Classes

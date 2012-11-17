@@ -14,6 +14,8 @@
    +----------------------------------------------------------------------+
 */
 
+
+#include <runtime/base/hphp_system.h>
 #include <runtime/base/server/http_protocol.h>
 #include <runtime/base/zend/zend_url.h>
 #include <runtime/base/zend/zend_string.h>
@@ -35,7 +37,7 @@
 
 #define DEFAULT_POST_CONTENT_TYPE "application/x-www-form-urlencoded"
 
-using namespace std;
+using std::map;
 
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
@@ -48,8 +50,7 @@ static bool read_all_post_data(Transport *transport,
     do {
       int delta = 0;
       const void *extra = transport->getMorePostData(delta);
-      if (size + delta < VirtualHost::GetMaxPostSize() &&
-          RuntimeOption::AlwaysPopulateRawPostData) {
+      if (size + delta < VirtualHost::GetMaxPostSize()) {
         data = Util::buffer_append(data, size, extra, delta);
         size += delta;
       }
@@ -96,10 +97,24 @@ void HttpProtocol::PrepareSystemVariables(Transport *transport,
   // $_ENV
   process_env_variables(g->GV(_ENV));
   g->GV(_ENV).set("HPHP", 1);
-  g->GV(_ENV).set("HPHP_SERVER", 1);
+  switch (getHphpBinaryType()) {
+  case HphpBinary::hhvm:
+    g->GV(_ENV).set("HHVM", 1);
+    if (RuntimeOption::EvalJit) {
+      g->GV(_ENV).set("HHVM_JIT", 1);
+    }
+    break;
+  case HphpBinary::hphpi: g->GV(_ENV).set("HPHPI", 1); break;
+  default: break;
+  }
+
+  bool isServer = RuntimeOption::serverExecutionMode();
+  if (isServer) {
+    g->GV(_ENV).set("HPHP_SERVER", 1);
 #ifdef HOTPROFILER
-  g->GV(_ENV).set("HPHP_HOTPROFILER", 1);
+    g->GV(_ENV).set("HPHP_HOTPROFILER", 1);
 #endif
+  }
 
   Variant &request = g->GV(_REQUEST);
 
@@ -129,7 +144,10 @@ void HttpProtocol::PrepareSystemVariables(Transport *transport,
           Logger::Warning("POST Content-Length of %d bytes exceeds "
                           "the limit of %lld bytes",
                           content_length, VirtualHost::GetMaxPostSize());
-          needDelete = read_all_post_data(transport, data, size);
+          while (transport->hasMorePostData()) {
+            int delta = 0;
+            transport->getMorePostData(delta);
+          }
         } else {
           if (transport->hasMorePostData()) {
             needDelete = true;
@@ -159,14 +177,17 @@ void HttpProtocol::PrepareSystemVariables(Transport *transport,
       }
       CopyParams(request, g->GV(_POST));
       if (needDelete) {
-        if (RuntimeOption::AlwaysPopulateRawPostData) {
+        if (RuntimeOption::AlwaysPopulateRawPostData &&
+            uint32_t(size) <= StringData::MaxSize) {
           g->GV(HTTP_RAW_POST_DATA) = String((char*)data, size, AttachString);
         } else {
           free((void *)data);
         }
       } else {
         // For literal we disregard RuntimeOption::AlwaysPopulateRawPostData
-        g->GV(HTTP_RAW_POST_DATA) = String((char*)data, size, AttachLiteral);
+        if (uint32_t(size) <= StringData::MaxSize) {
+          g->GV(HTTP_RAW_POST_DATA) = String((char*)data, size, AttachLiteral);
+        }
       }
     }
   }
@@ -187,15 +208,41 @@ void HttpProtocol::PrepareSystemVariables(Transport *transport,
   // "may" exclude them; this is not what APE does, but it's harmless.
   HeaderMap headers;
   transport->getHeaders(headers);
+
+  static int bad_request_count = -1;
   for (HeaderMap::const_iterator iter = headers.begin();
        iter != headers.end(); ++iter) {
     const vector<string> &values = iter->second;
+
+    // Detect suspicious headers.  We are about to modify header names
+    // for the SERVER variable.  This means that it is possible to
+    // deliberately cause a header collision, which an attacker could
+    // use to sneak a header past a proxy that would either overwrite
+    // or filter it otherwise.  Client code should use
+    // apache_request_headers() to retrieve the original headers if
+    // they are security-critical.
+    if (RuntimeOption::LogHeaderMangle != 0) {
+      String key = "HTTP_";
+      key += StringUtil::ToUpper(iter->first).replace("-","_");
+      if (server.asArrRef().exists(key)) {
+        if (!(++bad_request_count % RuntimeOption::LogHeaderMangle)) {
+          Logger::Warning(
+            "The header %s overwrote another header which mapped to the same "
+            "key. This happens because PHP normalises - to _, ie AN_EXAMPLE "
+            "and AN-EXAMPLE are equivalent.  You should treat this as "
+            "malicious.",
+            iter->first.c_str());
+        }
+      }
+    }
+
     for (unsigned int i = 0; i < values.size(); i++) {
       String key = "HTTP_";
       key += StringUtil::ToUpper(iter->first).replace("-", "_");
       server.set(key, String(values[i]));
     }
   }
+
   string host = transport->getHeader("Host");
   String hostName(VirtualHost::GetCurrent()->serverName(host));
   string hostHeader(host);

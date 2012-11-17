@@ -32,10 +32,11 @@ void f_thrift_protocol_write_binary(CObjRef transportobj,
   int seqid,
   bool strict_write);
 
-Variant f_thrift_protocol_read_binary(
-  CObjRef transportobj,
+Variant f_thrift_protocol_read_binary(CObjRef transportobj,
   CStrRef obj_typename,
   bool strict_read);
+
+int f_thrift_protocol_set_compact_version(int version);
 
 void f_thrift_protocol_write_compact(CObjRef transportobj,
   CStrRef method_name,

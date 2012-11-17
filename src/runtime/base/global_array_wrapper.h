@@ -29,53 +29,52 @@ public:
     m_globals = (Globals*)get_global_variables();
   }
 
+  // these using directives ensure the full set of overloaded functions
+  // are visible in this class, to avoid triggering implicit conversions
+  // from a CVarRef key to int64.
+  using ArrayData::exists;
+  using ArrayData::get;
+  using ArrayData::getIndex;
+  using ArrayData::lval;
+  using ArrayData::lvalNew;
+  using ArrayData::lvalPtr;
+  using ArrayData::set;
+  using ArrayData::setRef;
+  using ArrayData::add;
+  using ArrayData::addLval;
+  using ArrayData::remove;
+
   virtual void release();
-  virtual ssize_t size() const;
+  virtual ssize_t vsize() const;
   virtual Variant getKey(ssize_t pos) const;
   virtual Variant getValue(ssize_t pos) const;
   virtual CVarRef getValueRef(ssize_t pos) const;
-  virtual bool isGlobalArrayWrapper() const;
+  virtual bool noCopyOnWrite() const;
 
-  virtual bool exists(int64   k) const;
-  virtual bool exists(litstr  k) const;
-  virtual bool exists(CStrRef k) const;
-  virtual bool exists(CVarRef k) const;
-  virtual bool idxExists(ssize_t idx) const;
+  virtual bool exists(int64 k) const;
+  virtual bool exists(const StringData* k) const;
 
-  virtual CVarRef get(int64   k, bool error = false) const;
-  virtual CVarRef get(litstr  k, bool error = false) const;
-  virtual CVarRef get(CStrRef k, bool error = false) const;
-  virtual CVarRef get(CVarRef k, bool error = false) const;
-
-  virtual void load(CVarRef k, Variant &v) const;
+  virtual CVarRef get(int64 k, bool error = false) const;
+  virtual CVarRef get(const StringData* k, bool error = false) const;
 
   virtual ssize_t getIndex(int64 k) const;
-  virtual ssize_t getIndex(litstr k) const;
-  virtual ssize_t getIndex(CStrRef k) const;
-  virtual ssize_t getIndex(CVarRef k) const;
+  virtual ssize_t getIndex(const StringData* k) const;
 
-  virtual ArrayData *lval(int64   k, Variant *&ret, bool copy,
+  virtual ArrayData *lval(int64 k, Variant *&ret, bool copy,
                           bool checkExist = false);
-  virtual ArrayData *lval(litstr  k, Variant *&ret, bool copy,
-                          bool checkExist = false);
-  virtual ArrayData *lval(CVarRef k, Variant *&ret, bool copy,
-                          bool checkExist = false);
-  virtual ArrayData *lval(CStrRef k, Variant *&ret, bool copy,
+  virtual ArrayData *lval(StringData* k, Variant *&ret, bool copy,
                           bool checkExist = false);
   virtual ArrayData *lvalNew(Variant *&ret, bool copy);
 
-  virtual ArrayData *set(int64   k, CVarRef v, bool copy);
-  virtual ArrayData *set(CStrRef k, CVarRef v, bool copy);
-  virtual ArrayData *set(CVarRef k, CVarRef v, bool copy);
-  virtual ArrayData *setRef(int64   k, CVarRef v, bool copy);
-  virtual ArrayData *setRef(CStrRef k, CVarRef v, bool copy);
-  virtual ArrayData *setRef(CVarRef k, CVarRef v, bool copy);
-  virtual ArrayData *remove(int64   k, bool copy);
-  virtual ArrayData *remove(CStrRef k, bool copy);
-  virtual ArrayData *remove(CVarRef k, bool copy);
+  virtual ArrayData *set(int64 k, CVarRef v, bool copy);
+  virtual ArrayData *set(StringData* k, CVarRef v, bool copy);
+  virtual ArrayData *setRef(int64 k, CVarRef v, bool copy);
+  virtual ArrayData *setRef(StringData* k, CVarRef v, bool copy);
+  virtual ArrayData *remove(int64 k, bool copy);
+  virtual ArrayData *remove(const StringData* k, bool copy);
 
   virtual ArrayData *copy() const;
-  virtual ArrayData *nonSmartCopy() const { assert(false); }
+  virtual ArrayData *nonSmartCopy() const { not_reached(); }
 
   virtual ArrayData *append(CVarRef v, bool copy);
   virtual ArrayData *appendRef(CVarRef v, bool copy);
@@ -103,15 +102,19 @@ public:
   virtual Variant value(ssize_t &pos) const;
   virtual Variant each();
 
-  virtual bool isHead() const;
-  virtual bool isTail() const;
-  virtual bool isInvalid() const;
-
   virtual void getFullPos(FullPos &fp);
   virtual bool setFullPos(const FullPos &fp);
 
   virtual CVarRef currentRef();
   virtual CVarRef endRef();
+
+  virtual ArrayData* escalateForSort();
+  virtual void ksort(int sort_flags, bool ascending);
+  virtual void sort(int sort_flags, bool ascending);
+  virtual void asort(int sort_flags, bool ascending);
+  virtual void uksort(CVarRef cmp_function);
+  virtual void usort(CVarRef cmp_function);
+  virtual void uasort(CVarRef cmp_function);
 
 private:
   Globals* m_globals;

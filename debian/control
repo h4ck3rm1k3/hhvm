@@ -2,13 +2,13 @@ Source: hiphop-php
 Section: unknown
 Priority: extra
 Maintainer: James Michael DuPont <JamesMikeDuPont@googlemail.com>
-Build-Depends: debhelper (>= 7), cmake, libtbb-dev, libmcrypt-dev, re2c, binutils-dev, libonig-dev, libmysqlclient15-dev, libgd-dev, libmemcache-dev, libreadline-dev, libcap-dev
+Build-Depends: debhelper (>= 7), cmake, libtbb-dev, libmcrypt-dev, re2c, binutils-dev, libonig-dev, libmysqlclient15-dev, libgd-dev, libmemcache-dev, libreadline-dev, libcap-dev, libboost-all-dev, libinotifytools0-dev, libunwind8-dev, libmemcached-dev, libevent1-dev, libevent-1.4-2, libcurl4-gnutls-dev, libelfg0-dev, libtcmalloc-minimal4, libdwarf-dev, libc-client2007e-dev 
 Standards-Version: 3.8.1
 Homepage: http://github.com/h4ck3rm1k3/hiphop-php
 
 Package: hiphop-php
 Architecture: any
-Depends: ${shlibs:Depends}, ${misc:Depends},  libtbb2, libmcrypt4, mcrypt, libonig2, bison, cmake, curl, flex, libcurl3, libgnutls-dev, libevent-1.4-2,  libevent-dev, php5-dev, libpcre3-dev
+Depends: ${shlibs:Depends}, ${misc:Depends},  libtbb2, libmcrypt4, mcrypt, libonig2, bison, cmake, curl, flex, libcurl3, libgnutls-dev, libevent-1.4-2,  libevent-dev, php5-dev, libpcre3-dev, memcached
 Description: the php to c++ compiler
  experimental debian packaging
 

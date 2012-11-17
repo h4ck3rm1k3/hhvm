@@ -28,6 +28,24 @@ endif()
 include_directories(${Boost_INCLUDE_DIRS})
 link_directories(${Boost_LIBRARY_DIRS})
 
+# inotify checks
+find_package(Libinotify)
+if (LIBINOTIFY_INCLUDE_DIR)
+	include_directories(${LIBINOTIFY_INCLUDE_DIR})
+endif()
+
+# unwind checks
+find_package(Libunwind REQUIRED)
+include_directories(${LIBUNWIND_INCLUDE_DIR})
+
+# iconv checks
+find_package(Libiconv REQUIRED)
+include_directories(${LIBICONV_INCLUDE_DIR})
+if (LIBICONV_CONST)
+  message(STATUS "Using const for input to iconv() call")
+  add_definitions("-DICONV_CONST=const")
+endif()
+
 # mysql checks
 find_package(MySQL REQUIRED)
 include_directories(${MYSQL_INCLUDE_DIR})
@@ -98,6 +116,7 @@ include_directories("${HPHP_HOME}/src/third_party/libafdt/src")
 include_directories("${HPHP_HOME}/src/third_party/libmbfl")
 include_directories("${HPHP_HOME}/src/third_party/libmbfl/mbfl")
 include_directories("${HPHP_HOME}/src/third_party/libmbfl/filter")
+include_directories("${HPHP_HOME}/src/third_party/lz4")
 
 FIND_LIBRARY(XHP_LIB xhp)
 FIND_PATH(XHP_INCLUDE_DIR xhp_preprocess.hpp)
@@ -152,16 +171,8 @@ if (USE_JEMALLOC AND NOT GOOGLE_TCMALLOC_ENABLED
 		AND NOT CMAKE_BUILD_TYPE STREQUAL Debug)
 	FIND_LIBRARY(JEMALLOC_LIB jemalloc)
 	if (JEMALLOC_LIB)
-		CHECK_LIBRARY_EXISTS(jemalloc mallctl "" HAVE_JEMALLOC_FUN)
-		if (HAVE_JEMALLOC_FUN)
-			message(STATUS "Found jemalloc: ${JEMALLOC_LIB}")
-			set(JEMALLOC_ENABLED 1)
-		else()
-			message(STATUS "Found jemalloc at ${JEMALLOC_LIB}, but unable to find its API "
-			               "(maybe the library was configured with a non-empty function prefix?)")
-		endif()
-	else()
-		message(STATUS "Can't find jemalloc")
+		message(STATUS "Found jemalloc: ${JEMALLOC_LIB}")
+		set(JEMALLOC_ENABLED 1)
 	endif()
 endif()
 
@@ -195,11 +206,11 @@ endif()
 
 # tbb libs
 find_package(TBB REQUIRED)
-if (${TBB_INTERFACE_VERSION} LESS 3016)
+if (${TBB_INTERFACE_VERSION} LESS 5005)
 	unset(TBB_FOUND CACHE)
 	unset(TBB_INCLUDE_DIRS CACHE)
 	unset(TBB_LIBRARIES CACHE)
-	message(FATAL_ERROR "TBB is too old, please install a newer version")
+	message(FATAL_ERROR "TBB is too old, please install at least 3.0(5005), preferably 4.0(6000) or higher")
 endif()
 include_directories(${TBB_INCLUDE_DIRS})
 link_directories(${TBB_LIBRARY_DIRS})
@@ -238,6 +249,12 @@ include_directories(${READLINE_INCLUDE_DIR})
 
 find_package(CClient REQUIRED)
 include_directories(${CCLIENT_INCLUDE_PATH})
+
+find_package(LibDwarf REQUIRED)
+include_directories(${LIBDWARF_INCLUDE_DIRS})
+
+find_package(LibElf REQUIRED)
+include_directories(${LIBELF_INCLUDE_DIRS})
 
 CONTAINS_STRING("${CCLIENT_INCLUDE_PATH}/utf8.h" U8T_DECOMPOSE RECENT_CCLIENT)
 if (NOT RECENT_CCLIENT)
@@ -296,6 +313,9 @@ endif()
 
 if (FREEBSD)
 	FIND_LIBRARY (EXECINFO_LIB execinfo)
+	if (NOT EXECINFO_LIB)
+		message(FATAL_ERROR "You need to install libexecinfo")
+	endif()
 endif()
 
 #find_package(BISON REQUIRED)
@@ -324,11 +344,21 @@ macro(hphp_link target)
 	endif()
 
 	target_link_libraries(${target} ${Boost_LIBRARIES})
+	target_link_libraries(${target} ${LIBUNWIND_LIBRARY})
 	target_link_libraries(${target} ${MYSQL_CLIENT_LIBS})
 	target_link_libraries(${target} ${PCRE_LIBRARY})
 	target_link_libraries(${target} ${ICU_LIBRARIES} ${ICU_I18N_LIBRARIES})
 	target_link_libraries(${target} ${LIBEVENT_LIB})
 	target_link_libraries(${target} ${CURL_LIBRARIES})
+
+if (LIBINOTIFY_LIBRARY)
+	target_link_libraries(${target} ${LIBINOTIFY_LIBRARY})
+endif()
+
+if (LIBICONV_LIBRARY)
+	target_link_libraries(${target} ${LIBICONV_LIBRARY})
+endif()
+
 
 if (LINUX)
 	target_link_libraries(${target} ${CAP_LIB})
@@ -372,6 +402,7 @@ endif()
 
 	target_link_libraries(${target} timelib)
 	target_link_libraries(${target} sqlite3)
+	target_link_libraries(${target} lz4)
 
 	if (SKIP_BUNDLED_XHP)
 		target_link_libraries(${target} ${XHP_LIB})
@@ -389,5 +420,8 @@ endif()
 	if (CCLIENT_NEEDS_PAM)
 		target_link_libraries(${target} ${PAM_LIBRARY})
 	endif()
+
+        target_link_libraries(${target} ${LIBDWARF_LIBRARIES})
+        target_link_libraries(${target} ${LIBELF_LIBRARIES})
 
 endmacro()

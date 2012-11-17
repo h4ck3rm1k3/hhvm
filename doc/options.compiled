@@ -12,6 +12,7 @@ node's purpose. Listed values are defaults, unless examples.
     AlwaysLogUnhandledExceptions = true
     RuntimeErrorReportingLevel = 8191
     Header = false
+    HeaderMangle = 0
     InjectedStackTrace = true
     NativeStackTrace = true
     MaxMessagesPerRequest = -1
@@ -39,6 +40,14 @@ injects stacktrace preparation code into every frame of functions and methods.
 InjectedStackTrace can turn on this PHP stacktrace, which sometimes is cleaner
 than the C++ stacktrace, which can be turned on and off by NativeStackTrace.
 
+- HeaderMangle
+
+This setting controls logging of potentially malicious headers.  If
+HeaderMangle is greater than 0, then HipHop will log one in every n
+requests where a header collision has occurred.  Such collisions
+almost certainly indicate a malicious attempt to set headers which are
+either set or filtered by a proxy.
+
 - MaxMessagesPerRequest
 
 Controls maximum number of messages each request can log, in case some pages
@@ -47,6 +56,7 @@ flood error logs.
     # error log settings
     UseLogFile = true
     File = filename
+    UseSyslog = false
 
     # access log settings
     AccessLogDefaultFormat = %h %l %u %t \"%r\" %>s %b
@@ -65,18 +75,6 @@ flood error logs.
     AdminLog {
       File = filename
       Format = %h %t %s %U
-    }
-
-    # enable or disable hphp_log() that can be called from PHP code
-    ApplicationLog = true
-
-    # Log aggregator logs one line per several errors, grouped by error's
-    # stacktraces. It can also save errors to a specified database.
-    Aggregator = false
-    Aggregator {
-      File = filename
-      Database = [username[:password]@]server[:port][/database]
-      SleepSeconds = 10   # polling cycle for aggregation
     }
   }
 
@@ -151,24 +149,19 @@ flood error logs.
 
     # maximum POST Content-Length
     MaxPostSize = 10MB
-    # maximum upload file size
-    UploadMaxFileSize = 10MB
     # maximum memory size for image processing
-    ImageMemoryMaxBytes = UploadMaxFileSize * 2
+    ImageMemoryMaxBytes = Upload.UploadMaxFileSize * 2
 
-    # Recommend to turn this on to avoid memory leaks and to enable warmup
-    # document features.
+    # Recommended to turn this on to avoid memory leaks and to enable the
+    # RequestInitDocument and RequestInitFunction features.
     EnableMemoryManager = false
 
     # Only for debugging memory problems. When turned on, server will report
     # SmartAllocator's usage for each thread to stdout.
     CheckMemory = false
 
-    # Recommend to turn this on for faster array operations.
-    UseZendArray = true
-    # Faster data structure for arrays of size < 8. Requires UseZendArray=true.
-    # Recommend to turn this on.
-    UseSmallArray = true
+    # Faster data structure for arrays of size < 8.  Deprecated and ignored.
+    UseSmallArray = false
 
     # If ServerName is not specified for a virtual host, use prefix + this
     # suffix to compose one. If "Pattern" was specified, matched pattern,
@@ -183,7 +176,6 @@ flood error logs.
     TakeoverFilename = filename   # for port takeover between server instances
     DefaultDocument = index.php
     StartupDocument = filename
-    WarmupDocument = filename
     RequestInitFunction = function_name
     RequestInitDocument = filename
     ThreadDocuments {
@@ -237,7 +229,6 @@ How long to wait for dangling server to respond.
     EnableEarlyFlush = true
     ForceChunkedEncoding = false
     MaxPostSize = 8  # in MB
-    EnableFileUploads = true
     LibEventSyncSend = true
     ResponseQueueCount = 0
 
@@ -325,16 +316,13 @@ through PrimeLibrary option. The loading can be done in parallel with
 LoadThread count of threads. Once loading is done, it can write to APC with
 some specified keys in CompletionKeys to tell web application about priming.
 
-      TableType = hash (default) | lfu | concurrent
-      LockType = readwritelock | mutex
-      UseLockedRefs = false
+      TableType = concurrent (default)
 
-- TableType, LockType, UseLockedRefs
+- TableType
 
-Recommend to use "concurrent", the fastest with least locking. "lfu" is
-experimental for now and it may have bugs. When "concurrent", LockType doesn't
-matter. UseLockedRefs uses mutexes than atomic numbers for APC item's reference
-counting, so it's recommended to turn off.
+Recommend to use "concurrent", the fastest with least locking, and since its
+the only implemented table type.  (The option remains for future use if we
+add other apc implementations).
 
       ExpireOnSets = false
       PurgeFrequency = 4096
@@ -371,6 +359,17 @@ These are experimental LFU settings.
     # RTTI profiling settings. Experimental.
     RTTIDirectory = /tmp/
     EnableCliRTTI = false
+
+    # Uploads
+    Upload {
+      UploadMaxFileSize = 100 # Size in MB
+      UploadTmpDir = /tmp/
+      EnableFileUploads = true
+      EnableUploadProgress = false
+      Rfc1867Freq = 262144 # 256K
+      Rfc1867Prefix = vupload_
+      Rfc1867Name = video_ptoken
+    }
   }
 
 = Virtual Hosts
@@ -466,7 +465,6 @@ These are experimental LFU settings.
       MaxRequest = 500
       MaxDuration = 120    # in seconds
       TimeoutSeconds = 30  # default to RequestTimeoutSeconds
-      WarmupDocument = filename
       RequestInitFunction = on_init
       RequestInitDocument = filename
       Password = authentication
@@ -495,7 +493,6 @@ patterns for pages to server over this port.
       Port = 0
       MaxRequest = 500
       MaxDuration = 120
-      WarmupDocument =
       RequestInitFunction =
       RequestInitDocument =
     }
@@ -755,6 +752,7 @@ users can use the same machine serving their own source files.
     WaitTimeout = -1           # in ms, -1 means "don't set"
     SlowQueryThreshold = 1000  # in ms, log slow queries as errors
     KillOnTimeout = false
+    Socket =                   # Default location to look for mysql.sock
   }
 
 - KillOnTimeout

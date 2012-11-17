@@ -28,147 +28,292 @@ namespace HPHP {
 class ArrayInit;
 
 class HphpArray : public ArrayData {
+  enum CopyMode { kSmartCopy, kNonSmartCopy };
+  enum SortFlavor { IntegerSort, StringSort, GenericSort };
 public:
   friend class ArrayInit;
 
+  // Load factor scaler.  If S is the # of elements, C is the
+  // power-of-2 capacity, and L=LoadScale, we grow when S > C-C/L.
+  // So 2 gives 0.5 load factor, 4 gives 0.75 load factor, 8 gives
+  // 0.125 load factor.  Use powers of 2 to enable shift-divide.
+  static const uint LoadScale = 4;
+
 public:
-  HphpArray(uint nSize = 0);
+  static HphpArray* GetStaticEmptyArray() {
+    return &s_theEmptyArray;
+  }
+
 private:
-  HphpArray(int,int);
+  // for copy-on-write escalation
+  HphpArray(CopyMode);
+
 public:
+  // Create an empty array with enough capacity for nSize elements.
+  HphpArray(uint nSize);
+
+  // Create and initialize an array with size elements, populated by
+  // moving (without refcounting) and reversing vals.
+  HphpArray(uint size, const TypedValue* vals); // make tuple
+
   virtual ~HphpArray();
 
-  virtual ssize_t size() const;
+  // unlike ArrayData::size(), this functions doesn't delegate
+  // to the virtual vsize() functions, so its more efficient to
+  // use this when you know you have an HphpArray.
+  ssize_t getSize() const {
+    return m_size;
+  }
 
-  virtual Variant getKey(ssize_t pos) const;
-  virtual Variant getValue(ssize_t pos) const;
-  virtual CVarRef getValueRef(ssize_t pos) const;
-  virtual bool isVectorData() const;
+  // This behaves the same as iter_begin except that it assumes
+  // this array is not empty and its not virtual.
+  ssize_t getIterBegin() const {
+    ASSERT(!empty());
+    if (LIKELY((m_data[0].data.m_type < KindOfTombstone))) {
+      return 0;
+    }
+    return nextElm(m_data, 0);
+  }
 
-  virtual ssize_t iter_begin() const;
-  virtual ssize_t iter_end() const;
-  virtual ssize_t iter_advance(ssize_t prev) const;
-  virtual ssize_t iter_rewind(ssize_t prev) const;
+  // dropContentsOnFloor twiddles the HphpArray's internal state such
+  // that the destructor will do (almost) no work. Only call it if
+  // you're 100% confident that the contents of this array are static
+  // or will be swept.
+  void dropContentsOnFloor() {
+    m_lastE = ElmIndEmpty;
+    m_data = NULL;
+  }
 
-  ssize_t iter_advance_helper(ssize_t prev) const ATTRIBUTE_COLD;
+  // override/implement ArrayData api's
 
-  virtual Variant reset();
-  virtual Variant prev();
-  virtual Variant current() const;
-  virtual Variant next();
-  virtual Variant end();
-  virtual Variant key() const;
-  virtual Variant value(ssize_t& pos) const;
-  virtual Variant each();
+  // these using directives ensure the full set of overloaded functions
+  // are visible in this class, to avoid triggering implicit conversions
+  // from a CVarRef key to int64.
+  using ArrayData::exists;
+  using ArrayData::get;
+  using ArrayData::getIndex;
+  using ArrayData::lval;
+  using ArrayData::lvalNew;
+  using ArrayData::lvalPtr;
+  using ArrayData::set;
+  using ArrayData::setRef;
+  using ArrayData::add;
+  using ArrayData::addLval;
+  using ArrayData::remove;
+  using ArrayData::nvSet;
 
-  virtual bool isHead() const;
-  virtual bool isTail() const;
-  virtual bool isInvalid() const { return m_pos == invalid_index; }
+  // implements ArrayData
+  ssize_t vsize() const;
+  Variant getKey(ssize_t pos) const;
+  Variant getValue(ssize_t pos) const;
+  CVarRef getValueRef(ssize_t pos) const;
 
-  virtual bool exists(int64   k) const;
-  virtual bool exists(litstr  k) const;
-  virtual bool exists(CStrRef k) const;
-  virtual bool exists(CVarRef k) const;
+  // overrides ArrayData
+  bool isVectorData() const;
+  ssize_t iter_begin() const;
+  ssize_t iter_end() const;
+  ssize_t iter_advance(ssize_t prev) const;
+  ssize_t iter_rewind(ssize_t prev) const;
 
-  virtual bool idxExists(ssize_t idx) const;
+  // overrides ArrayData
+  Variant reset();
+  Variant prev();
+  Variant current() const;
+  Variant next();
+  Variant end();
+  Variant key() const;
+  Variant value(ssize_t& pos) const;
+  Variant each();
 
-  virtual CVarRef get(int64   k, bool error=false) const
-    __attribute__((flatten));
-  virtual CVarRef get(litstr  k, bool error=false) const
-    __attribute__((flatten));
-  virtual CVarRef get(CStrRef k, bool error=false) const
-    __attribute__((flatten));
-  virtual CVarRef get(CVarRef k, bool error=false) const
-    __attribute__((flatten));
+  // implements ArrayData
+  bool exists(int64 k) const;
+  bool exists(const StringData* k) const;
 
-  virtual void load(CVarRef k, Variant& v) const;
+  // implements ArrayData
+  CVarRef get(int64 k, bool error=false) const FLATTEN;
+  CVarRef get(const StringData* k, bool error=false) const FLATTEN;
 
-  Variant fetch(CStrRef k) const;
+  // implements ArrayData
+  ssize_t getIndex(int64 k) const;
+  ssize_t getIndex(const StringData* k) const;
 
-  virtual ssize_t getIndex(int64 k) const;
-  virtual ssize_t getIndex(litstr k) const;
-  virtual ssize_t getIndex(CStrRef k) const;
-  virtual ssize_t getIndex(CVarRef k) const;
+  // implements ArrayData
+  ArrayData* lval(int64 k, Variant*& ret, bool copy, bool checkExist=false);
+  ArrayData* lval(StringData* k, Variant*& ret, bool copy,
+                  bool checkExist=false);
+  ArrayData* lvalNew(Variant*& ret, bool copy);
 
-  virtual ArrayData* lval(int64   k, Variant*& ret, bool copy,
-                          bool checkExist=false);
-  virtual ArrayData* lval(litstr  k, Variant*& ret, bool copy,
-                          bool checkExist=false);
-  virtual ArrayData* lval(CStrRef k, Variant*& ret, bool copy,
-                          bool checkExist=false);
-  virtual ArrayData* lval(CVarRef k, Variant*& ret, bool copy,
-                          bool checkExist=false);
-  virtual ArrayData* lvalPtr(CStrRef k, Variant*& ret, bool copy,
-                             bool create);
-  virtual ArrayData* lvalPtr(int64   k, Variant*& ret, bool copy,
-                             bool create);
+  // overrides ArrayData
+  ArrayData* lvalPtr(int64 k, Variant*& ret, bool copy, bool create);
+  ArrayData* lvalPtr(StringData* k, Variant*& ret, bool copy,
+                     bool create);
 
-  virtual ArrayData* lvalNew(Variant*& ret, bool copy);
+  // implements ArrayData
+  ArrayData* set(int64 k, CVarRef v, bool copy);
+  ArrayData* set(StringData* k, CVarRef v, bool copy);
 
-  virtual ArrayData* set(int64   k, CVarRef v, bool copy);
-  virtual ArrayData* set(CStrRef k, CVarRef v, bool copy);
-  virtual ArrayData* set(CVarRef k, CVarRef v, bool copy);
+  // implements ArrayData
+  ArrayData* setRef(int64 k, CVarRef v, bool copy);
+  ArrayData* setRef(StringData* k, CVarRef v, bool copy);
 
-  virtual ArrayData* setRef(int64   k, CVarRef v, bool copy);
-  virtual ArrayData* setRef(CStrRef k, CVarRef v, bool copy);
-  virtual ArrayData* setRef(CVarRef k, CVarRef v, bool copy);
+  // overrides ArrayData
+  ArrayData *add(int64 k, CVarRef v, bool copy);
+  ArrayData *add(StringData* k, CVarRef v, bool copy);
+  ArrayData *addLval(int64 k, Variant*& ret, bool copy);
+  ArrayData *addLval(StringData* k, Variant*& ret, bool copy);
 
-  virtual ArrayData *add(int64   k, CVarRef v, bool copy);
-  virtual ArrayData *add(CStrRef k, CVarRef v, bool copy);
-  virtual ArrayData *add(CVarRef k, CVarRef v, bool copy);
-  virtual ArrayData *addLval(int64   k, Variant*& ret, bool copy);
-  virtual ArrayData *addLval(CStrRef k, Variant*& ret, bool copy);
-  virtual ArrayData *addLval(CVarRef k, Variant*& ret, bool copy);
+  // implements ArrayData
+  ArrayData* remove(int64 k, bool copy);
+  ArrayData* remove(const StringData* k, bool copy);
 
-  virtual ArrayData* remove(int64   k, bool copy);
-  virtual ArrayData* remove(CStrRef k, bool copy);
-  virtual ArrayData* remove(CVarRef k, bool copy);
+  // overrides/implements ArrayData
+  ArrayData* copy() const;
+  ArrayData* copyWithStrongIterators() const;
+  ArrayData* nonSmartCopy() const;
+  ArrayData* append(CVarRef v, bool copy);
+  ArrayData* appendRef(CVarRef v, bool copy);
+  ArrayData* appendWithRef(CVarRef v, bool copy);
+  ArrayData* append(const ArrayData* elems, ArrayOp op, bool copy);
+  ArrayData* pop(Variant& value);
+  ArrayData* dequeue(Variant& value);
+  ArrayData* prepend(CVarRef v, bool copy);
+  void renumber();
+  void onSetEvalScalar();
 
-  virtual ArrayData* copy() const;
-  virtual ArrayData* append(CVarRef v, bool copy);
-  virtual ArrayData* appendRef(CVarRef v, bool copy);
-  virtual ArrayData* appendWithRef(CVarRef v, bool copy);
-  virtual ArrayData* append(const ArrayData* elems, ArrayOp op, bool copy);
-  virtual ArrayData* pop(Variant& value);
-  virtual ArrayData* dequeue(Variant& value);
-  virtual ArrayData* prepend(CVarRef v, bool copy);
-  virtual void renumber();
-  virtual void onSetStatic();
+  // overrides ArrayData
+  void getFullPos(FullPos& fp);
+  bool setFullPos(const FullPos& fp);
+  CVarRef currentRef();
+  CVarRef endRef();
 
-  virtual void getFullPos(FullPos& fp);
-  virtual bool setFullPos(const FullPos& fp);
-  virtual CVarRef currentRef();
-  virtual CVarRef endRef();
+  // END overide/implements section
 
-  /**
-   * Assumes 'tv' is dead and preserves the element's original value
-   * if the key is already present in the array. If 'tv' is NULL, this
-   * method will migrate the element back to the array.
-   *
-   * Returns the previous fixed memory location that the element lived at,
-   * or NULL if the element used to live in the array.
-   */
-  TypedValue* migrate(StringData* k, TypedValue* tv);
+  // nvGet, nvSet and friends.
+  // "nv" stands for non-variant. If we know the types of keys and values
+  // through runtime and compile-time chicanery, we can directly call these
+  // methods.
 
-  /**
-   * Assumes 'tv' is live, overwrites the element's value if the key
-   * is already present in the array. 'tv' must not be NULL.
-   *
-   * Returns the previous fixed memory location that the element lived at,
-   * or NULL if the element used to live in the array.
-   */
-  TypedValue* migrateAndSet(StringData* k, TypedValue* tv);
+  // nvGet returns a pointer to the value if the specified key is in the
+  // array, NULL otherwise.
+  TypedValue* nvGet(int64 ki) const;
+  TypedValue* nvGet(const StringData* k) const;
+
+  // nvGetCell is a variation of get, however it unwraps a KindOfRef,
+  // returns KindOfNull if the key doesn't exist, and always warns.
+  TypedValue* nvGetCell(int64 ki) const;
+  TypedValue* nvGetCell(const StringData* k) const;
+
+  ArrayData* nvSet(int64 ki, int64 vi, bool copy);
+  void nvBind(int64 ki, const TypedValue* v) {
+    updateRef(ki, tvAsCVarRef(v));
+  }
+  void nvBind(StringData* k, const TypedValue* v) {
+    updateRef(k, tvAsCVarRef(v));
+  }
+  ArrayData* nvAppend(const TypedValue* v, bool copy);
+  void nvAppendWithRef(const TypedValue* v) {
+    nextInsertWithRef(tvAsCVarRef(v));
+  }
+  ArrayData* nvNew(TypedValue*& v, bool copy);
+  TypedValue* nvGetValueRef(ssize_t pos);
+  void nvGetKey(TypedValue* out, ssize_t pos);
+  bool nvInsert(StringData* k, TypedValue *v);
+
+private:
+  template <typename AccessorT>
+  SortFlavor preSort(const AccessorT& acc, bool checkTypes);
+
+  void postSort(bool resetKeys);
+
+public:
+  ArrayData* escalateForSort();
+  void ksort(int sort_flags, bool ascending);
+  void sort(int sort_flags, bool ascending);
+  void asort(int sort_flags, bool ascending);
+  void uksort(CVarRef cmp_function);
+  void usort(CVarRef cmp_function);
+  void uasort(CVarRef cmp_function);
+
+  // Assembly linkage
+  static uint32_t getMaskOff() {
+    return (uintptr_t)&((HphpArray*)0)->m_tableMask;
+  }
+
+  static uint32_t getDataOff() {
+    return (uintptr_t)&((HphpArray*)0)->m_data;
+  }
+
+  static uint32_t getHashOff() {
+    return (uintptr_t)&((HphpArray*)0)->m_hash;
+  }
+
+  static uint32_t getElmSize() {
+    return sizeof(Elm);
+  }
+
+  static uint32_t getElmKeyOff() {
+    return offsetof(Elm, key);
+  }
+
+  static uint32_t getElmHashOff() {
+    return offsetof(Elm, hash);
+  }
+
+  static uint32_t getElmDataOff() {
+    return offsetof(Elm, data);
+  }
+
+  void dumpDebugInfo() const;
 
   // Used in Elm's data.m_type field to denote an invalid Elm.
   static const HPHP::DataType KindOfTombstone = MaxNumDataTypes;
-  static const HPHP::DataType KindOfIndirect =
-      (HPHP::DataType)(MaxNumDataTypes + 1);
 
   // Array element.
   struct Elm {
-    int64       h;    // (key == NULL) ? <integer key value> : <string hash>
-    StringData* key;  // (key != NULL) ? <string key value>
-    TypedValue  data; // (data.m_type != KindOfTombstone) ? <value> : <invalid>
+    /* The key is either a string pointer or an int value, and the _count
+     * field in data is used to discriminate the key type. _count = 0 means
+     * int, nonzero values contain 32 bits of a string's hashcode.
+     * It is critical that when we return &data to clients, that they not
+     * read or write the _count field! */
+    union {
+      int64       ikey;
+      StringData* key;
+    };
+    union {
+      struct {
+        Value v;
+        int32_t hash;  // hash == 0 ? ikey is integer key: key is string key
+        DataType m_type;
+      };
+      TypedValue  data; // data.m_type != KindOfTombstone ? <value> : <invalid>
+    };
+    bool hasStrKey() const {
+      return hash != 0;
+    }
+    bool hasIntKey() const {
+      return hash == 0;
+    }
+    void setStrKey(StringData* k, strhash_t h) {
+      key = k;
+      hash = int32_t(h) | 0x80000000;
+    }
+    void setIntKey(int64 k) {
+      ikey = k;
+      hash = 0;
+    }
+  };
+
+  struct ElmKey {
+    ElmKey() {}
+    ElmKey(int32 hash, StringData* key) {
+      this->hash = hash;
+      this->key = key;
+    }
+    int32       hash;
+    union {
+      StringData* key;
+      int64 ikey;
+    };
   };
 
   // Element index, with special values < 0 used for hash tables.
@@ -180,24 +325,51 @@ public:
   static const ElmInd ElmIndEmpty      = -1; // == ArrayData::invalid_index
   static const ElmInd ElmIndTombstone  = -2;
 
-  // Use a minimum of an 8-element hash table.  Valid range: [2..32]
-  static const uint32 MinLgTableSize   = 3;
+  // Use a minimum of an 4-element hash table.  Valid range: [2..32]
+  static const uint32 MinLgTableSize = 2;
+  static const uint32 SmallHashSize = 1 << MinLgTableSize;
+  static const uint32 SmallSize = SmallHashSize - SmallHashSize / LoadScale;
 
-  // The element array is aligned such that elements do not needlessly straddle
-  // cacheline boundaries.
-  static const size_t ElmAlignment     = sizeof(Elm);
-  static const size_t ElmAlignmentMask = ElmAlignment-1;
+  struct InlineSlots {
+    Elm slots[SmallSize];
+    ElmInd hash[SmallHashSize];
+  };
 
+  ElmInd getLastE() const { return m_lastE; }
+  Elm*   getElm(ssize_t pos)  const {
+    ASSERT(unsigned(pos) <= unsigned(m_lastE));
+    return &m_data[pos];
+  }
 private:
-  // Array elements and the hash table are contiguously allocated, such that
-  // elements are naturally aligned.  If necessary, m_data starts and ends with
-  // padding in order to meet the element alignment requirements.
-  //
-  // Given 2^K == m_tableMask+1 && K >= 2 && K <= 32 &&
-  //       block == (void*)(uintptr_t(m_data) - uintptr_t(m_dataPad)):
+  // Small: Array elements and the hash table are allocated inline.
   //
   //            +--------------------+
-  // block -->  | alignment padding? |
+  // this -->   | HphpArray fields   |
+  //            +--------------------+
+  // m_data --> | slot 0 ...         | SmallSize slots for elements.
+  //            | slot SmallSize-1   |
+  //            +--------------------+
+  // m_hash --> |                    | 2^MinLgTableSize hash table entries.
+  //            +--------------------+
+  //
+  // Medium: Just the hash table is allocated inline, array elements
+  // are allocated from malloc.
+  //
+  //            +--------------------+
+  // this -->   | HphpArray fields   |
+  //            +--------------------+
+  // m_hash --> |                    | 2^K hash table entries
+  //            +--------------------+
+  //
+  //            +--------------------+
+  // m_data --> | slot 0             | 0.75 * 2^K slots for elements.
+  //            | slot 1             |
+  //            | ...                |
+  //            +--------------------+
+  //
+  // Big: Array elements and the hash table are contiguously allocated, and
+  // elements are pointer aligned.
+  //
   //            +--------------------+
   // m_data --> | slot 0             | 0.75 * 2^K slots for elements.
   //            | slot 1             |
@@ -205,70 +377,100 @@ private:
   //            +--------------------+
   // m_hash --> |                    | 2^K hash table entries.
   //            +--------------------+
-  //            | alignment padding? |
-  //            +--------------------+
-  void*   m_data;        // Contains elements and hash table.
+
+  ElmInd  m_lastE;       // Index of last used element.
+  Elm*    m_data;        // Contains elements and hash table.
   ElmInd* m_hash;        // Hash table.
   int64   m_nextKI;      // Next integer key to use for append.
-  uint32  m_tableMask;   // Bitmask used when indexing into the Hash table.
-  ElmInd  m_nElms;       // Total number of elements in array.
+  uint32  m_tableMask;   // Bitmask used when indexing into the hash table.
   uint32  m_hLoad;       // Hash table load (# of non-empty slots).
-  ElmInd  m_lastE;       // Index of last used element.
-  char    m_linear;      // (true) ? m_data came from linear allocator.
-  char    m_siPastEnd;   // (true) ? strong iterators possibly past end.
-#ifndef USE_JEMALLOC
-  uchar   m_dataPad;     // Number of bytes that m_data was advanced to
-                         //   achieve the required alignment
-#endif
-  ElmInd  m_nIndirectElms; // Total number of elements in the array with
-                           //   m_type == KindOfIndirect
+  union {
+    InlineSlots m_inline_data;
+    ElmInd m_inline_hash[sizeof(m_inline_data) / sizeof(ElmInd)];
+  };
 
-  inline void* getBlock() const {
-    return ((void*)(uintptr_t(m_data)
-#ifndef USE_JEMALLOC
-            - uintptr_t(m_dataPad)
-#endif
-            ));
+  ssize_t /*ElmInd*/ nextElm(Elm* elms, ssize_t /*ElmInd*/ ei) const {
+    ASSERT(ei >= -1);
+    ssize_t lastE = m_lastE;
+    while (ei < lastE) {
+      ++ei;
+      if (elms[ei].data.m_type < KindOfTombstone) {
+        return ei;
+      }
+    }
+    return (ssize_t)ElmIndEmpty;
   }
-
-  void dumpDebugInfo() const;
-
-  ssize_t /*ElmInd*/ nextElm(Elm* elms, ssize_t /*ElmInd*/ ei) const;
   ssize_t /*ElmInd*/ prevElm(Elm* elms, ssize_t /*ElmInd*/ ei) const;
 
-  inline ssize_t /*ElmInd*/ find(int64 ki) const;
-  inline ssize_t /*ElmInd*/ find(const char* k, int len, int64 prehash) const;
-  inline ElmInd* findForInsert(int64 ki) const;
-  inline ElmInd* findForInsert(const char* k, int len, int64 prehash) const;
+  ssize_t /*ElmInd*/ find(int64 ki) const;
+  ssize_t /*ElmInd*/ find(const StringData* s, strhash_t prehash) const;
+  ElmInd* findForInsert(int64 ki) const;
+  ElmInd* findForInsert(const StringData* k, strhash_t prehash) const;
+
+  ssize_t iter_advance_helper(ssize_t prev) const ATTRIBUTE_COLD;
 
   /**
    * findForNewInsert() CANNOT be used unless the caller can guarantee that
    * the relevant key is not already present in the array. Otherwise this can
    * put the array into a bad state; use with caution.
    */
-  inline ElmInd* ALWAYS_INLINE findForNewInsert(size_t h0) const;
+  ElmInd* findForNewInsertLoop(size_t tableMask, size_t h0) const;
+
+  inline ALWAYS_INLINE
+  ElmInd* findForNewInsert(size_t h0) const {
+    size_t tableMask = m_tableMask;
+    size_t probeIndex = h0 & tableMask;
+    ElmInd* ei = &m_hash[probeIndex];
+    ssize_t /*ElmInd*/ pos = *ei;
+    if (LIKELY(!validElmInd(pos))) {
+      return ei;
+    }
+    return findForNewInsertLoop(tableMask, h0);
+  }
 
   bool nextInsert(CVarRef data);
-  bool nextInsertRef(CVarRef data);
-  bool nextInsertWithRef(CVarRef data);
-  bool addLvalImpl(int64 ki, Variant** pDest, bool doFind=true);
-  bool addLvalImpl(StringData* key, int64 h, Variant** pDest, bool doFind=true);
-  bool addVal(int64 ki, CVarRef data, bool checkExists=true);
-  bool addVal(StringData* key, CVarRef data, bool checkExists=true);
-  bool addValWithRef(int64 ki, CVarRef data, bool checkExists=true);
-  bool addValWithRef(StringData* key, CVarRef data, bool checkExists=true);
+  void nextInsertRef(CVarRef data);
+  void nextInsertWithRef(CVarRef data);
+  void addLvalImpl(int64 ki, Variant** pDest);
+  void addLvalImpl(StringData* key, strhash_t h, Variant** pDest);
+  void addVal(int64 ki, CVarRef data);
+  void addVal(StringData* key, CVarRef data);
+  void addValWithRef(int64 ki, CVarRef data);
+  void addValWithRef(StringData* key, CVarRef data);
 
-  bool update(int64 ki, CVarRef data);
-  bool update(StringData* key, CVarRef data);
-  bool updateRef(int64 ki, CVarRef data);
-  bool updateRef(StringData* key, CVarRef data);
+  void update(int64 ki, CVarRef data);
+  void update(StringData* key, CVarRef data);
+  void updateRef(int64 ki, CVarRef data);
+  void updateRef(StringData* key, CVarRef data);
 
   void erase(ElmInd* ei, bool updateNext = false);
+
+  // nvUpdate: for internal use by the nv* methods.
+  bool nvUpdate(int64 ki, int64 vi);
+
+  HphpArray* copyImpl(HphpArray* target) const;
   HphpArray* copyImpl() const;
 
-  inline Elm* ALWAYS_INLINE allocElm(ElmInd* ei);
-  void reallocData(size_t maxElms, size_t tableSize);
-  void delinearize() ATTRIBUTE_COLD;
+  bool isFull() const;
+  Elm* newElm(ElmInd* e, size_t h0);
+  Elm* newElmGrow(size_t h0);
+  Elm* allocElm(ElmInd* ei);
+  Elm* allocElmExtra(Elm* e, ElmInd* ei);
+  void initElmInt(Elm* e, int64_t ki, CVarRef data, bool byRef=false);
+  void initElmStr(Elm* e, strhash_t h, StringData* key, CVarRef data,
+                  bool byRef=false);
+  void newElmInt(ElmInd* ei, int64_t ki, CVarRef data,
+                      bool byRef=false);
+  void newElmStr(ElmInd* ei, strhash_t h, StringData* key, CVarRef data,
+                      bool byRef=false);
+  void allocData(size_t maxElms, size_t tableSize);
+  void reallocData(size_t maxElms, size_t tableSize, uint oldMask);
+
+  /**
+   * init(size) allocates space for size elements but initializes
+   * as an empty array
+   */
+  void init(uint size);
 
   /**
    * grow() increases the hash table size and the number of slots for
@@ -294,29 +496,101 @@ private:
    * for a new element and hash entry before growing or compacting the array.
    */
   void resize();
-  inline void ALWAYS_INLINE resizeIfNeeded();
+  void resizeIfNeeded();
 
   // Memory allocator methods.
-  DECLARE_SMART_ALLOCATION(HphpArray, SmartAllocatorImpl::NeedRestoreOnce);
-  bool calculate(int& size);
-  void backup(LinearAllocator& allocator);
-  void restore(const char*& data);
-  void sweep();
-};
-
-class StaticEmptyHphpArray : public HphpArray {
-public:
-  StaticEmptyHphpArray() {
-    setStatic();
-  }
-
-  static HphpArray* Get() {
-    return &s_theEmptyArray;
-  }
+  DECLARE_SMART_ALLOCATION(HphpArray);
 
 private:
-  static StaticEmptyHphpArray s_theEmptyArray;
+  enum EmptyMode { StaticEmptyArray };
+  HphpArray(EmptyMode);
+  // static singleton empty array.  Not a subclass because we want a fast
+  // isHphpArray implementation; HphpArray should be effectively final.
+  static HphpArray s_theEmptyArray;
+
+  static void initHash(HphpArray::ElmInd* hash, size_t tableSize) {
+    ASSERT(HphpArray::ElmIndEmpty == -1);
+    memset(hash, 0xffU, tableSize * sizeof(HphpArray::ElmInd));
+  }
+
+public:
+  static bool validElmInd(ssize_t /*HphpArray::ElmInd*/ ei) {
+    return (ei > ssize_t(HphpArray::ElmIndEmpty));
+  }
+
+  static size_t computeTableSize(uint32 tableMask) {
+    return size_t(tableMask) + size_t(1U);
+  }
+
+  static size_t computeMaxElms(uint32 tableMask) {
+    return size_t(tableMask) - size_t(tableMask) / HphpArray::LoadScale;
+  }
+
+  static size_t computeDataSize(uint32 tableMask) {
+    return computeTableSize(tableMask) * sizeof(HphpArray::ElmInd) +
+      computeMaxElms(tableMask) * sizeof(HphpArray::Elm);
+  }
 };
+
+inline bool IsHphpArray(const ArrayData* ad) {
+  return ad->kind() == ArrayData::kHphpArray;
+}
+
+//=============================================================================
+// VM runtime support functions.
+namespace VM {
+
+enum ArrayGetFlags {
+  DecRefKey = 1,
+  CheckInts = 2
+};
+
+ArrayData* array_setm_ik1_iv(TypedValue* cell, ArrayData* ha, int64 key,
+                             int64 value);
+ArrayData* array_setm_ik1_v(TypedValue* cell, ArrayData* ad, int64 key,
+                            TypedValue* value);
+ArrayData* array_setm_ik1_v0(TypedValue* cell, ArrayData* ad, int64 key,
+                             TypedValue* value);
+ArrayData* array_setm_sk1_v(TypedValue* cell, ArrayData* ad, StringData* key,
+                            TypedValue* value);
+ArrayData* array_setm_sk1_v0(TypedValue* cell, ArrayData* ad, StringData* key,
+                             TypedValue* value);
+ArrayData* array_setm_s0k1_v(TypedValue* cell, ArrayData* ad, StringData* key,
+                             TypedValue* value);
+ArrayData* array_setm_s0k1_v0(TypedValue* cell, ArrayData* ad, StringData* key,
+                              TypedValue* value);
+ArrayData* array_setm_s0k1nc_v(TypedValue* cell, ArrayData* ad, StringData* key,
+                               TypedValue* value);
+ArrayData* array_setm_s0k1nc_v0(TypedValue* cell, ArrayData* ad,
+                                StringData* key, TypedValue* value);
+ArrayData* array_setm_wk1_v(TypedValue* cell, ArrayData* ad,
+                            TypedValue* value);
+ArrayData* array_setm_wk1_v0(TypedValue* cell, ArrayData* ad,
+                             TypedValue* value);
+ArrayData* array_getm_i(void* hphpArray, int64 key, TypedValue* out);
+
+ArrayData* array_getm_s(ArrayData* a, StringData* key, TypedValue* out,
+                        int flags);
+void       non_array_getm_i(TypedValue* base, int64 key, TypedValue* out);
+void       non_array_getm_s(TypedValue* base, StringData* key, TypedValue* out);
+void       array_getm_is(ArrayData* ad, int64 ik, StringData* sd,
+			 TypedValue* out) FLATTEN;
+void       array_getm_is0(ArrayData* ad, int64 ik, StringData* sd,
+			  TypedValue* out) FLATTEN;
+uint64 array_issetm_s(const void* hphpArray, StringData* sd)
+  FLATTEN;
+uint64 array_issetm_s0(const void* hphpArray, StringData* sd)
+  FLATTEN;
+uint64 array_issetm_s_fast(const void* hphpArray, StringData* sd)
+  FLATTEN;
+uint64 array_issetm_s0_fast(const void* hphpArray, StringData* sd)
+  FLATTEN;
+uint64 array_issetm_i(const void* hphpArray, int64_t key)
+  FLATTEN;
+ArrayData* array_add(ArrayData* a1, ArrayData* a2);
+
+}
+//=============================================================================
 
 ///////////////////////////////////////////////////////////////////////////////
 }

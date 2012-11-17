@@ -23,7 +23,6 @@
 
 using namespace HPHP;
 using std::pair;
-using namespace boost;
 
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -60,8 +59,7 @@ void DataFlow::ComputeForwards(T func, const ControlFlowGraph &g,
 
     for (int i = 1; i <= num; i++) {
       ControlBlock *b = g.getDfBlock(i);
-      std::pair<in_edge_iterator, in_edge_iterator> vi =
-        in_edges(b, g);
+      std::pair<in_edge_iterator, in_edge_iterator> vi = in_edges(b, g);
       BitOps::Bits *ain = b->getRow(inAttr);
 
       if (vi.first != vi.second) {
@@ -113,8 +111,7 @@ void DataFlow::ComputeBackwards(T func, const ControlFlowGraph &g,
 
     for (int i = num; i ; i--) {
       ControlBlock *b = g.getDfBlock(i);
-      std::pair<out_edge_iterator, out_edge_iterator> vi =
-        out_edges(b, g);
+      std::pair<out_edge_iterator, out_edge_iterator> vi = out_edges(b, g);
       BitOps::Bits *aout = b->getRow(outAttr);
 
       if (vi.first != vi.second) {
@@ -191,6 +188,13 @@ void DataFlow::ComputePartialNeeded(const ControlFlowGraph &g) {
     BitOps::bit_or, g,
     DataFlow::Object, DataFlow::NotObject,
     DataFlow::PObjIn, DataFlow::PObjOut);
+}
+
+void DataFlow::ComputePartialInited(const ControlFlowGraph &g) {
+  DataFlow::ComputeForwards(
+    BitOps::bit_or, g,
+    DataFlow::Inited, DataFlow::Killed,
+    DataFlow::PInitIn, DataFlow::PInitOut);
 }
 
 void DataFlow::ComputeUsed(const ControlFlowGraph &g) {

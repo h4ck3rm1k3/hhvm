@@ -18,10 +18,12 @@
 #define __CONCURRENCY_ASYNC_FUNC_H__
 
 #include "base.h"
+#include <sys/user.h>
 #include <pthread.h>
 #include "synchronizable.h"
 #include "lock.h"
 #include "exception.h"
+#include "alloc.h"
 
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
@@ -101,49 +103,23 @@ public:
    * The global static to feed into pthread_create(), and this will delegate
    * the work to AsyncFuncImpl::threadFuncImpl().
    */
-  static void *ThreadFunc(void *obj) {
-    ((AsyncFuncImpl*)obj)->threadFuncImpl();
-    return NULL;
-  }
+  static void *ThreadFunc(void *obj);
 
   /**
    * Called by AsyncFunc<T> so we can call func(obj) back on thread running.
    */
-  AsyncFuncImpl(void *obj, PFN_THREAD_FUNC *func)
-      : m_stopped(false), m_autoDelete(false),
-        m_obj(obj), m_func(func), m_threadId(0), m_exceptioned(false) {
-  }
+  AsyncFuncImpl(void *obj, PFN_THREAD_FUNC *func);
+  ~AsyncFuncImpl();
 
   /**
    * Starts this thread.
    */
-  void start() {
-    pthread_create(&m_threadId, NULL, ThreadFunc, (void*)this);
-    ASSERT(m_threadId);
-  }
+  void start();
 
   /**
    * Waits until this thread finishes running.
    */
-  void waitForEnd() {
-    if (m_threadId == 0) return;
-
-    {
-      Lock lock(m_stopMonitor.getMutex());
-      while (!m_stopped) {
-        m_stopMonitor.wait();
-      }
-    }
-
-    void *ret = NULL;
-    pthread_join(m_threadId, &ret);
-    m_threadId = 0;
-
-    if (m_exceptioned) {
-      m_exceptioned = false;
-      throw m_exception;
-    }
-  }
+  bool waitForEnd(int seconds = 0);
 
   /**
    * Starts and waits until this thread finishes running.
@@ -153,12 +129,8 @@ public:
     waitForEnd();
   }
 
-  /**
-   * So that an async func can instruct inside thread execution that this
-   * object gets deleted when thread finishes.
-   */
-  void setAutoDelete() {
-    m_autoDelete = true;
+  pthread_attr_t *getThreadAttr() {
+    return &m_attr;
   }
 
   static void SetThreadInitFunc(PFN_THREAD_FUNC* func, void *arg) {
@@ -179,10 +151,10 @@ public:
     return s_finiFunc;
   }
 
+  void setNoInit() { m_noInit = true; }
+
 private:
   Synchronizable m_stopMonitor;
-  bool m_stopped;
-  bool m_autoDelete;
 
   void *m_obj;
   PFN_THREAD_FUNC *m_func;
@@ -190,41 +162,21 @@ private:
   static PFN_THREAD_FUNC *s_finiFunc;
   static void* s_initFuncArg;
   static void* s_finiFuncArg;
+  void *m_threadStack;
+  size_t m_stackSize;
+  Exception m_exception; // exception was thrown and thread was terminated
+  pthread_attr_t m_attr;
   pthread_t m_threadId;
   bool m_exceptioned;
-  Exception m_exception; // exception was thrown and thread was terminated
+  bool m_stopped;
+  bool m_noInit;
+
+  static const size_t m_stackSizeMinimum = 8388608; // 8MB
 
   /**
    * Called by ThreadFunc() to delegate the work.
    */
-  void threadFuncImpl() {
-    if (s_initFunc) {
-      s_initFunc(s_initFuncArg);
-    }
-    try {
-      m_func(m_obj);
-    } catch (Exception &e) {
-      m_exceptioned = true;
-      m_exception = e;
-    } catch (std::exception &e) {
-      m_exceptioned = true;
-      m_exception.setMessage(e.what());
-    } catch (...) {
-      m_exceptioned = true;
-      m_exception.setMessage("(unknown exception)");
-    }
-    {
-      Lock lock(m_stopMonitor.getMutex());
-      m_stopped = true;
-      m_stopMonitor.notify();
-    }
-    if (m_autoDelete) {
-      delete this;
-    }
-    if (s_finiFunc) {
-      s_finiFunc(s_finiFuncArg);
-    }
-  }
+  void threadFuncImpl();
 };
 
 ///////////////////////////////////////////////////////////////////////////////

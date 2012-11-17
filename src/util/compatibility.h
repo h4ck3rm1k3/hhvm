@@ -29,7 +29,7 @@ char *strndup(const char* str, size_t len);
 int dprintf(int fd, const char *format, ...);
 #endif
 
-void gettime(clockid_t which_clock, struct timespec *tp);
+int gettime(clockid_t which_clock, struct timespec *tp);
 int64 gettime_diff_us(const timespec &start, const timespec &end);
 
 ///////////////////////////////////////////////////////////////////////////////

@@ -31,6 +31,7 @@ public:
   bool isStatic() const { return m_static; }
   bool isRedeclared() const { return m_redeclared; }
   bool isPresent() const { return m_present || m_forcePresent; }
+  bool forcedPresent() const { return m_forcePresent; }
   bool isUnknown() const { return m_unknown; }
 
   void setPresent() { m_present = m_forcePresent = true; }
@@ -46,6 +47,7 @@ public:
 
   ClassScopePtr resolveClass();
   bool checkPresent();
+  ClassScopePtr resolveClassWithChecks();
 protected:
   ExpressionPtr m_class;
   std::string m_origClassName;

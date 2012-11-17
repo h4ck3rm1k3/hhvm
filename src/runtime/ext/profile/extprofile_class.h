@@ -37,7 +37,6 @@ inline Array x_get_declared_interfaces() {
 
 inline Array x_get_declared_traits() {
   FUNCTION_INJECTION_BUILTIN(get_declared_traits);
-  TAINT_OBSERVER(TAINT_BIT_MUTATED, TAINT_BIT_NONE);
   return f_get_declared_traits();
 }
 
@@ -53,7 +52,6 @@ inline bool x_interface_exists(CStrRef interface_name, bool autoload = true) {
 
 inline bool x_trait_exists(CStrRef trait_name, bool autoload = true) {
   FUNCTION_INJECTION_BUILTIN(trait_exists);
-  TAINT_OBSERVER(TAINT_BIT_MUTATED, TAINT_BIT_NONE);
   return f_trait_exists(trait_name, autoload);
 }
 
@@ -82,14 +80,14 @@ inline Variant x_get_parent_class(CVarRef object = null_variant) {
   return f_get_parent_class(object);
 }
 
-inline bool x_is_a(CObjRef object, CStrRef class_name) {
+inline bool x_is_a(CVarRef class_or_object, CStrRef class_name, bool allow_string = false) {
   FUNCTION_INJECTION_BUILTIN(is_a);
-  return f_is_a(object, class_name);
+  return f_is_a(class_or_object, class_name, allow_string);
 }
 
-inline bool x_is_subclass_of(CVarRef class_or_object, CStrRef class_name) {
+inline bool x_is_subclass_of(CVarRef class_or_object, CStrRef class_name, bool allow_string = true) {
   FUNCTION_INJECTION_BUILTIN(is_subclass_of);
-  return f_is_subclass_of(class_or_object, class_name);
+  return f_is_subclass_of(class_or_object, class_name, allow_string);
 }
 
 inline bool x_method_exists(CVarRef class_or_object, CStrRef method_name) {

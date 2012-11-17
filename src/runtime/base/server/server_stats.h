@@ -47,6 +47,7 @@ public:
   static void Log(const std::string &name, int64 value);
   static int64 Get(const std::string &name);
   static void LogPage(const std::string &url, int code);
+  static void Reset();
   static void Clear();
   static void GetKeys(std::string &out, int64 from, int64 to);
   static void Report(std::string &out, Format format, int64 from, int64 to,
@@ -132,6 +133,7 @@ private:
   void log(const std::string &name, int64 value);
   int64 get(const std::string &name);
   void logPage(const std::string &url, int code);
+  void reset();
   void clear();
   void collect(std::list<TimeSlot*> &slots, int64 from, int64 to);
 
@@ -163,13 +165,15 @@ private:
 
     pthread_t m_threadId;
 
+    MemoryManager* m_mm;
+
     // total traffic
     int64 m_requestCount;
     int64 m_writeBytes;
 
     // current request
-    time_t m_start;
-    time_t m_done;
+    timeval m_start;
+    timeval m_done;
     ThreadMode m_mode;
 
     // Whether or not an io is in process.
@@ -198,17 +202,24 @@ private:
  */
 class ServerStatsHelper {
 public:
-  ServerStatsHelper(const char *section, bool trackMem = false);
+  enum {
+    TRACK_MEMORY = 0x00000001,
+    TRACK_HWINST = 0x00000002,
+  };
+  ServerStatsHelper(const char *section, uint32 track = 0);
   ~ServerStatsHelper();
 
 private:
   const char *m_section;
   timespec m_wallStart;
   timespec m_cpuStart;
-  bool m_trackMemory;
+  int64 m_instStart;
+  uint32 m_track;
 
   void logTime(const std::string &prefix, const timespec &start,
                const timespec &end);
+  void logTime(const std::string &prefix, const int64 &start,
+               const int64 &end);
 };
 
 /**

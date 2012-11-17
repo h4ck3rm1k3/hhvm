@@ -16,8 +16,10 @@
 
 #include <runtime/base/array/array_iterator.h>
 #include <runtime/base/array/array_data.h>
+#include <runtime/base/array/hphp_array.h>
 #include <runtime/base/complex_types.h>
 #include <runtime/base/object_data.h>
+#include <runtime/ext/ext_collection.h>
 
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
@@ -34,87 +36,238 @@ static StaticString s_Continuation("Continuation");
 ///////////////////////////////////////////////////////////////////////////////
 // ArrayIter
 
-ArrayIter::ArrayIter()
-  : m_data(NULL), m_obj(NULL), m_pos(ArrayData::invalid_index) { }
+ArrayIter::ArrayIter() : m_pos(ArrayData::invalid_index) {
+  m_data = NULL;
+}
 
-ArrayIter::ArrayIter(const ArrayData *data) : m_data(data), m_obj(NULL) {
-  if (m_data) {
-    m_data->incRefCount();
-    m_pos = m_data->iter_begin();
+HOT_FUNC
+ArrayIter::ArrayIter(const ArrayData *data) {
+  setArrayData(data);
+  if (data) {
+    data->incRefCount();
+    m_pos = data->iter_begin();
   } else {
     m_pos = ArrayData::invalid_index;
   }
 }
 
-ArrayIter::ArrayIter(CArrRef array)
-  : m_data(array.get()), m_obj(NULL), m_pos(0) {
-  if (m_data) {
-    m_data->incRefCount();
-    m_pos = m_data->iter_begin();
+HOT_FUNC
+ArrayIter::ArrayIter(CArrRef array) : m_pos(0) {
+  const ArrayData* ad = array.get();
+  setArrayData(ad);
+  if (ad) {
+    ad->incRefCount();
+    m_pos = ad->iter_begin();
   } else {
     m_pos = ArrayData::invalid_index;
+  }
+}
+
+template <bool incRef>
+void ArrayIter::objInit(ObjectData *obj, bool rewind /* = true */) {
+  ASSERT(obj);
+  setObject(obj);
+  if (incRef) {
+    obj->incRefCount();
+  }
+  if (!obj->isCollection()) {
+    ASSERT(obj->o_instanceof(s_Iterator));
+    if (obj->o_instanceof(s_Continuation)) {
+      obj->o_invoke(s_next, Array());
+    } else if (rewind) {
+      obj->o_invoke(s_rewind, Array());
+    }
+    // If it is from IteratorAggregate, there is no need to rewind.
+  } else {
+    if (hasVector()) {
+      c_Vector* vec = getVector();
+      m_versionNumber = vec->getVersionNumber();
+      m_pos = 0;
+    } else if (hasMap()) {
+      c_Map* mp = getMap();
+      m_versionNumber = mp->getVersionNumber();
+      m_pos = mp->iter_begin();
+    } else if (hasStableMap()) {
+      c_StableMap* smp = getStableMap();
+      m_versionNumber = smp->getVersionNumber();
+      m_pos = smp->iter_begin();
+    } else {
+      ASSERT(false);
+    }
   }
 }
 
 ArrayIter::ArrayIter(ObjectData *obj, bool rewind /* = true */)
-  : m_data(NULL), m_obj(obj), m_pos(ArrayData::invalid_index) {
-  ASSERT(m_obj);
-  ASSERT(m_obj->o_instanceof(s_Iterator));
-  m_obj->incRefCount();
-  if (m_obj->o_instanceof(s_Continuation)) {
-    m_obj->o_invoke(s_next, Array());
-  } else if (rewind) {
-    m_obj->o_invoke(s_rewind, Array());
-  }
-  // If it is from IteratorAggregate, there is no need to rewind.
+  : m_pos(ArrayData::invalid_index) {
+  objInit<true>(obj, rewind);
 }
 
+// Special constructor used by the VM. This constructor does not increment the
+// refcount of the specified object.
+ArrayIter::ArrayIter(ObjectData *obj, int)
+  : m_pos(ArrayData::invalid_index) {
+  objInit<false>(obj, true);
+}
+
+HOT_FUNC
 ArrayIter::~ArrayIter() {
-  if (m_data && m_data->decRefCount() == 0) {
-    const_cast<ArrayData*>(m_data)->release();
+  if (hasArrayData()) {
+    const ArrayData* ad = getArrayData();
+    if (ad && ad->decRefCount() == 0) {
+      const_cast<ArrayData*>(ad)->release();
+    }
     return;
   }
-  if (m_obj && m_obj->decRefCount() == 0) {
-    const_cast<ObjectData*>(m_obj)->release();
+  ObjectData* obj = getRawObject();
+  ASSERT(obj);
+  if (obj->decRefCount() == 0) {
+    const_cast<ObjectData*>(obj)->release();
   }
 }
 
 bool ArrayIter::endHelper() {
-  ASSERT(m_obj);
-  return !m_obj->o_invoke(s_valid, Array());
+  if (hasVector()) {
+    c_Vector* vec = getVector();
+    return m_pos >= vec->t_count();
+  }
+  if (hasMap()) {
+    return m_pos == 0;
+  }
+  if (hasStableMap()) {
+    return m_pos == 0;
+  }
+  ASSERT(hasObject());
+  ObjectData* obj = getObject();
+  return !obj->o_invoke(s_valid, Array());
 }
 
 void ArrayIter::nextHelper() {
-  ASSERT(m_obj);
-  m_obj->o_invoke(s_next, Array());
+  if (hasVector()) {
+    m_pos++;
+    return;
+  }
+  if (hasMap()) {
+    ASSERT(m_pos != 0);
+    c_Map* mp = getMap();
+    if (UNLIKELY(m_versionNumber != mp->getVersionNumber())) {
+      throw_collection_modified();
+    }
+    m_pos = mp->iter_next(m_pos);
+    return;
+  }
+  if (hasStableMap()) {
+    ASSERT(m_pos != 0);
+    c_StableMap* smp = getStableMap();
+    if (UNLIKELY(m_versionNumber != smp->getVersionNumber())) {
+      throw_collection_modified();
+    }
+    m_pos = smp->iter_next(m_pos);
+    return;
+  }
+  ASSERT(hasObject());
+  ObjectData* obj = getObject();
+  obj->o_invoke(s_next, Array());
 }
 
 Variant ArrayIter::firstHelper() {
-  ASSERT(m_obj);
-  return m_obj->o_invoke(s_key, Array());
+  if (hasVector()) {
+    return m_pos;
+  }
+  if (hasMap()) {
+    ASSERT(m_pos != 0);
+    c_Map* mp = getMap();
+    if (UNLIKELY(m_versionNumber != mp->getVersionNumber())) {
+      throw_collection_modified();
+    }
+    return mp->iter_key(m_pos);
+  }
+  if (hasStableMap()) {
+    ASSERT(m_pos != 0);
+    c_StableMap* smp = getStableMap();
+    if (UNLIKELY(m_versionNumber != smp->getVersionNumber())) {
+      throw_collection_modified();
+    }
+    return smp->iter_key(m_pos);
+  }
+  ASSERT(hasObject());
+  ObjectData* obj = getObject();
+  return obj->o_invoke(s_key, Array());
 }
 
+HOT_FUNC
 Variant ArrayIter::second() {
-  if (m_obj) {
-    return m_obj->o_invoke(s_current, Array());
+  if (hasVector()) {
+    c_Vector* vec = getVector();
+    if (UNLIKELY(m_versionNumber != vec->getVersionNumber())) {
+      throw_collection_modified();
+    }
+    return tvAsCVarRef(vec->at(m_pos));
   }
-  ASSERT(m_data);
+  if (hasMap()) {
+    c_Map* mp = getMap();
+    if (UNLIKELY(m_versionNumber != mp->getVersionNumber())) {
+      throw_collection_modified();
+    }
+    return mp->iter_value(m_pos);
+  }
+  if (hasStableMap()) {
+    c_StableMap* smp = getStableMap();
+    if (UNLIKELY(m_versionNumber != smp->getVersionNumber())) {
+      throw_collection_modified();
+    }
+    return smp->iter_value(m_pos);
+  }
+  if (hasObject()) {
+    ObjectData* obj = getObject();
+    return obj->o_invoke(s_current, Array());
+  }
+  ASSERT(hasArrayData());
   ASSERT(m_pos != ArrayData::invalid_index);
-  return m_data->getValue(m_pos);
+  const ArrayData* ad = getArrayData();
+  ASSERT(ad);
+  return ad->getValue(m_pos);
 }
 
 void ArrayIter::secondHelper(Variant & v) {
-  ASSERT(m_obj);
-  v = m_obj->o_invoke(s_current, Array());
+  if (hasVector()) {
+    c_Vector* vec = getVector();
+    if (UNLIKELY(m_versionNumber != vec->getVersionNumber())) {
+      throw_collection_modified();
+    }
+    v = tvAsCVarRef(vec->at(m_pos));
+    return;
+  }
+  if (hasMap()) {
+    c_Map* mp = getMap();
+    if (UNLIKELY(m_versionNumber != mp->getVersionNumber())) {
+      throw_collection_modified();
+    }
+    v = mp->iter_value(m_pos);
+    return;
+  }
+  if (hasStableMap()) {
+    c_StableMap* smp = getStableMap();
+    if (UNLIKELY(m_versionNumber != smp->getVersionNumber())) {
+      throw_collection_modified();
+    }
+    v = smp->iter_value(m_pos);
+    return;
+  }
+  ASSERT(hasObject());
+  ObjectData* obj = getObject();
+  v = obj->o_invoke(s_current, Array());
 }
 
+HOT_FUNC
 CVarRef ArrayIter::secondRef() {
-  if (m_obj) {
+  if (!hasArrayData()) {
     throw FatalErrorException("taking reference on iterator objects");
   }
-  ASSERT(m_data);
+  ASSERT(hasArrayData());
   ASSERT(m_pos != ArrayData::invalid_index);
-  return m_data->getValueRef(m_pos);
+  const ArrayData* ad = getArrayData();
+  ASSERT(ad);
+  return ad->getValueRef(m_pos);
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -124,9 +277,9 @@ MutableArrayIter::MutableArrayIter(const Variant *var, Variant *key,
                                    Variant &val)
   : m_var(var), m_data(NULL), m_key(key), m_val(val), m_fp() {
   ASSERT(m_var);
-  ArrayData *data = getData();
+  escalateCheck();
+  ArrayData* data = cowCheck();
   if (data) {
-    ASSERT(data->getCount() <= 1);
     data->reset();
     data->newFullPos(m_fp);
     ASSERT(m_fp.container == data);
@@ -137,9 +290,8 @@ MutableArrayIter::MutableArrayIter(ArrayData *data, Variant *key,
                                    Variant &val)
   : m_var(NULL), m_data(data), m_key(key), m_val(val), m_fp() {
   if (data) {
-    ASSERT(data->getCount() <= 1);
-    // protect the data which may be owned by a C++ temp
-    data->incRefCount();
+    escalateCheck();
+    data = cowCheck();
     data->reset();
     data->newFullPos(m_fp);
     ASSERT(m_fp.container == data);
@@ -170,9 +322,17 @@ bool MutableArrayIter::advance() {
     if (m_fp.container != NULL) {
       m_fp.container->freeFullPos(m_fp);
     }
-    // Create a new strong iterator for the new array
     ASSERT(m_fp.container == NULL);
+    // If needed, escalate the array to an array type that can support
+    // foreach by reference
+    escalateCheck();
+    // Trigger COW if needed, copying over strong iterators
+    data = cowCheck();
+    // Create a new strong iterator for the new array
     data->newFullPos(m_fp);
+  } else {
+    // Trigger COW if needed, copying over strong iterators
+    data = cowCheck();
   }
   ASSERT(m_fp.container == data);
   if (!data->setFullPos(m_fp)) return false;
@@ -184,11 +344,69 @@ bool MutableArrayIter::advance() {
   return true;
 }
 
-ArrayData *MutableArrayIter::getData() {
+void MutableArrayIter::escalateCheck() {
+  ArrayData* data;
+  if (m_var) {
+    data = getData();
+    if (!data) return;
+    ArrayData* esc = data->escalate(true);
+    if (data != esc) {
+      *const_cast<Variant*>(m_var) = esc;
+    }
+  } else {
+    ASSERT(m_data);
+    data = m_data;
+    ArrayData* esc = data->escalate(true);
+    if (data != esc) {
+      esc->incRefCount();
+      if (data->decRefCount() == 0) {
+        data->release();
+      }
+      m_data = esc;
+    }
+  }
+}
+
+ArrayData* MutableArrayIter::cowCheck() {
+  ArrayData* data;
+  if (m_var) {
+    data = getData();
+    if (!data) return NULL;
+    if (data->getCount() > 1 && !data->noCopyOnWrite()) {
+      *const_cast<Variant*>(m_var) = (data = data->copyWithStrongIterators());
+    }
+  } else {
+    ASSERT(m_data);
+    data = m_data;
+    if (data->getCount() > 1 && !data->noCopyOnWrite()) {
+      ArrayData* copied = data->copyWithStrongIterators();
+      copied->incRefCount();
+      if (data->decRefCount() == 0) {
+        data->release();
+      }
+      m_data = data = copied;
+    }
+  }
+  return data;
+}
+
+ArrayData* MutableArrayIter::getData() {
+  ASSERT(m_var);
   if (m_var->is(KindOfArray)) {
     return m_var->getArrayData();
   }
   return NULL;
 }
+
+MIterCtx::~MIterCtx() {
+  m_mArray->~MutableArrayIter();
+  smart_free(m_mArray);
+  tvRefcountedDecRef(&m_key);
+  tvRefcountedDecRef(&m_val);
+  if (m_ref && m_ref->decRefCount() == 0) {
+    const_cast<RefData*>(m_ref)->release();
+  }
+}
+
 ///////////////////////////////////////////////////////////////////////////////
 }

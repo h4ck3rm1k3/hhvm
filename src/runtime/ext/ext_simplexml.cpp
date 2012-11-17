@@ -30,7 +30,7 @@ IMPLEMENT_DEFAULT_EXTENSION(SimpleXML);
 // it go out of scope.
 class XmlDocWrapper : public SweepableResourceData {
 public:
-  DECLARE_OBJECT_ALLOCATION(XmlDocWrapper)
+  DECLARE_OBJECT_ALLOCATION_NO_SWEEP(XmlDocWrapper)
 
   static StaticString s_class_name;
   // overriding ResourceData
@@ -39,16 +39,16 @@ public:
   XmlDocWrapper(xmlDocPtr doc) : m_doc(doc) {
   }
 
-  ~XmlDocWrapper() {
+  void sweep() {
     if (m_doc) {
       xmlFreeDoc(m_doc);
     }
   }
-
+  ~XmlDocWrapper() { XmlDocWrapper::sweep(); }
 private:
   xmlDocPtr m_doc;
 };
-IMPLEMENT_OBJECT_ALLOCATION(XmlDocWrapper)
+IMPLEMENT_OBJECT_ALLOCATION_NO_DEFAULT_SWEEP(XmlDocWrapper)
 
 StaticString XmlDocWrapper::s_class_name("xmlDoc");
 
@@ -71,18 +71,20 @@ static inline bool match_ns(xmlNodePtr node, CStrRef ns, bool is_prefix) {
 
 static String node_list_to_string(xmlDocPtr doc, xmlNodePtr list) {
   xmlChar *tmp = xmlNodeListGetString(doc, list, 1);
-  char *res = strdup((char*)tmp);
+  String res((char*) tmp, CopyString);
   xmlFree(tmp);
-  return String((const char *)res, AttachString);
+  return res;
 }
 
 static Array collect_attributes(xmlNodePtr node, CStrRef ns, bool is_prefix) {
   ASSERT(node);
   Array attributes = Array::Create();
-  for (xmlAttrPtr attr = node->properties; attr; attr = attr->next) {
-    if (match_ns((xmlNodePtr)attr, ns, is_prefix)) {
-      String n = String((char*)attr->name, xmlStrlen(attr->name), CopyString);
-      attributes.set(n, node_list_to_string(node->doc, attr->children));
+  if (node->type != XML_ENTITY_DECL) {
+    for (xmlAttrPtr attr = node->properties; attr; attr = attr->next) {
+      if (match_ns((xmlNodePtr)attr, ns, is_prefix)) {
+        String n = String((char*)attr->name, xmlStrlen(attr->name), CopyString);
+        attributes.set(n, node_list_to_string(node->doc, attr->children));
+      }
     }
   }
   return attributes;
@@ -262,8 +264,12 @@ Variant f_simplexml_load_file(CStrRef filename,
 ///////////////////////////////////////////////////////////////////////////////
 // SimpleXMLElement
 
-c_SimpleXMLElement::c_SimpleXMLElement()
-    : m_node(NULL), m_is_text(false), m_free_text(false),
+c_SimpleXMLElement::c_SimpleXMLElement(const ObjectStaticCallbacks *cb) :
+    ExtObjectDataFlags<ObjectData::UseGet|
+                       ObjectData::UseSet|
+                       ObjectData::UseIsset|
+                       ObjectData::UseUnset>(cb),
+      m_node(NULL), m_is_text(false), m_free_text(false),
       m_is_attribute(false), m_is_children(false), m_is_property(false),
       m_xpath(NULL) {
   setAttribute(HasLval);
@@ -271,6 +277,10 @@ c_SimpleXMLElement::c_SimpleXMLElement()
 }
 
 c_SimpleXMLElement::~c_SimpleXMLElement() {
+  c_SimpleXMLElement::sweep();
+}
+
+void c_SimpleXMLElement::sweep() {
   if (m_xpath) {
     xmlXPathFreeContext(m_xpath);
   }
@@ -791,7 +801,7 @@ Variant c_SimpleXMLElement::t___set(Variant name, Variant value) {
                   "(duplicate subnodes or attr detected)");
   } else if (m_is_attribute) {
     if (name.isInteger()) {
-      raise_warning("Cannot change attribute number %lld when only %d "
+      raise_warning("Cannot change attribute number %lld when only %ld "
                     "attributes exist", name.toInt64(),
                     m_attributes.toArray().size());
     } else {
@@ -822,7 +832,7 @@ Variant c_SimpleXMLElement::t___set(Variant name, Variant value) {
 }
 
 bool c_SimpleXMLElement::o_toBoolean() const {
-  return m_node != NULL || o_properties.size();
+  return m_node != NULL || getProperties().size();
 }
 
 int64 c_SimpleXMLElement::o_toInt64() const {
@@ -856,7 +866,7 @@ Array c_SimpleXMLElement::o_toArray() const {
 Variant c_SimpleXMLElement::t_getiterator() {
   INSTANCE_METHOD_INJECTION_BUILTIN(SimpleXMLElement, SimpleXMLElement::getiterator);
   c_SimpleXMLElementIterator *iter = NEWOBJ(c_SimpleXMLElementIterator)();
-  iter->reset_iterator(this);
+  iter->set_parent(this);
   return Object(iter);
 }
 
@@ -873,11 +883,6 @@ int64 c_SimpleXMLElement::t_count() {
     return n;
   }
   return m_children.toArray().size();
-}
-
-Variant c_SimpleXMLElement::t___destruct() {
-  INSTANCE_METHOD_INJECTION_BUILTIN(SimpleXMLElement, SimpleXMLElement::__destruct);
-  return null;
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -970,19 +975,29 @@ void c_SimpleXMLElement::t_offsetunset(CVarRef index) {
 
 ///////////////////////////////////////////////////////////////////////////////
 
-c_SimpleXMLElementIterator::c_SimpleXMLElementIterator()
-    : m_parent(NULL), m_iter1(NULL), m_iter2(NULL) {
+c_SimpleXMLElementIterator::c_SimpleXMLElementIterator(
+  const ObjectStaticCallbacks *cb) :
+    ExtObjectData(cb), m_parent(), m_iter1(NULL), m_iter2(NULL) {
 }
 
 c_SimpleXMLElementIterator::~c_SimpleXMLElementIterator() {
+  c_SimpleXMLElementIterator::sweep();
+}
+
+void c_SimpleXMLElementIterator::sweep() {
   delete m_iter1;
   delete m_iter2;
 }
 
-void c_SimpleXMLElementIterator::reset_iterator(c_SimpleXMLElement *parent) {
+void c_SimpleXMLElementIterator::set_parent(c_SimpleXMLElement* parent) {
+  m_parent = parent;
+  reset_iterator();
+}
+
+void c_SimpleXMLElementIterator::reset_iterator() {
+  ASSERT(m_parent.get() != NULL);
   delete m_iter1; m_iter1 = NULL;
   delete m_iter2; m_iter2 = NULL;
-  m_parent = parent;
 
   if (m_parent->m_is_attribute) {
     m_iter1 = new ArrayIter(m_parent->m_attributes);
@@ -997,8 +1012,6 @@ void c_SimpleXMLElementIterator::reset_iterator(c_SimpleXMLElement *parent) {
                               "", false);
     Variant children = m_parent->m_children[name];
     m_parent->m_children = CREATE_MAP1(name, children);
-
-    m_temp = m_parent;
     // fall through
   }
 
@@ -1024,11 +1037,6 @@ void c_SimpleXMLElementIterator::reset_iterator(c_SimpleXMLElement *parent) {
 }
 
 void c_SimpleXMLElementIterator::t___construct() {
-}
-
-Variant c_SimpleXMLElementIterator::t___destruct() {
-  INSTANCE_METHOD_INJECTION_BUILTIN(SimpleXMLElementIterator, SimpleXMLElementIterator::__destruct);
-  return null;
 }
 
 Variant c_SimpleXMLElementIterator::t_current() {
@@ -1090,7 +1098,7 @@ Variant c_SimpleXMLElementIterator::t_next() {
 
 Variant c_SimpleXMLElementIterator::t_rewind() {
   INSTANCE_METHOD_INJECTION_BUILTIN(SimpleXMLElementIterator, SimpleXMLElementIterator::rewind);
-  reset_iterator(m_parent);
+  reset_iterator();
   return null;
 }
 
@@ -1102,16 +1110,12 @@ Variant c_SimpleXMLElementIterator::t_valid() {
 ///////////////////////////////////////////////////////////////////////////////
 // LibXMLError
 
-c_LibXMLError::c_LibXMLError() {
+c_LibXMLError::c_LibXMLError(const ObjectStaticCallbacks *cb) :
+    ExtObjectData(cb) {
 }
 c_LibXMLError::~c_LibXMLError() {
 }
 void c_LibXMLError::t___construct() {
-}
-
-Variant c_LibXMLError::t___destruct() {
-  INSTANCE_METHOD_INJECTION_BUILTIN(LibXMLError, LibXMLError::__destruct);
-  return null;
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -1136,6 +1140,7 @@ public:
   virtual void requestInit() {
     m_use_error = false;
     m_errors.reset();
+    xmlParserInputBufferCreateFilenameDefault(NULL);
   }
   virtual void requestShutdown() {
     m_use_error = false;
@@ -1189,12 +1194,12 @@ static void libxml_error_handler(void *userData, xmlErrorPtr error) {
 
 static Object create_libxmlerror(xmlError &error) {
   Object ret(NEWOBJ(c_LibXMLError)());
-  ret->o_set("level",   error.level);
-  ret->o_set("code",    error.code);
-  ret->o_set("column",  error.int2);
-  ret->o_set("message", String(error.message, CopyString));
-  ret->o_set("file",    String(error.file, CopyString));
-  ret->o_set("line",    error.line);
+  ret->o_setPublic("level",   error.level);
+  ret->o_setPublic("code",    error.code);
+  ret->o_setPublic("column",  error.int2);
+  ret->o_setPublic("message", String(error.message, CopyString));
+  ret->o_setPublic("file",    String(error.file, CopyString));
+  ret->o_setPublic("line",    error.line);
   return ret;
 }
 
@@ -1239,8 +1244,20 @@ void f_libxml_set_streams_context(CObjRef streams_context) {
   throw NotImplementedException(__func__);
 }
 
+static xmlParserInputBufferPtr
+hphp_libxml_input_buffer_noload(const char *URI, xmlCharEncoding enc) {
+  return NULL;
+}
+
 bool f_libxml_disable_entity_loader(bool disable /* = true */) {
-  throw NotImplementedException(__func__);
+  xmlParserInputBufferCreateFilenameFunc old;
+
+  if (disable) {
+    old = xmlParserInputBufferCreateFilenameDefault(hphp_libxml_input_buffer_noload);
+  } else {
+    old = xmlParserInputBufferCreateFilenameDefault(NULL);
+  }
+  return (old == hphp_libxml_input_buffer_noload);
 }
 
 ///////////////////////////////////////////////////////////////////////////////

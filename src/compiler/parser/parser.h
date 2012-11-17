@@ -17,6 +17,7 @@
 #ifndef __HPHP_PARSER_H__
 #define __HPHP_PARSER_H__
 
+#include <runtime/base/util/exceptions.h>
 #include <util/parser/parser.h>
 #include <compiler/construct.h>
 
@@ -28,7 +29,15 @@
 #ifdef HPHP_PARSER_ERROR
 #undef HPHP_PARSER_ERROR
 #endif
-#define HPHP_PARSER_ERROR HPHP::Logger::Error
+#define HPHP_PARSER_ERROR(fmt, p, args...)                              \
+  do {                                                                  \
+    if (!HPHP::hhvm) {                                                  \
+      HPHP::Logger::Error(fmt " %s", ##args, (p)->getMessage(true).c_str()); \
+    }                                                                   \
+    throw HPHP::ParseTimeFatalException((p)->file(), (p)->line1(),      \
+                                        fmt, ##args);                   \
+  } while (0)
+
 
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
@@ -90,12 +99,17 @@ public:
          AnalysisResultPtr ar, int fileSize = 0);
 
   // implementing ParserBase
-  virtual bool parse();
+  virtual bool parseImpl();
+  bool parse();
   virtual void error(const char* fmt, ...);
   virtual bool enableXHP();
+  virtual bool enableHipHopSyntax();
+  virtual bool enableFinallyStatement();
   IMPLEMENT_XHP_ATTRIBUTES;
 
-  void failed();
+  virtual void fatal(Location *loc, const char *msg);
+  std::string errString();
+
   // result
   StatementListPtr getTree() const { return m_tree;}
 
@@ -121,7 +135,7 @@ public:
   void onRefDim(Token &out, Token &var, Token &offset);
   void onCallParam(Token &out, Token *params, Token &expr, bool ref);
   void onCall(Token &out, bool dynamic, Token &name, Token &params,
-              Token *cls);
+              Token *cls, bool fromCompiler = false);
   void onEncapsList(Token &out, int type, Token &list);
   void addEncap(Token &out, Token *list, Token &expr, int type);
   void encapRefDim(Token &out, Token &var, Token &offset);
@@ -131,11 +145,8 @@ public:
   void onScalar(Token &out, int type, Token &scalar);
   void onExprListElem(Token &out, Token *exprs, Token &expr);
 
-  void pushObject(Token &base);
-  void popObject(Token &out);
-  void appendMethodParams(Token &params);
-  void appendProperty(Token &prop);
-  void appendRefDim(Token &offset);
+  void onObjectProperty(Token &out, Token &base, Token &prop);
+  void onObjectMethodCall(Token &out, Token &base, Token &prop, Token &params);
 
   void onListAssignment(Token &out, Token &vars, Token *expr);
   void onAListVar(Token &out, Token *list, Token *var);
@@ -149,17 +160,19 @@ public:
   void onArray(Token &out, Token &pairs, int op = T_ARRAY);
   void onArrayPair(Token &out, Token *pairs, Token *name, Token &value,
                    bool ref);
+  void onUserAttribute(Token &out, Token *attrList, Token &name, Token &value);
   void onClassConst(Token &out, Token &cls, Token &name, bool text);
   void fixStaticVars();
-  void onFunctionStart(Token &name);
+  void onFunctionStart(Token &name, bool doPushComment = true);
   void onFunction(Token &out, Token &ret, Token &ref, Token &name,
-                  Token &params, Token &stmt);
+                  Token &params, Token &stmt, Token *attr);
   void onParam(Token &out, Token *params, Token &type, Token &var,
-               bool ref, Token *defValue);
-  void onClassStart(int type, Token &name, Token *parent);
+               bool ref, Token *defValue, Token *attr);
+  void onClassStart(int type, Token &name);
   void onClass(Token &out, int type, Token &name, Token &base,
-               Token &baseInterface, Token &stmt);
-  void onInterface(Token &out, Token &name, Token &base, Token &stmt);
+               Token &baseInterface, Token &stmt, Token *attr);
+  void onInterface(Token &out, Token &name, Token &base, Token &stmt,
+                   Token *attr);
   void onInterfaceName(Token &out, Token *names, Token &name);
   void onTraitUse(Token &out, Token &traits, Token &rules);
   void onTraitName(Token &out, Token *names, Token &name);
@@ -169,9 +182,10 @@ public:
   void onTraitAliasRuleStart(Token &out, Token &className, Token &methodName);
   void onTraitAliasRuleModify(Token &out, Token &rule, Token &accessModifiers,
                          Token &newMethodName);
-  void onMethodStart(Token &name, Token &mods);
+  void onMethodStart(Token &name, Token &mods, bool doPushComment = true);
   void onMethod(Token &out, Token &modifiers, Token &ret, Token &ref,
-                Token &name, Token &params, Token &stmt, bool reloc = true);
+                Token &name, Token &params, Token &stmt, Token *attr,
+                bool reloc = true);
   void onMemberModifier(Token &out, Token *modifiers, Token &modifier);
   void onStatementListStart(Token &out);
   void addStatement(Token &out, Token &stmts, Token &new_stmt);
@@ -202,9 +216,11 @@ public:
   void onForEach(Token &out, Token &arr, Token &name, Token &value,
                  Token &stmt);
   void onTry(Token &out, Token &tryStmt, Token &className, Token &var,
-             Token &catchStmt, Token &catches);
+             Token &catchStmt, Token &catches, Token &finallyStmt);
+  void onTry(Token &out, Token &tryStmt, Token &finallyStmt);
   void onCatch(Token &out, Token &catches, Token &className, Token &var,
                Token &stmt);
+  void onFinally(Token &out, Token &stmt);
   void onThrow(Token &out, Token &expr);
 
   void onClosure(Token &out, Token &ret, Token &ref, Token &params,
@@ -212,9 +228,6 @@ public:
   void onClosureParam(Token &out, Token *params, Token &param, bool ref);
   void onLabel(Token &out, Token &label);
   void onGoto(Token &out, Token &label, bool limited);
-
-  void onTypeDecl(Token &out, Token &type, Token &decl);
-  void onTypedVariable(Token &out, Token *exprs, Token &var, Token *value);
 
   virtual void invalidateGoto(TStatementPtr stmt, GotoError error);
   virtual void invalidateLabel(TStatementPtr stmt);
@@ -225,7 +238,6 @@ public:
 private:
   AnalysisResultPtr m_ar;
   FileScopePtr m_file;
-  ExpressionPtrVec m_objects; // for parsing object property/method calls
   std::vector<std::string> m_comments; // for docComment stack
   std::vector<BlockScopePtrVec> m_scopes;
   std::vector<int> m_generators;
@@ -237,6 +249,7 @@ private:
 
   // parser output
   StatementListPtr m_tree;
+  std::string m_error;
 
   std::vector<bool> m_hasCallToGetArgs;
   std::vector<StringToExpressionPtrVecMap> m_staticVars;
@@ -244,6 +257,7 @@ private:
   bool m_closureGenerator;
 
   void pushComment();
+  void pushComment(const std::string& s);
   std::string popComment();
 
   void newScope();
@@ -253,6 +267,8 @@ private:
   ExpressionPtr createDynamicVariable(ExpressionPtr exp);
 
   bool hasType(Token &type);
+
+  void checkAssignThis(Token &var);
 };
 
 ///////////////////////////////////////////////////////////////////////////////

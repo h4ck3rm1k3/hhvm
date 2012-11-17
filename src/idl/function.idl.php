@@ -117,7 +117,7 @@ DefineFunction(
 DefineFunction(
   array(
     'name'   => "call_user_func_array",
-    'desc'   => "Call a user defined function with the parameters in param_arr.",
+    'desc'   => "Call a user defined function with the parameters in params.",
     'flags'  =>  HasDocComment | HasOptFunction | NoProfile | ContextSensitive,
     'opt'    => "hphp_opt_call_user_func",
     'return' => array(
@@ -143,7 +143,7 @@ DefineFunction(
   array(
     'name'   => "call_user_func",
     'desc'   => "Call a user defined function given by the function parameter.",
-    'flags'  =>  HasDocComment | MixedVariableArguments | HasOptFunction | NoProfile | ContextSensitive,
+    'flags'  =>  HasDocComment | VariableArguments | HasOptFunction | NoProfile | ContextSensitive,
     'opt'    => "hphp_opt_call_user_func",
     'return' => array(
       'type'   => Variant,
@@ -388,7 +388,7 @@ DefineFunction(
   array(
     'name'   => "forward_static_call",
     'desc'   => "Calls a user defined function or method given by the function parameter, with the following arguments. This function must be called within a method context, it can't be used outside a class.",
-    'flags'  =>  HasDocComment | MixedVariableArguments | ContextSensitive,
+    'flags'  =>  HasDocComment | VariableArguments | ContextSensitive,
     'return' => array(
       'type'   => Variant,
       'desc'   => "Returns the function result, or FALSE on error.",
@@ -409,7 +409,7 @@ DefineFunction(
     'desc'   => "Gets the name of the class the static method is called in.",
     'flags'  =>  HasDocComment,
     'return' => array(
-      'type'   => String,
+      'type'   => Variant,
       'desc'   => "Returns the class name. Returns FALSE if called from outside a class.",
     ),
     'taint_observer' => false,
@@ -476,7 +476,7 @@ DefineFunction(
     'desc'   => "Gets the number of arguments passed to the function.\n\nThis function may be used in conjunction with func_get_arg() and func_get_args() to allow user-defined functions to accept variable-length argument lists.",
     'flags'  =>  HasDocComment,
     'return' => array(
-      'type'   => Int32,
+      'type'   => Int64,
       'desc'   => "Returns the number of arguments passed into the current user-defined function.",
     ),
     'taint_observer' => false,

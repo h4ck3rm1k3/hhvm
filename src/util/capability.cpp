@@ -18,6 +18,7 @@
 
 #include "capability.h"
 #include <util/logger.h>
+#include <linux/types.h>
 #include <sys/capability.h>
 #include <sys/prctl.h>
 #include <sys/types.h>
@@ -30,11 +31,11 @@ static bool setInitialCapabilities() {
   cap_t cap_d = cap_init();
   if (cap_d != NULL) {
     cap_value_t cap_list[] = {CAP_NET_BIND_SERVICE, CAP_SYS_RESOURCE,
-                              CAP_SETUID, CAP_SETGID};
+                              CAP_SETUID, CAP_SETGID, CAP_SYS_NICE};
     cap_clear(cap_d);
 
-    if (cap_set_flag(cap_d, CAP_PERMITTED, 4, cap_list, CAP_SET) < 0 ||
-        cap_set_flag(cap_d, CAP_EFFECTIVE, 4, cap_list, CAP_SET) < 0) {
+    if (cap_set_flag(cap_d, CAP_PERMITTED, 5, cap_list, CAP_SET) < 0 ||
+        cap_set_flag(cap_d, CAP_EFFECTIVE, 5, cap_list, CAP_SET) < 0) {
       Logger::Error("cap_set_flag failed");
       return false;
     }
@@ -63,12 +64,13 @@ static bool setMinimalCapabilities() {
   cap_t cap_d = cap_init();
 
   if (cap_d != NULL) {
-    cap_value_t cap_list[] = {CAP_NET_BIND_SERVICE, CAP_SYS_RESOURCE};
+    cap_value_t cap_list[] = {CAP_NET_BIND_SERVICE, CAP_SYS_RESOURCE,
+                              CAP_SYS_NICE};
 
     cap_clear(cap_d);
 
-    if (cap_set_flag(cap_d, CAP_PERMITTED, 2, cap_list, CAP_SET) < 0 ||
-        cap_set_flag(cap_d, CAP_EFFECTIVE, 2, cap_list, CAP_SET) < 0) {
+    if (cap_set_flag(cap_d, CAP_PERMITTED, 3, cap_list, CAP_SET) < 0 ||
+        cap_set_flag(cap_d, CAP_EFFECTIVE, 3, cap_list, CAP_SET) < 0) {
       Logger::Error("cap_set_flag failed");
       return false;
     }

@@ -27,8 +27,6 @@
 #include <compiler/expression/constant_expression.h>
 
 using namespace HPHP;
-using namespace std;
-using namespace boost;
 
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -40,13 +38,14 @@ ClassConstantExpression::ClassConstantExpression
   : Expression(
       EXPRESSION_CONSTRUCTOR_PARAMETER_VALUES(ClassConstantExpression)),
     StaticClassName(classExp), m_varName(varName), m_defScope(NULL),
-    m_valid(false) {
+    m_valid(false), m_depsSet(false) {
 }
 
 ExpressionPtr ClassConstantExpression::clone() {
   ClassConstantExpressionPtr exp(new ClassConstantExpression(*this));
   Expression::deepCopy(exp);
   exp->m_class = Clone(m_class);
+  exp->m_depsSet = false;
   return exp;
 }
 
@@ -72,6 +71,13 @@ void ClassConstantExpression::analyzeProgram(AnalysisResultPtr ar) {
       ConstructPtr decl = cls->getConstants()->
         getValueRecur(ar, m_varName, cls);
       cls->addUse(getScope(), BlockScope::UseKindConstRef);
+      m_depsSet = true;
+      if (ar->getPhase() == AnalysisResult::AnalyzeFinal) {
+        if (!isPresent()) {
+          getScope()->getVariables()->
+            setAttribute(VariableTable::NeedGlobalPointer);
+        }
+      }
     }
     addUserClass(ar, m_className);
   }
@@ -122,7 +128,13 @@ ExpressionPtr ClassConstantExpression::preOptimize(AnalysisResultConstPtr ar) {
   }
 
   ClassScopePtr cls = resolveClass();
-  if (!cls || (cls->isVolatile() && !isPresent())) return ExpressionPtr();
+  if (!cls || (cls->isVolatile() && !isPresent())) {
+    if (cls && !m_depsSet) {
+      cls->addUse(getScope(), BlockScope::UseKindConstRef);
+      m_depsSet = true;
+    }
+    return ExpressionPtr();
+  }
 
   ConstantTablePtr constants = cls->getConstants();
   ClassScopePtr defClass = cls;
@@ -131,18 +143,14 @@ ExpressionPtr ClassConstantExpression::preOptimize(AnalysisResultConstPtr ar) {
     BlockScope::s_constMutex.lock();
     ExpressionPtr value = dynamic_pointer_cast<Expression>(decl);
     BlockScope::s_constMutex.unlock();
-    if (value->isScalar()) {
-      ExpressionPtr rep = Clone(value, getScope());
-      bool annotate = Option::FlAnnotate;
-      Option::FlAnnotate = false; // avoid nested comments on getText
-      rep->setComment(getText());
-      Option::FlAnnotate = annotate;
-      rep->setLocation(getLocation());
-      if (!value->is(KindOfScalarExpression)) {
-        value->getScope()->addUse(getScope(), BlockScope::UseKindConstRef);
-      }
-      return replaceValue(rep);
-    }
+
+    ExpressionPtr rep = Clone(value, getScope());
+    bool annotate = Option::FlAnnotate;
+    Option::FlAnnotate = false; // avoid nested comments on getText
+    rep->setComment(getText());
+    Option::FlAnnotate = annotate;
+    rep->setLocation(getLocation());
+    return replaceValue(rep);
   }
   return ExpressionPtr();
 }
@@ -157,37 +165,15 @@ TypePtr ClassConstantExpression::inferTypes(AnalysisResultPtr ar,
     return Type::Variant;
   }
 
-  ClassScopePtr cls = resolveClass();
+  ClassScopePtr cls = resolveClassWithChecks();
   if (!cls) {
-    if (isRedeclared()) {
-      getScope()->getVariables()->
-        setAttribute(VariableTable::NeedGlobalPointer);
-    } else if (getScope()->isFirstPass()) {
-      Compiler::Error(Compiler::UnknownClass, self);
-    }
     return Type::Variant;
   }
 
-  ASSERT(cls);
   ClassScopePtr defClass = cls;
-  bool isDynamic = false;
-  ConstructPtr decl;
-  // we want to read dynamic-ness and declaration atomically
-  if (getScope()->is(BlockScope::FunctionScope)) {
-    GET_LOCK(cls);
-    isDynamic = cls->getConstants()->isDynamic(m_varName);
-    decl = cls->getConstants()->getDeclarationRecur(ar, m_varName, defClass);
-  } else {
-    ASSERT(getScope()->is(BlockScope::ClassScope));
-    TRY_LOCK(cls);
-    isDynamic = cls->getConstants()->isDynamic(m_varName);
-    decl = cls->getConstants()->getDeclarationRecur(ar, m_varName, defClass);
-  }
+  ConstructPtr decl =
+    cls->getConstants()->getDeclarationRecur(ar, m_varName, defClass);
 
-  if (isDynamic || !isPresent()) {
-    getScope()->getVariables()->
-      setAttribute(VariableTable::NeedGlobalPointer);
-  }
   if (decl) { // No decl means an extension class or derived from redeclaring
     cls = defClass;
     m_valid = true;
@@ -274,16 +260,18 @@ void ClassConstantExpression::outputCPPImpl(CodeGenerator &cg,
                 cg.getGlobals(ar));
       if (cg.isFileOrClassHeader()) {
         if (getClassScope()) {
-          getClassScope()->addUsedClassFullHeader(trueClassName);
+          getClassScope()->addUsedClassFullHeader(ClassScopeRawPtr(cls));
         } else {
-          getFileScope()->addUsedClassFullHeader(trueClassName);
+          getFileScope()->addUsedClassFullHeader(ClassScopeRawPtr(cls));
         }
       }
     } else if (cg.isFileOrClassHeader()) {
       if (getClassScope()) {
-        getClassScope()->addUsedClassConstHeader(trueClassName, m_varName);
+        getClassScope()->addUsedClassConstHeader(ClassScopeRawPtr(cls),
+                                                 m_varName);
       } else {
-        getFileScope()->addUsedClassConstHeader(trueClassName, m_varName);
+        getFileScope()->addUsedClassConstHeader(ClassScopeRawPtr(cls),
+                                                m_varName);
       }
     }
     cg_printf("%s%s%s%s",

@@ -214,8 +214,8 @@ static inline char *php_fcvt(double value, int ndigit, int *decpt, int *sign) {
   return(__cvt(value, ndigit, decpt, sign, 1, 1));
 }
 
-static inline char *php_gcvt(double value, int ndigit, char dec_point,
-                             char exponent, char *buf) {
+static char *php_gcvt(double value, int ndigit, char dec_point,
+                      char exponent, char *buf) {
   char *digits, *dst, *src;
   int i, decpt, sign;
 
@@ -236,10 +236,7 @@ static inline char *php_gcvt(double value, int ndigit, char dec_point,
     *dst++ = '-';
   }
 
-  for (i = 0; i < ndigit && digits[i] != '\0'; i++);
-
-  if ((decpt >= 0 && decpt - i > 4)
-      || (decpt < 0 && decpt < -3)) {     /* use E-style */
+  if ((decpt >= 0 && decpt > ndigit) || decpt < -3) { /* use E-style */
     /* exponential format (e.g. 1.2345e+13) */
     if (--decpt < 0) {
       sign = 1;
@@ -684,14 +681,14 @@ inline static void appenddouble(char **buffer, int *pos,
   if (isnan(number)) {
     is_negative = (number<0);
     appendstring(buffer, pos, size, "NaN", 3, 0, padding,
-                 alignment, precision, is_negative, 0, always_sign);
+                 alignment, 3, is_negative, 0, always_sign);
     return;
   }
 
   if (isinf(number)) {
     is_negative = (number<0);
     appendstring(buffer, pos, size, "INF", 3, 0, padding,
-                 alignment, precision, is_negative, 0, always_sign);
+                 alignment, 3, is_negative, 0, always_sign);
     return;
   }
 

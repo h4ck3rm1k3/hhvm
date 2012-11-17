@@ -152,14 +152,63 @@ DefineFunction(
 BeginClass(
   array(
     'name' => 'Continuation',
+    'flags' => IsFinal,
     'ifaces' => array('Iterator'),
     'footer' => <<<EOT
-protected:
-  virtual bool php_sleep(Variant &ret);
+  public: void setCalledClass(CStrRef cls) {
+    const_assert(!hhvm);
+    m_called_class = cls;
+  }
+protected: virtual bool php_sleep(Variant &ret);
 private:
-  const CallInfo *m_callInfo;
-  void *m_extra;
+  template<typename FI> void nextImpl(FI& fi);
+
+public:
+  inline void preNext() {
+    if (m_done) {
+      throw_exception(Object(SystemLib::AllocExceptionObject(
+                               "Continuation is already finished")));
+    }
+    if (m_running) {
+      throw_exception(Object(SystemLib::AllocExceptionObject(
+                               "Continuation is already running")));
+    }
+    m_running = true;
+    ++m_index;
+  }
+
+  inline void nextCheck() {
+    if (m_index < 0LL) {
+      throw_exception(
+        Object(SystemLib::AllocExceptionObject("Need to call next() first")));
+    }
+  }
+
+public:
+#define LABEL_DECL int64 m_label;
+  Object m_obj;
+  Array m_args;
+#ifndef HHVM
+  LABEL_DECL
+#endif
+  int64 m_index;
+  Variant m_value;
+  Variant m_received;
+  String m_origFuncName;
+  String m_called_class;
+  bool m_done;
+  bool m_running;
+  bool m_should_throw;
   bool m_isMethod;
+  const CallInfo *m_callInfo;
+  union {
+    void *m_extra;
+    VM::Func *m_vmFunc;
+  };
+#ifdef HHVM
+  LABEL_DECL
+#endif
+#undef LABEL_DECL
 EOT
 ,
   )
@@ -357,76 +406,6 @@ DefineFunction(
     ),
   ));
 
-DefineProperty(
-  array(
-    'name'  => 'obj',
-    'type'  => Object,
-    'flags' => IsPrivate,
-  ));
-
-DefineProperty(
-  array(
-    'name'  => 'args',
-    'type'  => VariantVec,
-    'flags' => IsPrivate,
-  ));
-
-DefineProperty(
-  array(
-    'name'  => 'label',
-    'type'  => Int64,
-    'flags' => IsPrivate,
-  ));
-
-DefineProperty(
-  array(
-    'name'  => 'index',
-    'type'  => Int64,
-    'flags' => IsPrivate,
-  ));
-
-DefineProperty(
-  array(
-    'name'  => 'value',
-    'type'  => Variant,
-    'flags' => IsPrivate,
-  ));
-
-DefineProperty(
-  array(
-    'name'  => 'received',
-    'type'  => Variant,
-    'flags' => IsPrivate,
-  ));
-
-DefineProperty(
-  array(
-    'name'  => 'origFuncName',
-    'type'  => String,
-    'flags' => IsPrivate,
-  ));
-
-DefineProperty(
-  array(
-    'name'  => 'called_class',
-    'type'  => String,
-    'flags' => IsPrivate,
-  ));
-
-DefineProperty(
-  array(
-    'name'  => 'done',
-    'type'  => Boolean,
-    'flags' => IsPrivate,
-  ));
-
-DefineProperty(
-  array(
-    'name'  => 'running',
-    'type'  => Boolean,
-    'flags' => IsPrivate,
-  ));
-
 DefineFunction(
   array(
     'name'   => '__clone',
@@ -439,91 +418,58 @@ EndClass();
 
 BeginClass(
   array(
-    'name'   => 'GenericContinuation',
-    'parent' => 'Continuation',
-    'footer' => <<<EOT
-public:
-  LVariableTable m_statics;
-EOT
-,
-  )
-);
+    'name' => "DummyContinuation",
+    'ifaces' => array('Iterator'),
+    'desc' => "Represents an invalid continuation which will fatal when used.",
+  ));
 
 DefineFunction(
   array(
     'name'   => '__construct',
+    'args'   => array(),
     'return' => array(
       'type'   => null,
-    ),
-    'args'   => array(
-      array(
-        'name'   => 'func',
-        'type'   => Int64,
-      ),
-      array(
-        'name'   => 'extra',
-        'type'   => Int64,
-      ),
-      array(
-        'name'   => 'isMethod',
-        'type'   => Boolean,
-      ),
-      array(
-        'name'   => 'origFuncName',
-        'type'   => String,
-      ),
-      array(
-        'name'   => 'vars',
-        'type'   => VariantMap,
-      ),
-      array(
-        'name'   => 'obj',
-        'type'   => Variant,
-        'value'  => 'null',
-      ),
-      array(
-        'name'   => 'args',
-        'type'   => VariantMap,
-        'value'  => 'null_array',
-      ),
     ),
   ));
 
 DefineFunction(
   array(
-    'name'   => 'update',
+    'name'   => 'current',
     'return' => array(
-      'type'   => null,
-    ),
-    'args'   => array(
-      array(
-        'name'   => 'label',
-        'type'   => Int64,
-      ),
-      array(
-        'name'   => 'value',
-        'type'   => Variant,
-      ),
-      array(
-        'name'   => 'vars',
-        'type'   => VariantMap,
-      ),
+      'type'   => Variant,
     ),
   ));
 
 DefineFunction(
   array(
-    'name'   => 'getVars',
+    'name'   => 'key',
     'return' => array(
-      'type'   => VariantMap,
+      'type'   => Int64,
     ),
   ));
 
-DefineProperty(
+DefineFunction(
   array(
-    'name'  => 'vars',
-    'type'  => VariantMap,
-    'flags' => IsPrivate,
+    'name'   => 'next',
+    'return' => array(
+      'type'   => null,
+    ),
+  ));
+
+DefineFunction(
+  array(
+    'name'   => 'rewind',
+    'return' => array(
+      'type'   => null,
+    ),
+  ));
+
+DefineFunction(
+  array(
+    'name'   => 'valid',
+    'return' => array(
+      'type'   => Boolean,
+    ),
   ));
 
 EndClass();

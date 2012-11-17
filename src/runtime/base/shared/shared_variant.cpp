@@ -20,8 +20,6 @@
 #include <runtime/base/shared/shared_map.h>
 #include <runtime/base/runtime_option.h>
 
-using namespace std;
-
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -39,7 +37,6 @@ SharedVariant::SharedVariant(CVarRef source, bool serialized,
       m_data.num = source.toBoolean();
       break;
     }
-  case KindOfInt32:
   case KindOfInt64:
     {
       m_type = KindOfInt64;
@@ -75,7 +72,7 @@ SharedVariant::SharedVariant(CVarRef source, bool serialized,
           setSerializedArray();
           m_shouldCache = true;
           String s = apc_serialize(source);
-          m_data.str = new StringData(s.data(), s.size(), CopyString);
+          m_data.str = new StringData(s.data(), s.size(), CopyMalloc);
           break;
         }
       }
@@ -120,13 +117,14 @@ SharedVariant::SharedVariant(CVarRef source, bool serialized,
         setIsObj();
       } else {
         String s = apc_serialize(source);
-        m_data.str = new StringData(s.data(), s.size(), CopyString);
+        m_data.str = new StringData(s.data(), s.size(), CopyMalloc);
       }
       break;
     }
   }
 }
 
+HOT_FUNC
 Variant SharedVariant::toLocal() {
   switch (m_type) {
   case KindOfBoolean:
@@ -250,49 +248,11 @@ SharedVariant::~SharedVariant() {
 
 ///////////////////////////////////////////////////////////////////////////////
 
-size_t SharedVariant::arrSize() const {
-  ASSERT(is(KindOfArray));
-  if (getIsVector()) return m_data.vec->size;
-  return m_data.map->size();
-}
-
-int SharedVariant::getIndex(CVarRef key) {
-  ASSERT(is(KindOfArray));
-  switch (key.getType()) {
-  case KindOfInt32:
-  case KindOfInt64: {
-    int64 num = key.getNumData();
-    if (getIsVector()) {
-      if (num < 0 || (size_t) num >= m_data.vec->size) return -1;
-      return num;
-    }
-    return m_data.map->indexOf(num);
-  }
-  case KindOfStaticString:
-  case KindOfString: {
-    if (getIsVector()) return -1;
-    StringData *sd = key.getStringData();
-    return m_data.map->indexOf(sd);
-  }
-  default:
-    // No other types are legitimate keys
-    break;
-  }
-  return -1;
-}
-
-int SharedVariant::getIndex(CStrRef key) {
+HOT_FUNC
+int SharedVariant::getIndex(const StringData* key) {
   ASSERT(is(KindOfArray));
   if (getIsVector()) return -1;
-  StringData *sd = key.get();
-  return m_data.map->indexOf(sd);
-}
-
-int SharedVariant::getIndex(litstr key) {
-  ASSERT(is(KindOfArray));
-  if (getIsVector()) return -1;
-  StringData sd(key);
-  return m_data.map->indexOf(&sd);
+  return m_data.map->indexOf(key);
 }
 
 int SharedVariant::getIndex(int64 key) {
@@ -313,6 +273,7 @@ Variant SharedVariant::getKey(ssize_t pos) const {
   return m_data.map->getKeyIndex(pos)->toLocal();
 }
 
+HOT_FUNC
 SharedVariant* SharedVariant::getValue(ssize_t pos) const {
   ASSERT(is(KindOfArray));
   if (getIsVector()) {
@@ -324,15 +285,21 @@ SharedVariant* SharedVariant::getValue(ssize_t pos) const {
 
 void SharedVariant::loadElems(ArrayData *&elems,
                               const SharedMap &sharedMap,
-                              bool keepRef /* = false */) {
+                              bool keepRef /* = false */,
+                              bool mapInit /* = false */) {
   ASSERT(is(KindOfArray));
   uint count = arrSize();
   bool isVector = getIsVector();
-  ArrayInit ai(count, keepRef);
-  for (uint i = 0; i < count; i++) {
-    if (isVector) {
+  ArrayInit ai = keepRef ? ArrayInit(count, true) :
+                 mapInit ? ArrayInit(count, ArrayInit::mapInit) :
+                 isVector ? ArrayInit(count, ArrayInit::vectorInit) :
+                 ArrayInit(count, false);
+  if (isVector) {
+    for (uint i = 0; i < count; i++) {
       ai.set(sharedMap.getValueRef(i));
-    } else {
+    }
+  } else {
+    for (uint i = 0; i < count; i++) {
       ai.add(m_data.map->getKeyIndex(i)->toLocal(), sharedMap.getValueRef(i),
              true);
     }
@@ -379,8 +346,7 @@ SharedVariant* SharedVariant::convertObj(CVarRef var) {
     // should also check the object itself
     return NULL;
   }
-  CArrRef arr = obj->o_toArray();
-  if (arr->hasInternalReference(seen, true)) {
+  if (obj->hasInternalReference(seen, true)) {
     return NULL;
   }
   SharedVariant *tmp = new SharedVariant(var, false, true, true);

@@ -26,8 +26,6 @@
 #include <compiler/analysis/function_scope.h>
 
 using namespace HPHP;
-using namespace std;
-using namespace boost;
 
 ///////////////////////////////////////////////////////////////////////////////
 // constructors/destructors
@@ -37,7 +35,7 @@ GlobalStatement::GlobalStatement
   : Statement(STATEMENT_CONSTRUCTOR_PARAMETER_VALUES(GlobalStatement)),
     m_exp(exp) {
 
-  set<string> seen;
+  std::set<string> seen;
   for (int i = 0; i < m_exp->getCount(); i++) {
     ExpressionPtr exp = (*m_exp)[i];
     exp->setContext(Expression::Declaration);
@@ -176,7 +174,7 @@ void GlobalStatement::outputCPPImpl(CodeGenerator &cg, AnalysisResultPtr ar) {
       cg_printf("variables->get(dgv_%d).assignRef(g->get(dgv_%d));\n", id, id);
       exp->outputCPPEnd(cg, ar);
     } else {
-      assert(false);
+      not_reached();
     }
   }
   if (m_exp->getCount() > 1) cg_indentEnd("}\n");

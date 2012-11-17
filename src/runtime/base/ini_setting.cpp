@@ -14,6 +14,9 @@
    +----------------------------------------------------------------------+
 */
 
+#define __STDC_LIMIT_MACROS
+#include <stdint.h>
+
 #include <runtime/base/ini_setting.h>
 #include <runtime/base/complex_types.h>
 #include <runtime/base/type_conversions.h>
@@ -23,8 +26,6 @@
 #include <runtime/base/timeout_thread.h>
 #include <runtime/ext/extension.h>
 #include <util/lock.h>
-
-using namespace std;
 
 ///////////////////////////////////////////////////////////////////////////////
 // defined in zend/zend_ini.tab.cpp
@@ -213,7 +214,9 @@ bool IniSetting::Get(CStrRef name, String &value) {
     return true;
   }
   if (name == "memory_limit") {
-    value = String((int64)g_context->getRequestMemoryMaxBytes());
+    int64 v = g_context->getRequestMemoryMaxBytes();
+    if (v == INT64_MAX) v = -1;
+    value = String(v);
     return true;
   }
   if (name == "max_execution_time" || name == "maximum_execution_time") {
@@ -239,6 +242,11 @@ bool IniSetting::Get(CStrRef name, String &value) {
   if (name == "upload_max_filesize") {
     int uploadMaxFilesize = VirtualHost::GetUploadMaxFileSize() / (1 << 20);
     value = String(uploadMaxFilesize);
+    return true;
+  }
+  if (name == "post_max_size") {
+    int postMaxSize = VirtualHost::GetMaxPostSize();
+    value = String(postMaxSize);
     return true;
   }
   if (name == "log_errors") {

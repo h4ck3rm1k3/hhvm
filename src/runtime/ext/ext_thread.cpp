@@ -50,11 +50,18 @@ bool f_hphp_thread_is_warmup_enabled() {
 }
 
 void f_hphp_thread_set_warmup_enabled() {
-  hphp_set_warmup_enabled();
+  raise_warning("hphp_thread_set_warmup_enabled is deprecated, to enable "
+                "the RequestInitFunction and RequestInitDocument features "
+                "please set Server.EnableMemoryManager=true in your HipHop "
+                "config");
 }
 
 int64 f_hphp_get_thread_id() {
   return  (unsigned long)Process::GetThreadId();
+}
+
+int32 f_hphp_gettid() {
+    return (unsigned int)Process::GetThreadPid();
 }
 
 ///////////////////////////////////////////////////////////////////////////////

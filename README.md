@@ -1,6 +1,6 @@
 # HipHop for PHP
 
-HipHop is a source code transformer which transforms PHP source code into highly optimized C++ and then compiles it using g++. Currently supported platforms are Linux and FreeBSD. There is no OS X support.
+HipHop is a high performance PHP toolchain. Currently supported platforms are Linux and FreeBSD. There is no OS X support.
 
 * [Developer Mailing List](http://groups.google.com/group/hiphop-php-dev)
 * [Wiki](http://wiki.github.com/facebook/hiphop-php)
@@ -64,7 +64,7 @@ Once this is done you can generate the build file. This will return you to the s
     make
 
 ## Contributing to HipHop
-HipHop is licensed under the PHP and Zend licenses expect as otherwise noted.
+HipHop is licensed under the PHP and Zend licenses except as otherwise noted.
 
 Before changes can be accepted a [Contributors Licensing Agreement](http://developers.facebook.com/opensource/cla) must be signed and returned.
 

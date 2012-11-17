@@ -25,6 +25,7 @@
 #include "atomic.h"
 #include "alloc.h"
 #include "exception.h"
+#include "runtime/vm/bytecode.h"
 
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
@@ -81,10 +82,11 @@ public:
    * Constructor.
    */
   JobQueue(int threadCount, bool threadRoundRobin, int dropCacheTimeout,
-           bool lifo)
+           bool dropStack, bool lifo)
       : SynchronizableMulti(threadRoundRobin ? 1 : threadCount),
         m_jobCount(0), m_stopped(false), m_workerCount(0),
-        m_dropCacheTimeout(dropCacheTimeout), m_lifo(lifo) {
+        m_dropCacheTimeout(dropCacheTimeout), m_dropStack(dropStack),
+        m_lifo(lifo) {
   }
 
   /**
@@ -114,7 +116,14 @@ public:
       } else if (!wait(id, true, m_dropCacheTimeout)) {
         // since we timed out, maybe we can turn idle without holding memory
         if (m_jobs.empty()) {
+          ScopedUnlock unlock(this);
           Util::flush_thread_caches();
+          if (m_dropStack && Util::s_stackLimit) {
+            Util::flush_thread_stack();
+          }
+          if (hhvm) {
+            VM::Stack::flush();
+          }
           flushed = true;
         }
       }
@@ -169,6 +178,7 @@ public:
   bool m_stopped;
   int m_workerCount;
   int m_dropCacheTimeout;
+  bool m_dropStack;
   bool m_lifo;
 };
 
@@ -176,8 +186,9 @@ template<typename TJob>
 class JobQueue<TJob,true> : public JobQueue<TJob,false> {
 public:
   JobQueue(int threadCount, bool threadRoundRobin, int dropCacheTimeout,
-           bool lifo) : JobQueue<TJob,false>(threadCount, threadRoundRobin,
-                                             dropCacheTimeout, lifo) {
+           bool dropStack, bool lifo) :
+    JobQueue<TJob,false>(threadCount, threadRoundRobin, dropCacheTimeout,
+                         dropStack, lifo) {
     pthread_cond_init(&m_cond, NULL);
   }
   ~JobQueue() {
@@ -206,6 +217,7 @@ class JobQueueWorker {
 public:
   typedef TJob JobType;
   static const bool Waitable = waitable;
+  static const bool CountActive = countActive;
   /**
    * Default constructor.
    */
@@ -292,12 +304,19 @@ public:
    * Constructor.
    */
   JobQueueDispatcher(int threadCount, bool threadRoundRobin,
-                     int dropCacheTimeout, void *opaque, bool lifo = false)
+                     int dropCacheTimeout, bool dropStack, void *opaque,
+                     bool lifo = false)
       : m_stopped(true), m_id(0), m_opaque(opaque),
-        m_queue(threadCount, threadRoundRobin, dropCacheTimeout, lifo) {
+        m_maxThreadCount(threadCount),
+        m_queue(threadCount, threadRoundRobin, dropCacheTimeout, dropStack,
+                lifo) {
     ASSERT(threadCount >= 1);
-    for (int i = 0; i < threadCount; i++) {
-      addWorkerImpl(false);
+    if (!TWorker::CountActive) {
+      // If TWorker does not support counting the number of
+      // active workers, just start all of the workers eagerly
+      for (int i = 0; i < threadCount; i++) {
+        addWorkerImpl(false);
+      }
     }
   }
 
@@ -321,12 +340,25 @@ public:
   int getQueuedJobs() {
     return m_queue.getQueuedJobs();
   }
+  int getTargetNumWorkers() {
+    if (TWorker::CountActive) {
+      int target = getActiveWorker() + getQueuedJobs();
+      return (target > m_maxThreadCount) ? m_maxThreadCount : target;
+    } else {
+      return m_maxThreadCount;
+    }
+  }
 
   /**
    * Creates worker threads and start running them. This is non-blocking.
    */
   void start() {
     Lock lock(m_mutex);
+    // Spin up more worker threads if appropriate
+    int target = getTargetNumWorkers();
+    for (int n = m_workers.size(); n < target; ++n) {
+      addWorkerImpl(false);
+    }
     for (typename
            std::set<AsyncFunc<TWorker>*>::iterator iter = m_funcs.begin();
          iter != m_funcs.end(); ++iter) {
@@ -340,6 +372,12 @@ public:
    */
   void enqueue(TJob job) {
     m_queue.enqueue(job);
+    // Spin up another worker thread if appropriate
+    int target = getTargetNumWorkers();
+    int n = m_workers.size();
+    if (n < target) {
+      addWorker();
+    }
   }
 
   /**
@@ -352,28 +390,6 @@ public:
     }
   }
 
-  /**
-   * Remove a worker thread on the fly. Use "defer=true" for removing a worker
-   * thread from within a worker thread itself, as it's still running.
-   * Otherwise, "defer=false" has to be used to properly delete the thread.
-   */
-  void removeWorker(TWorker *worker, AsyncFunc<TWorker> *func, bool defer) {
-    Lock lock(m_mutex);
-    if (!m_stopped) {
-      if (m_funcs.find(func) != m_funcs.end()) {
-        m_funcs.erase(func);
-        if (defer) {
-          func->setAutoDelete();
-        } else {
-          delete func;
-        }
-      }
-      if (m_workers.find(worker) != m_workers.end()) {
-        m_workers.erase(worker);
-        delete worker;
-      }
-    }
-  }
   void getWorkers(std::vector<TWorker*> &workers) {
     Lock lock(m_mutex);
     workers.insert(workers.end(), m_workers.begin(), m_workers.end());
@@ -431,6 +447,7 @@ private:
   bool m_stopped;
   int m_id;
   void *m_opaque;
+  int m_maxThreadCount;
   JobQueue<TJob, TWorker::Waitable> m_queue;
 
   Mutex m_mutex;

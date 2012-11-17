@@ -20,8 +20,6 @@
 #include <compiler/statement/statement_list.h>
 #include <compiler/analysis/analysis_result.h>
 
-using namespace std;
-
 ///////////////////////////////////////////////////////////////////////////////
 
 bool TestParserStmt::RunTests(const std::string &which) {
@@ -153,12 +151,6 @@ bool TestParserStmt::TestClassVariable() {
   V("<?php class Test { static $data;}",
     "class Test {\npublic static $data;\n}\n");
 
-  V("<?php class Test { abstract $data;}",
-    "class Test {\npublic abstract $data;\n}\n");
-
-  V("<?php class Test { final $data;}",
-    "class Test {\npublic final $data;\n}\n");
-
   V("<?php class Test { private static $data;}",
     "class Test {\nprivate static $data;\n}\n");
 
@@ -195,8 +187,8 @@ bool TestParserStmt::TestClassConstant() {
 }
 
 bool TestParserStmt::TestMethodStatement() {
-  V("<?php class A {abstract function test();}",
-    "class A {\npublic abstract function test();\n}\n");
+  V("<?php abstract class A {abstract function test();}",
+    "abstract class A {\npublic abstract function test();\n}\n");
   V("<?php class A {function test() {}}",
     "class A {\npublic function test() {\n}\n}\n");
   V("<?php class A {function test() {return 0;}}",
@@ -600,10 +592,10 @@ bool TestParserStmt::TestForEachStatement() {
   V("<?php foreach ($a + $b as $b => $c) : $a = 1; $b = 2; endforeach;",
     "foreach ($a + $b as $b => $c) {\n$a = 1;\n$b = 2;\n}\n");
 
-  V("<?php foreach ($a as &$name => &$b) ;",
+  V("<?php foreach ($a as $name => &$b) ;",
     "foreach ($a as $name => &$b) {}\n");
 
-  V("<?php foreach ($a as &$name => $b) ;",
+  V("<?php foreach ($a as $name => $b) ;",
     "foreach ($a as $name => $b) {}\n");
 
   return true;
@@ -680,7 +672,7 @@ bool TestParserStmt::TestYieldStatement() {
     "}\n"
     "function foo() {\n"
     "return hphp_create_continuation"
-    "('', '32316968161694270338_1', __FUNCTION__);\n"
+    "('', '3990978909_1', __FUNCTION__);\n"
     "}\n");
 
   V("<?php function foo() { yield 123;}",
@@ -698,14 +690,14 @@ bool TestParserStmt::TestYieldStatement() {
     "}\n"
     "function foo() {\n"
     "return hphp_create_continuation"
-    "('', '32316968161694270338_1', __FUNCTION__);\n"
+    "('', '3990978909_1', __FUNCTION__);\n"
     "}\n");
 
   V("<?php class bar { function foo() { yield 123; yield 456;} }",
     "class bar {\n"
     "public function foo() {\n"
     "return hphp_create_continuation"
-    "('bar', '32316968161694270338_1', __METHOD__);\n"
+    "('bar', '3990978909_1', __METHOD__);\n"
     "}\n"
     "public function (Continuation $" CONTINUATION_OBJECT_NAME ") {\n"
     "hphp_unpack_continuation($" CONTINUATION_OBJECT_NAME ");\n"
@@ -732,9 +724,6 @@ bool TestParserStmt::TestYieldStatement() {
 }
 
 bool TestParserStmt::TestUseTraitStatement() {
-  // GO: TODO: enable this once traits are implemented in hphpi
-  return true;
-
   V("<?php trait T1 { public function F() {} } "
     "trait T2 { public function F() {} } "
     "class C { use T1, T2 { T1::F insteadof T2; T2::F as private G; } } ",

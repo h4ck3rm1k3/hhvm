@@ -3,11 +3,16 @@
 chdir(preg_replace('#/bin/ext_injection.php$#', '/src', realpath(__FILE__)));
 
 // parse all these files
-$inputs = 'find . -name ext_*.cpp';
+$inputs = 'find . -name ext_*.cpp | grep -Ev \'/ext/[^/]+.ext_hhvm.cpp\'';
 $files = array();
 exec($inputs, $files);
 
 foreach ($files as $file) {
+  // Skip injection macros for the collection classes
+  if (preg_match("#/ext_collection\\.cpp$#", $file)) {
+    continue;
+  }
+
   $contents = file_get_contents($file);
   if ($contents === false) {
     exit("unable to read $file\n");

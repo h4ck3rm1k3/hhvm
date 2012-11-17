@@ -17,12 +17,10 @@
 #include "synchronizable_multi.h"
 #include "compatibility.h"
 
-using namespace std;
-
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
 
-SynchronizableMulti::SynchronizableMulti(int size) {
+SynchronizableMulti::SynchronizableMulti(int size) : m_mutex(RankLeaf) {
   ASSERT(size > 0);
   m_conds.resize(size);
   for (unsigned int i = 0; i < m_conds.size(); i++) {
@@ -60,10 +58,10 @@ bool SynchronizableMulti::waitImpl(int id, bool front, timespec *ts) {
 
   if (front) {
     m_cond_list.push_front(cond);
-    m_cond_map[cond] = m_cond_list.begin();
+    m_cond_map.insert(make_pair(cond, m_cond_list.begin()));
   } else {
     m_cond_list.push_back(cond);
-    m_cond_map[cond] = --m_cond_list.end();
+    m_cond_map.insert(make_pair(cond, --m_cond_list.end()));
   }
 
   int ret;

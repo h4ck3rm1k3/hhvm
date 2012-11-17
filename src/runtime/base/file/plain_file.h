@@ -55,13 +55,12 @@ public:
   FILE *getStream() { return m_stream;}
   virtual const char *getStreamType() const { return "STDIO";}
 
-  static CVarRef getStdIn();
-  static CVarRef getStdOut();
-  static CVarRef getStdErr();
-
 protected:
   FILE *m_stream;
   bool m_eof;
+  char *m_buffer;       // For setbuffer.  Needed to reduce mmap
+                        // contention due to how glibc allocates memory
+                        // for buffered io.
 
   bool closeImpl();
 };

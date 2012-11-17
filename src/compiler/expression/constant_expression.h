@@ -34,6 +34,9 @@ public:
 
   DECLARE_BASE_EXPRESSION_VIRTUAL_FUNCTIONS;
   ExpressionPtr preOptimize(AnalysisResultConstPtr ar);
+  virtual bool isTemporary() const {
+    return isNull() || isBoolean();
+  }
   virtual bool isScalar() const;
   virtual bool isLiteralNull() const;
   virtual int getLocalEffects() const { return NoEffect; }
@@ -49,8 +52,9 @@ public:
   const std::string &getDocComment() const {
     return m_docComment;
   }
-  bool isBoolean() const;
   bool isNull() const;
+  bool isBoolean() const;
+  bool isDouble() const;
   bool getBooleanValue() const;
   void pushConst(const std::string &name);
   void popConst();
@@ -63,10 +67,11 @@ private:
   Symbol *resolveNS(AnalysisResultConstPtr ar);
   std::string m_name;
   std::string m_docComment;
+  std::string m_comment; // for inlined constant name
   bool m_valid;
   bool m_dynamic;
   bool m_visited;
-  std::string m_comment; // for inlined constant name
+  bool m_depsSet;
 };
 
 ///////////////////////////////////////////////////////////////////////////////

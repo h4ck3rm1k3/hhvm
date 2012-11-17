@@ -105,6 +105,48 @@ DefineFunction(
     'taint_observer' => false,
   ));
 
+DefineFunction(
+  array(
+    'name'   => "hphpd_get_client",
+    'desc'   => "Gets an hphpd client with a string key (creating on-demand). With the same key, it guarantees to get the same debugger client across multiple requests. One hphpd client can only be gotten by a single request at any given time. Will return null if the client is already gotten.",
+    'flags'  =>  HasDocComment | HipHopSpecific,
+    'return' => array(
+      'type'   => Variant,
+    ),
+    'args'   => array(
+      array(
+        'name'   => "name",
+        'type'   => String,
+        'value'  => "null",
+        'desc'   => "the name to identify the debugger client",
+      ),
+    ),
+    'taint_observer' => false,
+  ));
+
+DefineFunction(
+  array(
+    'name'   => "hphpd_client_ctrl",
+    'desc'   => "Make special operations on a client, such as interrupt a waiting client.",
+    'flags'  =>  HasDocComment | HipHopSpecific,
+    'return' => array(
+      'type'   => Variant,
+    ),
+    'args'   => array(
+      array(
+        'name'   => "name",
+        'type'   => String,
+        'desc'   => "the name to identify the debugger client",
+      ),
+      array(
+        'name'   => "op",
+        'type'   => String,
+        'desc'   => "the string to represent the operation",
+      ),
+    ),
+    'taint_observer' => false,
+  ));
+
 
 ///////////////////////////////////////////////////////////////////////////////
 // Classes
@@ -144,8 +186,8 @@ DefineFunction(
 
 BeginClass(
   array(
-    'name'   => "DebuggerProxy",
-    'desc'   => "",
+    'name'   => "DebuggerProxyCmdUser",
+    'desc'   => "DebuggerProxy wrapper for CmdUser",
     'flags'  =>  HasDocComment | HipHopSpecific,
     'footer' => <<<EOT
 
@@ -158,7 +200,7 @@ EOT
 DefineFunction(
   array(
     'name'   => "__construct",
-    'desc'   => "Constructor of DebuggerProxy.",
+    'desc'   => "Constructor of DebuggerProxyCmdUser.",
     'flags'  =>  HasDocComment | HipHopSpecific,
     'return' => array(
       'type'   => null,
@@ -179,7 +221,7 @@ DefineFunction(
 DefineFunction(
   array(
     'name'   => "send",
-    'desc'   => "Sends a command back to DebuggerClient.",
+    'desc'   => "Sends a command back to DebuggerClientCmdUser.",
     'flags'  =>  HasDocComment | HipHopSpecific,
     'return' => array(
       'type'   => Variant,
@@ -194,17 +236,6 @@ DefineFunction(
     ),
   ));
 
-DefineFunction(
-  array(
-    'name'   => "__destruct",
-    'desc'   => "Destructor of DebuggerProxy.",
-    'flags'  =>  HasDocComment | HipHopSpecific,
-    'return' => array(
-      'type'   => Variant,
-      'desc'   => "Always returns null.",
-    ),
-  ));
-
 EndClass(
 );
 
@@ -212,8 +243,8 @@ EndClass(
 
 BeginClass(
   array(
-    'name'   => "DebuggerClient",
-    'desc'   => "",
+    'name'   => "DebuggerClientCmdUser",
+    'desc'   => "DebuggerClient wrapper for CmdUser",
     'flags'  =>  HasDocComment | HipHopSpecific,
     'footer' => <<<EOT
 
@@ -286,7 +317,7 @@ DefineConstant(
 DefineFunction(
   array(
     'name'   => "__construct",
-    'desc'   => "Constructor of DebuggerClient.",
+    'desc'   => "Constructor of DebuggerClientCmdUser.",
     'flags'  =>  HasDocComment | HipHopSpecific,
     'return' => array(
       'type'   => null,
@@ -600,7 +631,7 @@ DefineFunction(
     'desc'   => "Count of total arguments.",
     'flags'  =>  HasDocComment | HipHopSpecific,
     'return' => array(
-      'type'   => Int32,
+      'type'   => Int64,
       'desc'   => "The count, not including user command itself.",
     ),
   ));
@@ -625,8 +656,8 @@ DefineFunction(
 
 DefineFunction(
   array(
-    'name'   => "argRest",
-    'desc'   => "Gets remaining arguments all together as a single string.",
+    'name'   => "lineRest",
+    'desc'   => "Gets rest of line all together as a single string.",
     'flags'  =>  HasDocComment | HipHopSpecific,
     'return' => array(
       'type'   => String,
@@ -714,7 +745,7 @@ DefineFunction(
     'desc'   => "Returns current frame index.",
     'flags'  =>  HasDocComment | HipHopSpecific,
     'return' => array(
-      'type'   => Int32,
+      'type'   => Int64,
       'desc'   => "An index indicating which frame end user has moved to for inspection.",
     ),
   ));
@@ -739,7 +770,7 @@ DefineFunction(
 DefineFunction(
   array(
     'name'   => "addCompletion",
-    'desc'   => "Adds string(s) to auto-completion. This function is only effective inside DebuggerClient::onAutoComplete().",
+    'desc'   => "Adds string(s) to auto-completion. This function is only effective inside DebuggerClientCmdUser::onAutoComplete().",
     'flags'  =>  HasDocComment | HipHopSpecific,
     'return' => array(
       'type'   => null,
@@ -753,17 +784,116 @@ DefineFunction(
     ),
   ));
 
+EndClass(
+);
+
+///////////////////////////////////////////////////////////////////////////////
+
+BeginClass(
+  array(
+    'name'   => "DebuggerClient",
+    'desc'   => "",
+    'bases'  => array('Sweepable'),
+    'flags'  =>  HasDocComment | HipHopSpecific | NoDefaultSweep,
+    'footer' => <<<EOT
+
+ public:
+  Eval::DebuggerClient *m_client;
+EOT
+,
+  ));
+
+DefineConstant(
+  array(
+    'name'   => "STATE_INVALID",
+    'type'   => Int64,
+  ));
+
+DefineConstant(
+  array(
+    'name'   => "STATE_UNINIT",
+    'type'   => Int64,
+  ));
+
+DefineConstant(
+  array(
+    'name'   => "STATE_INITIALIZING",
+    'type'   => Int64,
+  ));
+
+DefineConstant(
+  array(
+    'name'   => "STATE_READY_FOR_COMMAND",
+    'type'   => Int64,
+  ));
+
+DefineConstant(
+  array(
+    'name'   => "STATE_BUSY",
+    'type'   => Int64,
+  ));
+
 DefineFunction(
   array(
-    'name'   => "__destruct",
-    'desc'   => "Destructor of DebugerClient.",
+    'name'   => "__construct",
+    'desc'   => "Constructor",
     'flags'  =>  HasDocComment | HipHopSpecific,
     'return' => array(
+      'type'   => null,
+    ),
+  ));
+
+DefineFunction(
+  array(
+    'name'   => "getState",
+    'desc'   => "get current state of the debugger client",
+    'flags'  => HasDocComment | HipHopSpecific,
+    'return' => array(
+      'type'   => Int64,
+      'desc'   => "One of the constants",
+    ),
+  ));
+
+DefineFunction(
+  array(
+    'name'   => "init",
+    'desc'   => "initialize the debugger client",
+    'flags'  => HasDocComment | HipHopSpecific,
+    'return' => array(
       'type'   => Variant,
-      'desc'   => "Always returns null.",
+      'desc'   => "TBD",
+    ),
+    'args'   => array(
+      array(
+        'name'   => "options",
+        'type'   => Variant,
+        'desc'   => "array for passing options",
+      ),
+    ),
+  ));
+
+DefineFunction(
+  array(
+    'name'   => "processCmd",
+    'desc'   => "issue a command to debugger client",
+    'flags'  => HasDocComment | HipHopSpecific,
+    'return' => array(
+      'type'   => Variant,
+      'desc'   => "TBD",
+    ),
+    'args'   => array(
+      array(
+        'name'   => "cmdName",
+        'type'   => Variant,
+        'desc'   => "name of the command to be executed",
+      ),
+      array(
+        'name'   => "args",
+        'type'   => Variant,
+        'desc'   => "A vector array of strings to be used as arguments",
+      ),
     ),
   ));
 
 EndClass(
 );
-

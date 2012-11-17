@@ -19,6 +19,7 @@
 #include <runtime/ext/ext_variable.h>
 #include <runtime/base/variable_unserializer.h>
 #include <util/lock.h>
+#include <util/alloc.h>
 
 #include <sys/types.h>
 #include <sys/ipc.h>
@@ -26,16 +27,20 @@
 #include <sys/sem.h>
 #include <sys/shm.h>
 
-using namespace std;
-
-#if defined(__APPLE__) || defined(__FREEBSD__)
-#include <sys/msgbuf.h>
-#define MSGBUF_MTYPE(b) (b)->msg_magic
-#define MSGBUF_MTEXT(b) (b)->msg_bufc
+#if defined(__APPLE__) || defined(__FreeBSD__)
+# include <sys/msgbuf.h>
+# define MSGBUF_MTYPE(b) (b)->msg_magic
+# ifdef __APPLE__
+#  define MSGBUF_MTEXT(b) (b)->msg_bufc
+# else
+#  define MSGBUF_MTEXT(b) (b)->msg_ptr
+# endif
 #else
-#define MSGBUF_MTYPE(b) (b)->mtype
-#define MSGBUF_MTEXT(b) (b)->mtext
+# define MSGBUF_MTYPE(b) (b)->mtype
+# define MSGBUF_MTEXT(b) (b)->mtext
 #endif
+
+using HPHP::Util::ScopedMem;
 
 namespace HPHP {
 IMPLEMENT_DEFAULT_EXTENSION(sysvmsg);
@@ -79,7 +84,7 @@ Variant f_msg_get_queue(int64 key, int64 perms /* = 0666 */) {
   if (id < 0) {
     id = msgget(key, IPC_CREAT | IPC_EXCL | perms);
     if (id < 0) {
-      raise_warning("Failed to create message queue for key 0x%lx: %s",
+      raise_warning("Failed to create message queue for key 0x%llx: %s",
                       key, Util::safe_strerror(errno).c_str());
       return false;
     }
@@ -173,7 +178,7 @@ bool f_msg_send(CObjRef queue, int64 msgtype, CVarRef message,
   }
   int len = data.length();
   buffer = (struct msgbuf *)calloc(len + sizeof(struct msgbuf), 1);
-  String deleter((char*)buffer, 1, AttachString);
+  ScopedMem deleter(buffer);
   MSGBUF_MTYPE(buffer) = msgtype;
   memcpy(MSGBUF_MTEXT(buffer), (const char *)data, len + 1);
 
@@ -207,7 +212,7 @@ bool f_msg_receive(CObjRef queue, int64 desiredmsgtype, VRefParam msgtype,
 
   int64 realflags = 0;
   if (flags != 0) {
-#if !defined(__APPLE__) && !defined(__FREEBSD__)
+#if !defined(__APPLE__) && !defined(__FreeBSD__)
     if (flags & k_MSG_EXCEPT) realflags |= MSG_EXCEPT;
 #endif
     if (flags & k_MSG_NOERROR) realflags |= MSG_NOERROR;
@@ -216,7 +221,7 @@ bool f_msg_receive(CObjRef queue, int64 desiredmsgtype, VRefParam msgtype,
 
   struct msgbuf *buffer =
     (struct msgbuf *)calloc(maxsize + sizeof(struct msgbuf), 1);
-  String deleter((char*)buffer, 1, AttachString);
+  ScopedMem deleter(buffer);
 
   int result = msgrcv(q->id, buffer, maxsize, desiredmsgtype, realflags);
   if (result < 0) {
@@ -366,7 +371,7 @@ Variant f_sem_get(int64 key, int64 max_acquire /* = 1 */,
    */
   int semid = semget(key, 3, perm|IPC_CREAT);
   if (semid == -1) {
-    raise_warning("failed for key 0x%lx: %s", key,
+    raise_warning("failed for key 0x%llx: %s", key,
                     Util::safe_strerror(errno).c_str());
     return false;
   }
@@ -398,7 +403,7 @@ Variant f_sem_get(int64 key, int64 max_acquire /* = 1 */,
 
   while (semop(semid, sop, 3) == -1) {
     if (errno != EINTR) {
-      raise_warning("failed acquiring SYSVSEM_SETVAL for key 0x%lx: %s",
+      raise_warning("failed acquiring SYSVSEM_SETVAL for key 0x%llx: %s",
                       key, Util::safe_strerror(errno).c_str());
       break;
     }
@@ -407,7 +412,7 @@ Variant f_sem_get(int64 key, int64 max_acquire /* = 1 */,
   /* Get the usage count. */
   int count = semctl(semid, SYSVSEM_USAGE, GETVAL, NULL);
   if (count == -1) {
-    raise_warning("failed for key 0x%lx: %s", key,
+    raise_warning("failed for key 0x%llx: %s", key,
                     Util::safe_strerror(errno).c_str());
   }
 
@@ -416,7 +421,7 @@ Variant f_sem_get(int64 key, int64 max_acquire /* = 1 */,
     union semun semarg;
     semarg.val = max_acquire;
     if (semctl(semid, SYSVSEM_SEM, SETVAL, semarg) == -1) {
-      raise_warning("failed for key 0x%lx: %s", key,
+      raise_warning("failed for key 0x%llx: %s", key,
                       Util::safe_strerror(errno).c_str());
     }
   }
@@ -427,7 +432,7 @@ Variant f_sem_get(int64 key, int64 max_acquire /* = 1 */,
   sop[0].sem_flg = SEM_UNDO;
   while (semop(semid, sop, 1) == -1) {
     if (errno != EINTR) {
-      raise_warning("failed releasing SYSVSEM_SETVAL for key 0x%lx: %s",
+      raise_warning("failed releasing SYSVSEM_SETVAL for key 0x%llx: %s",
                       key, Util::safe_strerror(errno).c_str());
       break;
     }
@@ -595,13 +600,13 @@ Variant f_shm_attach(int64 shm_key, int64 shm_size /* = 10000 */,
   /* get the id from a specified key or create new shared memory */
   if ((shm_id = shmget(shm_key, 0, 0)) < 0) {
     if (shm_size < (int)sizeof(sysvshm_chunk_head)) {
-      raise_warning("failed for key 0x%x: memorysize too small", shm_key);
+      raise_warning("failed for key 0x%llx: memorysize too small", shm_key);
       free(shm_list_ptr);
       return false;
     }
     if ((shm_id = shmget(shm_key, shm_size, shm_flag | IPC_CREAT | IPC_EXCL))
         < 0) {
-      raise_warning("failed for key 0x%x: %s", shm_key,
+      raise_warning("failed for key 0x%llx: %s", shm_key,
                       Util::safe_strerror(errno).c_str());
       free(shm_list_ptr);
       return false;
@@ -609,7 +614,7 @@ Variant f_shm_attach(int64 shm_key, int64 shm_size /* = 10000 */,
   }
 
   if ((shm_ptr = (char*)shmat(shm_id, NULL, 0)) == (char *)-1) {
-    raise_warning("failed for key 0x%x: %s", shm_key,
+    raise_warning("failed for key 0x%llx: %s", shm_key,
                     Util::safe_strerror(errno).c_str());
     free(shm_list_ptr);
     return false;
@@ -635,19 +640,21 @@ Variant f_shm_attach(int64 shm_key, int64 shm_size /* = 10000 */,
 
 bool f_shm_detach(int64 shm_identifier) {
   Lock lock(g_shm_mutex);
-  set<sysvshm_shm*>::iterator iter = g_shms.find((sysvshm_shm*)shm_identifier);
+  std::set<sysvshm_shm*>::iterator iter =
+    g_shms.find((sysvshm_shm*)shm_identifier);
   if (iter == g_shms.end()) {
     raise_warning("%lld is not a SysV shared memory index", shm_identifier);
     return false;
   }
   g_shms.erase(iter);
-  delete *iter;
+  delete (sysvshm_shm*)shm_identifier;
   return true;
 }
 
 bool f_shm_remove(int64 shm_identifier) {
   Lock lock(g_shm_mutex);
-  set<sysvshm_shm*>::iterator iter = g_shms.find((sysvshm_shm*)shm_identifier);
+  std::set<sysvshm_shm*>::iterator iter =
+    g_shms.find((sysvshm_shm*)shm_identifier);
   if (iter == g_shms.end()) {
     raise_warning("%lld is not a SysV shared memory index", shm_identifier);
     return false;
@@ -664,7 +671,8 @@ bool f_shm_remove(int64 shm_identifier) {
 
 Variant f_shm_get_var(int64 shm_identifier, int64 variable_key) {
   Lock lock(g_shm_mutex);
-  set<sysvshm_shm*>::iterator iter = g_shms.find((sysvshm_shm*)shm_identifier);
+  std::set<sysvshm_shm*>::iterator iter =
+    g_shms.find((sysvshm_shm*)shm_identifier);
   if (iter == g_shms.end()) {
     raise_warning("%lld is not a SysV shared memory index", shm_identifier);
     return false;
@@ -683,7 +691,8 @@ Variant f_shm_get_var(int64 shm_identifier, int64 variable_key) {
 
 bool f_shm_has_var(int64 shm_identifier, int64 variable_key) {
   Lock lock(g_shm_mutex);
-  set<sysvshm_shm*>::iterator iter = g_shms.find((sysvshm_shm*)shm_identifier);
+  std::set<sysvshm_shm*>::iterator iter =
+    g_shms.find((sysvshm_shm*)shm_identifier);
   if (iter == g_shms.end()) {
     raise_warning("%lld is not a SysV shared memory index", shm_identifier);
     return false;
@@ -697,7 +706,8 @@ bool f_shm_has_var(int64 shm_identifier, int64 variable_key) {
 bool f_shm_put_var(int64 shm_identifier, int64 variable_key,
                    CVarRef variable) {
   Lock lock(g_shm_mutex);
-  set<sysvshm_shm*>::iterator iter = g_shms.find((sysvshm_shm*)shm_identifier);
+  std::set<sysvshm_shm*>::iterator iter =
+    g_shms.find((sysvshm_shm*)shm_identifier);
   if (iter == g_shms.end()) {
     raise_warning("%lld is not a SysV shared memory index", shm_identifier);
     return false;
@@ -719,7 +729,8 @@ bool f_shm_put_var(int64 shm_identifier, int64 variable_key,
 
 bool f_shm_remove_var(int64 shm_identifier, int64 variable_key) {
   Lock lock(g_shm_mutex);
-  set<sysvshm_shm*>::iterator iter = g_shms.find((sysvshm_shm*)shm_identifier);
+  std::set<sysvshm_shm*>::iterator iter =
+    g_shms.find((sysvshm_shm*)shm_identifier);
   if (iter == g_shms.end()) {
     raise_warning("%lld is not a SysV shared memory index", shm_identifier);
     return false;
