@@ -1,0 +1,23 @@
+Source: hhvm
+Section: php
+Priority: optional
+Maintainer: David Martínez Moreno <ender@debian.org>
+Build-Depends: debhelper (>= 9.0.0), autotools-dev, cmake
+Standards-Version: 3.9.5
+Homepage: http://hhvm.com/blog/
+Vcs-Git: git://git.debian.org/collab-maint/hhvm.git
+Vcs-Browser: http://git.debian.org/?p=collab-maint/hhvm.git;a=summary
+
+Package: hhvm
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: HipHop Virtual Machine, a JIT replacement for PHP
+ HHVM is a new open-source virtual machine designed for executing programs
+ written in PHP. HHVM uses a just-in-time (JIT) compilation approach to
+ achieve superior performance while maintaining the flexibility that PHP
+ developers are accustomed to.
+ .
+ For the majority of your programs HHVM should be a drop-in replacement for
+ the usual PHP interpreter/engine.
+ .
+ HHVM is developed by Facebook in the open.

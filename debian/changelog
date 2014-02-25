@@ -1,0 +1,5 @@
+hhvm (2.4.1-1) unstable; urgency=low
+
+  * Initial release (closes: #727085).
+
+ -- David Martínez Moreno <ender@debian.org>  Mon, 24 Feb 2014 14:01:15 -0800
