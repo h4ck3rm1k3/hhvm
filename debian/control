@@ -2,7 +2,7 @@ Source: hhvm
 Section: php
 Priority: optional
 Maintainer: David Martínez Moreno <ender@debian.org>
-Build-Depends: debhelper (>= 9.0.0), autotools-dev, cmake
+Build-Depends: debhelper (>= 9.0.0), cmake, libboost-dev, libboost-program-options-dev, libboost-filesystem-dev, libboost-system-dev, libboost-regex-dev, libgoogle-glog-dev, libmysqlclient-dev, libmemcached-dev, libpcre3-dev, libevent-dev, libpng12-dev, libjpeg62-dev, libvpx-dev, unixodbc-dev, libfreetype6-dev, pkg-config, libcurl4-openssl-dev, libxml2-dev, libexpat1-dev, libtbb-dev, libmcrypt-dev, libbz2-dev, libonig-dev, libreadline6-dev, libelf-dev, libdwarf-dev, libc-client2007e-dev, libcap-dev, binutils-dev, libiberty-dev
 Standards-Version: 3.9.5
 Homepage: http://hhvm.com/blog/
 Vcs-Git: git://git.debian.org/collab-maint/hhvm.git
@@ -18,6 +18,9 @@ Description: HipHop Virtual Machine, a JIT replacement for PHP
  developers are accustomed to.
  .
  For the majority of your programs HHVM should be a drop-in replacement for
- the usual PHP interpreter/engine.
+ the usual PHP interpreter/engine. To date, HHVM (and its predecessor HPHPc
+ before it) has realized over a 9x increase in web request throughput and
+ over a 5x reduction in memory consumption for Facebook compared with the
+ Zend PHP 5.2 engine + APC.
  .
  HHVM is developed by Facebook in the open.
