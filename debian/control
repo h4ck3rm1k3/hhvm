@@ -2,14 +2,14 @@ Source: hhvm
 Section: php
 Priority: optional
 Maintainer: David Martínez Moreno <ender@debian.org>
-Build-Depends: debhelper (>= 9.0.0), cmake, libboost-dev, libboost-program-options-dev, libboost-filesystem-dev, libboost-system-dev, libboost-regex-dev, libgoogle-glog-dev, libmysqlclient-dev, libmemcached-dev, libpcre3-dev, libevent-dev, libpng12-dev, libjpeg62-dev, libvpx-dev, unixodbc-dev, libfreetype6-dev, pkg-config, libcurl4-openssl-dev, libxml2-dev, libexpat1-dev, libtbb-dev, libmcrypt-dev, libbz2-dev, libonig-dev, libreadline6-dev, libelf-dev, libdwarf-dev, libc-client2007e-dev, libcap-dev, binutils-dev, libiberty-dev
+Build-Depends: debhelper (>= 9.0.0), cmake, libboost-dev, libboost-program-options-dev, libboost-filesystem-dev, libboost-system-dev, libboost-regex-dev, libgoogle-glog-dev, libmysqlclient-dev, libmemcached-dev, libpcre3-dev, libevent-dev, libpng12-dev, libjpeg62-dev, libvpx-dev, unixodbc-dev, libfreetype6-dev, pkg-config, libcurl4-openssl-dev, libxml2-dev, libexpat1-dev, libtbb-dev, libmcrypt-dev, libbz2-dev, libonig-dev, libreadline6-dev, libelf-dev, libdwarf-dev, libc-client2007e-dev, libcap-dev, binutils-dev, libiberty-dev, chrpath, libboost-thread-dev, libncurses5-dev
 Standards-Version: 3.9.5
 Homepage: http://hhvm.com/blog/
 Vcs-Git: git://git.debian.org/collab-maint/hhvm.git
 Vcs-Browser: http://git.debian.org/?p=collab-maint/hhvm.git;a=summary
 
 Package: hhvm
-Architecture: any
+Architecture: amd64
 Depends: ${shlibs:Depends}, ${misc:Depends}
 Description: HipHop Virtual Machine, a JIT replacement for PHP
  HHVM is a new open-source virtual machine designed for executing programs
