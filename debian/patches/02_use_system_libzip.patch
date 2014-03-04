@@ -1,0 +1,68 @@
+Description: Use the system libzip instead of something in third-party.
+ There is a version of libzip in third-party that shouldn't be used.
+ .
+ For some reason the HHVM sources are using an internal API from libzip, so
+ define it as well.
+Author: David Martínez Moreno <ender@debian.org>
+Forwarded: no
+Last-Update: 2014-03-04
+
+--- /dev/null
++++ b/CMake/FindLibZip.cmake
+@@ -0,0 +1,30 @@
++# Finds libzip.
++#
++# This module defines:
++# LIBZIP_INCLUDE_DIR_ZIP
++# LIBZIP_INCLUDE_DIR_ZIPCONF
++# LIBZIP_LIBRARY
++#
++
++find_package(PkgConfig)
++pkg_check_modules(PC_LIBZIP QUIET libzip)
++
++find_path(LIBZIP_INCLUDE_DIR_ZIP
++    NAMES zip.h
++    HINTS ${PC_LIBZIP_INCLUDE_DIRS})
++
++find_path(LIBZIP_INCLUDE_DIR_ZIPCONF
++    NAMES zipconf.h
++    HINTS ${PC_LIBZIP_INCLUDE_DIRS})
++
++find_library(LIBZIP_LIBRARY
++    NAMES zip)
++
++include(FindPackageHandleStandardArgs)
++FIND_PACKAGE_HANDLE_STANDARD_ARGS(
++    LIBZIP DEFAULT_MSG
++    LIBZIP_LIBRARY LIBZIP_INCLUDE_DIR_ZIP LIBZIP_INCLUDE_DIR_ZIPCONF)
++
++if (NOT LIBZIP_FOUND)
++    message(FATAL_ERROR "Could not locate LIBZIP.")
++endif (NOT LIBZIP_FOUND)
+--- a/CMake/HPHPFindLibs.cmake
++++ b/CMake/HPHPFindLibs.cmake
+@@ -165,7 +165,11 @@
+ include_directories("${HPHP_HOME}/hphp/third_party/lz4")
+ include_directories("${HPHP_HOME}/hphp/third_party/double-conversion/src")
+ include_directories("${HPHP_HOME}/hphp/third_party/folly")
+-include_directories("${HPHP_HOME}/hphp/third_party/libzip")
++#include_directories("${HPHP_HOME}/hphp/third_party/libzip")
++
++# libzip
++find_package(LibZip REQUIRED)
++include_directories(${LIBZIP_INCLUDE_DIR_ZIP} ${LIBZIP_INCLUDE_DIR_ZIPCONF})
+ 
+ # ICU
+ find_package(ICU REQUIRED)
+--- a/hphp/runtime/ext/zip/ext_zip.cpp
++++ b/hphp/runtime/ext/zip/ext_zip.cpp
+@@ -21,6 +21,8 @@
+ #include "hphp/runtime/ext/ext_file.h"
+ #include "hphp/runtime/ext/ext_preg.h"
+ 
++void _zip_free(struct zip *);
++
+ namespace HPHP {
+ 
+ class ZipStream : public File {

@@ -2,6 +2,9 @@ hhvm (2.4.1-1) UNRELEASED; urgency=low
 
   [ David Martínez Moreno ]
   * Initial release (closes: #727085).
+  * debian/patches:
+    - 01_fix_freetype_include.patch: Bad include in libgd.
+    - 02_use_system_libzip.patch: Add CMake code to use the system's libzip.
 
   [ Faidon Liambotis ]
   * debian/patches:

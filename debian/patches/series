@@ -1,1 +1,3 @@
 prefer-libedit
+01_fix_freetype_include.patch
+02_use_system_libzip.patch

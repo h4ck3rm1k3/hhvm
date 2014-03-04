@@ -1,0 +1,18 @@
+Description: Fix the FreeType2 include in libgd.
+ The embedded libgd code has an include directory that forces the freetype
+ headers files to be in a freetype/ directory.
+Author: David Martínez Moreno <ender@debian.org>
+Forwarded: no
+Last-Update: 2014-02-25
+
+--- hhvm-2.4.1.orig/hphp/runtime/ext/gd/libgd/gdft.cpp
++++ hhvm-2.4.1/hphp/runtime/ext/gd/libgd/gdft.cpp
+@@ -61,7 +61,7 @@ gdImageStringFT (gdImage * im, int *brec
+ #else
+ 
+ #include "gdcache.h"
+-#include <freetype/config/ftheader.h>
++#include <config/ftheader.h>
+ #include FT_FREETYPE_H
+ #include FT_GLYPH_H
+ 
