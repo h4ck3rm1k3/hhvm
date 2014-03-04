@@ -2,7 +2,41 @@ Source: hhvm
 Section: php
 Priority: optional
 Maintainer: David Martínez Moreno <ender@debian.org>
-Build-Depends: debhelper (>= 9.0.0), cmake, libboost-dev, libboost-program-options-dev, libboost-filesystem-dev, libboost-system-dev, libboost-regex-dev, libgoogle-glog-dev, libmysqlclient-dev, libmemcached-dev, libpcre3-dev, libevent-dev, libpng12-dev, libjpeg62-dev, libvpx-dev, unixodbc-dev, libfreetype6-dev, pkg-config, libcurl4-openssl-dev, libxml2-dev, libexpat1-dev, libtbb-dev, libmcrypt-dev, libbz2-dev, libonig-dev, libreadline6-dev, libelf-dev, libdwarf-dev, libc-client2007e-dev, libcap-dev, binutils-dev, libiberty-dev, chrpath, libboost-thread-dev, libncurses5-dev
+Build-Depends: debhelper (>= 9.0.0),
+  binutils-dev,
+  chrpath,
+  cmake,
+  libboost-dev,
+  libboost-filesystem-dev,
+  libboost-program-options-dev,
+  libboost-regex-dev,
+  libboost-system-dev,
+  libboost-thread-dev,
+  libbz2-dev,
+  libcap-dev,
+  libc-client2007e-dev,
+  libcurl4-openssl-dev,
+  libdwarf-dev,
+  libelf-dev,
+  libevent-dev,
+  libexpat1-dev,
+  libfreetype6-dev,
+  libgoogle-glog-dev,
+  libiberty-dev,
+  libjpeg62-dev,
+  libmcrypt-dev,
+  libmemcached-dev,
+  libmysqlclient-dev,
+  libncurses5-dev,
+  libonig-dev,
+  libpcre3-dev,
+  libpng12-dev,
+  libreadline6-dev,
+  libtbb-dev,
+  libvpx-dev,
+  libxml2-dev,
+  pkg-config,
+  unixodbc-dev
 Standards-Version: 3.9.5
 Homepage: http://hhvm.com/blog/
 Vcs-Git: git://git.debian.org/collab-maint/hhvm.git
