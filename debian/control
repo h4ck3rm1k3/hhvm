@@ -32,11 +32,13 @@ Build-Depends: debhelper (>= 9.0.0),
   libpcre3-dev,
   libpng12-dev,
   libreadline6-dev,
+  libssl-dev,
   libtbb-dev,
   libvpx-dev,
   libxml2-dev,
   pkg-config,
-  unixodbc-dev
+  unixodbc-dev,
+  zlib1g-dev
 Standards-Version: 3.9.5
 Homepage: http://hhvm.com/blog/
 Vcs-Git: git://git.debian.org/collab-maint/hhvm.git
