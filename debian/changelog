@@ -1,5 +1,11 @@
 hhvm (2.4.1-1) UNRELEASED; urgency=low
 
+  [ David Martínez Moreno ]
   * Initial release (closes: #727085).
 
- -- David Martínez Moreno <ender@debian.org>  Mon, 24 Feb 2014 14:01:15 -0800
+  [ Faidon Liambotis ]
+  * debian/patches:
+    - prefer-libedit: workaround build system bug and prefer libedit over
+    libreadline.
+
+ -- Faidon Liambotis <paravoid@debian.org>  Tue, 04 Mar 2014 10:21:56 +0200

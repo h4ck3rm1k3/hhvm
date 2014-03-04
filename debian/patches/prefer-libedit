@@ -1,0 +1,47 @@
+Description: Workaround build system bug and prefer libedit over libreadline
+Author: Faidon Liambotis <paravoid@debian.org>
+Last-Update: 2014-03-04
+ The build system is a bit naive and picks linker arguments based on the
+ presence of libraries and not based on whether the library choice that was
+ made earlier based on the availability of headers.
+ .
+ This has the effect that if you have both libedit and libreadline installed
+ on the system but only libedit-dev, hhvm will get built with libedit headers
+ but attempted to link against libreadline which in turn will fail.
+ .
+ Since we want to prefer libedit over libreadline in the Debian package for
+ licensing reasons, work around this bug by ordering libedit in this first.
+ This is, of course, the wrong way to fix this, but a proper fix is outside the
+ scope of this patch.
+
+--- a/CMake/HPHPFindLibs.cmake
++++ b/CMake/HPHPFindLibs.cmake
+@@ -305,11 +305,11 @@ include_directories(${LIBPTHREAD_INCLUDE_DIRS})
+ # Either Readline or Editline (for hphpd)
+ find_package(Readline)
+ find_package(Editline)
+-if (READLINE_INCLUDE_DIR)
+-	include_directories(${READLINE_INCLUDE_DIR})
+-elseif (EDITLINE_INCLUDE_DIRS)
++if (EDITLINE_INCLUDE_DIRS)
+ 	add_definitions("-DUSE_EDITLINE")
+ 	include_directories(${EDITLINE_INCLUDE_DIRS})
++elseif (READLINE_INCLUDE_DIR)
++	include_directories(${READLINE_INCLUDE_DIR})
+ else()
+ 	message(FATAL_ERROR "Could not find Readline or Editline")
+ endif()
+@@ -523,10 +523,10 @@ endif()
+ 	target_link_libraries(${target} afdt)
+ 	target_link_libraries(${target} mbfl)
+ 
+-	if (READLINE_LIBRARY)
+-		target_link_libraries(${target} ${READLINE_LIBRARY})
+-	elseif (EDITLINE_LIBRARIES)
++	if (EDITLINE_LIBRARIES)
+ 		target_link_libraries(${target} ${EDITLINE_LIBRARIES})
++	elseif (READLINE_LIBRARY)
++		target_link_libraries(${target} ${READLINE_LIBRARY})
+ 	endif()
+ 
+ 	target_link_libraries(${target} ${NCURSES_LIBRARY})

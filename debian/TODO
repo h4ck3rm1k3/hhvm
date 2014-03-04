@@ -1,2 +1,3 @@
+- Figure out licensing incompatibilities mess, esp. with GPL-only software
 - Talk to the PHP team to make the binaries alternatives for /usr/bin/php.
 - Write some examples or automatic scripts to create config in Apache/nginx/etc.
