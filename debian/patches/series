@@ -1,3 +1,5 @@
 01_fix_freetype_include.patch
 02_use_system_libzip.patch
 03_prefer_libedit_over_libreadline.patch
+04_generated_files_prebuild.patch
+05_bison3_whitespace.patch

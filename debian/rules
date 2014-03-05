@@ -6,9 +6,17 @@
 %:
 	dh $@
 
+override_dh_auto_build:
+	# rerun flex/bison to regenerate their output
+	HPHP_HOME=$(CURDIR) sh hphp/tools/generated_files.sh lexer
+	HPHP_HOME=$(CURDIR) sh hphp/tools/generated_files.sh parser
+	HPHP_HOME=$(CURDIR) sh hphp/tools/generated_files.sh ini-lexer
+	HPHP_HOME=$(CURDIR) sh hphp/tools/generated_files.sh ini-parser
+	dh_auto_build
+
 override_dh_auto_configure:
 	dh_auto_configure -- \
 		-DLIBVPX_INCLUDE_DIRS=/usr/include/vpx/ \
 		-DFREETYPE_INCLUDE_DIRS=/usr/include/freetype2/
 
-.PHONY: override_dh_auto_configure
+.PHONY: override_dh_auto_build override_dh_auto_configure
