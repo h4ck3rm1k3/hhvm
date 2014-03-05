@@ -44,7 +44,7 @@ Build-Depends: debhelper (>= 9.0.0),
   unixodbc-dev,
   zlib1g-dev
 Standards-Version: 3.9.5
-Homepage: http://hhvm.com/blog/
+Homepage: http://hhvm.com/
 Vcs-Git: git://git.debian.org/collab-maint/hhvm.git
 Vcs-Browser: http://git.debian.org/?p=collab-maint/hhvm.git;a=summary
 
@@ -62,5 +62,3 @@ Description: HipHop Virtual Machine, a JIT replacement for PHP
  before it) has realized over a 9x increase in web request throughput and
  over a 5x reduction in memory consumption for Facebook compared with the
  Zend PHP 5.2 engine + APC.
- .
- HHVM is developed by Facebook in the open.
