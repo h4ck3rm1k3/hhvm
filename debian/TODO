@@ -1,3 +1,4 @@
 - debian/copyright
 - Talk to the PHP team to make the binaries alternatives for /usr/bin/php.
 - Write some examples or automatic scripts to create config in Apache/nginx/etc.
+- Finish 02_use_system_libzip.patch when libzip 0.11 or later is not present.
