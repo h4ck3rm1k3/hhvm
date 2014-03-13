@@ -4,3 +4,4 @@
 04_generated_files_prebuild.patch
 05_bison3_whitespace.patch
 06_typos.patch
+#07_enable_vpx_in_libgd.patch

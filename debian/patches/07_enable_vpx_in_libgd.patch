@@ -1,0 +1,18 @@
+Description: VPx code is not really enabled in GD extension.
+ It seems that the VPx code in libgd is protected by a HAVE_LIBVPX macro,
+ so define it when we find the VPx libraries.
+Author: David Martínez Moreno <ender@debian.org>
+Forwarded: no
+Last-Update: 2014-03-13
+
+--- hhvm-2.4.1.orig/CMake/HPHPFindLibs.cmake
++++ hhvm-2.4.1/CMake/HPHPFindLibs.cmake
+@@ -107,7 +107,7 @@ add_definitions(-DPNG_SKIP_SETJMP_CHECK)
+ find_package(LibVpx)
+ if (LIBVPX_INCLUDE_DIRS)
+ 	include_directories(${LIBVPX_INCLUDE_DIRS})
+-	add_definitions("-DHAVE_GD_WEBP")
++	add_definitions("-DHAVE_GD_WEBP -DHAVE_LIBVPX")
+ endif()
+ find_package(LibJpeg)
+ if (LIBJPEG_INCLUDE_DIRS)

@@ -8,6 +8,9 @@ hhvm (2.4.1-1) UNRELEASED; urgency=low
     - 02_use_system_libzip.patch: Add CMake code to use the system's libzip.
     - 06_typos.patch: Lots of typos, most of them detected by lintian. Added
       the false positives to a lintian override file.
+    - 07_enable_vpx_in_libgd.patch: Enable VPx code in libgd.  This is
+      disabled for now in patches/series because there are some broken code in
+      hphp/runtime/ext/gd/libgd/gd_webp.cpp.
 
   [ Faidon Liambotis ]
   * debian/patches:
