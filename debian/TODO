@@ -1,4 +1,34 @@
-- debian/copyright
+- debian/copyright: Review the following directories:
+  * CMake/
+  * hphp
+  * hphp/compiler
+  * hphp/doc
+  * hphp/hhbbc
+  * hphp/hhvm
+  * hphp/neo
+  * hphp/parser
+  * hphp/runtime
+  * hphp/system
+  * hphp/test
+  * hphp/third_party
+  * hphp/third_party/double-conversion
+  * hphp/third_party/folly
+  * hphp/third_party/libafdt
+  * hphp/third_party/libmbfl
+  * hphp/third_party/libsqlite3
+  * hphp/third_party/libzip
+  * hphp/third_party/lz4
+  * hphp/third_party/stubs
+  * hphp/third_party/thrift
+  * hphp/third_party/ti
+  * hphp/third_party/timelib
+  * hphp/tools
+  * hphp/util
+  * hphp/vixl
+  * hphp/zend
+  * hphp/submodules
 - Talk to the PHP team to make the binaries alternatives for /usr/bin/php.
 - Write some examples or automatic scripts to create config in Apache/nginx/etc.
-- Finish 02_use_system_libzip.patch when libzip 0.11 or later is not present.
+- Finish with 02_use_system_libzip.patch because we have to support the case when
+  libzip 0.11 or later is not present.
+- Write a manpage for hhvm and hphpize.

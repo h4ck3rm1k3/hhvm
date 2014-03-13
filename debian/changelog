@@ -2,9 +2,12 @@ hhvm (2.4.1-1) UNRELEASED; urgency=low
 
   [ David Martínez Moreno ]
   * Initial release (closes: #727085).
+  * Version released on 2014-02-13.
   * debian/patches:
     - 01_fix_freetype_include.patch: Bad include in libgd.
     - 02_use_system_libzip.patch: Add CMake code to use the system's libzip.
+    - 06_typos.patch: Lots of typos, most of them detected by lintian. Added
+      the false positives to a lintian override file.
 
   [ Faidon Liambotis ]
   * debian/patches:
@@ -12,5 +15,7 @@ hhvm (2.4.1-1) UNRELEASED; urgency=low
       and prefer libedit over libreadline.
     - 04_generated_files_prebuild.patch: allow generated_files.sh to be run
       before HHVM is built to run it for DFSG completeness reasons.
+    - 05_bison3_whitespace.patch: Change to the whitespace matchingto support
+      both Bison 2 and 3.
 
- -- Faidon Liambotis <paravoid@debian.org>  Tue, 04 Mar 2014 10:21:56 +0200
+ -- David Martínez Moreno <ender@debian.org>  Wed, 12 Mar 2014 15:31:34 -0700

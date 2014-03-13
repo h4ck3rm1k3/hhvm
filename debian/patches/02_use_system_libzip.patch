@@ -48,12 +48,11 @@ Last-Update: 2014-03-04
 +endif (NOT LIBZIP_FOUND)
 --- a/CMake/HPHPFindLibs.cmake
 +++ b/CMake/HPHPFindLibs.cmake
-@@ -165,7 +165,11 @@
+@@ -165,7 +165,10 @@
  include_directories("${HPHP_HOME}/hphp/third_party/lz4")
  include_directories("${HPHP_HOME}/hphp/third_party/double-conversion/src")
  include_directories("${HPHP_HOME}/hphp/third_party/folly")
 -include_directories("${HPHP_HOME}/hphp/third_party/libzip")
-+#include_directories("${HPHP_HOME}/hphp/third_party/libzip")
 +
 +# libzip
 +find_package(LibZip REQUIRED)
@@ -61,6 +60,15 @@ Last-Update: 2014-03-04
  
  # ICU
  find_package(ICU REQUIRED)
+@@ -518,7 +521,7 @@
+ 	target_link_libraries(${target} lz4)
+ 	target_link_libraries(${target} double-conversion)
+ 	target_link_libraries(${target} folly)
+-	target_link_libraries(${target} zip_static)
++	target_link_libraries(${target} zip)
+ 
+ 	target_link_libraries(${target} afdt)
+ 	target_link_libraries(${target} mbfl)
 --- a/hphp/runtime/ext/zip/ext_zip.cpp
 +++ b/hphp/runtime/ext/zip/ext_zip.cpp
 @@ -215,7 +215,7 @@

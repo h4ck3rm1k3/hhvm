@@ -1,0 +1,209 @@
+Description: Lots of typos.
+ Lots of typos, most of them detected by lintian. Added the false positives
+ to a lintian override file.
+Author: David Martínez Moreno <ender@debian.org>
+Forwarded: no
+Last-Update: 2014-03-12
+
+--- a/hphp/doc/options.compiler
++++ b/hphp/doc/options.compiler
+@@ -200,7 +200,7 @@
+ 
+ = GCCOptimization
+ 
+-Default is disabled. This option allows to selectively decrease the compiler
++Default is disabled. This option allows one to selectively decrease the compiler
+ optimization level for long functions. It is specified as:
+ 
+   GCCOptimization {
+--- a/hphp/neo/neo_hdf.c
++++ b/hphp/neo/neo_hdf.c
+@@ -1482,7 +1482,7 @@
+     if (*s == '\0' || k_l == 0)
+     {
+       _dealloc_hdf_attr(attr);
+-      return nerr_raise(NERR_PARSE, "Misformed attribute specification: %s", *str);
++      return nerr_raise(NERR_PARSE, "Malformed attribute specification: %s", *str);
+     }
+     SKIPWS(s);
+     if (*s == '=')
+@@ -1537,7 +1537,7 @@
+ 	{
+ 	  _dealloc_hdf_attr(attr);
+ 	  string_clear(&buf);
+-	  return nerr_raise(NERR_PARSE, "Misformed attribute specification: %s", *str);
++	  return nerr_raise(NERR_PARSE, "Malformed attribute specification: %s", *str);
+ 	}
+ 	s++;
+ 	v = buf.buf;
+@@ -1550,7 +1550,7 @@
+ 	if (*s == '\0')
+ 	{
+ 	  _dealloc_hdf_attr(attr);
+-	  return nerr_raise(NERR_PARSE, "Misformed attribute specification: %s", *str);
++	  return nerr_raise(NERR_PARSE, "Malformed attribute specification: %s", *str);
+ 	}
+         v_l = s-v;
+       }
+@@ -1591,7 +1591,7 @@
+   if (*s == '\0')
+   {
+     _dealloc_hdf_attr(attr);
+-    return nerr_raise(NERR_PARSE, "Misformed attribute specification: %s", *str);
++    return nerr_raise(NERR_PARSE, "Malformed attribute specification: %s", *str);
+   }
+   *str = s+1;
+   return STATUS_OK;
+--- a/hphp/runtime/ext/ext_domdocument.cpp
++++ b/hphp/runtime/ext/ext_domdocument.cpp
+@@ -415,7 +415,7 @@
+       inclusive_ns_prefixes[nscount] = NULL;
+     } else {
+       raise_notice("Inclusive namespace prefixes only allowed in "
+-                   "exlcusive mode.");
++                   "exclusive mode.");
+     }
+   }
+   if (mode == 1) {
+--- a/hphp/system/idl/calendar.idl.json
++++ b/hphp/system/idl/calendar.idl.json
+@@ -232,7 +232,7 @@
+                 {
+                     "name": "method",
+                     "type": "Variant",
+-                    "desc": "Allows to calculate easter dates based on the Gregorian calendar during the years 1582 - 1752 when set to CAL_EASTER_ROMAN. See the calendar constants for more valid constants."
++                    "desc": "Allows Easter dates to be calculated based on the Gregorian calendar during the years 1582 - 1752 when set to CAL_EASTER_ROMAN. See the calendar constants for more valid constants."
+                 }
+             ]
+         },
+@@ -245,7 +245,7 @@
+             ],
+             "return": {
+                 "type": "Variant",
+-                "desc": "The julian day for the given french revolution date as an integer."
++                "desc": "The Julian day for the given French Revolution date as an integer."
+             },
+             "args": [
+                 {
+@@ -274,7 +274,7 @@
+             ],
+             "return": {
+                 "type": "Variant",
+-                "desc": "The julian day for the given gregorian date as an integer."
++                "desc": "The Julian day for the given gregorian date as an integer."
+             },
+             "args": [
+                 {
+@@ -309,7 +309,7 @@
+                 {
+                     "name": "julianday",
+                     "type": "Variant",
+-                    "desc": "A julian day number as integer"
++                    "desc": "A Julian day number as integer"
+                 },
+                 {
+                     "name": "mode",
+--- a/hphp/system/idl/image.idl.json
++++ b/hphp/system/idl/image.idl.json
+@@ -2268,7 +2268,7 @@
+         },
+         {
+             "name": "imagepsencodefont",
+-            "desc": "Loads a character encoding vector from a file and changes the fonts encoding vector to it. As a PostScript fonts default vector lacks most of the character positions above 127, you'll definitely want to change this if you use an other language than English.\n\nIf you find yourself using this function all the time, a much better way to define the encoding is to set ps.default_encoding in the configuration file to point to the right encoding file and all fonts you load will automatically have the right encoding.",
++            "desc": "Loads a character encoding vector from a file and changes the fonts encoding vector to it. As a PostScript fonts default vector lacks most of the character positions above 127, you'll definitely want to change this if you use a language other than English.\n\nIf you find yourself using this function all the time, a much better way to define the encoding is to set ps.default_encoding in the configuration file to point to the right encoding file and all fonts you load will automatically have the right encoding.",
+             "flags": [
+             ],
+             "return": {
+--- a/hphp/system/idl/memcache.idl.json
++++ b/hphp/system/idl/memcache.idl.json
+@@ -1051,7 +1051,7 @@
+                             "name": "status",
+                             "type": "Boolean",
+                             "value": "true",
+-                            "desc": "Controls if the server should be flagged as online. Setting this parameter to FALSE and retry_interval to -1 allows a failed server to be kept in the pool so as not to affect the key distribution algoritm. Requests for this server will then failover or fail immediately depending on the memcache.allow_failover setting. Default to TRUE, meaning the server should be considered online."
++                            "desc": "Controls if the server should be flagged as online. Setting this parameter to FALSE and retry_interval to -1 allows a failed server to be kept in the pool so as not to affect the key distribution algorithm. Requests for this server will then failover or fail immediately depending on the memcache.allow_failover setting. Default to TRUE, meaning the server should be considered online."
+                         },
+                         {
+                             "name": "failure_callback",
+--- a/hphp/system/idl/pdo.idl.json
++++ b/hphp/system/idl/pdo.idl.json
+@@ -1053,7 +1053,7 @@
+                 },
+                 {
+                     "name": "debugdumpparams",
+-                    "desc": "Dumps the informations contained by a prepared statement directly on the output. It will provide the SQL query in use, the number of parameters used (Params), the list of parameters, with their name, type (paramtype) as an integer, their key name or position, the value, and the position in the query (if this is supported by the PDO driver, otherwise, it will be -1).\n\nThis is a debug function, which dump directly the data on the normal output. TipAs with anything that outputs its result directly to the browser, the output-control functions can be used to capture the output of this function, and save it in a string (for example).\n\nThis will only dumps the parameters in the statement at the moment of the dump. Extra parameters are not stored in the statement, and not displayed.",
++                    "desc": "Dumps the information contained by a prepared statement directly on the output. It will provide the SQL query in use, the number of parameters used (Params), the list of parameters, with their name, type (paramtype) as an integer, their key name or position, the value, and the position in the query (if this is supported by the PDO driver, otherwise, it will be -1).\n\nThis is a debug function, which dump directly the data on the normal output. TipAs with anything that outputs its result directly to the browser, the output-control functions can be used to capture the output of this function, and save it in a string (for example).\n\nThis will only dumps the parameters in the statement at the moment of the dump. Extra parameters are not stored in the statement, and not displayed.",
+                     "flags": [
+                     ],
+                     "return": {
+--- a/hphp/system/idl/stream.idl.json
++++ b/hphp/system/idl/stream.idl.json
+@@ -314,7 +314,7 @@
+         },
+         {
+             "name": "stream_wrapper_unregister",
+-            "desc": "Allows you to disable an already defined stream wrapper. Once the wrapper has been disabled you may override it with a user-defined wrapper using stream_wrapper_register() or reenable it later on with stream_wrapper_restore().",
++            "desc": "Allows you to disable an already defined stream wrapper. Once the wrapper has been disabled you may override it with a user-defined wrapper using stream_wrapper_register() or re-enable it later on with stream_wrapper_restore().",
+             "flags": [
+             ],
+             "return": {
+--- a/hphp/system/idl/xml.idl.json
++++ b/hphp/system/idl/xml.idl.json
+@@ -117,7 +117,7 @@
+                     "name": "separator",
+                     "type": "String",
+                     "value": "null_string",
+-                    "desc": "With a namespace aware parser tag parameters passed to the various handler functions will consist of namespace and tag name separated by the string specified in seperator."
++                    "desc": "With a namespace aware parser tag parameters passed to the various handler functions will consist of namespace and tag name separated by the string specified in separator."
+                 }
+             ]
+         },
+@@ -368,7 +368,7 @@
+         },
+         {
+             "name": "xml_set_object",
+-            "desc": "This function allows to use parser inside object. All callback functions could be set with xml_set_element_handler() etc and assumed to be methods of object.",
++            "desc": "This function allows one to use parser inside object. All callback functions could be set with xml_set_element_handler() etc and assumed to be methods of object.",
+             "flags": [
+             ],
+             "return": {
+--- a/hphp/system/php/spl/iterators/ArrayIterator.php
++++ b/hphp/system/php/spl/iterators/ArrayIterator.php
+@@ -4,7 +4,7 @@
+ /**
+  * ( excerpt from http://php.net/manual/en/class.arrayiterator.php )
+  *
+- * This iterator allows to unset and modify values and keys while
++ * This iterator allows one to unset and modify values and keys while
+  * iterating over Arrays and Objects.
+  *
+  * When you want to iterate over the same array multiple times you need to
+--- a/hphp/system/php/spl/iterators/RecursiveArrayIterator.php
++++ b/hphp/system/php/spl/iterators/RecursiveArrayIterator.php
+@@ -5,7 +5,7 @@
+  * ( excerpt from http://php.net/manual/en/class.recursivearrayiterator.php
+  * )
+  *
+- * This iterator allows to unset and modify values and keys while
++ * This iterator allows one to unset and modify values and keys while
+  * iterating over Arrays and Objects in the same way as the ArrayIterator.
+  * Additionally it is possible to iterate over the current iterator entry.
+  *
+--- a/hphp/test/zend/bad/ext/mbstring/tests/htmlent.php
++++ b/hphp/test/zend/bad/ext/mbstring/tests/htmlent.php
+@@ -4,7 +4,7 @@
+ // &#64... are must be decoded on input these are not reencoded on output. 
+ // If you see &#64;&#65;&#66; on output this means input encoding fails.
+ // If you do not see &auml;... on output this means output encoding fails.
+-// Using UTF-8 internally allows to encode/decode ALL characters.
++// Using UTF-8 internally allows one to encode/decode ALL characters.
+ // &128... will stay as they are since their character codes are above 127
+ // and they do not have a named entity representaion.
+ ?>
+@@ -13,4 +13,4 @@
+ <?php mb_parse_str("test=&#38;&#64;&#65;&#66;&#128;&#129;&#130;&auml;&ouml;&uuml;&euro;&lang;&rang;", $test);
+ print_r($test);
+ ?>
+-===DONE===
+\ No newline at end of file
++===DONE===

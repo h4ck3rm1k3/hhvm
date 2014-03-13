@@ -47,8 +47,8 @@ Build-Depends: debhelper (>= 9.0.0),
   zlib1g-dev
 Standards-Version: 3.9.5
 Homepage: http://hhvm.com/
-Vcs-Git: git://git.debian.org/collab-maint/hhvm.git
-Vcs-Browser: http://git.debian.org/?p=collab-maint/hhvm.git;a=summary
+Vcs-Git: git://anonscm.debian.org/collab-maint/hhvm.git
+Vcs-Browser: http://anonscm.debian.org/gitweb/?p=collab-maint/hhvm.git;a=summary
 
 Package: hhvm
 Architecture: amd64
