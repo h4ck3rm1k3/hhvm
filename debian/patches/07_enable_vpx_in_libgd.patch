@@ -1,13 +1,16 @@
-Description: VPx code is not really enabled in GD extension.
+Description: VPx code is not enabled in GD and it's broken.
  It seems that the VPx code in libgd is protected by a HAVE_LIBVPX macro,
  so define it when we find the VPx libraries.
+ .
+ Also, when enabled, the code broke probably because of a C->C++
+ conversion problem.  So cast some stuff and clean unused code.
 Author: David Martínez Moreno <ender@debian.org>
 Forwarded: no
 Last-Update: 2014-03-13
 
---- hhvm-2.4.1.orig/CMake/HPHPFindLibs.cmake
-+++ hhvm-2.4.1/CMake/HPHPFindLibs.cmake
-@@ -107,7 +107,7 @@ add_definitions(-DPNG_SKIP_SETJMP_CHECK)
+--- a/CMake/HPHPFindLibs.cmake
++++ b/CMake/HPHPFindLibs.cmake
+@@ -107,7 +107,7 @@
  find_package(LibVpx)
  if (LIBVPX_INCLUDE_DIRS)
  	include_directories(${LIBVPX_INCLUDE_DIRS})
@@ -16,3 +19,68 @@ Last-Update: 2014-03-13
  endif()
  find_package(LibJpeg)
  if (LIBJPEG_INCLUDE_DIRS)
+--- a/hphp/runtime/ext/gd/libgd/gd_webp.cpp
++++ b/hphp/runtime/ext/gd/libgd/gd_webp.cpp
+@@ -42,7 +42,7 @@
+ 	unsigned char   *V = NULL;
+ 	gdImagePtr im;
+ 
+-	ret = WebPDecode(data, size, &Y, &U, &V, &width, &height);
++	ret = WebPDecode((const uint8*) data, size, &Y, &U, &V, &width, &height);
+ 	if (ret != webp_success) {
+ 		if (Y) free(Y);
+ 		if (U) free(U);
+@@ -72,7 +72,7 @@
+ 	gdImagePtr im;
+ 
+ 	do {
+-		temp = gdRealloc(filedata, size+GD_WEBP_ALLOC_STEP);
++		temp = (unsigned char*) gdRealloc(filedata, size+GD_WEBP_ALLOC_STEP);
+ 		if (temp) {
+ 			filedata = temp;
+ 			read = temp + size;
+@@ -167,10 +167,8 @@
+ {
+ 	int width = im->sx;
+ 	int height = im->sy;
+-	int colors = im->colorsTotal;
+-	int *open = im->open;
+ 
+-	int  yuv_width, yuv_height, yuv_nbytes, ret;
++	int yuv_width, yuv_height, yuv_nbytes, ret;
+ 	int vp8_quality;
+ 	unsigned char *Y = NULL,
+ 				  *U = NULL,
+--- a/hphp/runtime/ext/gd/libgd/webpimg.cpp
++++ b/hphp/runtime/ext/gd/libgd/webpimg.cpp
+@@ -379,7 +379,7 @@
+                     U + (y >> 1) * uv_stride,
+                     V + (y >> 1) * uv_stride,
+                     width,
+-                    im->tpixels[y]);
++                    (uint32*) im->tpixels[y]);
+   }
+ }
+ 
+@@ -560,8 +560,8 @@
+   	im = im2;
+   }
+   for (y = 0; y < (y_height >> 1); ++y) {
+-	RGBALinepairToYUV420(im->tpixels[2 * y],
+-						 im->tpixels[2 * y + 1],
++	RGBALinepairToYUV420((uint32*) im->tpixels[2 * y],
++						 (uint32*) im->tpixels[2 * y + 1],
+ 						 y_width,
+ 						 Y + 2 * y * y_stride,
+ 						 Y + (2 * y + 1) * y_stride,
+@@ -569,8 +569,8 @@
+ 						 V + y * uv_stride);
+   }
+   if (y_height & 1) {
+-	RGBALinepairToYUV420(im->tpixels[y_height - 1],
+-						 im->tpixels[y_height - 1],
++	RGBALinepairToYUV420((uint32*) im->tpixels[y_height - 1],
++						 (uint32*) im->tpixels[y_height - 1],
+ 						 y_width,
+ 						 Y + (y_height - 1) * y_stride,
+ 						 Y + (y_height - 1) * y_stride,
