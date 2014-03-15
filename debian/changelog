@@ -8,9 +8,8 @@ hhvm (2.4.1-1) UNRELEASED; urgency=low
     - 02_use_system_libzip.patch: Add CMake code to use the system's libzip.
     - 06_typos.patch: Lots of typos, most of them detected by lintian. Added
       the false positives to a lintian override file.
-    - 07_enable_vpx_in_libgd.patch: Enable VPx code in libgd.  This is
-      disabled for now in patches/series because there are some broken code in
-      hphp/runtime/ext/gd/libgd/gd_webp.cpp.
+    - 07_disable_vpx_in_libgd.patch: Disable VPx code in libgd to make sure we
+      don't get an additional dependency if it's present in the system.
 
   [ Faidon Liambotis ]
   * debian/patches:
@@ -18,7 +17,7 @@ hhvm (2.4.1-1) UNRELEASED; urgency=low
       and prefer libedit over libreadline.
     - 04_generated_files_prebuild.patch: allow generated_files.sh to be run
       before HHVM is built to run it for DFSG completeness reasons.
-    - 05_bison3_whitespace.patch: Change to the whitespace matchingto support
+    - 05_bison3_whitespace.patch: Change to the whitespace matching to support
       both Bison 2 and 3.
 
  -- David Martínez Moreno <ender@debian.org>  Wed, 12 Mar 2014 15:31:34 -0700

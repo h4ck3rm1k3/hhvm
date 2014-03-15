@@ -1,0 +1,50 @@
+Description: VPx code is not used in the public extensions.
+ It seems that the VPx code in libgd apart from being protected by the
+ HAVE_LIBVPX macro. Nuke the CMake definitions to make sure we don't
+ enable it and create an additional dependency.
+ .
+Origin: upstream
+Author: Sara Golemon <sgolemon@fb.com>
+Last-Update: 2014-03-13
+
+--- a/CMake/FindLibVpx.cmake
++++ /dev/null
+@@ -1,14 +0,0 @@
+-
+-if (LIBVPX_LIBRARIES AND LIBVPX_INCLUDE_DIRS)
+-  set (LibVpx_FIND_QUIETLY TRUE)
+-endif (LIBVPX_LIBRARIES AND LIBVPX_INCLUDE_DIRS)
+-
+-find_path(LIBVPX_INCLUDE_DIRS NAMES vpx_codec.h)
+-find_library(LIBVPX_LIBRARIES NAMES vpx)
+-
+-include (FindPackageHandleStandardArgs)
+-FIND_PACKAGE_HANDLE_STANDARD_ARGS(LibVpx DEFAULT_MSG
+-    LIBVPX_LIBRARIES
+-    LIBVPX_INCLUDE_DIRS)
+-
+-mark_as_advanced(LIBVPX_INCLUDE_DIRS LIBVPX_LIBRARIES)
+--- a/CMake/HPHPFindLibs.cmake
++++ b/CMake/HPHPFindLibs.cmake
+@@ -104,11 +104,6 @@
+ 
+ # GD checks
+ add_definitions(-DPNG_SKIP_SETJMP_CHECK)
+-find_package(LibVpx)
+-if (LIBVPX_INCLUDE_DIRS)
+-	include_directories(${LIBVPX_INCLUDE_DIRS})
+-	add_definitions("-DHAVE_GD_WEBP")
+-endif()
+ find_package(LibJpeg)
+ if (LIBJPEG_INCLUDE_DIRS)
+ 	include_directories(${LIBJPEG_INCLUDE_DIRS})
+@@ -500,9 +495,6 @@
+ if (LIBPNG_LIBRARIES)
+ 	target_link_libraries(${target} ${LIBPNG_LIBRARIES})
+ endif()
+-if (LIBVPX_LIBRARIES)
+-	target_link_libraries(${target} ${LIBVPX_LIBRARIES})
+-endif()
+ if (LIBUODBC_LIBRARIES)
+ 	target_link_libraries(${target} ${LIBUODBC_LIBRARIES})
+ endif()
