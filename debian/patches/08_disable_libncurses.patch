@@ -1,8 +1,8 @@
 Description: Disable bogus code for finding and linking against ncurses.
- For some very old reasoa lost in the dawn of time, HHVM imported the CMake
+ For some very old reason lost in the dawn of time, HHVM imported the CMake
  file of Readline from KDE, which had an ncurses dependency. Remove it from
  everywhere.
-Forwarded: no
+Forwarded: https://github.com/facebook/hhvm/pull/2087
 Last-Update: 2014-03-15
 
 --- a/CMake/FindReadline.cmake

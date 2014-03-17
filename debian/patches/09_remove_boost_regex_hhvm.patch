@@ -1,8 +1,8 @@
 Description: HHVM itself does not depend on boost_regex.
  Only third-party/folly depends on libboost_regex, but HHVM has a dependency
- that causes a bogus linking in the final binary.
+ that causes a bogus linkage in the final binary.
 Author: David Martínez Moreno <ender@debian.org>
-Forwarded: no
+Forwarded: https://github.com/facebook/hhvm/pull/2086
 Last-Update: 2014-03-15
 
 --- hhvm-2.4.1.orig/CMake/HPHPFindLibs.cmake

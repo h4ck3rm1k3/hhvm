@@ -2,7 +2,7 @@ Description: Remove PAM dependency code.
  The libpam dependency was brought 3.5 years due to c-client.  As of today,
  there's no need neither in HHVM or c-client to link against libpam.
 Author: David Martínez Moreno <ender@debian.org>
-Forwarded: no
+Forwarded: https://github.com/facebook/hhvm/pull/2085
 Last-Update: 2014-03-15
 
 --- a/CMake/FindLibpam.cmake
