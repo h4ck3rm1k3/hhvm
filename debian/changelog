@@ -3,6 +3,8 @@ hhvm (2.4.1-1) UNRELEASED; urgency=low
   [ David Martínez Moreno ]
   * Initial release (closes: #727085).
   * Version released on 2014-02-13.
+  * debian/rules: Build the package with --as-needed to remove a couple of
+    bogus dependencies,
   * debian/patches:
     - 01_fix_freetype_include.patch: Bad include in libgd.
     - 02_use_system_libzip.patch: Add CMake code to use the system's libzip.
