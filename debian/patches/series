@@ -5,3 +5,6 @@
 05_bison3_whitespace.patch
 06_typos.patch
 07_disable_vpx_in_libgd.patch
+08_disable_libncurses.patch
+09_remove_boost_regex_hhvm.patch
+10_remove_libpam.patch

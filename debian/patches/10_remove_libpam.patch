@@ -1,0 +1,61 @@
+Description: Remove PAM dependency code.
+ The libpam dependency was brought 3.5 years due to c-client.  As of today,
+ there's no need neither in HHVM or c-client to link against libpam.
+Author: David Martínez Moreno <ender@debian.org>
+Forwarded: no
+Last-Update: 2014-03-15
+
+--- a/CMake/FindLibpam.cmake
++++ /dev/null
+@@ -1,23 +0,0 @@
+-IF(PAM_FOUND)
+-  SET(PAM_FIND_QUIETLY TRUE)
+-ENDIF(PAM_FOUND)
+-
+-FIND_PATH(PAM_INCLUDE_PATH
+-  NAMES pam_modules.h
+-  PATH_SUFFIXES security
+-  PATHS /usr/include /usr/local/include /usr/pkg/include
+-)
+-
+-FIND_LIBRARY(PAM_LIBRARY
+-  NAMES pam
+-  PATHS /lib /usr/lib /usr/local/lib /usr/pkg/lib
+-)
+-
+-IF (PAM_INCLUDE_PATH AND PAM_LIBRARY)
+-  SET(PAM_FOUND TRUE)
+-ENDIF()
+-
+-MARK_AS_ADVANCED(
+-  PAM_INCLUDE_PATH
+-  PAM_LIBRARY
+-)
+--- a/CMake/HPHPFindLibs.cmake
++++ b/CMake/HPHPFindLibs.cmake
+@@ -335,11 +335,6 @@
+     CONTAINS_STRING("${CCLIENT_INCLUDE_PATH}/linkage.h" auth_gss CCLIENT_HAS_GSS)
+ endif()
+ 
+-find_package(Libpam)
+-if (PAM_INCLUDE_PATH)
+-	include_directories(${PAM_INCLUDE_PATH})
+-endif()
+-
+ if (NOT CCLIENT_HAS_GSS)
+ 	add_definitions(-DSKIP_IMAP_GSS=1)
+ endif()
+@@ -521,11 +516,7 @@
+ 
+ 	target_link_libraries(${target} ${CCLIENT_LIBRARY})
+ 
+-	if (PAM_LIBRARY)
+-		target_link_libraries(${target} ${PAM_LIBRARY})
+-	endif()
+-
+-        target_link_libraries(${target} ${LIBDWARF_LIBRARIES})
+-        target_link_libraries(${target} ${LIBELF_LIBRARIES})
++    target_link_libraries(${target} ${LIBDWARF_LIBRARIES})
++    target_link_libraries(${target} ${LIBELF_LIBRARIES})
+ 
+ endmacro()

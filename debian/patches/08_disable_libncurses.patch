@@ -1,0 +1,75 @@
+Description: Disable bogus code for finding and linking against ncurses.
+ For some very old reasoa lost in the dawn of time, HHVM imported the CMake
+ file of Readline from KDE, which had an ncurses dependency. Remove it from
+ everywhere.
+Forwarded: no
+Last-Update: 2014-03-15
+
+--- a/CMake/FindReadline.cmake
++++ b/CMake/FindReadline.cmake
+@@ -3,9 +3,9 @@
+ # --> BSD licensed
+ #
+ # GNU Readline library finder
+-if(READLINE_INCLUDE_DIR AND READLINE_LIBRARY AND NCURSES_LIBRARY)
++if(READLINE_INCLUDE_DIR AND READLINE_LIBRARY)
+   set(READLINE_FOUND TRUE)
+-else(READLINE_INCLUDE_DIR AND READLINE_LIBRARY AND NCURSES_LIBRARY)
++else(READLINE_INCLUDE_DIR AND READLINE_LIBRARY)
+   FIND_PATH(READLINE_INCLUDE_DIR readline/readline.h
+     /usr/include/readline
+   )
+@@ -26,4 +26,4 @@
+         FIND_PACKAGE_HANDLE_STANDARD_ARGS(Readline DEFAULT_MSG READLINE_INCLUDE_DIR READLINE_LIBRARY )
+ 
+   MARK_AS_ADVANCED(READLINE_INCLUDE_DIR READLINE_LIBRARY)
+-endif(READLINE_INCLUDE_DIR AND READLINE_LIBRARY AND NCURSES_LIBRARY)
++endif(READLINE_INCLUDE_DIR AND READLINE_LIBRARY)
+--- a/CMake/FindNcurses.cmake
++++ /dev/null
+@@ -1,23 +0,0 @@
+-IF(NCURSES_FOUND)
+-  SET(NCURSES_FIND_QUIETLY TRUE)
+-ENDIF(NCURSES_FOUND)
+-
+-FIND_PATH(NCURSES_INCLUDE_PATH
+-  NAMES ncurses.h curses.h
+-  PATH_SUFFIXES ncurses
+-  PATHS /usr/include /usr/local/include /usr/pkg/include
+-)
+-
+-FIND_LIBRARY(NCURSES_LIBRARY
+-  NAMES ncurses ncursesw
+-  PATHS /lib /usr/lib /usr/local/lib /usr/pkg/lib
+-)
+-
+-IF (NCURSES_INCLUDE_PATH AND NCURSES_LIBRARY)
+-  SET(NCURSES_FOUND TRUE)
+-ENDIF(NCURSES_INCLUDE_PATH AND NCURSES_LIBRARY)
+-
+-MARK_AS_ADVANCED(
+-  NCURSES_INCLUDE_PATH
+-  NCURSES_LIBRARY
+-)
+--- a/CMake/HPHPFindLibs.cmake
++++ b/CMake/HPHPFindLibs.cmake
+@@ -291,11 +291,6 @@
+ find_package(Ldap REQUIRED)
+ include_directories(${LDAP_INCLUDE_DIR})
+ 
+-# ncurses, readline and history
+-#set(CURSES_NEED_NCURSES true)
+-find_package(Ncurses REQUIRED)
+-include_directories(${NCURSES_INCLUDE_PATH})
+-
+ # libpthreads
+ find_package(PThread REQUIRED)
+ include_directories(${LIBPTHREAD_INCLUDE_DIRS})
+@@ -524,7 +519,6 @@
+ 		target_link_libraries(${target} ${READLINE_LIBRARY})
+ 	endif()
+ 
+-	target_link_libraries(${target} ${NCURSES_LIBRARY})
+ 	target_link_libraries(${target} ${CCLIENT_LIBRARY})
+ 
+ 	if (PAM_LIBRARY)

@@ -154,7 +154,7 @@ Last-Update: 2014-03-12
                      "type": "String",
                      "value": "null_string",
 -                    "desc": "With a namespace aware parser tag parameters passed to the various handler functions will consist of namespace and tag name separated by the string specified in seperator."
-+                    "desc": "With a namespace aware parser tag parameters passed to the various handler functions will consist of namespace and tag name separated by the string specified in separator."
++                    "desc": "With a namespace-aware parser tag parameters passed to the various handler functions will consist of namespace and tag name separated by the string specified in separator."
                  }
              ]
          },

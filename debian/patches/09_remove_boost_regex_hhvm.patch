@@ -1,0 +1,18 @@
+Description: HHVM itself does not depend on boost_regex.
+ Only third-party/folly depends on libboost_regex, but HHVM has a dependency
+ that causes a bogus linking in the final binary.
+Author: David Martínez Moreno <ender@debian.org>
+Forwarded: no
+Last-Update: 2014-03-15
+
+--- hhvm-2.4.1.orig/CMake/HPHPFindLibs.cmake
++++ hhvm-2.4.1/CMake/HPHPFindLibs.cmake
+@@ -28,7 +28,7 @@ if (LIBDL_INCLUDE_DIRS)
+ endif()
+ 
+ # boost checks
+-find_package(Boost 1.48.0 COMPONENTS system program_options filesystem regex REQUIRED)
++find_package(Boost 1.48.0 COMPONENTS system program_options filesystem REQUIRED)
+ include_directories(${Boost_INCLUDE_DIRS})
+ link_directories(${Boost_LIBRARY_DIRS})
+ # Boost 1.49 supports a better flat_multimap, but 1.48 is good enough
