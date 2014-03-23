@@ -1,12 +1,5 @@
 - debian/copyright: Review the following directories:
-  * CMake/
   * hphp
-  * hphp/compiler
-  * hphp/doc
-  * hphp/hhbbc
-  * hphp/hhvm
-  * hphp/neo
-  * hphp/parser
   * hphp/runtime
   * hphp/system
   * hphp/test

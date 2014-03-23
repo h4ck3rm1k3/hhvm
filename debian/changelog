@@ -6,20 +6,23 @@ hhvm (2.4.1-1) UNRELEASED; urgency=low
   * debian/rules: Build the package with --as-needed to remove a couple of
     bogus dependencies,
   * debian/patches:
-    - 01_fix_freetype_include.patch: Bad include in libgd.
-    - 02_use_system_libzip.patch: Add CMake code to use the system's libzip.
-    - 06_typos.patch: Lots of typos, most of them detected by lintian. Added
-      the false positives to a lintian override file.
-    - 07_disable_vpx_in_libgd.patch: Disable VPx code in libgd to make sure we
-      don't get an additional dependency if it's present in the system.
+    - 01_fix_freetype_include: Bad include in libgd.
+    - 02_use_system_libzip: Add CMake code to use the system's libzip.
+    - 06_typos: Lots of typos, most of them detected by lintian. Added the
+      false positives to a lintian override file.
+    - 07_disable_vpx_in_libgd: Disable VPx code in libgd to make sure we don't
+      get an additional dependency if it's present in the system.
+    - 08_disable_libncurses: Disable libncurses CMake and linking code.
+    - 09_remove_boost_regex_hhvm: Disable boost_regex in CMake code.
+    - 10_remove_libpam: Disable libpam CMake and linking code.
 
   [ Faidon Liambotis ]
   * debian/patches:
-    - 03_prefer_libedit_over_libreadline.patch: workaround build system bug
+    - 03_prefer_libedit_over_libreadline: workaround build system bug
       and prefer libedit over libreadline.
-    - 04_generated_files_prebuild.patch: allow generated_files.sh to be run
+    - 04_generated_files_prebuild: allow generated_files.sh to be run
       before HHVM is built to run it for DFSG completeness reasons.
-    - 05_bison3_whitespace.patch: Change to the whitespace matching to support
+    - 05_bison3_whitespace: Change to the whitespace matching to support
       both Bison 2 and 3.
 
  -- David Martínez Moreno <ender@debian.org>  Wed, 12 Mar 2014 15:31:34 -0700

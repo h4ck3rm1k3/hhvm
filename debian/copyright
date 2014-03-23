@@ -57,7 +57,28 @@ Copyright: 2010 Facebook, Inc. (http://www.facebook.com)
            1997-2010 The PHP Group
 License: PHP-3.01
 
-Files: CMake/*
+Files: hphp/compiler/parser/hphp.tab.cpp hphp/parser/hphp.tab.cpp
+Copyright: 1984, 1989-1990, 2000-2011 Free Software Foundation, Inc.
+License: Bison-GPL-3+
+
+Files: hphp/neo/neo* hphp/neo/ulist* hphp/neo/ulocks.c
+Copyright: 2001-2004 Brandon Long
+License: Clearsilver
+
+Files: hphp/neo/neo* hphp/neo/ulist* hphp/neo/ulocks.c
+Copyright: 1998-2000 Scott Shambarger <scott@shambarger.net>
+License: Free
+
+Files: hphp/neo/wildmat.*
+Copyright: 1986-1991 Rich Salz <rsalz@osf.org>
+License: Wildmat
+
+Files: debian/*
+Copyright: 2014 David Martínez Moreno <ender@debian.org>
+           2014 Faidon Liambotis <paravoid@debian.org>
+License: GPL-2+
+
+Files: *
 Copyright: 2010-2014 Facebook, Inc. (http://www.facebook.com)
 License: PHP-3.01
 
@@ -138,9 +159,23 @@ License: PHP-3.01
  ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
  OF THE POSSIBILITY OF SUCH DAMAGE.
 
-Files: debian/*
-Copyright: 2014 David Martínez Moreno <ender@debian.org>
-           2014 Faidon Liambotis <paravoid@debian.org>
+License: GPL-2
+ This program is free software; you can redistribute it and/or modify
+ it under the terms of version 2 of the GNU General Public License as
+ published by the Free Software Foundation.
+ .
+ This program is distributed in the hope that it will be useful,
+ but WITHOUT ANY WARRANTY; without even the implied warranty of
+ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ GNU General Public License for more details.
+ .
+ You should have received a copy of the GNU General Public License
+ along with this program; if not, write to the Free Software
+ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+ .
+ On Debian systems, the complete text of the GNU General
+ Public License version 2 can be found in "/usr/share/common-licenses/GPL-2".
+
 License: GPL-2+
  This package is free software; you can redistribute it and/or modify
  it under the terms of the GNU General Public License as published by
@@ -157,3 +192,62 @@ License: GPL-2+
  .
  On Debian systems, the complete text of the GNU General
  Public License version 2 can be found in "/usr/share/common-licenses/GPL-2".
+
+License: GPL-3+
+ This program is free software: you can redistribute it and/or modify
+ it under the terms of the GNU General Public License as published by
+ the Free Software Foundation, either version 3 of the License, or
+ (at your option) any later version.
+ .
+ This program is distributed in the hope that it will be useful,
+ but WITHOUT ANY WARRANTY; without even the implied warranty of
+ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ GNU General Public License for more details.
+ .
+ You should have received a copy of the GNU General Public License
+ along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ .
+ On Debian systems, the complete text of the GNU General
+ Public License version 3 can be found in "/usr/share/common-licenses/GPL-3".
+
+License: Bison-GPL-3+
+ This program is free software: you can redistribute it and/or modify
+ it under the terms of the GNU General Public License as published by
+ the Free Software Foundation, either version 3 of the License, or
+ (at your option) any later version.
+ .
+ This program is distributed in the hope that it will be useful,
+ but WITHOUT ANY WARRANTY; without even the implied warranty of
+ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ GNU General Public License for more details.
+ .
+ You should have received a copy of the GNU General Public License
+ along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ .
+ On Debian systems, the complete text of the GNU General
+ Public License version 3 can be found in "/usr/share/common-licenses/GPL-3".
+ .
+ As a special exception, you may create a larger work that contains
+ part or all of the Bison parser skeleton and distribute that work
+ under terms of your choice, so long as that work isn't itself a
+ parser generator using the skeleton or a modified version thereof
+ as a parser skeleton.  Alternatively, if you modify or redistribute
+ the parser skeleton itself, you may (at your option) remove this
+ special exception, which will cause the skeleton and the resulting
+ Bison output files to be licensed under the GNU General Public
+ License without this special exception.
+ .
+ This special exception was added by the Free Software Foundation in
+ version 2.2 of Bison.
+
+License: Clearsilver
+ FIXME, on the plane with no Internec.
+
+License: Free
+ This software is open source. Permission to use, copy, modify, and
+ distribute this software for any purpose and without fee is hereby granted,
+ provided that the above copyright notice appear in all copies.  No
+ warranty of any kind is expressed or implied.  Use at your own risk.
+
+License: Wildmat
+ FIXME, files without license info!!
