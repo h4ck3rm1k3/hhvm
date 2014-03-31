@@ -25,3 +25,4 @@
 - Finish with 02_use_system_libzip.patch because we have to support the case when
   libzip 0.11 or later is not present.
 - Write a manpage for hhvm and hphpize.
+- Fix the clean targets as it's not possible to rebuild HHVM after a successful build.

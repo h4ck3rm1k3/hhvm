@@ -7,7 +7,8 @@ hhvm (2.4.1-1) UNRELEASED; urgency=low
     bogus dependencies,
   * debian/patches:
     - 01_fix_freetype_include: Bad include in libgd.
-    - 02_use_system_libzip: Add CMake code to use the system's libzip.
+    - 02_use_system_libzip: Use the system's libzip and remove the one in
+      third-party.
     - 06_typos: Lots of typos, most of them detected by lintian. Added the
       false positives to a lintian override file.
     - 07_disable_vpx_in_libgd: Disable VPx code in libgd to make sure we don't
@@ -15,6 +16,8 @@ hhvm (2.4.1-1) UNRELEASED; urgency=low
     - 08_disable_libncurses: Disable libncurses CMake and linking code.
     - 09_remove_boost_regex_hhvm: Disable boost_regex in CMake code.
     - 10_remove_libpam: Disable libpam CMake and linking code.
+    - 11_use_system_libsqlite: Use the system's libsqlite3 and remove the one
+      in third-party.
 
   [ Faidon Liambotis ]
   * debian/patches:
