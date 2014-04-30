@@ -7,7 +7,7 @@ Last-Update: 2014-03-12
 
 --- a/hphp/doc/options.compiler
 +++ b/hphp/doc/options.compiler
-@@ -200,7 +200,7 @@
+@@ -200,7 +200,7 @@ a more precise partitioning.
  
  = GCCOptimization
  
@@ -18,7 +18,7 @@ Last-Update: 2014-03-12
    GCCOptimization {
 --- a/hphp/neo/neo_hdf.c
 +++ b/hphp/neo/neo_hdf.c
-@@ -1482,7 +1482,7 @@
+@@ -1482,7 +1482,7 @@ static NEOERR* parse_attr(char **str, HD
      if (*s == '\0' || k_l == 0)
      {
        _dealloc_hdf_attr(attr);
@@ -27,7 +27,7 @@ Last-Update: 2014-03-12
      }
      SKIPWS(s);
      if (*s == '=')
-@@ -1537,7 +1537,7 @@
+@@ -1537,7 +1537,7 @@ static NEOERR* parse_attr(char **str, HD
  	{
  	  _dealloc_hdf_attr(attr);
  	  string_clear(&buf);
@@ -36,7 +36,7 @@ Last-Update: 2014-03-12
  	}
  	s++;
  	v = buf.buf;
-@@ -1550,7 +1550,7 @@
+@@ -1550,7 +1550,7 @@ static NEOERR* parse_attr(char **str, HD
  	if (*s == '\0')
  	{
  	  _dealloc_hdf_attr(attr);
@@ -45,7 +45,7 @@ Last-Update: 2014-03-12
  	}
          v_l = s-v;
        }
-@@ -1591,7 +1591,7 @@
+@@ -1591,7 +1591,7 @@ static NEOERR* parse_attr(char **str, HD
    if (*s == '\0')
    {
      _dealloc_hdf_attr(attr);
@@ -56,7 +56,7 @@ Last-Update: 2014-03-12
    return STATUS_OK;
 --- a/hphp/runtime/ext/ext_domdocument.cpp
 +++ b/hphp/runtime/ext/ext_domdocument.cpp
-@@ -415,7 +415,7 @@
+@@ -405,7 +405,7 @@ static Variant dom_canonicalization(xmlN
        inclusive_ns_prefixes[nscount] = NULL;
      } else {
        raise_notice("Inclusive namespace prefixes only allowed in "
@@ -125,20 +125,9 @@ Last-Update: 2014-03-12
                          },
                          {
                              "name": "failure_callback",
---- a/hphp/system/idl/pdo.idl.json
-+++ b/hphp/system/idl/pdo.idl.json
-@@ -1053,7 +1053,7 @@
-                 },
-                 {
-                     "name": "debugdumpparams",
--                    "desc": "Dumps the informations contained by a prepared statement directly on the output. It will provide the SQL query in use, the number of parameters used (Params), the list of parameters, with their name, type (paramtype) as an integer, their key name or position, the value, and the position in the query (if this is supported by the PDO driver, otherwise, it will be -1).\n\nThis is a debug function, which dump directly the data on the normal output. TipAs with anything that outputs its result directly to the browser, the output-control functions can be used to capture the output of this function, and save it in a string (for example).\n\nThis will only dumps the parameters in the statement at the moment of the dump. Extra parameters are not stored in the statement, and not displayed.",
-+                    "desc": "Dumps the information contained by a prepared statement directly on the output. It will provide the SQL query in use, the number of parameters used (Params), the list of parameters, with their name, type (paramtype) as an integer, their key name or position, the value, and the position in the query (if this is supported by the PDO driver, otherwise, it will be -1).\n\nThis is a debug function, which dump directly the data on the normal output. TipAs with anything that outputs its result directly to the browser, the output-control functions can be used to capture the output of this function, and save it in a string (for example).\n\nThis will only dumps the parameters in the statement at the moment of the dump. Extra parameters are not stored in the statement, and not displayed.",
-                     "flags": [
-                     ],
-                     "return": {
 --- a/hphp/system/idl/stream.idl.json
 +++ b/hphp/system/idl/stream.idl.json
-@@ -314,7 +314,7 @@
+@@ -359,7 +359,7 @@
          },
          {
              "name": "stream_wrapper_unregister",
@@ -207,3 +196,14 @@ Last-Update: 2014-03-12
 -===DONE===
 \ No newline at end of file
 +===DONE===
+--- a/hphp/system/idl/pdo.idl.json
++++ b/hphp/system/idl/pdo.idl.json
+@@ -1054,7 +1054,7 @@
+                 },
+                 {
+                     "name": "debugDumpParams",
+-                    "desc": "Dumps the informations contained by a prepared statement directly on the output. It will provide the SQL query in use, the number of parameters used (Params), the list of parameters, with their name, type (paramtype) as an integer, their key name or position, the value, and the position in the query (if this is supported by the PDO driver, otherwise, it will be -1).\n\nThis is a debug function, which dump directly the data on the normal output. TipAs with anything that outputs its result directly to the browser, the output-control functions can be used to capture the output of this function, and save it in a string (for example).\n\nThis will only dumps the parameters in the statement at the moment of the dump. Extra parameters are not stored in the statement, and not displayed.",
++                    "desc": "Dumps the information contained by a prepared statement directly on the output. It will provide the SQL query in use, the number of parameters used (Params), the list of parameters, with their name, type (paramtype) as an integer, their key name or position, the value, and the position in the query (if this is supported by the PDO driver, otherwise, it will be -1).\n\nThis is a debug function, which dump directly the data on the normal output. TipAs with anything that outputs its result directly to the browser, the output-control functions can be used to capture the output of this function, and save it in a string (for example).\n\nThis will only dumps the parameters in the statement at the moment of the dump. Extra parameters are not stored in the statement, and not displayed.",
+                     "flags": [
+                     ],
+                     "return": {

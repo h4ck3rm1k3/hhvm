@@ -19,7 +19,7 @@ Last-Update: 2014-03-15
    FIND_PATH(READLINE_INCLUDE_DIR readline/readline.h
      /usr/include/readline
    )
-@@ -26,4 +26,4 @@
+@@ -26,4 +26,4 @@ else(READLINE_INCLUDE_DIR AND READLINE_L
          FIND_PACKAGE_HANDLE_STANDARD_ARGS(Readline DEFAULT_MSG READLINE_INCLUDE_DIR READLINE_LIBRARY )
  
    MARK_AS_ADVANCED(READLINE_INCLUDE_DIR READLINE_LIBRARY)
@@ -53,7 +53,7 @@ Last-Update: 2014-03-15
 -)
 --- a/CMake/HPHPFindLibs.cmake
 +++ b/CMake/HPHPFindLibs.cmake
-@@ -291,11 +291,6 @@
+@@ -298,11 +298,6 @@ include_directories(${ONIGURUMA_INCLUDE_
  find_package(Ldap REQUIRED)
  include_directories(${LDAP_INCLUDE_DIR})
  
@@ -65,7 +65,7 @@ Last-Update: 2014-03-15
  # libpthreads
  find_package(PThread REQUIRED)
  include_directories(${LIBPTHREAD_INCLUDE_DIRS})
-@@ -524,7 +519,6 @@
+@@ -535,7 +530,6 @@ endif()
  		target_link_libraries(${target} ${READLINE_LIBRARY})
  	endif()
  

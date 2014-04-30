@@ -33,7 +33,7 @@ Last-Update: 2014-03-15
 -)
 --- a/CMake/HPHPFindLibs.cmake
 +++ b/CMake/HPHPFindLibs.cmake
-@@ -335,11 +335,6 @@
+@@ -342,11 +342,6 @@ elseif (EXISTS "${CCLIENT_INCLUDE_PATH}/
      CONTAINS_STRING("${CCLIENT_INCLUDE_PATH}/linkage.h" auth_gss CCLIENT_HAS_GSS)
  endif()
  
@@ -45,7 +45,7 @@ Last-Update: 2014-03-15
  if (NOT CCLIENT_HAS_GSS)
  	add_definitions(-DSKIP_IMAP_GSS=1)
  endif()
-@@ -521,11 +516,7 @@
+@@ -532,12 +527,8 @@ endif()
  
  	target_link_libraries(${target} ${CCLIENT_LIBRARY})
  
@@ -58,4 +58,5 @@ Last-Update: 2014-03-15
 +    target_link_libraries(${target} ${LIBDWARF_LIBRARIES})
 +    target_link_libraries(${target} ${LIBELF_LIBRARIES})
  
- endmacro()
+ 	if (ZEND_COMPAT_LINK_LIBRARIES)
+ 		target_link_libraries(${target} ${ZEND_COMPAT_LINK_LIBRARIES})

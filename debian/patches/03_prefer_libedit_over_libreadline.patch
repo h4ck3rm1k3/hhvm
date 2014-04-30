@@ -16,7 +16,7 @@ Last-Update: 2014-03-04
 
 --- a/CMake/HPHPFindLibs.cmake
 +++ b/CMake/HPHPFindLibs.cmake
-@@ -305,11 +305,11 @@ include_directories(${LIBPTHREAD_INCLUDE_DIRS})
+@@ -310,11 +310,11 @@ include_directories(${LIBPTHREAD_INCLUDE
  # Either Readline or Editline (for hphpd)
  find_package(Readline)
  find_package(Editline)
@@ -31,7 +31,7 @@ Last-Update: 2014-03-04
  else()
  	message(FATAL_ERROR "Could not find Readline or Editline")
  endif()
-@@ -523,10 +523,10 @@ endif()
+@@ -529,10 +529,10 @@ endif()
  	target_link_libraries(${target} afdt)
  	target_link_libraries(${target} mbfl)
  
