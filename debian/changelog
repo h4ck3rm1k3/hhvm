@@ -11,8 +11,6 @@ hhvm (2.4.1-1) UNRELEASED; urgency=low
       third-party.
     - 06_typos: Lots of typos, most of them detected by lintian. Added the
       false positives to a lintian override file.
-    - 07_disable_vpx_in_libgd: Disable VPx code in libgd to make sure we don't
-      get an additional dependency if it's present in the system.
     - 08_disable_libncurses: Disable libncurses CMake and linking code.
     - 09_remove_boost_regex_hhvm: Disable boost_regex in CMake code.
     - 10_remove_libpam: Disable libpam CMake and linking code.
