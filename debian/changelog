@@ -1,4 +1,4 @@
-hhvm (2.4.1-1) UNRELEASED; urgency=low
+hhvm (3.0.1-1) UNRELEASED; urgency=low
 
   [ David Martínez Moreno ]
   * Initial release (closes: #727085).
@@ -26,4 +26,4 @@ hhvm (2.4.1-1) UNRELEASED; urgency=low
     - 05_bison3_whitespace: Change to the whitespace matching to support
       both Bison 2 and 3.
 
- -- David Martínez Moreno <ender@debian.org>  Wed, 12 Mar 2014 15:31:34 -0700
+ -- Faidon Liambotis <paravoid@debian.org>  Wed, 30 Apr 2014 12:34:34 +0000
