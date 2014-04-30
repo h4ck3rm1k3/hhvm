@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -17,9 +17,9 @@
 #include "hphp/runtime/vm/debug/gdb-jit.h"
 #include <elf.h>
 #include <gelf.h>
-#include <elf.h>
 #include <string>
 #include <vector>
+#include <iostream>
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -27,7 +27,7 @@
 #include "hphp/util/asm-x64.h"
 
 #include "hphp/runtime/base/runtime-option.h"
-#include "hphp/runtime/vm/jit/translator-x64.h"
+#include "hphp/runtime/vm/jit/mc-generator.h"
 
 using namespace HPHP::JIT;
 
@@ -533,7 +533,7 @@ int ElfWriter::writeStringSection() {
 
 int ElfWriter::writeTextSection() {
   int section = -1;
-  CodeBlock& a = tx64->code.main();
+  CodeBlock& a = mcg->code.main();
   if ((section = newSection(
       ".text.tracelets", a.capacity(), SHT_NOBITS, SHF_ALLOC | SHF_EXECINSTR,
       reinterpret_cast<uint64_t>(a.base()))) < 0) {

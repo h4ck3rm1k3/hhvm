@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -21,17 +21,22 @@
 
 #include <sys/time.h>
 #include <sys/resource.h>
+#include <map>
+#include <memory>
+#include <set>
+#include <vector>
 
 #include "folly/String.h"
 
 #include "hphp/util/hdf.h"
-#include "hphp/util/util.h"
+#include "hphp/util/text-util.h"
 #include "hphp/util/network.h"
 #include "hphp/util/logger.h"
 #include "hphp/util/stack-trace.h"
 #include "hphp/util/process.h"
 #include "hphp/util/file-cache.h"
 #include "hphp/util/log-file-flusher.h"
+#include "hphp/util/file-util.h"
 
 #include "hphp/parser/scanner.h"
 
@@ -49,6 +54,7 @@
 #include "hphp/runtime/base/hardware-counter.h"
 #include "hphp/runtime/base/preg.h"
 #include "hphp/runtime/base/crash-reporter.h"
+#include "hphp/runtime/base/static-string-table.h"
 
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
@@ -62,13 +68,12 @@ std::string RuntimeOption::PidFile = "www.pid";
 
 std::string RuntimeOption::LogFile;
 std::string RuntimeOption::LogFileSymLink;
-int RuntimeOption::LogHeaderMangle;
+int RuntimeOption::LogHeaderMangle = 0;
 bool RuntimeOption::AlwaysEscapeLog = false;
 bool RuntimeOption::AlwaysLogUnhandledExceptions = true;
 bool RuntimeOption::InjectedStackTrace = true;
 int RuntimeOption::InjectedStackTraceLimit = -1;
 bool RuntimeOption::NoSilencer = false;
-bool RuntimeOption::EnableApplicationLog = true;
 bool RuntimeOption::CallUserHandlerOnFatals = true;
 bool RuntimeOption::ThrowExceptionOnBadMethodCall = true;
 int RuntimeOption::RuntimeErrorReportingLevel =
@@ -87,16 +92,16 @@ bool RuntimeOption::ThrowInvalidArguments = false;
 bool RuntimeOption::EnableHipHopErrors = true;
 bool RuntimeOption::AssertActive = false;
 bool RuntimeOption::AssertWarning = false;
-int RuntimeOption::NoticeFrequency = 1;
-int RuntimeOption::WarningFrequency = 1;
+int64_t RuntimeOption::NoticeFrequency = 1;
+int64_t RuntimeOption::WarningFrequency = 1;
 int RuntimeOption::RaiseDebuggingFrequency = 1;
 int64_t RuntimeOption::SerializationSizeLimit = StringData::MaxSize;
 int64_t RuntimeOption::StringOffsetLimit = 10 * 1024 * 1024; // 10MB
 
-std::string RuntimeOption::AccessLogDefaultFormat;
+std::string RuntimeOption::AccessLogDefaultFormat = "%h %l %u %t \"%r\" %>s %b";
 std::vector<AccessLogFileData> RuntimeOption::AccessLogs;
 
-std::string RuntimeOption::AdminLogFormat;
+std::string RuntimeOption::AdminLogFormat = "%h %t %s %U";
 std::string RuntimeOption::AdminLogFile;
 std::string RuntimeOption::AdminLogSymLink;
 
@@ -108,15 +113,13 @@ std::string RuntimeOption::ServerType = "libevent";
 std::string RuntimeOption::ServerIP;
 std::string RuntimeOption::ServerFileSocket;
 std::string RuntimeOption::ServerPrimaryIP;
-int RuntimeOption::ServerPort;
+int RuntimeOption::ServerPort = 80;
 int RuntimeOption::ServerPortFd = -1;
 int RuntimeOption::ServerBacklog = 128;
 int RuntimeOption::ServerConnectionLimit = 0;
 int RuntimeOption::ServerThreadCount = 50;
 bool RuntimeOption::ServerThreadRoundRobin = false;
-constexpr int kDefaultWarmupThrottleRequestCount = 0;
-int RuntimeOption::ServerWarmupThrottleRequestCount =
-  kDefaultWarmupThrottleRequestCount;
+int RuntimeOption::ServerWarmupThrottleRequestCount = 0;
 int RuntimeOption::ServerThreadDropCacheTimeoutSeconds = 0;
 int RuntimeOption::ServerThreadJobLIFOSwitchThreshold = INT_MAX;
 int RuntimeOption::ServerThreadJobMaxQueuingMilliSeconds = -1;
@@ -126,25 +129,27 @@ bool RuntimeOption::ServerStatCache = false;
 std::vector<std::string> RuntimeOption::ServerWarmupRequests;
 boost::container::flat_set<std::string>
 RuntimeOption::ServerHighPriorityEndPoints;
+bool RuntimeOption::ServerExitOnBindFail;
 int RuntimeOption::PageletServerThreadCount = 0;
 bool RuntimeOption::PageletServerThreadRoundRobin = false;
 int RuntimeOption::PageletServerThreadDropCacheTimeoutSeconds = 0;
 int RuntimeOption::PageletServerQueueLimit = 0;
 bool RuntimeOption::PageletServerThreadDropStack = false;
-int RuntimeOption::FiberCount = 1;
+int RuntimeOption::FiberCount = Process::GetCPUCount();
 int RuntimeOption::RequestTimeoutSeconds = 0;
 int RuntimeOption::PspTimeoutSeconds = 0;
 size_t RuntimeOption::ServerMemoryHeadRoom = 0;
 int64_t RuntimeOption::RequestMemoryMaxBytes =
   std::numeric_limits<int64_t>::max();
 int64_t RuntimeOption::ImageMemoryMaxBytes = 0;
-int RuntimeOption::ResponseQueueCount;
-int RuntimeOption::ServerGracefulShutdownWait;
+int RuntimeOption::ResponseQueueCount = 0;
+int RuntimeOption::ServerGracefulShutdownWait = 0;
 bool RuntimeOption::ServerHarshShutdown = true;
 bool RuntimeOption::ServerEvilShutdown = true;
-int RuntimeOption::ServerDanglingWait;
+int RuntimeOption::ServerDanglingWait = 0;
 int RuntimeOption::ServerShutdownListenWait = 0;
 int RuntimeOption::ServerShutdownListenNoWork = -1;
+std::vector<std::string> RuntimeOption::ServerNextProtocols;
 int RuntimeOption::GzipCompressionLevel = 3;
 std::string RuntimeOption::ForceCompressionURL;
 std::string RuntimeOption::ForceCompressionCookie;
@@ -161,15 +166,15 @@ std::string RuntimeOption::OutputHandler;
 bool RuntimeOption::ImplicitFlush = false;
 bool RuntimeOption::EnableEarlyFlush = true;
 bool RuntimeOption::ForceChunkedEncoding = false;
-int64_t RuntimeOption::MaxPostSize;
+int64_t RuntimeOption::MaxPostSize = 100;
 bool RuntimeOption::AlwaysPopulateRawPostData = true;
-int64_t RuntimeOption::UploadMaxFileSize;
-std::string RuntimeOption::UploadTmpDir;
-bool RuntimeOption::EnableFileUploads;
-bool RuntimeOption::EnableUploadProgress;
-int RuntimeOption::Rfc1867Freq;
-std::string RuntimeOption::Rfc1867Prefix;
-std::string RuntimeOption::Rfc1867Name;
+int64_t RuntimeOption::UploadMaxFileSize = 100;
+std::string RuntimeOption::UploadTmpDir = "/tmp";
+bool RuntimeOption::EnableFileUploads = true;
+bool RuntimeOption::EnableUploadProgress = false;
+int RuntimeOption::Rfc1867Freq = 256 * 1024;
+std::string RuntimeOption::Rfc1867Prefix = "vupload_";
+std::string RuntimeOption::Rfc1867Name = "video_ptoken";
 bool RuntimeOption::LibEventSyncSend = true;
 bool RuntimeOption::ExpiresActive = true;
 int RuntimeOption::ExpiresDefault = 2592000;
@@ -186,7 +191,7 @@ int RuntimeOption::SSLPortFd = -1;
 std::string RuntimeOption::SSLCertificateFile;
 std::string RuntimeOption::SSLCertificateKeyFile;
 std::string RuntimeOption::SSLCertificateDir;
-bool RuntimeOption::TLSDisableTLS1_2;
+bool RuntimeOption::TLSDisableTLS1_2 = false;
 std::string RuntimeOption::TLSClientCipherSpec;
 
 std::vector<std::shared_ptr<VirtualHost>> RuntimeOption::VirtualHosts;
@@ -249,7 +254,7 @@ bool RuntimeOption::UnserializationWhitelistCheck = false;
 bool RuntimeOption::UnserializationWhitelistCheckWarningOnly = true;
 
 std::string RuntimeOption::TakeoverFilename;
-int RuntimeOption::AdminServerPort;
+int RuntimeOption::AdminServerPort = 0;
 int RuntimeOption::AdminThreadCount = 1;
 std::string RuntimeOption::AdminPassword;
 std::set<std::string> RuntimeOption::AdminPasswords;
@@ -263,7 +268,6 @@ int RuntimeOption::ProxyPercentage = 0;
 std::set<std::string> RuntimeOption::ProxyURLs;
 std::vector<std::string> RuntimeOption::ProxyPatterns;
 bool RuntimeOption::AlwaysUseRelativePath = false;
-std::string RuntimeOption::IniFile = "/etc/hhvm/php.ini";
 
 int RuntimeOption::HttpDefaultTimeout = 30;
 int RuntimeOption::HttpSlowQueryThreshold = 5000; // ms
@@ -276,7 +280,7 @@ bool RuntimeOption::ServerErrorMessage = false;
 bool RuntimeOption::TranslateSource = false;
 bool RuntimeOption::RecordInput = false;
 bool RuntimeOption::ClearInputOnSuccess = true;
-std::string RuntimeOption::ProfilerOutputDir;
+std::string RuntimeOption::ProfilerOutputDir = "/tmp";
 std::string RuntimeOption::CoreDumpEmail;
 bool RuntimeOption::CoreDumpReport = true;
 std::string RuntimeOption::CoreDumpReportDirectory
@@ -291,8 +295,6 @@ bool RuntimeOption::MemcacheReadOnly = false;
 bool RuntimeOption::EnableStats = false;
 bool RuntimeOption::EnableWebStats = false;
 bool RuntimeOption::EnableMemoryStats = false;
-bool RuntimeOption::EnableAPCStats = false;
-bool RuntimeOption::EnableAPCKeyStats = false;
 bool RuntimeOption::EnableMemcacheStats = false;
 bool RuntimeOption::EnableMemcacheKeyStats = false;
 bool RuntimeOption::EnableSQLStats = false;
@@ -303,23 +305,12 @@ std::string RuntimeOption::StatsXSLProxy;
 int RuntimeOption::StatsSlotDuration = 10 * 60; // 10 minutes
 int RuntimeOption::StatsMaxSlot = 12 * 6; // 12 hours
 
-bool RuntimeOption::EnableAPCSizeStats = false;
-bool RuntimeOption::EnableAPCSizeGroup = false;
-std::vector<std::string> RuntimeOption::APCSizeSpecialPrefix;
-std::vector<std::string> RuntimeOption::APCSizePrefixReplace;
-std::vector<std::string> RuntimeOption::APCSizeSpecialMiddle;
-std::vector<std::string> RuntimeOption::APCSizeMiddleReplace;
-std::vector<std::string> RuntimeOption::APCSizeSkipPrefix;
-bool RuntimeOption::EnableAPCSizeDetail = false;
-bool RuntimeOption::EnableAPCFetchStats = false;
-bool RuntimeOption::APCSizeCountPrime = false;
-
 int64_t RuntimeOption::MaxRSS = 0;
 int64_t RuntimeOption::MaxRSSPollingCycle = 0;
 int64_t RuntimeOption::DropCacheCycle = 0;
-int64_t RuntimeOption::MaxSQLRowCount = 10000;
+int64_t RuntimeOption::MaxSQLRowCount = 0;
 int64_t RuntimeOption::MaxMemcacheKeyCount = 0;
-int RuntimeOption::SocketDefaultTimeout = 5;
+int64_t RuntimeOption::SocketDefaultTimeout = 5;
 bool RuntimeOption::LockCodeMemory = false;
 int RuntimeOption::MaxArrayChain = INT_MAX;
 bool RuntimeOption::WarnOnCollectionToArray = false;
@@ -334,8 +325,8 @@ int RuntimeOption::DnsCacheKeyFrequencyUpdatePeriod = 1000;
 std::map<std::string, std::string> RuntimeOption::ServerVariables;
 std::map<std::string, std::string> RuntimeOption::EnvVariables;
 
-std::string RuntimeOption::LightProcessFilePrefix;
-int RuntimeOption::LightProcessCount;
+std::string RuntimeOption::LightProcessFilePrefix = "./lightprocess";
+int RuntimeOption::LightProcessCount = 0;
 
 bool RuntimeOption::EnableHipHopSyntax = false;
 bool RuntimeOption::EnableHipHopExperimentalSyntax = false;
@@ -351,6 +342,9 @@ int RuntimeOption::MaxUserFunctionId = (2 * 65536);
 bool RuntimeOption::EnableArgsInBacktraces = true;
 bool RuntimeOption::EnableZendCompat = false;
 bool RuntimeOption::TimeoutsUseWallTime = true;
+bool RuntimeOption::CheckFlushOnUserClose = true;
+bool RuntimeOption::EvalAuthoritativeMode = false;
+bool RuntimeOption::IntsOverflowToInts = false;
 
 int RuntimeOption::GetScannerType() {
   int type = 0;
@@ -361,36 +355,14 @@ int RuntimeOption::GetScannerType() {
   return type;
 }
 
-// Initializers for Eval flags.
-static inline bool evalJitDefault() {
-  // --mode server or --mode daemon
-  // run long enough to justify JIT
-  if (RuntimeOption::ServerExecutionMode()) {
-    return true;
-  }
-
-  // JIT explicitly turned on via .hhvm-jit file
-  static const char* path = "/.hhvm-jit";
-  struct stat dummy;
-  return stat(path, &dummy) == 0;
-}
-
 static inline std::string regionSelectorDefault() {
-  if (RuntimeOption::EvalJitPGO) {
-    return "hottrace";
-  }
-
 #ifdef HHVM_REGION_SELECTOR_TRACELET
   return "tracelet";
 #else
 #ifdef HHVM_REGION_SELECTOR_LEGACY
   return "legacy";
 #else
-#ifdef HHVM_REGION_SELECTOR_HOTTRACE
-  return "hottrace";
-#else
   return "";
-#endif
 #endif
 #endif
 }
@@ -406,6 +378,19 @@ static inline bool hhirRelaxGuardsDefault() {
 
 static inline bool hhbcRelaxGuardsDefault() {
   return !RuntimeOption::EvalHHIRRelaxGuards;
+}
+
+static inline bool hhirRefcountOptsDefault() {
+  // TODO(t3091846)
+  return !RuntimeOption::EvalSimulateARM;
+}
+
+static inline bool evalJitDefault() {
+#ifdef __APPLE__
+  return false;
+#else
+  return true;
+#endif
 }
 
 static inline bool simulateARMDefault() {
@@ -448,7 +433,7 @@ std::string RuntimeOption::RepoLocalMode;
 std::string RuntimeOption::RepoLocalPath;
 std::string RuntimeOption::RepoCentralPath;
 std::string RuntimeOption::RepoEvalMode;
-std::string RuntimeOption::RepoJournal;
+std::string RuntimeOption::RepoJournal = "delete";
 bool RuntimeOption::RepoCommit = true;
 bool RuntimeOption::RepoDebugInfo = true;
 // Missing: RuntimeOption::RepoAuthoritative's physical location is
@@ -460,7 +445,7 @@ std::string RuntimeOption::SandboxHome;
 std::string RuntimeOption::SandboxFallback;
 std::string RuntimeOption::SandboxConfFile;
 std::map<std::string, std::string> RuntimeOption::SandboxServerVariables;
-bool RuntimeOption::SandboxFromCommonRoot;
+bool RuntimeOption::SandboxFromCommonRoot = false;
 std::string RuntimeOption::SandboxDirectoriesRoot;
 std::string RuntimeOption::SandboxLogsRoot;
 
@@ -479,7 +464,7 @@ std::string RuntimeOption::DebuggerDefaultSandboxPath;
 std::string RuntimeOption::DebuggerStartupDocument;
 int RuntimeOption::DebuggerSignalTimeout = 1;
 
-std::string RuntimeOption::SendmailPath;
+std::string RuntimeOption::SendmailPath = "sendmail -t -i";
 std::string RuntimeOption::MailForceExtraParameters;
 
 long RuntimeOption::PregBacktraceLimit = 1000000;
@@ -495,6 +480,8 @@ bool RuntimeOption::HHProfServerAllocationProfile = false;
 int RuntimeOption::HHProfServerFilterMinAllocPerReq = 2;
 int RuntimeOption::HHProfServerFilterMinBytesPerReq = 128;
 
+bool RuntimeOption::SimpleXMLEmptyNamespaceMatchesAll = false;
+
 bool RuntimeOption::EnableHotProfiler = true;
 int RuntimeOption::ProfilerTraceBuffer = 2000000;
 double RuntimeOption::ProfilerTraceExpansion = 1.2;
@@ -502,7 +489,7 @@ int RuntimeOption::ProfilerMaxTraceBuffer = 0;
 
 #ifdef FACEBOOK
 bool RuntimeOption::EnableFb303Server = true;
-int RuntimeOption::Fb303ServerPort;
+int RuntimeOption::Fb303ServerPort = 0;
 int RuntimeOption::Fb303ServerThreadStackSizeMb = 8;
 int RuntimeOption::Fb303ServerWorkerThreads = 1;
 int RuntimeOption::Fb303ServerPoolThreads = 1;
@@ -626,6 +613,41 @@ void RuntimeOption::Load(Hdf &config,
     } else if (logger["Level"] == "Verbose") {
       Logger::LogLevel = Logger::LogVerbose;
     }
+    IniSetting::Bind(IniSetting::CORE, IniSetting::PHP_INI_SYSTEM,
+                     "hhvm.log.level", IniSetting::SetAndGet<std::string>(
+      [](const std::string& value) {
+        if (value == "None") {
+          Logger::LogLevel = Logger::LogNone;
+        } else if (value == "Error") {
+          Logger::LogLevel = Logger::LogError;
+        } else if (value == "Warning") {
+          Logger::LogLevel = Logger::LogWarning;
+        } else if (value == "Info") {
+          Logger::LogLevel = Logger::LogInfo;
+        } else if (value == "Verbose") {
+          Logger::LogLevel = Logger::LogVerbose;
+        } else {
+          return false;
+        }
+        return true;
+      },
+      []() {
+        switch (Logger::LogLevel) {
+          case Logger::LogNone:
+            return "None";
+          case Logger::LogError:
+            return "Error";
+          case Logger::LogWarning:
+            return "Warning";
+          case Logger::LogInfo:
+            return "Info";
+          case Logger::LogVerbose:
+            return "Verbose";
+        }
+        return "";
+      }
+    ));
+
     Logger::LogHeader = logger["Header"].getBool();
     bool logInjectedStackTrace = logger["InjectedStackTrace"].getBool();
     if (logInjectedStackTrace) {
@@ -638,7 +660,10 @@ void RuntimeOption::Load(Hdf &config,
 
     Logger::UseSyslog = logger["UseSyslog"].getBool(false);
     Logger::UseLogFile = logger["UseLogFile"].getBool(true);
+    IniSetting::Bind(IniSetting::CORE, IniSetting::PHP_INI_SYSTEM,
+                     "hhvm.log.use_log_file", &Logger::UseLogFile);
     Logger::UseCronolog = logger["UseCronolog"].getBool(false);
+    Logger::UseRequestLog = logger["UseRequestLog"].getBool(false);
     if (Logger::UseLogFile) {
       LogFile = logger["File"].getString();
       if (!RuntimeOption::ServerExecutionMode()) {
@@ -647,6 +672,19 @@ void RuntimeOption::Load(Hdf &config,
       if (LogFile[0] == '|') Logger::IsPipeOutput = true;
       LogFileSymLink = logger["SymLink"].getString();
     }
+    IniSetting::Bind(IniSetting::CORE, IniSetting::PHP_INI_SYSTEM,
+                     "hhvm.log.file", IniSetting::SetAndGet<std::string>(
+      [](const std::string& value) {
+        LogFile = value;
+        if (!RuntimeOption::ServerExecutionMode()) {
+          LogFile.clear();
+        }
+        if (LogFile[0] == '|') Logger::IsPipeOutput = true;
+        return true;
+      }, []() {
+        return LogFile;
+      }
+    ));
     LogFileFlusher::DropCacheChunkSize =
       logger["DropCacheChunkSize"].getInt32(1 << 20);
     AlwaysEscapeLog = logger["AlwaysEscapeLog"].getBool(false);
@@ -655,7 +693,6 @@ void RuntimeOption::Load(Hdf &config,
     AlwaysLogUnhandledExceptions =
       logger["AlwaysLogUnhandledExceptions"].getBool(true);
     NoSilencer = logger["NoSilencer"].getBool();
-    EnableApplicationLog = logger["ApplicationLog"].getBool(true);
     RuntimeErrorReportingLevel =
       logger["RuntimeErrorReportingLevel"]
         .getInt32(static_cast<int>(ErrorConstants::ErrorModes::HPHP_ALL));
@@ -703,8 +740,8 @@ void RuntimeOption::Load(Hdf &config,
     EnableHipHopErrors = error["EnableHipHopErrors"].getBool(true);
     AssertActive = error["AssertActive"].getBool();
     AssertWarning = error["AssertWarning"].getBool();
-    NoticeFrequency = error["NoticeFrequency"].getInt32(1);
-    WarningFrequency = error["WarningFrequency"].getInt32(1);
+    NoticeFrequency = error["NoticeFrequency"].getInt64(1);
+    WarningFrequency = error["WarningFrequency"].getInt64(1);
   }
   {
     Hdf rlimit = config["ResourceLimit"];
@@ -716,7 +753,7 @@ void RuntimeOption::Load(Hdf &config,
     setResourceLimit(RLIMIT_NOFILE, rlimit, "MaxSocket");
     setResourceLimit(RLIMIT_DATA,   rlimit, "RSS");
     MaxRSS = rlimit["MaxRSS"].getInt64(0);
-    SocketDefaultTimeout = rlimit["SocketDefaultTimeout"].getInt16(5);
+    SocketDefaultTimeout = rlimit["SocketDefaultTimeout"].getInt64(5);
     MaxRSSPollingCycle = rlimit["MaxRSSPollingCycle"].getInt64(0);
     DropCacheCycle = rlimit["DropCacheCycle"].getInt64(0);
     MaxSQLRowCount = rlimit["MaxSQLRowCount"].getInt64(0);
@@ -730,17 +767,23 @@ void RuntimeOption::Load(Hdf &config,
     Host = server["Host"].getString();
     DefaultServerNameSuffix = server["DefaultServerNameSuffix"].getString();
     ServerType = server["Type"].getString(ServerType);
+    IniSetting::Bind(IniSetting::CORE, IniSetting::PHP_INI_SYSTEM,
+                     "hhvm.server.type", &ServerType);
     ServerIP = server["IP"].getString();
     ServerFileSocket = server["FileSocket"].getString();
-    ServerPrimaryIP = Util::GetPrimaryIP();
+    IniSetting::Bind(IniSetting::CORE, IniSetting::PHP_INI_SYSTEM,
+                     "hhvm.server.file_socket", &ServerFileSocket);
+    ServerPrimaryIP = GetPrimaryIP();
     ServerPort = server["Port"].getUInt16(80);
+    IniSetting::Bind(IniSetting::CORE, IniSetting::PHP_INI_SYSTEM,
+                     "hhvm.server.port", &ServerPort);
     ServerBacklog = server["Backlog"].getInt16(128);
     ServerConnectionLimit = server["ConnectionLimit"].getInt16(0);
     ServerThreadCount = server["ThreadCount"].getInt32(50);
     ServerThreadRoundRobin = server["ThreadRoundRobin"].getBool();
     ServerWarmupThrottleRequestCount =
       server["WarmupThrottleRequestCount"].getInt32(
-        kDefaultWarmupThrottleRequestCount
+        ServerWarmupThrottleRequestCount
       );
     ServerThreadDropCacheTimeoutSeconds =
       server["ThreadDropCacheTimeoutSeconds"].getInt32(0);
@@ -757,6 +800,7 @@ void RuntimeOption::Load(Hdf &config,
     ServerStatCache = server["StatCache"].getBool(false);
     server["WarmupRequests"].get(ServerWarmupRequests);
     server["HighPriorityEndPoints"].get(ServerHighPriorityEndPoints);
+    ServerExitOnBindFail = server["ExitOnBindFail"].getBool(false);
 
     RequestTimeoutSeconds = server["RequestTimeoutSeconds"].getInt32(0);
     PspTimeoutSeconds = server["PspTimeoutSeconds"].getInt32(0);
@@ -774,6 +818,7 @@ void RuntimeOption::Load(Hdf &config,
     ServerDanglingWait = server["DanglingWait"].getInt16(0);
     ServerShutdownListenWait = server["ShutdownListenWait"].getInt16(0);
     ServerShutdownListenNoWork = server["ShutdownListenNoWork"].getInt16(-1);
+    server["SSLNextProtocols"].get(ServerNextProtocols);
     if (ServerGracefulShutdownWait < ServerDanglingWait) {
       ServerGracefulShutdownWait = ServerDanglingWait;
     }
@@ -815,25 +860,27 @@ void RuntimeOption::Load(Hdf &config,
     TLSDisableTLS1_2 = server["TLSDisableTLS1_2"].getBool(false);
     TLSClientCipherSpec = server["TLSClientCipherSpec"].getString();
 
-    string srcRoot = Util::normalizeDir(server["SourceRoot"].getString());
+    string srcRoot = FileUtil::normalizeDir(server["SourceRoot"].getString());
     if (!srcRoot.empty()) SourceRoot = srcRoot;
     FileCache::SourceRoot = SourceRoot;
 
     server["IncludeSearchPaths"].get(IncludeSearchPaths);
     for (unsigned int i = 0; i < IncludeSearchPaths.size(); i++) {
-      IncludeSearchPaths[i] = Util::normalizeDir(IncludeSearchPaths[i]);
+      IncludeSearchPaths[i] = FileUtil::normalizeDir(IncludeSearchPaths[i]);
     }
     IncludeSearchPaths.insert(IncludeSearchPaths.begin(), ".");
 
     FileCache = server["FileCache"].getString();
     DefaultDocument = server["DefaultDocument"].getString();
+    IniSetting::Bind(IniSetting::CORE, IniSetting::PHP_INI_SYSTEM,
+                     "hhvm.server.default_document", &DefaultDocument);
     ErrorDocument404 = server["ErrorDocument404"].getString();
     normalizePath(ErrorDocument404);
     ForbiddenAs404 = server["ForbiddenAs404"].getBool();
     ErrorDocument500 = server["ErrorDocument500"].getString();
     normalizePath(ErrorDocument500);
     FatalErrorMessage = server["FatalErrorMessage"].getString();
-    FontPath = Util::normalizeDir(server["FontPath"].getString());
+    FontPath = FileUtil::normalizeDir(server["FontPath"].getString());
     EnableStaticContentFromDisk =
       server["EnableStaticContentFromDisk"].getBool(true);
     EnableOnDemandUncompress =
@@ -887,14 +934,6 @@ void RuntimeOption::Load(Hdf &config,
     UseDirectCopy = server["UseDirectCopy"].getBool(false);
     AlwaysUseRelativePath = server["AlwaysUseRelativePath"].getBool(false);
 
-    IniFile = server["IniFile"].getString(IniFile);
-    if (access(IniFile.c_str(), R_OK) == -1) {
-      if (IniFile != "/etc/hhvm/php.ini") {
-        Logger::Error("INI file doesn't exist: %s", IniFile.c_str());
-      }
-      IniFile.clear();
-    }
-
     Hdf dns = server["DnsCache"];
     EnableDnsCache = dns["Enable"].getBool();
     DnsCacheTTL = dns["TTL"].getInt32(600); // 10 minutes
@@ -907,7 +946,6 @@ void RuntimeOption::Load(Hdf &config,
     UploadMaxFileSize =
       (upload["UploadMaxFileSize"].getInt32(100)) * (1LL << 20);
     UploadTmpDir = upload["UploadTmpDir"].getString("/tmp");
-    RuntimeOption::AllowedDirectories.push_back(UploadTmpDir);
     EnableFileUploads = upload["EnableFileUploads"].getBool(true);
     EnableUploadProgress = upload["EnableUploadProgress"].getBool();
     Rfc1867Freq = upload["Rfc1867Freq"].getInt32(256 * 1024);
@@ -1026,7 +1064,7 @@ void RuntimeOption::Load(Hdf &config,
   }
   {
     Hdf admin = config["AdminServer"];
-    AdminServerPort = admin["Port"].getInt16(0);
+    AdminServerPort = admin["Port"].getUInt16(0);
     AdminThreadCount = admin["ThreadCount"].getInt32(1);
     AdminPassword = admin["Password"].getString();
     admin["Passwords"].get(AdminPasswords);
@@ -1083,8 +1121,6 @@ void RuntimeOption::Load(Hdf &config,
 
     EnableWebStats = stats["Web"].getBool();
     EnableMemoryStats = stats["Memory"].getBool();
-    EnableAPCStats = stats["APC"].getBool();
-    EnableAPCKeyStats = stats["APCKey"].getBool();
     EnableMemcacheStats = stats["Memcache"].getBool();
     EnableMemcacheKeyStats = stats["MemcacheKey"].getBool();
     EnableSQLStats = stats["SQL"].getBool();
@@ -1096,30 +1132,6 @@ void RuntimeOption::Load(Hdf &config,
 
     StatsSlotDuration = stats["SlotDuration"].getInt32(10 * 60); // 10 minutes
     StatsMaxSlot = stats["MaxSlot"].getInt32(12 * 6); // 12 hours
-
-    {
-      Hdf apcSize = stats["APCSize"];
-      EnableAPCSizeStats = apcSize["Enable"].getBool();
-      EnableAPCSizeGroup = apcSize["Group"].getBool();
-      apcSize["SpecialPrefix"].get(APCSizeSpecialPrefix);
-      for (unsigned int i = 0; i < APCSizeSpecialPrefix.size(); i++) {
-        string &prefix = APCSizeSpecialPrefix[i];
-        string prefixReplace = prefix + "{A}";
-        APCSizePrefixReplace.push_back(prefixReplace);
-      }
-      apcSize["SpecialMiddle"].get(APCSizeSpecialMiddle);
-      for (unsigned int i = 0; i < APCSizeSpecialMiddle.size(); i++) {
-        string &middle = APCSizeSpecialMiddle[i];
-        string middleReplace = "{A}" + middle + "{A}";
-        APCSizeMiddleReplace.push_back(middleReplace);
-      }
-      apcSize["SkipPrefix"].get(APCSizeSkipPrefix);
-      EnableAPCSizeDetail = apcSize["Individual"].getBool();
-      EnableAPCFetchStats = apcSize["FetchStats"].getBool();
-      if (EnableAPCFetchStats) EnableAPCSizeDetail = true;
-      if (EnableAPCSizeDetail) EnableAPCSizeGroup = true;
-      APCSizeCountPrime = apcSize["CountPrime"].getBool();
-    }
 
     EnableHotProfiler = stats["EnableHotProfiler"].getBool(true);
     ProfilerTraceBuffer = stats["ProfilerTraceBuffer"].getInt32(2000000);
@@ -1140,6 +1152,7 @@ void RuntimeOption::Load(Hdf &config,
     EnableXHP = eval["EnableXHP"].getBool(false);
     EnableZendCompat = eval["EnableZendCompat"].getBool(false);
     TimeoutsUseWallTime = eval["TimeoutsUseWallTime"].getBool(true);
+    CheckFlushOnUserClose = eval["CheckFlushOnUserClose"].getBool(true);
 
     if (EnableHipHopSyntax) {
       // If EnableHipHopSyntax is true, it forces EnableXHP to true
@@ -1179,7 +1192,7 @@ void RuntimeOption::Load(Hdf &config,
 #undef get_uint32
 #undef get_uint32_t
 #undef get_uint64
-    Util::low_malloc_huge_pages(EvalMaxLowMemHugePages);
+    low_malloc_huge_pages(EvalMaxLowMemHugePages);
     EvalJitEnableRenameFunction = EvalJitEnableRenameFunction || !EvalJit;
 
     EnableEmitSwitch = eval["EnableEmitSwitch"].getBool(true);
@@ -1209,6 +1222,11 @@ void RuntimeOption::Load(Hdf &config,
       DebuggerDefaultRpcAuth = debugger["RPC.DefaultAuth"].getString();
       DebuggerRpcHostDomain = debugger["RPC.HostDomain"].getString();
       DebuggerDefaultRpcTimeout = debugger["RPC.DefaultTimeout"].getInt32(30);
+    }
+    {
+      Hdf lang = config["Hack"]["Lang"];
+      IntsOverflowToInts =
+        lang["IntsOverflowToInts"].getBool(EnableHipHopSyntax);
     }
     {
       Hdf repo = config["Repo"];
@@ -1245,6 +1263,8 @@ void RuntimeOption::Load(Hdf &config,
         Hdf repoCentral = repo["Central"];
         // Repo.Central.Path.
         RepoCentralPath = repoCentral["Path"].getString();
+        IniSetting::Bind(IniSetting::CORE, IniSetting::PHP_INI_SYSTEM,
+                         "hhvm.repo.central.path", &RepoCentralPath);
       }
       {
         Hdf repoEval = repo["Eval"];
@@ -1269,12 +1289,13 @@ void RuntimeOption::Load(Hdf &config,
     // NB: after we know the value of RepoAuthoritative.
     EnableArgsInBacktraces =
       eval["EnableArgsInBacktraces"].getBool(!RepoAuthoritative);
+    EvalAuthoritativeMode =
+      eval["AuthoritativeMode"].getBool(false) || RepoAuthoritative;
   }
   {
     Hdf sandbox = config["Sandbox"];
     SandboxMode = sandbox["SandboxMode"].getBool();
-    SandboxPattern = Util::format_pattern
-      (sandbox["Pattern"].getString(), true);
+    SandboxPattern = format_pattern(sandbox["Pattern"].getString(), true);
     SandboxHome = sandbox["Home"].getString();
     SandboxFallback = sandbox["Fallback"].getString();
     SandboxConfFile = sandbox["ConfFile"].getString();
@@ -1297,7 +1318,7 @@ void RuntimeOption::Load(Hdf &config,
   {
     Hdf hhprofServer = config["HHProfServer"];
     HHProfServerEnabled = hhprofServer["Enabled"].getBool(false);
-    HHProfServerPort = hhprofServer["Port"].getInt16(4327);
+    HHProfServerPort = hhprofServer["Port"].getUInt16(4327);
     HHProfServerThreads = hhprofServer["Threads"].getInt16(2);
     HHProfServerTimeoutSeconds =
       hhprofServer["TimeoutSeconds"].getInt64(30);
@@ -1313,16 +1334,111 @@ void RuntimeOption::Load(Hdf &config,
     HHProfServerFilterMinBytesPerReq =
       hhprofFilter["MinBytesPerReq"].getInt64(128);
   }
+  {
+    Hdf simplexml = config["SimpleXML"];
+    SimpleXMLEmptyNamespaceMatchesAll =
+      simplexml["EmptyNamespaceMatchesAll"].getBool(false);
+  }
 #ifdef FACEBOOK
   {
     Hdf fb303Server = config["Fb303Server"];
     EnableFb303Server = fb303Server["Enable"].getBool(true);
-    Fb303ServerPort = fb303Server["Port"].getInt16(0);
+    Fb303ServerPort = fb303Server["Port"].getUInt16(0);
     Fb303ServerThreadStackSizeMb = fb303Server["ThreadStackSizeMb"].getInt16(8);
     Fb303ServerWorkerThreads = fb303Server["WorkerThreads"].getInt16(1);
     Fb303ServerPoolThreads = fb303Server["PoolThreads"].getInt16(1);
   }
 #endif
+
+  refineStaticStringTableSize();
+
+  // Language and Misc Configuration Options
+  IniSetting::Bind(IniSetting::CORE, IniSetting::PHP_INI_ONLY, "expose_php",
+                   &RuntimeOption::ExposeHPHP);
+
+  // Data Handling
+  IniSetting::Bind(IniSetting::CORE, IniSetting::PHP_INI_PERDIR,
+                   "post_max_size",
+                   IniSetting::SetAndGet<int64_t>(
+                     nullptr,
+                     []() {
+                       return VirtualHost::GetMaxPostSize();
+                     }
+                   ),
+                   &RuntimeOption::MaxPostSize);
+  IniSetting::Bind(IniSetting::CORE, IniSetting::PHP_INI_PERDIR,
+                   "always_populate_raw_post_data",
+                   &RuntimeOption::AlwaysPopulateRawPostData);
+
+  // Paths and Directories
+  IniSetting::Bind(IniSetting::CORE, IniSetting::PHP_INI_SYSTEM,
+                   "doc_root", &RuntimeOption::SourceRoot);
+
+  // FastCGI
+  IniSetting::Bind(IniSetting::CORE, IniSetting::PHP_INI_ONLY,
+                   "pid", &RuntimeOption::PidFile);
+
+  // File Uploads
+  IniSetting::Bind(IniSetting::CORE, IniSetting::PHP_INI_SYSTEM,
+                   "file_uploads", "true",
+                   &RuntimeOption::EnableFileUploads);
+  IniSetting::Bind(IniSetting::CORE, IniSetting::PHP_INI_SYSTEM,
+                   "upload_tmp_dir", &RuntimeOption::UploadTmpDir);
+  IniSetting::Bind(IniSetting::CORE, IniSetting::PHP_INI_PERDIR,
+                   "upload_max_filesize",
+                   IniSetting::SetAndGet<std::string>(
+                     [](const std::string& value) {
+                       return ini_on_update(
+                         value, RuntimeOption::UploadMaxFileSize);
+                     },
+                     []() {
+                       int uploadMaxFilesize =
+                         VirtualHost::GetUploadMaxFileSize() / (1 << 20);
+                       return std::to_string(uploadMaxFilesize) + "M";
+                     }
+                   ));
+  // Filesystem and Streams Configuration Options
+  IniSetting::Bind(IniSetting::CORE, IniSetting::PHP_INI_SYSTEM,
+                   "allow_url_fopen",
+                   IniSetting::SetAndGet<std::string>(
+                     [](const std::string& value) { return false; },
+                     []() { return "1"; }));
+
+  // HPHP specific
+  IniSetting::Bind(IniSetting::CORE, IniSetting::PHP_INI_ONLY,
+                   "hhvm.eval.jit", &EvalJit);
+  IniSetting::Bind(IniSetting::CORE, IniSetting::PHP_INI_NONE,
+                   "hphp.compiler_id",
+                   IniSetting::SetAndGet<std::string>(
+                     [](const std::string& value) { return false; },
+                     []() { return getHphpCompilerId(); }
+                   ));
+  IniSetting::Bind(IniSetting::CORE, IniSetting::PHP_INI_NONE,
+                   "hphp.compiler_version",
+                   IniSetting::SetAndGet<std::string>(
+                     [](const std::string& value) { return false; },
+                     []() { return getHphpCompilerVersion(); }
+                   ));
+  IniSetting::Bind(IniSetting::CORE, IniSetting::PHP_INI_NONE,
+                   "hhvm.ext_zend_compat",
+                   IniSetting::SetAndGet<bool>(
+                     [](const bool& value) { return false; },
+                     nullptr
+                   ),
+                   &RuntimeOption::EnableZendCompat),
+  IniSetting::Bind(IniSetting::CORE, IniSetting::PHP_INI_NONE,
+                   "hphp.build_id",
+                   IniSetting::SetAndGet<std::string>(
+                     [](const std::string& value) { return false; },
+                     nullptr
+                   ),
+                   &RuntimeOption::BuildId);
+  IniSetting::Bind(IniSetting::CORE, IniSetting::PHP_INI_SYSTEM,
+                   "notice_frequency",
+                   &RuntimeOption::NoticeFrequency);
+  IniSetting::Bind(IniSetting::CORE, IniSetting::PHP_INI_SYSTEM,
+                   "warning_frequency",
+                   &RuntimeOption::WarningFrequency);
 
   Extension::LoadModules(config);
   if (overwrites) Loaded = true;

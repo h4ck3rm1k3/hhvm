@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -18,6 +18,7 @@
 #define incl_HPHP_VM_BLOCK_H_
 
 #include "hphp/runtime/base/smart-containers.h"
+#include <algorithm>
 #include "hphp/runtime/vm/jit/ir.h"
 #include "hphp/runtime/vm/jit/edge.h"
 #include "hphp/runtime/vm/jit/ir-instruction.h"
@@ -75,8 +76,6 @@ struct Block : boost::noncopyable {
 
   // return the postorder number of this block. (updated each time
   // sortBlocks() is called.
-  unsigned postId() const { return m_postid; }
-  void setPostId(unsigned id) { m_postid = id; }
 
   // Insert inst after this block's optional DefLabel and BeginCatch,
   // then return an iterator to the newly inserted instruction.
@@ -128,6 +127,7 @@ struct Block : boost::noncopyable {
   void splice(iterator pos, Block* from, iterator begin, iterator end);
   void push_back(IRInstruction* inst);
   template <class Predicate> void remove_if(Predicate p);
+  InstructionList&& moveInstrs();
 
   // return the first instruction in the block.
   reference front();
@@ -144,7 +144,6 @@ struct Block : boost::noncopyable {
  private:
   InstructionList m_instrs; // instructions in this block
   const unsigned m_id;      // unit-assigned unique id of this block
-  unsigned m_postid;        // postorder number of this block
   EdgeList m_preds;         // Edges that point to this block
   Hint m_hint;              // execution frequency hint
 };
@@ -266,6 +265,11 @@ inline void Block::push_back(IRInstruction* inst) {
 template <class Predicate> inline
 void Block::remove_if(Predicate p) {
   m_instrs.remove_if(p);
+}
+
+inline InstructionList&& Block::moveInstrs() {
+  for (auto i = begin(); i != end(); ++i) i->setBlock(nullptr);
+  return std::move(m_instrs);
 }
 
 inline bool Block::isCatch() const {

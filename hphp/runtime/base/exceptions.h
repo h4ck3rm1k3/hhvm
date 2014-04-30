@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -17,14 +17,21 @@
 #ifndef incl_HPHP_CPP_BASE_EXCEPTIONS_H_
 #define incl_HPHP_CPP_BASE_EXCEPTIONS_H_
 
+#include <string>
+
+#include <boost/intrusive_ptr.hpp>
+
 #include "hphp/util/exception.h"
-#include "hphp/util/util.h"
 #include "hphp/runtime/base/types.h"
 #include "folly/String.h"
 
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
 // all defined exceptions
+
+typedef boost::intrusive_ptr<ArrayData> ArrayHolder;
+void intrusive_ptr_add_ref(ArrayData* a);
+void intrusive_ptr_release(ArrayData* a);
 
 class ExtendedException : public Exception {
 public:
@@ -289,7 +296,7 @@ public:
 class NotSupportedException : public ExtendedException {
 public:
   NotSupportedException(const char *feature, const char *reason)
-    : ExtendedException("%s is not going to be supported: %s",
+    : ExtendedException("%s is not supported: %s",
                         feature, reason) {}
   virtual ~NotSupportedException() throw() {}
   EXCEPTION_COMMON_IMPL(NotSupportedException);

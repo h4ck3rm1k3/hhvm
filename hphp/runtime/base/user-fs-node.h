@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -25,14 +25,14 @@ namespace HPHP {
 
 class UserFSNode {
 public:
-  explicit UserFSNode(Class *cls, CVarRef context = uninit_null());
+  explicit UserFSNode(Class *cls, const Variant& context = uninit_null());
 
 protected:
-  Variant invoke(const Func *func, const String& name, CArrRef args,
-                 bool &success);
-  Variant invoke(const Func *func, const String& name, CArrRef args) {
-    bool success;
-    return invoke(func, name, args, success);
+  Variant invoke(const Func *func, const String& name, const Array& args,
+                 bool &invoked);
+  Variant invoke(const Func *func, const String& name, const Array& args) {
+    bool invoked;
+    return invoke(func, name, args, invoked);
   }
   const Func* lookupMethod(const StringData* name);
 

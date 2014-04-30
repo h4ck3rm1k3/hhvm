@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -33,7 +33,7 @@ public:
                    int type, const std::string &value,
                    const std::string &translated, bool quoted = false);
   ScalarExpression(EXPRESSION_CONSTRUCTOR_PARAMETERS,
-                   CVarRef value, bool quoted = true);
+                   const Variant& value, bool quoted = true);
 
   // change case to lower so to make it case insensitive
   void toLower(bool funcCall = false);

@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -27,7 +27,7 @@
 #include "hphp/runtime/server/access-log.h"
 #include "hphp/runtime/ext/ext_openssl.h"
 #include "hphp/util/compression.h"
-#include "hphp/util/util.h"
+#include "hphp/util/text-util.h"
 #include "hphp/util/service-data.h"
 #include "hphp/util/logger.h"
 #include "hphp/util/compatibility.h"
@@ -294,7 +294,7 @@ void Transport::getSplitParam(const char *name,
                               Method method /* = Method::GET */) {
   std::string param = getParam(name, method);
   if (!param.empty()) {
-    Util::split(delimiter, param.c_str(), values);
+    split(delimiter, param.c_str(), values);
   }
 }
 
@@ -341,12 +341,12 @@ void Transport::addHeaderNoLock(const char *name, const char *value) {
 
   if (!m_firstHeaderSet) {
     m_firstHeaderSet = true;
-    m_firstHeaderFile = g_vmContext->getContainingFileName().data();
-    m_firstHeaderLine = g_vmContext->getLine();
+    m_firstHeaderFile = g_context->getContainingFileName().data();
+    m_firstHeaderLine = g_context->getLine();
   }
 
   std::string svalue = value;
-  Util::replaceAll(svalue, "\n", "");
+  replaceAll(svalue, "\n", "");
   m_responseHeaders[name].push_back(svalue);
 
   if (strcasecmp(name, "Location") == 0 && m_responseCode != 201 &&
@@ -424,7 +424,7 @@ bool Transport::acceptEncoding(const char *encoding) {
 
   // This is testing a substring than a word match, but in practice, this
   // always works.
-  return header.find(encoding) != std::string::npos;
+  return strcasestr(header.c_str(), encoding) != nullptr;
 }
 
 bool Transport::cookieExists(const char *name) {
@@ -635,12 +635,12 @@ void Transport::prepareHeaders(bool compressed, bool chunked,
   if (m_responseHeaders.find("Content-Type") == m_responseHeaders.end() &&
       m_responseCode != 304) {
     std::string contentType = "text/html; charset="
-                         + RuntimeOption::DefaultCharsetName;
+                              + IniSetting::Get("default_charset");
     addHeaderImpl("Content-Type", contentType.c_str());
   }
 
   if (RuntimeOption::ExposeHPHP) {
-    addHeaderImpl("X-Powered-By", "HPHP");
+    addHeaderImpl("X-Powered-By", ("HHVM/" + k_HHVM_VERSION).c_str());
   }
 
   if ((RuntimeOption::ExposeXFBServer || RuntimeOption::ExposeXFBDebug) &&
@@ -657,7 +657,7 @@ void Transport::prepareHeaders(bool compressed, bool chunked,
     if (debug) {
       String decrypted =
         f_openssl_decrypt(encrypted, cipher, key, k_OPENSSL_RAW_DATA, iv);
-      assert(decrypted->same(ip.get()));
+      assert(decrypted.get()->same(ip.get()));
     }
     addHeaderImpl("X-FB-Debug", output.c_str());
   }
@@ -715,7 +715,7 @@ String Transport::prepareResponse(const void *data, int size, bool &compressed,
   return response;
 }
 
-bool Transport::setHeaderCallback(CVarRef callback) {
+bool Transport::setHeaderCallback(const Variant& callback) {
   if (m_headerCallback.toBoolean()) {
     // return false if a callback has already been set.
     return false;
@@ -839,29 +839,6 @@ int Transport::getLastChunkSentSize() {
 
 bool Transport::isUploadedFile(const String& filename) {
   return is_uploaded_file(filename.c_str());
-}
-
-// Move a file if and only if it was created by an upload
-bool Transport::moveUploadedFileHelper(const String& filename, const String& destination) {
-  // Do access check.
-  String dest = File::TranslatePath(destination);
-  if (Util::rename(filename.c_str(), dest.c_str()) < 0) {
-    Logger::Error("Unable to move uploaded file %s to %s: %s.",
-                  filename.c_str(), dest.c_str(),
-                  folly::errnoStr(errno).c_str());
-    return false;
-  }
-  Logger::Verbose("Successfully moved uploaded file %s to %s.",
-                  filename.c_str(), dest.c_str());
-  return true;
-}
-
-bool Transport::moveUploadedFile(const String& filename, const String& destination) {
-  if (!is_uploaded_file(filename.c_str())) {
-    Logger::Error("%s is not an uploaded file.", filename.c_str());
-    return false;
-  }
-  return moveUploadedFileHelper(filename, destination);
 }
 
 ///////////////////////////////////////////////////////////////////////////////

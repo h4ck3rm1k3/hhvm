@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -18,6 +18,9 @@
 #define incl_HPHP_OPTION_H_
 
 #include "hphp/util/hdf.h"
+#include <map>
+#include <set>
+#include <vector>
 #include "hphp/util/string-bag.h"
 #include "hphp/util/deprecated/base.h"
 #include "hphp/util/deprecated/declare-boost-types.h"
@@ -105,6 +108,12 @@ public:
   static bool AnalyzePerfectVirtuals;
   static bool HardTypeHints;
 
+  /*
+   * Flags that only affect HHBBC right now.  See hhbbc/hhbbc.h for
+   * description.
+   */
+  static bool HardConstProp;
+
   /**
    * Separate compilation
    */
@@ -128,7 +137,7 @@ public:
   static std::vector<std::string> DynamicMethodPostfixes;
   static std::vector<std::string> DynamicClassPrefixes;
   static std::vector<std::string> DynamicClassPostfixes;
-  static std::set<std::string> DynamicInvokeFunctions;
+  static std::set<std::string, stdltistr> DynamicInvokeFunctions;
   static std::set<std::string> VolatileClasses;
   static std::map<std::string,std::string> AutoloadClassMap;
   static std::map<std::string,std::string> AutoloadFuncMap;
@@ -152,7 +161,6 @@ public:
    * A somewhat unique prefix for system identifiers.
    */
   static std::string IdPrefix;
-  static std::string LabelEscape;
   static std::string LambdaPrefix;
   static std::string Tab;
 
@@ -160,7 +168,6 @@ public:
    * Name resolution helpers.
    */
   static const char *UserFilePrefix;
-  static const char *ClassHeaderPrefix;
 
   /**
    * Turn it off for cleaner unit tests.
@@ -219,6 +226,7 @@ public:
   static bool EnableShortTags;
   static bool EnableAspTags;
   static bool EnableXHP;
+  static bool IntsOverflowToInts;
   static int ParserThreadCount;
 
   static int GetScannerType();
@@ -254,10 +262,6 @@ public:
   static bool RecordErrors;
   static std::string DocJson; // filename to dump doc JSON to
 
-  static void setHookHandler(void (*hookHandler)(Hdf &config)) {
-    m_hookHandler = hookHandler;
-  }
-
   static bool (*PersistenceHook)(BlockScopeRawPtr scope, FileScopeRawPtr fs);
 private:
   static StringBag OptionStrings;
@@ -270,8 +274,6 @@ private:
   static bool IsDynamic(const std::string &name,
                         const std::vector<std::string> &prefixes,
                         const std::vector<std::string> &postfixes);
-
-  static void (*m_hookHandler)(Hdf &config);
 };
 
 //////////////////////////////////////////////////////////////////////

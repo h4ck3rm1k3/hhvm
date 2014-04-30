@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -13,19 +13,23 @@
    | license@php.net so we can mail you a copy immediately.               |
    +----------------------------------------------------------------------+
 */
+#include "hphp/runtime/base/execution-context.h"
 
 #define __STDC_LIMIT_MACROS
 
-#include "hphp/runtime/base/execution-context.h"
-
-#include <stdint.h>
+#include <cstdint>
+#include <algorithm>
+#include <list>
+#include <utility>
 
 #include "folly/MapUtil.h"
 
 #include "hphp/util/logger.h"
 #include "hphp/util/process.h"
 #include "hphp/util/text-color.h"
+#include "hphp/runtime/base/request-event-handler.h"
 #include "hphp/runtime/base/array-init.h"
+#include "hphp/runtime/base/debuggable.h"
 #include "hphp/runtime/base/array-iterator.h"
 #include "hphp/runtime/base/memory-manager.h"
 #include "hphp/runtime/base/sweepable.h"
@@ -50,114 +54,41 @@ namespace HPHP {
 
 IMPLEMENT_THREAD_LOCAL_NO_CHECK(ExecutionContext, g_context);
 
-int64_t VMExecutionContext::s_threadIdxCounter = 0;
-Mutex VMExecutionContext::s_threadIdxLock;
-hphp_hash_map<pid_t, int64_t> VMExecutionContext::s_threadIdxMap;
+ExecutionContext::ExecutionContext()
+  : m_fp(nullptr)
+  , m_pc(nullptr)
+  , m_transport(nullptr)
+  , m_cwd(Process::CurrentWorkingDirectory)
+  , m_out(nullptr)
+  , m_implicitFlush(false)
+  , m_protectedLevel(0)
+  , m_stdout(nullptr)
+  , m_stdoutData(nullptr)
+  , m_errorState(ExecutionContext::ErrorState::NoError)
+  , m_lastErrorNum(0)
+  , m_throwAllErrors(false)
+  , m_vhost(nullptr)
+  , m_globalVarEnv(nullptr)
+  , m_lambdaCounter(0)
+  , m_nesting(0)
+  , m_breakPointFilter(nullptr)
+  , m_lastLocFilter(nullptr)
+  , m_dbgNoBreak(false)
+  , m_coverPrevLine(-1)
+  , m_coverPrevUnit(nullptr)
+  , m_lastErrorPath("")
+  , m_lastErrorLine(0)
+  , m_executingSetprofileCallback(false)
+{
+  // We want this to run on every request, instead of just once per thread
+  auto max_mem = std::to_string(RuntimeOption::RequestMemoryMaxBytes);
+  IniSetting::Set("memory_limit", max_mem);
 
-BaseExecutionContext::BaseExecutionContext() :
-    m_fp(nullptr), m_pc(nullptr),
-    m_transport(nullptr),
-    m_cwd(Process::CurrentWorkingDirectory),
-    m_out(nullptr), m_implicitFlush(false), m_protectedLevel(0),
-    m_stdout(nullptr), m_stdoutData(nullptr),
-    m_errorState(ExecutionContext::ErrorState::NoError),
-    m_errorReportingLevel(RuntimeOption::RuntimeErrorReportingLevel),
-    m_lastErrorNum(0), m_logErrors(false), m_throwAllErrors(false),
-    m_vhost(nullptr) {
-
-  setRequestMemoryMaxBytes(String(RuntimeOption::RequestMemoryMaxBytes));
-  restoreIncludePath();
-
-  IniSetting::Bind(IniSetting::CORE, "arg_separator.output", "&",
-                   ini_on_update_string, ini_get_string,
-                   &m_argSeparatorOutput);
-  IniSetting::Bind(IniSetting::CORE, "error_reporting",
-                   ini_on_update_int, ini_get_int,
-                   &m_errorReportingLevel);
-  IniSetting::Bind(IniSetting::CORE, "memory_limit",
-                   [this](const String& value, void* p) {
-                     this->setRequestMemoryMaxBytes(value);
-                     return true;
-                   },
-                   ini_get_string,
-                   &m_maxMemory);
-  IniSetting::Bind(IniSetting::CORE, "log_errors",
-                   [this](const String& value, void* p) {
-                     bool log;
-                     ini_on_update_bool(value, &log);
-                     this->setLogErrors(log);
-                     return true;
-                   },
-                   ini_get_bool_as_int,
-                   &m_logErrors);
-  IniSetting::Bind(IniSetting::CORE, "error_log",
-                   [this](const String& value, void* p) {
-                     this->setErrorLog(value);
-                     return true;
-                   },
-                   ini_get_string,
-                   &m_errorLog);
-  IniSetting::Bind(IniSetting::CORE, "include_path",
-                   [this](const String& value, void* p) {
-                     this->setIncludePath(value);
-                     return true;
-                   },
-                   [this](void*) {
-                     return this->getIncludePath();
-                   });
-  IniSetting::Bind(IniSetting::CORE, "hphp.compiler_id",
-                   ini_on_update_fail,
-                   [](void*) {
-                     return String(getHphpCompilerId());
-                   });
-  IniSetting::Bind(IniSetting::CORE, "hphp.compiler_version",
-                   ini_on_update_fail,
-                   [](void*) {
-                     return String(getHphpCompilerVersion());
-                   });
-  IniSetting::Bind(IniSetting::CORE, "hphp.build_id",
-                   ini_on_update_fail,
-                   ini_get_stdstring,
-                   &RuntimeOption::BuildId);
-  IniSetting::Bind(IniSetting::CORE, "hhvm.ext_zend_compat",
-                   ini_on_update_fail, ini_get_bool,
-                   &RuntimeOption::EnableZendCompat),
-  IniSetting::Bind(IniSetting::CORE, "file_uploads",
-                   ini_on_update_fail, ini_get_bool_as_int,
-                   &RuntimeOption::EnableFileUploads);
-  IniSetting::Bind(IniSetting::CORE, "upload_tmp_dir",
-                   ini_on_update_fail, ini_get_stdstring,
-                   &RuntimeOption::UploadTmpDir);
-  IniSetting::Bind(IniSetting::CORE, "upload_max_filesize",
-                   ini_on_update_fail,
-                   [](void*) {
-                     int uploadMaxFilesize =
-                       VirtualHost::GetUploadMaxFileSize() / (1 << 20);
-                     return String(uploadMaxFilesize) + "M";
-                   });
-  IniSetting::Bind(IniSetting::CORE, "post_max_size",
-                   ini_on_update_fail,
-                   [](void*) {
-                     return String(VirtualHost::GetMaxPostSize());
-                   });
-  IniSetting::Bind(IniSetting::CORE, "allow_url_fopen",
-                   ini_on_update_fail, ini_get_static_string_1);
-  IniSetting::Bind(IniSetting::CORE, "notice_frequency",
-                   ini_on_update_int, ini_get_int,
-                   &RuntimeOption::NoticeFrequency);
-  IniSetting::Bind(IniSetting::CORE, "warning_frequency",
-                   ini_on_update_int, ini_get_int,
-                   &RuntimeOption::WarningFrequency);
-}
-
-VMExecutionContext::VMExecutionContext() :
-    m_preg_backtrace_limit(RuntimeOption::PregBacktraceLimit),
-    m_preg_recursion_limit(RuntimeOption::PregRecursionLimit),
-    m_lambdaCounter(0), m_nesting(0),
-    m_breakPointFilter(nullptr), m_lastLocFilter(nullptr),
-    m_dbgNoBreak(false), m_coverPrevLine(-1), m_coverPrevUnit(nullptr),
-    m_lastErrorPath(""), m_lastErrorLine(0),
-    m_executingSetprofileCallback(false) {
+  // This one is hot so we don't want to go through the ini_set() machinery to
+  // change it in error_reporting(). Because of that, we have to set it back to
+  // the default on every request.
+  ThreadInfo::s_threadInfo.getNoCheck()->m_reqInjectionData.
+    setErrorReportingLevel(RuntimeOption::RuntimeErrorReportingLevel);
 
   // Make sure any fields accessed from the TC are within a byte of
   // ExecutionContext's beginning.
@@ -167,30 +98,9 @@ VMExecutionContext::VMExecutionContext() :
                 "m_fp offset too large");
   static_assert(offsetof(ExecutionContext, m_pc) <= 0xff,
                 "m_pc offset too large");
-  static_assert(offsetof(ExecutionContext, m_currentThreadIdx) <= 0xff,
-                "m_currentThreadIdx offset too large");
-
-  {
-    Lock lock(s_threadIdxLock);
-    pid_t tid = Process::GetThreadPid();
-    if (auto const idx = folly::get_ptr(s_threadIdxMap, tid)) {
-      m_currentThreadIdx = *idx;
-    } else {
-      m_currentThreadIdx = s_threadIdxCounter++;
-      s_threadIdxMap[tid] = m_currentThreadIdx;
-    }
-  }
 }
 
-BaseExecutionContext::~BaseExecutionContext() {
-  obFlushAll();
-  for (std::list<OutputBuffer*>::const_iterator iter = m_buffers.begin();
-       iter != m_buffers.end(); ++iter) {
-    delete *iter;
-  }
-}
-
-VMExecutionContext::~VMExecutionContext() {
+ExecutionContext::~ExecutionContext() {
   // Discard any ConstInfo objects that were created to support reflection.
   for (ConstInfoMap::const_iterator it = m_constInfo.begin();
        it != m_constInfo.end(); ++it) {
@@ -198,22 +108,21 @@ VMExecutionContext::~VMExecutionContext() {
   }
 
   // Discard all units that were created via create_function().
-  for (EvaledUnitsVec::iterator it = m_createdFuncs.begin();
-       it != m_createdFuncs.end(); ++it) {
-    delete *it;
-  }
+  for (auto& v : m_createdFuncs) delete v;
 
   delete m_breakPointFilter;
   delete m_lastLocFilter;
+  obFlushAll();
+  for (auto& b : m_buffers) delete b;
 }
 
-void BaseExecutionContext::backupSession() {
+void ExecutionContext::backupSession() {
   m_shutdownsBackup = m_shutdowns;
   m_userErrorHandlersBackup = m_userErrorHandlers;
   m_userExceptionHandlersBackup = m_userExceptionHandlers;
 }
 
-void BaseExecutionContext::restoreSession() {
+void ExecutionContext::restoreSession() {
   m_shutdowns = m_shutdownsBackup;
   m_userErrorHandlers = m_userErrorHandlersBackup;
   m_userExceptionHandlers = m_userExceptionHandlersBackup;
@@ -222,7 +131,7 @@ void BaseExecutionContext::restoreSession() {
 ///////////////////////////////////////////////////////////////////////////////
 // system functions
 
-String BaseExecutionContext::getMimeType() const {
+String ExecutionContext::getMimeType() const {
   String mimetype;
   if (m_transport) {
     mimetype = m_transport->getMimeType();
@@ -233,13 +142,14 @@ String BaseExecutionContext::getMimeType() const {
     if (pos != String::npos) {
       mimetype = mimetype.substr(0, pos);
     }
-  } else if (m_transport && m_transport->sendDefaultContentType()) {
-    mimetype = m_transport->getDefaultContentType();
+  } else if (m_transport && m_transport->getUseDefaultContentType()) {
+    mimetype =
+        ThreadInfo::s_threadInfo->m_reqInjectionData.getDefaultMimeType();
   }
   return mimetype;
 }
 
-std::string BaseExecutionContext::getRequestUrl(size_t szLimit) {
+std::string ExecutionContext::getRequestUrl(size_t szLimit) {
   Transport* t = getTransport();
   std::string ret = t ? t->getUrl() : "";
   if (szLimit != std::string::npos) {
@@ -248,7 +158,7 @@ std::string BaseExecutionContext::getRequestUrl(size_t szLimit) {
   return ret;
 }
 
-void BaseExecutionContext::setContentType(const String& mimetype,
+void ExecutionContext::setContentType(const String& mimetype,
                                           const String& charset) {
   if (m_transport) {
     String contentType = mimetype;
@@ -256,48 +166,18 @@ void BaseExecutionContext::setContentType(const String& mimetype,
     contentType += "charset=";
     contentType += charset;
     m_transport->addHeader("Content-Type", contentType.c_str());
-    m_transport->setDefaultContentType(false);
+    m_transport->setUseDefaultContentType(false);
   }
-}
-
-int64_t BaseExecutionContext::convertBytesToInt(const String& value) const {
-  int64_t newInt = value.toInt64();
-  if (newInt <= 0) {
-    newInt = INT64_MAX;
-  } else {
-    char lastChar = value.charAt(value.size() - 1);
-    if (lastChar == 'K' || lastChar == 'k') {
-      newInt <<= 10;
-    } else if (lastChar == 'M' || lastChar == 'm') {
-      newInt <<= 20;
-    } else if (lastChar == 'G' || lastChar == 'g') {
-      newInt <<= 30;
-    }
-  }
-  return newInt;
-}
-
-
-void BaseExecutionContext::setRequestMemoryMaxBytes(const String& max) {
-  int64_t newInt = max.toInt64();
-  if (newInt <= 0) {
-    newInt = INT64_MAX;
-    m_maxMemory = String(newInt);
-  } else {
-    m_maxMemory = max;
-    newInt = convertBytesToInt(max);
-  }
-  MM().getStatsNoRefresh().maxBytes = newInt;
 }
 
 ///////////////////////////////////////////////////////////////////////////////
 // write()
 
-void BaseExecutionContext::write(const String& s) {
+void ExecutionContext::write(const String& s) {
   write(s.data(), s.size());
 }
 
-void BaseExecutionContext::setStdout(PFUNC_STDOUT func, void *data) {
+void ExecutionContext::setStdout(PFUNC_STDOUT func, void *data) {
   m_stdout = func;
   m_stdoutData = data;
 }
@@ -306,7 +186,7 @@ static void safe_stdout(const  void  *ptr,  size_t  size) {
   write(fileno(stdout), ptr, size);
 }
 
-void BaseExecutionContext::writeStdout(const char *s, int len) {
+void ExecutionContext::writeStdout(const char *s, int len) {
   if (m_stdout == nullptr) {
     if (s_stdout_color) {
       safe_stdout(s_stdout_color, strlen(s_stdout_color));
@@ -320,7 +200,7 @@ void BaseExecutionContext::writeStdout(const char *s, int len) {
   }
 }
 
-void BaseExecutionContext::write(const char *s, int len) {
+void ExecutionContext::write(const char *s, int len) {
   if (m_out) {
     m_out->append(s, len);
   } else {
@@ -332,18 +212,18 @@ void BaseExecutionContext::write(const char *s, int len) {
 ///////////////////////////////////////////////////////////////////////////////
 // output buffers
 
-void BaseExecutionContext::obProtect(bool on) {
+void ExecutionContext::obProtect(bool on) {
   m_protectedLevel = on ? m_buffers.size() : 0;
 }
 
-void BaseExecutionContext::obStart(CVarRef handler /* = null */) {
+void ExecutionContext::obStart(const Variant& handler /* = null */) {
   OutputBuffer *ob = new OutputBuffer();
   ob->handler = handler;
   m_buffers.push_back(ob);
   resetCurrentBuffer();
 }
 
-String BaseExecutionContext::obCopyContents() {
+String ExecutionContext::obCopyContents() {
   if (!m_buffers.empty()) {
     StringBuffer &oss = m_buffers.back()->oss;
     if (!oss.empty()) {
@@ -353,7 +233,7 @@ String BaseExecutionContext::obCopyContents() {
   return "";
 }
 
-String BaseExecutionContext::obDetachContents() {
+String ExecutionContext::obDetachContents() {
   if (!m_buffers.empty()) {
     StringBuffer &oss = m_buffers.back()->oss;
     if (!oss.empty()) {
@@ -363,20 +243,20 @@ String BaseExecutionContext::obDetachContents() {
   return "";
 }
 
-int BaseExecutionContext::obGetContentLength() {
+int ExecutionContext::obGetContentLength() {
   if (m_buffers.empty()) {
     return 0;
   }
   return m_buffers.back()->oss.size();
 }
 
-void BaseExecutionContext::obClean() {
+void ExecutionContext::obClean() {
   if (!m_buffers.empty()) {
     m_buffers.back()->oss.clear();
   }
 }
 
-bool BaseExecutionContext::obFlush() {
+bool ExecutionContext::obFlush() {
   assert(m_protectedLevel >= 0);
   if ((int)m_buffers.size() > m_protectedLevel) {
     std::list<OutputBuffer*>::const_iterator iter = m_buffers.end();
@@ -419,11 +299,11 @@ bool BaseExecutionContext::obFlush() {
   return false;
 }
 
-void BaseExecutionContext::obFlushAll() {
+void ExecutionContext::obFlushAll() {
   while (obFlush()) { obEnd();}
 }
 
-bool BaseExecutionContext::obEnd() {
+bool ExecutionContext::obEnd() {
   assert(m_protectedLevel >= 0);
   if ((int)m_buffers.size() > m_protectedLevel) {
     delete m_buffers.back();
@@ -436,11 +316,11 @@ bool BaseExecutionContext::obEnd() {
   return false;
 }
 
-void BaseExecutionContext::obEndAll() {
+void ExecutionContext::obEndAll() {
   while (obEnd()) {}
 }
 
-int BaseExecutionContext::obGetLevel() {
+int ExecutionContext::obGetLevel() {
   assert((int)m_buffers.size() >= m_protectedLevel);
   return m_buffers.size() - m_protectedLevel;
 }
@@ -452,7 +332,7 @@ const StaticString
   s_args("args"),
   s_default_output_handler("default output handler");
 
-Array BaseExecutionContext::obGetStatus(bool full) {
+Array ExecutionContext::obGetStatus(bool full) {
   Array ret = Array::Create();
   std::list<OutputBuffer*>::const_iterator iter = m_buffers.begin();
   ++iter; // skip over the fake outermost buffer
@@ -477,11 +357,11 @@ Array BaseExecutionContext::obGetStatus(bool full) {
   return ret;
 }
 
-void BaseExecutionContext::obSetImplicitFlush(bool on) {
+void ExecutionContext::obSetImplicitFlush(bool on) {
   m_implicitFlush = on;
 }
 
-Array BaseExecutionContext::obGetHandlers() {
+Array ExecutionContext::obGetHandlers() {
   Array ret;
   for (auto& ob : m_buffers) {
     auto& handler = ob->handler;
@@ -490,7 +370,7 @@ Array BaseExecutionContext::obGetHandlers() {
   return ret;
 }
 
-void BaseExecutionContext::flush() {
+void ExecutionContext::flush() {
   if (m_buffers.empty()) {
     fflush(stdout);
   } else if (RuntimeOption::EnableEarlyFlush && m_protectedLevel &&
@@ -510,7 +390,7 @@ void BaseExecutionContext::flush() {
   }
 }
 
-void BaseExecutionContext::resetCurrentBuffer() {
+void ExecutionContext::resetCurrentBuffer() {
   if (m_buffers.empty()) {
     m_out = nullptr;
   } else {
@@ -521,23 +401,23 @@ void BaseExecutionContext::resetCurrentBuffer() {
 ///////////////////////////////////////////////////////////////////////////////
 // program executions
 
-void BaseExecutionContext::registerShutdownFunction(CVarRef function,
-                                                    Array arguments,
-                                                    ShutdownType type) {
+void ExecutionContext::registerShutdownFunction(const Variant& function,
+                                                Array arguments,
+                                                ShutdownType type) {
   Array callback = make_map_array(s_name, function, s_args, arguments);
-  Variant &funcs = m_shutdowns.lvalAt(type);
-  funcs.append(callback);
+  Variant& funcs = m_shutdowns.lvalAt(type);
+  forceToArray(funcs).append(callback);
 }
 
-Variant BaseExecutionContext::popShutdownFunction(ShutdownType type) {
+Variant ExecutionContext::popShutdownFunction(ShutdownType type) {
   Variant& funcs = m_shutdowns.lvalAt(type);
   if (!funcs.isArray()) {
     return uninit_null();
   }
-  return funcs.pop();
+  return funcs.toArrRef().pop();
 }
 
-Variant BaseExecutionContext::pushUserErrorHandler(CVarRef function,
+Variant ExecutionContext::pushUserErrorHandler(const Variant& function,
                                                    int error_types) {
   Variant ret;
   if (!m_userErrorHandlers.empty()) {
@@ -547,7 +427,7 @@ Variant BaseExecutionContext::pushUserErrorHandler(CVarRef function,
   return ret;
 }
 
-Variant BaseExecutionContext::pushUserExceptionHandler(CVarRef function) {
+Variant ExecutionContext::pushUserExceptionHandler(const Variant& function) {
   Variant ret;
   if (!m_userExceptionHandlers.empty()) {
     ret = m_userExceptionHandlers.back();
@@ -556,19 +436,19 @@ Variant BaseExecutionContext::pushUserExceptionHandler(CVarRef function) {
   return ret;
 }
 
-void BaseExecutionContext::popUserErrorHandler() {
+void ExecutionContext::popUserErrorHandler() {
   if (!m_userErrorHandlers.empty()) {
     m_userErrorHandlers.pop_back();
   }
 }
 
-void BaseExecutionContext::popUserExceptionHandler() {
+void ExecutionContext::popUserExceptionHandler() {
   if (!m_userExceptionHandlers.empty()) {
     m_userExceptionHandlers.pop_back();
   }
 }
 
-void BaseExecutionContext::registerRequestEventHandler
+void ExecutionContext::registerRequestEventHandler
 (RequestEventHandler *handler) {
   assert(handler);
   if (m_requestEventHandlerSet.find(handler) ==
@@ -585,7 +465,7 @@ static bool requestEventHandlerPriorityComp(RequestEventHandler *a,
   return a->priority() < b->priority();
 }
 
-void BaseExecutionContext::onRequestShutdown() {
+void ExecutionContext::onRequestShutdown() {
   // Sort handlers by priority so that lower priority values get shutdown
   // first
   sort(m_requestEventHandlers.begin(), m_requestEventHandlers.end(),
@@ -602,7 +482,7 @@ void BaseExecutionContext::onRequestShutdown() {
   m_requestEventHandlerSet.clear();
 }
 
-void BaseExecutionContext::executeFunctions(CArrRef funcs) {
+void ExecutionContext::executeFunctions(const Array& funcs) {
   ThreadInfo::s_threadInfo->m_reqInjectionData.resetTimer(
     RuntimeOption::PspTimeoutSeconds);
 
@@ -612,29 +492,31 @@ void BaseExecutionContext::executeFunctions(CArrRef funcs) {
   }
 }
 
-void BaseExecutionContext::onShutdownPreSend() {
+void ExecutionContext::onShutdownPreSend() {
+  // in case obStart was called without obFlush
+  SCOPE_EXIT { obFlushAll(); };
+
   if (!m_shutdowns.isNull() && m_shutdowns.exists(ShutDown)) {
+    SCOPE_EXIT { m_shutdowns.remove(ShutDown); };
     executeFunctions(m_shutdowns[ShutDown].toArray());
-    m_shutdowns.remove(ShutDown);
   }
-  obFlushAll(); // in case obStart was called without obFlush
 }
 
 extern void ext_session_request_shutdown();
 
-void BaseExecutionContext::onShutdownPostSend() {
+void ExecutionContext::onShutdownPostSend() {
   ServerStats::SetThreadMode(ServerStats::ThreadMode::PostProcessing);
   try {
     try {
       ServerStatsHelper ssh("psp", ServerStatsHelper::TRACK_HWINST);
       if (!m_shutdowns.isNull()) {
         if (m_shutdowns.exists(PostSend)) {
+          SCOPE_EXIT { m_shutdowns.remove(PostSend); };
           executeFunctions(m_shutdowns[PostSend].toArray());
-          m_shutdowns.remove(PostSend);
         }
         if (m_shutdowns.exists(CleanUp)) {
+          SCOPE_EXIT { m_shutdowns.remove(CleanUp); };
           executeFunctions(m_shutdowns[CleanUp].toArray());
-          m_shutdowns.remove(CleanUp);
         }
       }
     } catch (const ExitException &e) {
@@ -661,7 +543,7 @@ void BaseExecutionContext::onShutdownPostSend() {
 ///////////////////////////////////////////////////////////////////////////////
 // error handling
 
-bool BaseExecutionContext::errorNeedsHandling(int errnum,
+bool ExecutionContext::errorNeedsHandling(int errnum,
                                               bool callUserHandler,
                                               ErrorThrowMode mode) {
   if (m_throwAllErrors) {
@@ -679,13 +561,15 @@ bool BaseExecutionContext::errorNeedsHandling(int errnum,
   return false;
 }
 
-bool BaseExecutionContext::errorNeedsLogging(int errnum) {
-  return RuntimeOption::NoSilencer || (getErrorReportingLevel() & errnum) != 0;
+bool ExecutionContext::errorNeedsLogging(int errnum) {
+  auto level = ThreadInfo::s_threadInfo.getNoCheck()->
+    m_reqInjectionData.getErrorReportingLevel();
+  return RuntimeOption::NoSilencer || (level & errnum) != 0;
 }
 
 class ErrorStateHelper {
 public:
-  ErrorStateHelper(BaseExecutionContext *context,
+  ErrorStateHelper(ExecutionContext *context,
                    ExecutionContext::ErrorState state) {
     m_context = context;
     m_originalState = m_context->getErrorState();
@@ -695,7 +579,7 @@ public:
     m_context->setErrorState(m_originalState);
   }
 private:
-  BaseExecutionContext *m_context;
+  ExecutionContext *m_context;
   ExecutionContext::ErrorState m_originalState;
 };
 
@@ -703,7 +587,7 @@ const StaticString
   s_file("file"),
   s_line("line");
 
-void BaseExecutionContext::handleError(const std::string& msg,
+void ExecutionContext::handleError(const std::string& msg,
                                        int errnum,
                                        bool callUserHandler,
                                        ErrorThrowMode mode,
@@ -755,7 +639,7 @@ void BaseExecutionContext::handleError(const std::string& msg,
   }
 }
 
-bool BaseExecutionContext::callUserErrorHandler(const Exception &e, int errnum,
+bool ExecutionContext::callUserErrorHandler(const Exception &e, int errnum,
                                                 bool swallowExceptions) {
   switch (getErrorState()) {
   case ErrorState::ExecutingUserHandler:
@@ -782,10 +666,11 @@ bool BaseExecutionContext::callUserErrorHandler(const Exception &e, int errnum,
     }
     try {
       ErrorStateHelper esh(this, ErrorState::ExecutingUserHandler);
+      Array dummyContext = Array::Create();
       if (!same(vm_call_user_func
                 (m_userErrorHandlers.back().first,
                  make_packed_array(errnum, String(e.getMessage()), errfile,
-                                errline, "", backtrace)),
+                     errline, dummyContext, backtrace)),
                 false)) {
         return true;
       }
@@ -796,13 +681,7 @@ bool BaseExecutionContext::callUserErrorHandler(const Exception &e, int errnum,
   return false;
 }
 
-void BaseExecutionContext::recordLastError(const Exception &e,
-                                           int errnum /* = 0 */) {
-  m_lastError = String(e.getMessage());
-  m_lastErrorNum = errnum;
-}
-
-bool BaseExecutionContext::onFatalError(const Exception &e) {
+bool ExecutionContext::onFatalError(const Exception &e) {
   int errnum = static_cast<int>(ErrorConstants::ErrorModes::FATAL_ERROR);
   recordLastError(e, errnum);
   String file = empty_string;
@@ -821,7 +700,7 @@ bool BaseExecutionContext::onFatalError(const Exception &e) {
   }
   // need to silence even with the AlwaysLogUnhandledExceptions flag set
   if (!silenced && RuntimeOption::AlwaysLogUnhandledExceptions) {
-    Logger::Log(Logger::LogError, "HipHop Fatal error: ", e,
+    Logger::Log(Logger::LogError, "\nFatal error: ", e,
                 file.c_str(), line);
   }
   bool handled = false;
@@ -829,16 +708,16 @@ bool BaseExecutionContext::onFatalError(const Exception &e) {
     handled = callUserErrorHandler(e, errnum, true);
   }
   if (!handled && !silenced && !RuntimeOption::AlwaysLogUnhandledExceptions) {
-    Logger::Log(Logger::LogError, "HipHop Fatal error: ", e,
+    Logger::Log(Logger::LogError, "\nFatal error: ", e,
                 file.c_str(), line);
   }
   return handled;
 }
 
-bool BaseExecutionContext::onUnhandledException(Object e) {
+bool ExecutionContext::onUnhandledException(Object e) {
   String err = e.toString();
   if (RuntimeOption::AlwaysLogUnhandledExceptions) {
-    Logger::Error("HipHop Fatal error: Uncaught %s", err.data());
+    Logger::Error("\nFatal error: Uncaught %s", err.data());
   }
 
   if (e.instanceof(SystemLib::s_ExceptionClass)) {
@@ -857,58 +736,36 @@ bool BaseExecutionContext::onUnhandledException(Object e) {
   m_lastError = err;
 
   if (!RuntimeOption::AlwaysLogUnhandledExceptions) {
-    Logger::Error("HipHop Fatal error: Uncaught %s", err.data());
+    Logger::Error("\nFatal error: Uncaught %s", err.data());
   }
   return false;
 }
 
-void BaseExecutionContext::setLogErrors(bool on) {
-  if (m_logErrors != on) {
-    m_logErrors = on;
-    if (m_logErrors) {
-      if (!m_errorLog.empty()) {
-        FILE *output = fopen(m_errorLog.data(), "a");
-        if (output) {
-          Logger::SetNewOutput(output);
-        }
-      }
-    } else {
-      Logger::SetNewOutput(nullptr);
-    }
-  }
-}
-
-void BaseExecutionContext::setErrorLog(const String& filename) {
-  m_errorLog = filename;
-  if (m_logErrors && !m_errorLog.empty()) {
-    FILE *output = fopen(m_errorLog.data(), "a");
-    if (output) {
-      Logger::SetNewOutput(output);
-    }
-  }
-}
-
 ///////////////////////////////////////////////////////////////////////////////
-// IDebuggable
 
-void BaseExecutionContext::debuggerInfo(InfoVec &info) {
-  int64_t newInt = convertBytesToInt(m_maxMemory);
+void ExecutionContext::debuggerInfo(
+    std::vector<std::pair<const char*,std::string>>& info) {
+  int64_t newInt = convert_bytes_to_long(IniSetting::Get("memory_limit"));
+  if (newInt <= 0) {
+    newInt = INT64_MAX;
+  }
   if (newInt == INT64_MAX) {
-    Add(info, "Max Memory", "(unlimited)");
+    info.emplace_back("Max Memory", "(unlimited)");
   } else {
-    Add(info, "Max Memory", FormatSize(newInt));
+    info.emplace_back("Max Memory", IDebuggable::FormatSize(newInt));
   }
-  Add(info, "Max Time", FormatTime(ThreadInfo::s_threadInfo.getNoCheck()->
-                                   m_reqInjectionData.getTimeout() * 1000));
+  info.emplace_back("Max Time",
+    IDebuggable::FormatTime(ThreadInfo::s_threadInfo.getNoCheck()->
+                 m_reqInjectionData.getTimeout() * 1000));
 }
 
 ///////////////////////////////////////////////////////////////////////////////
 
-void BaseExecutionContext::setenv(const String& name, const String& value) {
+void ExecutionContext::setenv(const String& name, const String& value) {
   m_envs.set(name, value);
 }
 
-String BaseExecutionContext::getenv(const String& name) const {
+String ExecutionContext::getenv(const String& name) const {
   if (m_envs.exists(name)) {
     return m_envs[name].toString();
   }
@@ -922,120 +779,6 @@ String BaseExecutionContext::getenv(const String& name) const {
   return String();
 }
 
-///////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////
 
-void BaseExecutionContext::restoreIncludePath() {
-  m_include_paths = Array::Create();
-  for (unsigned int i = 0; i < RuntimeOption::IncludeSearchPaths.size(); ++i) {
-    m_include_paths.append(String(RuntimeOption::IncludeSearchPaths[i]));
-  }
-}
-
-void BaseExecutionContext::setIncludePath(const String& path) {
-  m_include_paths = f_explode(":", path);
-}
-
-String BaseExecutionContext::getIncludePath() const {
-  StringBuffer sb;
-  bool first = true;
-  for (ArrayIter iter(m_include_paths); iter; ++iter) {
-    if (first) {
-      first = false;
-    } else {
-      sb.append(':');
-    }
-    sb.append(iter.second().toString());
-  }
-  return sb.detach();
-}
-
-///////////////////////////////////////////////////////////////////////////////
-// persistent objects
-
-IMPLEMENT_THREAD_LOCAL_NO_CHECK(PersistentObjectStore, g_persistentObjects);
-
-void PersistentObjectStore::removeObject(ResourceData *data) {
-  if (data) {
-    if (!decRefRes(data)) {
-      SweepableResourceData *sw = dynamic_cast<SweepableResourceData*>(data);
-      if (sw) {
-        sw->decPersistent();
-      }
-    }
-  }
-}
-
-PersistentObjectStore::~PersistentObjectStore() {
-  for (ResourceMapMap::const_iterator iter = m_objects.begin();
-       iter != m_objects.end(); ++iter) {
-    const ResourceMap &resources = iter->second;
-    for (ResourceMap::const_iterator iterInner = resources.begin();
-         iterInner != resources.end(); ++iterInner) {
-      removeObject(iterInner->second);
-    }
-  }
-}
-
-int PersistentObjectStore::size() const {
-  int total = 0;
-  for (ResourceMapMap::const_iterator iter = m_objects.begin();
-       iter != m_objects.end(); ++iter) {
-    total += iter->second.size();
-  }
-  return total;
-}
-
-void PersistentObjectStore::set(const char *type, const char *name,
-                                ResourceData *obj) {
-  assert(type && *type);
-  assert(name);
-  {
-    ResourceMap &resources = m_objects[type];
-    ResourceMap::iterator iter = resources.find(name);
-    if (iter != resources.end()) {
-      if (iter->second == obj) {
-        return; // we are setting the same object
-      }
-      removeObject(iter->second);
-      resources.erase(iter);
-    }
-  }
-  if (obj) {
-    obj->incRefCount();
-    SweepableResourceData *sw = dynamic_cast<SweepableResourceData*>(obj);
-    if (sw) {
-      sw->incPersistent();
-    }
-    m_objects[type][name] = obj;
-  }
-}
-
-ResourceData *PersistentObjectStore::get(const char *type, const char *name) {
-  assert(type && *type);
-  assert(name);
-  ResourceMap &resources = m_objects[type];
-  ResourceMap::const_iterator iter = resources.find(name);
-  if (iter == resources.end()) {
-    return nullptr;
-  }
-  return iter->second;
-}
-
-void PersistentObjectStore::remove(const char *type, const char *name) {
-  assert(type && *type);
-  assert(name);
-  ResourceMap &resources = m_objects[type];
-  ResourceMap::iterator iter = resources.find(name);
-  if (iter != resources.end()) {
-    removeObject(iter->second);
-    resources.erase(iter);
-  }
-}
-
-const ResourceMap &PersistentObjectStore::getMap(const char *type) {
-  assert(type && *type);
-  return m_objects[type];
-}
-
-///////////////////////////////////////////////////////////////////////////////
 }

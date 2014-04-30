@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -24,21 +24,23 @@
 namespace HPHP { namespace JIT {
 
 inline bool funcPrologueHasGuard(JIT::TCA prologue, const Func* func) {
-  if (arch() == Arch::X64) {
-    return X64::funcPrologueHasGuard(prologue, func);
-  } else if (arch() == Arch::ARM) {
-    return ARM::funcPrologueHasGuard(prologue, func);
+  switch (arch()) {
+    case Arch::X64:
+      return X64::funcPrologueHasGuard(prologue, func);
+    case Arch::ARM:
+      return ARM::funcPrologueHasGuard(prologue, func);
   }
-  not_implemented();
+  not_reached();
 }
 
 inline JIT::TCA funcPrologueToGuard(JIT::TCA prologue, const Func* func) {
-  if (arch() == Arch::X64) {
-    return X64::funcPrologueToGuard(prologue, func);
-  } else if (arch() == Arch::ARM) {
-    return ARM::funcPrologueToGuard(prologue, func);
+  switch (arch()) {
+    case Arch::X64:
+      return X64::funcPrologueToGuard(prologue, func);
+    case Arch::ARM:
+      return ARM::funcPrologueToGuard(prologue, func);
   }
-  not_implemented();
+  not_reached();
 }
 
 }}

@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -17,11 +17,11 @@
 #ifndef incl_HPHP_TV_HELPERS_H_
 #define incl_HPHP_TV_HELPERS_H_
 
-#ifndef incl_HPHP_INSIDE_HPHP_COMPLEX_TYPES_H_
-#error Directly including 'tv_helpers.h' is prohibited. \
-       Include 'complex_types.h' instead.
-#endif
-
+#include "hphp/runtime/base/object-data.h"
+#include "hphp/runtime/base/ref-data.h"
+#include "hphp/runtime/base/resource-data.h"
+#include "hphp/runtime/base/string-data.h"
+#include "hphp/runtime/base/typed-value.h"
 #include "hphp/runtime/base/types.h"
 
 namespace HPHP {
@@ -429,7 +429,7 @@ inline bool tvIsStatic(const TypedValue* tv) {
 }
 
 /**
- * tvAsVariant and tvAsCVarRef serve as escape hatches that allow us to call
+ * tvAsVariant and tvAsconst Variant& serve as escape hatches that allow us to call
  * into the Variant machinery. Ideally we will use these as little as possible
  * in the long term.
  */
@@ -554,6 +554,34 @@ bool tvCoerceParamToResourceInPlace(TypedValue* tv);
 
 typedef void(*RawDestructor)(void*);
 extern const RawDestructor g_destructors[kDestrTableSize];
+
+inline void tvCastInPlace(TypedValue *tv, DataType DType) {
+#define X(kind) \
+  if (DType == KindOf##kind) { tvCastTo##kind##InPlace(tv); return; }
+  X(Boolean)
+  X(Int64)
+  X(Double)
+  X(String)
+  X(Array)
+  X(Object)
+  X(Resource)
+#undef X
+  not_reached();
+}
+
+inline bool tvCoerceParamInPlace(TypedValue* tv, DataType DType) {
+#define X(kind) \
+  if (DType == KindOf##kind) return tvCoerceParamTo##kind##InPlace(tv);
+  X(Boolean)
+  X(Int64)
+  X(Double)
+  X(String)
+  X(Array)
+  X(Object)
+  X(Resource)
+#undef X
+  not_reached();
+}
 
 ///////////////////////////////////////////////////////////////////////////////
 }

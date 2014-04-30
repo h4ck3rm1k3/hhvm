@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -26,8 +26,8 @@ namespace HPHP {
 const char *s_stdout_color = nullptr;
 const char *s_stderr_color = nullptr;
 
-const char *get_color_by_name(const char *name) {
-  auto upper = boost::to_upper_copy(std::string(name));
+const char *get_color_by_name(const std::string &name) {
+  auto upper = boost::to_upper_copy(name);
   if (upper == "BLACK"         ) return ANSI_COLOR_BLACK;
   if (upper == "RED"           ) return ANSI_COLOR_RED;
   if (upper == "GREEN"         ) return ANSI_COLOR_GREEN;
@@ -47,8 +47,8 @@ const char *get_color_by_name(const char *name) {
   return nullptr;
 }
 
-const char *get_bgcolor_by_name(const char *name) {
-  auto upper = boost::to_upper_copy(std::string(name));
+const char *get_bgcolor_by_name(const std::string &name) {
+  auto upper = boost::to_upper_copy(name);
   if (upper == "BLACK"         ) return  ANSI_BGCOLOR_BLACK;
   if (upper == "RED"           ) return  ANSI_BGCOLOR_RED;
   if (upper == "GREEN"         ) return  ANSI_BGCOLOR_GREEN;

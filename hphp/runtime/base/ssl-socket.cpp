@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -17,9 +17,9 @@
 #include "hphp/runtime/base/ssl-socket.h"
 #include "hphp/runtime/base/complex-types.h"
 #include "hphp/runtime/base/runtime-error.h"
-#include "hphp/util/util.h"
 #include "folly/String.h"
 #include <poll.h>
+#include <sys/time.h>
 
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
@@ -308,7 +308,7 @@ bool SSLSocket::handleError(int64_t nr_bytes, bool is_init) {
 
 ///////////////////////////////////////////////////////////////////////////////
 
-SSLSocket *SSLSocket::Create(const Util::HostURL &hosturl, double timeout) {
+SSLSocket *SSLSocket::Create(const HostURL &hosturl, double timeout) {
   CryptoMethod method;
   const std::string scheme = hosturl.getScheme();
 
@@ -337,6 +337,7 @@ SSLSocket *SSLSocket::Create(const Util::HostURL &hosturl, double timeout) {
 }
 
 bool SSLSocket::close() {
+  invokeFiltersOnClose();
   return closeImpl();
 }
 
@@ -688,7 +689,7 @@ bool SSLSocket::checkLiveness() {
 
 const StaticString s_file("file://");
 
-BIO *Certificate::ReadData(CVarRef var, bool *file /* = NULL */) {
+BIO *Certificate::ReadData(const Variant& var, bool *file /* = NULL */) {
   if (var.isString() || var.isObject()) {
     String svar = var.toString();
     if (svar.substr(0, 7) == s_file) {
@@ -707,7 +708,7 @@ BIO *Certificate::ReadData(CVarRef var, bool *file /* = NULL */) {
 }
 
 
-Resource Certificate::Get(CVarRef var) {
+Resource Certificate::Get(const Variant& var) {
   if (var.isResource()) {
     return var.toResource();
   }

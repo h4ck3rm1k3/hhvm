@@ -82,7 +82,7 @@ function startServer($serverPort, $adminPort, $debugPort) {
   $useJit = array_key_exists('HHVM_JIT', $_ENV) && $_ENV['HHVM_JIT'] == 1;
   $jitConfig = ' -vEval.Jit='.($useJit ? "true" : "false");
   // To emulate sandbox setup, let Sandbox.Home be '$home'
-  // and user name be 'debugger', so that the server can find the sandbox_conf
+  // and user name be 'debugger', so that the server can find the sandbox_conf.hdf
   // in '$home'.'/debugger'.
   $sandboxHomeConfig = ' -vSandbox.Home='.$home;
 
@@ -168,7 +168,7 @@ function startDebuggerClient($debugPort, $input_path, &$pipes) {
   $config = ' --config '.$home.'/config/debugger-client.hdf';
   $logFileConfig = ' -vLog.File='."/tmp/hphpd_test_client$test_run_id.log";
   $repoConfig = " -vRepo.Central.Path=/tmp/hphpd_client$test_run_id.hhbc";
-  $debugConfig = ' --debug-config '.$home.'/config/hphpd.hdf';
+  $debugConfig = ' --debug-config '.$home.'/config/hphpd.ini';
 
   $cmd = $hhvm.' -m debug' . $host . $port . $user .
     $config . $logFileConfig . $repoConfig . $debugConfig .

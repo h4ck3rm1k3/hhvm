@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -17,7 +17,7 @@
 #include "hphp/util/process.h"
 #include "hphp/util/timer.h"
 #include "hphp/runtime/vm/bytecode.h"
-#include "hphp/runtime/vm/jit/translator-x64.h"
+#include "hphp/runtime/vm/jit/mc-generator.h"
 
 #include <sys/mman.h>
 
@@ -91,7 +91,7 @@ bool Lease::acquire(bool blocking /* = false */ ) {
       } else if (expire != 0 && m_owner == pthread_self()) {
         m_hintKept++;
       }
-      tx64->code.unprotect();
+      mcg->code.unprotect();
     }
 
     m_owner = pthread_self();
@@ -113,7 +113,7 @@ void Lease::drop(int64_t hintExpireDelay) {
         __builtin_return_address(1));
   if (debug) {
     popRank(RankWriteLease);
-    tx64->code.protect();
+    mcg->code.protect();
   }
   m_hintExpire = hintExpireDelay > 0 ?
     Timer::GetCurrentTimeMicros() + hintExpireDelay : 0;

@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -16,103 +16,22 @@
 #include "hphp/runtime/base/array-util.h"
 
 #include <vector>
+#include <set>
+#include <utility>
 
 #include "hphp/runtime/base/array-iterator.h"
 #include "hphp/runtime/base/string-util.h"
 #include "hphp/runtime/base/builtin-functions.h"
 #include "hphp/runtime/base/runtime-error.h"
 #include "hphp/runtime/ext/ext_math.h"
-#include "hphp/runtime/ext/ext_json.h"
 #include "hphp/runtime/ext/ext_string.h"
 
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
 // compositions
 
-Variant ArrayUtil::CreateArray(CArrRef keys, CVarRef value) {
-  ArrayInit ai(keys.size());
-  for (ArrayIter iter(keys); iter; ++iter) {
-    ai.set(iter.secondRef(), value);
-  }
-  return ai.create();
-}
-
-Variant ArrayUtil::CreateArray(int start_index, int num, CVarRef value) {
-  if (num <= 0) {
-    throw_invalid_argument("num: [non-positive]");
-    return false;
-  }
-
-  Array ret;
-  ret.set(start_index, value);
-  for (int i = num - 1; i > 0; i--) {
-    ret.append(value);
-  }
-  return ret;
-}
-
-Variant ArrayUtil::Chunk(CArrRef input, int size,
-                         bool preserve_keys /* = false */) {
-  if (size < 1) {
-    throw_invalid_argument("size: %d", size);
-    return init_null();
-  }
-
-  Array ret = Array::Create();
-  Array chunk;
-  int current = 0;
-  for (ArrayIter iter(input); iter; ++iter) {
-    if (preserve_keys) {
-      chunk.setWithRef(iter.first(), iter.secondRef(), true);
-    } else {
-      chunk.appendWithRef(iter.secondRef());
-    }
-    if ((++current % size) == 0) {
-      ret.append(chunk);
-      chunk.clear();
-    }
-  }
-
-  if (!chunk.empty()) {
-    ret.append(chunk);
-  }
-  return ret;
-}
-
-Variant ArrayUtil::Slice(CArrRef input, int offset, int64_t length,
-                         bool preserve_keys) {
-  int num_in = input.size();
-  if (offset > num_in) {
-    offset = num_in;
-  } else if (offset < 0 && (offset = (num_in + offset)) < 0) {
-    offset = 0;
-  }
-
-  if (length < 0) {
-    length = num_in - offset + length;
-  } else if (((unsigned)offset + (unsigned)length) > (unsigned)num_in) {
-    length = num_in - offset;
-  }
-
-  Array out_hash = Array::Create();
-  int pos = 0;
-  ArrayIter iter(input);
-  for (; pos < offset && iter; ++pos, ++iter) {}
-  for (; pos < offset + length && iter; ++pos, ++iter) {
-    Variant key(iter.first());
-    bool doAppend = !preserve_keys && key.isNumeric();
-    CVarRef v = iter.secondRef();
-    if (doAppend) {
-      out_hash.appendWithRef(v);
-    } else {
-      out_hash.setWithRef(key, v, true);
-    }
-  }
-  return out_hash;
-}
-
-Variant ArrayUtil::Splice(CArrRef input, int offset, int64_t length /* = 0 */,
-                          CVarRef replacement /* = null_variant */,
+Variant ArrayUtil::Splice(const Array& input, int offset, int64_t length /* = 0 */,
+                          const Variant& replacement /* = null_variant */,
                           Array *removed /* = NULL */) {
   int num_in = input.size();
   if (offset > num_in) {
@@ -132,7 +51,7 @@ Variant ArrayUtil::Splice(CArrRef input, int offset, int64_t length /* = 0 */,
   ArrayIter iter(input);
   for (; pos < offset && iter; ++pos, ++iter) {
     Variant key(iter.first());
-    CVarRef v = iter.secondRef();
+    const Variant& v = iter.secondRef();
     if (key.isNumeric()) {
       out_hash.appendWithRef(v);
     } else {
@@ -143,7 +62,7 @@ Variant ArrayUtil::Splice(CArrRef input, int offset, int64_t length /* = 0 */,
   for (; pos < offset + length && iter; ++pos, ++iter) {
     if (removed) {
       Variant key(iter.first());
-      CVarRef v = iter.secondRef();
+      const Variant& v = iter.secondRef();
       if (key.isNumeric()) {
         removed->appendWithRef(v);
       } else {
@@ -155,14 +74,14 @@ Variant ArrayUtil::Splice(CArrRef input, int offset, int64_t length /* = 0 */,
   Array arr = replacement.toArray();
   if (!arr.empty()) {
     for (ArrayIter iter(arr); iter; ++iter) {
-      CVarRef v = iter.secondRef();
+      const Variant& v = iter.secondRef();
       out_hash.appendWithRef(v);
     }
   }
 
   for (; iter; ++iter) {
     Variant key(iter.first());
-    CVarRef v = iter.secondRef();
+    const Variant& v = iter.secondRef();
     if (key.isNumeric()) {
       out_hash.appendWithRef(v);
     } else {
@@ -173,7 +92,7 @@ Variant ArrayUtil::Splice(CArrRef input, int offset, int64_t length /* = 0 */,
   return out_hash;
 }
 
-Variant ArrayUtil::Pad(CArrRef input, CVarRef pad_value, int pad_size,
+Variant ArrayUtil::Pad(const Array& input, const Variant& pad_value, int pad_size,
                        bool pad_right /* = true */) {
   int input_size = input.size();
   if (input_size >= pad_size) {
@@ -280,69 +199,14 @@ Variant ArrayUtil::Range(double low, double high, int64_t step /* = 1 */) {
   return ret;
 }
 
-const StaticString s_default("(default)");
-
-Variant ArrayUtil::FromHdf(const Hdf &hdf) {
-  if (hdf.firstChild().exists()) {
-    Array ret = Array::Create();
-
-    const char *value = hdf.get();
-    if (value) {
-      ret.set(s_default, String(value, CopyString));
-    }
-
-    for (Hdf child = hdf.firstChild(); child.exists(); child = child.next()) {
-      ret.set(String(child.getName()), FromHdf(child));
-    }
-    return ret;
-  }
-
-  const char *value = hdf.get("");
-  if (strcasecmp(value, "false") == 0 ||
-      strcasecmp(value, "no") == 0 ||
-      strcasecmp(value, "off") == 0) {
-    return false;
-  }
-  if (strcasecmp(value, "true") == 0 ||
-      strcasecmp(value, "yes") == 0 ||
-      strcasecmp(value, "on") == 0) {
-    return true;
-  }
-
-  int64_t lval; double dval;
-  int len = strlen(value);
-  DataType ret = is_numeric_string(value, len, &lval, &dval, 0);
-  switch (ret) {
-  case KindOfInt64:  return lval;
-  case KindOfDouble: return dval;
-  default: break;
-  }
-  return String(value, len, CopyString);
-}
-
-void ArrayUtil::ToHdf(const Array &arr, Hdf &hdf) {
-  for (ArrayIter iter(arr); iter; ++iter) {
-    CVarRef value(iter.secondRef());
-    if (value.isArray()) {
-      Hdf child = hdf[iter.first().toString().data()];
-      ToHdf(iter.secondRef().toArray(), child);
-    } else if (value.isBoolean()) {
-      hdf[iter.first().toString().data()] =
-        iter.secondRef().toBoolean() ? "true" : "false";
-    } else {
-      hdf[iter.first().toString().data()] = iter.secondRef().toString().data();
-    }
-  }
-}
-
 ///////////////////////////////////////////////////////////////////////////////
 // information and calculations
 
-DataType ArrayUtil::Sum(CArrRef input, int64_t *isum, double *dsum) {
+DataType ArrayUtil::Sum(const Array& input, int64_t *isum, double *dsum) {
   int64_t i = 0;
   ArrayIter iter(input);
   for (; iter; ++iter) {
-    CVarRef entry(iter.secondRef());
+    const Variant& entry(iter.secondRef());
     switch (entry.getType()) {
     case KindOfDouble: {
       goto DOUBLE;
@@ -376,7 +240,7 @@ DataType ArrayUtil::Sum(CArrRef input, int64_t *isum, double *dsum) {
 DOUBLE:
   double d = i;
   for (; iter; ++iter) {
-    CVarRef entry(iter.secondRef());
+    const Variant& entry(iter.secondRef());
     if (!entry.is(KindOfArray) && !entry.is(KindOfObject) &&
         !entry.is(KindOfResource)) {
       d += entry.toDouble();
@@ -386,11 +250,11 @@ DOUBLE:
   return KindOfDouble;
 }
 
-DataType ArrayUtil::Product(CArrRef input, int64_t *iprod, double *dprod) {
+DataType ArrayUtil::Product(const Array& input, int64_t *iprod, double *dprod) {
   int64_t i = 1;
   ArrayIter iter(input);
   for (; iter; ++iter) {
-    CVarRef entry(iter.secondRef());
+    const Variant& entry(iter.secondRef());
     switch (entry.getType()) {
     case KindOfDouble: {
       goto DOUBLE;
@@ -424,7 +288,7 @@ DataType ArrayUtil::Product(CArrRef input, int64_t *iprod, double *dprod) {
 DOUBLE:
   double d = i;
   for (; iter; ++iter) {
-    CVarRef entry(iter.secondRef());
+    const Variant& entry(iter.secondRef());
     if (!entry.is(KindOfArray) && !entry.is(KindOfObject) &&
         !entry.is(KindOfResource)) {
       d *= entry.toDouble();
@@ -434,10 +298,10 @@ DOUBLE:
   return KindOfDouble;
 }
 
-Variant ArrayUtil::CountValues(CArrRef input) {
+Variant ArrayUtil::CountValues(const Array& input) {
   Array ret = Array::Create();
   for (ArrayIter iter(input); iter; ++iter) {
-    CVarRef entry(iter.secondRef());
+    const Variant& entry(iter.secondRef());
     if (entry.isInteger() || entry.isString()) {
       if (!ret.exists(entry)) {
         ret.set(entry, 1);
@@ -454,7 +318,7 @@ Variant ArrayUtil::CountValues(CArrRef input) {
 ///////////////////////////////////////////////////////////////////////////////
 // manipulations
 
-Variant ArrayUtil::ChangeKeyCase(CArrRef input, bool lower) {
+Variant ArrayUtil::ChangeKeyCase(const Array& input, bool lower) {
   Array ret = Array::Create();
   for (ArrayIter iter(input); iter; ++iter) {
     Variant key(iter.first());
@@ -471,7 +335,7 @@ Variant ArrayUtil::ChangeKeyCase(CArrRef input, bool lower) {
   return ret;
 }
 
-Variant ArrayUtil::Reverse(CArrRef input, bool preserve_keys /* = false */) {
+Variant ArrayUtil::Reverse(const Array& input, bool preserve_keys /* = false */) {
   if (input.empty()) {
     return input;
   }
@@ -504,7 +368,7 @@ static void php_array_data_shuffle(std::vector<ssize_t> &indices) {
   }
 }
 
-Variant ArrayUtil::Shuffle(CArrRef input) {
+Variant ArrayUtil::Shuffle(const Array& input) {
   int count = input.size();
   if (count == 0) {
     return input;
@@ -526,12 +390,26 @@ Variant ArrayUtil::Shuffle(CArrRef input) {
   return ret;
 }
 
-Variant ArrayUtil::RandomKeys(CArrRef input, int num_req /* = 1 */) {
+Variant ArrayUtil::RandomKeys(const Array& input, int num_req /* = 1 */) {
   int count = input.size();
   if (num_req <= 0 || num_req > count) {
     raise_warning("Second argument has to be between 1 and the "
                   "number of elements in the array");
     return init_null();
+  }
+
+  if (num_req == 1) {
+    // Iterating through the counter is correct but a bit inefficient
+    // compared to being able to access the right offset into array data,
+    // but necessary for this code to be agnostic to the array's internal
+    // representation.  Assuming uniform distribution, we'll expect to
+    // iterate through half of the array's data.
+    ssize_t index = f_rand(0, count-1);
+    ssize_t pos = input->iter_begin();
+    while (index--) {
+      pos = input->iter_advance(pos);
+    }
+    return input->getKey(pos);
   }
 
   std::vector<ssize_t> indices;
@@ -542,10 +420,6 @@ Variant ArrayUtil::RandomKeys(CArrRef input, int num_req /* = 1 */) {
   }
   php_array_data_shuffle(indices);
 
-  if (num_req == 1) {
-    return input->getKey(indices[0]);
-  }
-
   Array ret = Array::Create();
   for (int i = 0; i < num_req; i++) {
     ssize_t pos = indices[i];
@@ -554,11 +428,11 @@ Variant ArrayUtil::RandomKeys(CArrRef input, int num_req /* = 1 */) {
   return ret;
 }
 
-Variant ArrayUtil::StringUnique(CArrRef input) {
+Variant ArrayUtil::StringUnique(const Array& input) {
   Array seenValues;
   Array ret = Array::Create();
   for (ArrayIter iter(input); iter; ++iter) {
-    CVarRef entry(iter.secondRef());
+    const Variant& entry(iter.secondRef());
     String str(entry.toString());
     if (!seenValues.exists(str)) {
       seenValues.set(str, 1);
@@ -568,11 +442,11 @@ Variant ArrayUtil::StringUnique(CArrRef input) {
   return ret;
 }
 
-Variant ArrayUtil::NumericUnique(CArrRef input) {
+Variant ArrayUtil::NumericUnique(const Array& input) {
   std::set<double> seenValues;
   Array ret = Array::Create();
   for (ArrayIter iter(input); iter; ++iter) {
-    CVarRef entry(iter.secondRef());
+    const Variant& entry(iter.secondRef());
     double value = entry.toDouble();
     std::pair<std::set<double>::iterator, bool> res =
       seenValues.insert(value);
@@ -583,7 +457,7 @@ Variant ArrayUtil::NumericUnique(CArrRef input) {
   return ret;
 }
 
-Variant ArrayUtil::RegularSortUnique(CArrRef input) {
+Variant ArrayUtil::RegularSortUnique(const Array& input) {
   /* The output of this function in PHP strictly depends on the implementation
    * of the sort function and on whether values that compare as equal end
    * up in contiguous positions in the sorted array (which is not really
@@ -625,15 +499,26 @@ Variant ArrayUtil::RegularSortUnique(CArrRef input) {
 ///////////////////////////////////////////////////////////////////////////////
 // iterations
 
+namespace {
+
+MutableArrayIter iter_begin(Variant& var, Variant* key, Variant& val) {
+  if (var.is(KindOfObject)) {
+    return var.getObjectData()->begin(key, val, null_string);
+  }
+  return MutableArrayIter(&var, key, val);
+}
+
+}
+
 void ArrayUtil::Walk(VRefParam input, PFUNC_WALK walk_function,
                      const void *data, bool recursive /* = false */,
                      PointerSet *seen /* = NULL */,
-                     CVarRef userdata /* = null_variant */) {
+                     const Variant& userdata /* = null_variant */) {
   assert(walk_function);
 
   Variant k;
   Variant v;
-  for (MutableArrayIter iter = input->begin(&k, v); iter.advance(); ) {
+  for (MutableArrayIter iter = iter_begin(input, &k, v); iter.advance(); ) {
     if (recursive && v.is(KindOfArray)) {
       assert(seen);
       ArrayData *arr = v.getArrayData();
@@ -656,9 +541,9 @@ void ArrayUtil::Walk(VRefParam input, PFUNC_WALK walk_function,
   }
 }
 
-Variant ArrayUtil::Reduce(CArrRef input, PFUNC_REDUCE reduce_function,
+Variant ArrayUtil::Reduce(const Array& input, PFUNC_REDUCE reduce_function,
                           const void *data,
-                          CVarRef initial /* = null_variant */) {
+                          const Variant& initial /* = null_variant */) {
   Variant result(initial);
   for (ArrayIter iter(input); iter; ++iter) {
     result = reduce_function(result, iter.second(), data);

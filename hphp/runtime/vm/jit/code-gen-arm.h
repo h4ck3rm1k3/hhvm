@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -17,30 +17,33 @@
 #define incl_HPHP_JIT_CODE_GEN_ARM_H
 
 #include "hphp/vixl/a64/macro-assembler-a64.h"
+#include <vector>
 
 #include "hphp/util/data-block.h"
 #include "hphp/runtime/vm/jit/block.h"
 #include "hphp/runtime/vm/jit/translator.h"
-#include "hphp/runtime/vm/jit/translator-x64.h"
+#include "hphp/runtime/vm/jit/mc-generator.h"
+#include "hphp/runtime/vm/jit/arg-group.h"
+#include "hphp/runtime/vm/jit/code-gen.h"
 
 namespace HPHP { namespace JIT { namespace ARM {
 
 struct CodeGenerator {
 
   CodeGenerator(const IRUnit& unit, CodeBlock& mainCode, CodeBlock& stubsCode,
-                JIT::TranslatorX64* tx64, CodegenState& state)
+                JIT::MCGenerator* mcg, CodegenState& state)
       : m_unit(unit)
       , m_mainCode(mainCode)
       , m_stubsCode(stubsCode)
       , m_as(mainCode)
       , m_astubs(stubsCode)
-      , m_tx64(tx64)
+      , m_mcg(mcg)
       , m_state(state)
       , m_curInst(nullptr)
     {
     }
 
-  void cgBlock(Block* block, std::vector<TransBCMapping>* bcMap);
+  Address cgInst(IRInstruction* inst);
 
  private:
   template<class Then>
@@ -65,10 +68,17 @@ struct CodeGenerator {
 
   const Func* curFunc() { return m_curInst->marker().func; }
 
+  void emitJumpToBlock(CodeBlock& cb, Block* target, ConditionCode cc);
+
+  void emitCompareInt(IRInstruction* inst);
+  void emitCompareIntAndSet(IRInstruction* inst,
+                            vixl::Condition cond);
+
+
   CallDest callDest(PhysReg reg0, PhysReg reg1 = InvalidReg) const;
-  CallDest callDest(SSATmp* dst) const;
-  CallDest callDestTV(SSATmp* dst) const;
-  CallDest callDest2(SSATmp* dst) const;
+  CallDest callDest(const IRInstruction*) const;
+  CallDest callDestTV(const IRInstruction*) const;
+  CallDest callDest2(const IRInstruction*) const;
 
   void cgCallNative(vixl::MacroAssembler& as, IRInstruction* inst);
   void cgCallHelper(vixl::MacroAssembler& a,
@@ -88,28 +98,28 @@ struct CodeGenerator {
   void emitDecRefMem(Type type, vixl::Register baseReg, ptrdiff_t offset);
 
   template<class Loc, class JmpFn>
-  void emitTypeTest(Type type, Loc typeSrc, Loc dataSrc, JmpFn doJcc);
+  void emitTypeTest(Type type, vixl::Register typeReg, Loc dataSrc,
+                    JmpFn doJcc);
 
-  void emitLoadTypedValue(SSATmp* dst, vixl::Register base, ptrdiff_t offset,
+  void emitLoadTypedValue(PhysLoc dst, vixl::Register base, ptrdiff_t offset,
                           Block* label);
-  void emitStoreTypedValue(vixl::Register base, ptrdiff_t offset, SSATmp* src);
-  void emitLoad(SSATmp* dst, vixl::Register base, ptrdiff_t offset,
-                Block* label = nullptr);
+  void emitStoreTypedValue(vixl::Register base, ptrdiff_t offset, PhysLoc src);
+  void emitLoad(Type dstType, PhysLoc dstLoc, vixl::Register base,
+                ptrdiff_t offset, Block* label = nullptr);
   void emitStore(vixl::Register base,
                  ptrdiff_t offset,
-                 SSATmp* src,
+                 SSATmp* src, PhysLoc srcLoc,
                  bool genStoreType = true);
+  void emitLdRaw(IRInstruction* inst, size_t extraOff);
 
-  Address cgInst(IRInstruction* inst);
-
-  const PhysLoc curOpd(const SSATmp* t) const {
-    return m_state.regs[m_curInst][t];
+  const PhysLoc srcLoc(unsigned i) const {
+    return m_state.regs[m_curInst].src(i);
   }
-  const PhysLoc curOpd(const SSATmp& t) const {
-    return curOpd(&t);
+  const PhysLoc dstLoc(unsigned i) const {
+    return m_state.regs[m_curInst].dst(i);
   }
-  const RegAllocInfo::RegMap& curOpds() const {
-    return m_state.regs[m_curInst];
+  ArgGroup argGroup() const {
+    return ArgGroup(m_curInst, m_state.regs[m_curInst]);
   }
 
   void recordHostCallSyncPoint(vixl::MacroAssembler& as, JIT::TCA tca);
@@ -124,10 +134,13 @@ struct CodeGenerator {
   CodeBlock&                  m_stubsCode;
   vixl::MacroAssembler        m_as;
   vixl::MacroAssembler        m_astubs;
-  TranslatorX64*              m_tx64;
+  MCGenerator*                m_mcg;
   CodegenState&               m_state;
   IRInstruction*              m_curInst;
 };
+
+void patchJumps(CodeBlock& cb, CodegenState& state, Block* block);
+void emitFwdJmp(CodeBlock& cb, Block* target, CodegenState& state);
 
 }}}
 

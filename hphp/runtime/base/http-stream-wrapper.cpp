@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -18,7 +18,7 @@
 #include "hphp/runtime/base/string-util.h"
 #include "hphp/runtime/base/url-file.h"
 #include "hphp/runtime/base/runtime-option.h"
-#include "hphp/runtime/ext/ext_stream.h"
+#include "hphp/runtime/ext/stream/ext_stream.h"
 #include <memory>
 
 namespace HPHP {
@@ -36,7 +36,7 @@ const StaticString
   s_User_Agent("User-Agent");
 
 File* HttpStreamWrapper::open(const String& filename, const String& mode,
-                              int options, CVarRef context) {
+                              int options, const Variant& context) {
   if (RuntimeOption::ServerHttpSafeMode) {
     return nullptr;
   }

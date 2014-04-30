@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -19,6 +19,8 @@
 
 #include <cstdint>
 #include <string>
+#include <sys/resource.h>
+#include <sys/time.h>
 
 #include "hphp/util/compatibility.h"
 
@@ -49,6 +51,7 @@ public:
   static void GetRealtimeTime(timespec &sp);
   static void GetMonotonicTime(timespec &sp);
   static int64_t GetCurrentTimeMicros();
+  static int64_t GetRusageMicros(Type t, int who);
   const char *getName() const;
   int64_t getMicroSeconds() const;
   void report() const;

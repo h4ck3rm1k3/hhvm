@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -135,7 +135,7 @@ const StaticString s_http_response_header("http_response_header");
 const StaticString s_omitted("...(omitted)");
 
 
-void CmdVariable::PrintVariables(DebuggerClient &client, CArrRef variables,
+void CmdVariable::PrintVariables(DebuggerClient &client, const Array& variables,
                                  int frame, const String& text, int version) {
   bool global = frame == -1; // I.e. we were called from CmdGlobal, or the
   //client's current frame is the global frame, according to OnServer
@@ -245,7 +245,7 @@ void CmdVariable::onClient(DebuggerClient &client) {
 const StaticString s_GLOBALS("GLOBALS");
 
 Array CmdVariable::GetGlobalVariables() {
-  Array ret = g_vmContext->m_globalVarEnv->getDefinedVariables();
+  Array ret = g_context->m_globalVarEnv->getDefinedVariables();
   ret.remove(s_GLOBALS);
   return ret;
 }
@@ -312,11 +312,11 @@ bool CmdVariable::onServer(DebuggerProxy &proxy) {
     }
   }
   else if (m_frame < 0) {
-    m_variables = g_vmContext->m_globalVarEnv->getDefinedVariables();
+    m_variables = g_context->m_globalVarEnv->getDefinedVariables();
     m_global = true;
   } else {
-    m_variables = g_vmContext->getLocalDefinedVariables(m_frame);
-    m_global = g_vmContext->getVarEnv(m_frame) == g_vmContext->m_globalVarEnv;
+    m_variables = g_context->getLocalDefinedVariables(m_frame);
+    m_global = g_context->getVarEnv(m_frame) == g_context->m_globalVarEnv;
   }
 
   if (m_global) {

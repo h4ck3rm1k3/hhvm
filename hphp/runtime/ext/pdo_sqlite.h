@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    | Copyright (c) 1997-2010 The PHP Group                                |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
@@ -19,6 +19,8 @@
 #define incl_HPHP_PDO_SQLITE_H_
 
 #include "hphp/runtime/ext/pdo_driver.h"
+#include <memory>
+#include <vector>
 #include "hphp/runtime/ext/ext_sqlite3.h"
 
 namespace HPHP {
@@ -42,7 +44,7 @@ class PDOSqliteConnection : public PDOConnection {
 public:
   PDOSqliteConnection();
   virtual ~PDOSqliteConnection();
-  virtual bool create(CArrRef options);
+  virtual bool create(const Array& options);
   virtual void sweep();
 
   int handleError(const char *file, int line, PDOStatement *stmt = nullptr);
@@ -51,7 +53,7 @@ public:
   virtual bool closer();
   virtual bool preparer(const String& sql,
                         sp_PDOStatement* stmt,
-                        CVarRef options);
+                        const Variant& options);
   virtual int64_t doer(const String& sql);
   virtual bool quoter(const String& input,
                       String& quoted,
@@ -59,13 +61,13 @@ public:
   virtual bool begin();
   virtual bool commit();
   virtual bool rollback();
-  virtual bool setAttribute(int64_t attr, CVarRef value);
+  virtual bool setAttribute(int64_t attr, const Variant& value);
   virtual String lastId(const char *name);
   virtual bool fetchErr(PDOStatement *stmt, Array &info);
   virtual int getAttribute(int64_t attr, Variant &value);
   virtual void persistentShutdown();
 
-  bool createFunction(const String& name, CVarRef callback, int argcount);
+  bool createFunction(const String& name, const Variant& callback, int argcount);
 
 private:
   sqlite3 *m_db;

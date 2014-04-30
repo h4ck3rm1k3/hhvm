@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -68,9 +68,9 @@ public:
   // Serialization functions for Array, Object, and Variant
   // Return true on success, false on error
   // On error, the result would be a special string indicating the error
-  static int WireSerialize(CArrRef data, String& sdata);
-  static int WireSerialize(CObjRef data, String& sdata);
-  static int WireSerialize(CVarRef data, String& sdata);
+  static int WireSerialize(const Array& data, String& sdata);
+  static int WireSerialize(const Object& data, String& sdata);
+  static int WireSerialize(const Variant& data, String& sdata);
   static int WireUnserialize(String& sdata, Array& data);
   static int WireUnserialize(String& sdata, Object& data);
   static int WireUnserialize(String& sdata, Variant& data);

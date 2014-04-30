@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -28,11 +28,10 @@ struct HhbcExtClassInfo;
 
 ObjectData* newVectorHelper(int nElms);
 ObjectData* newMapHelper(int nElms);
-ObjectData* newStableMapHelper(int nElms);
 ObjectData* newSetHelper(int nElms);
-ObjectData* newFrozenVectorHelper(int nElms);
-ObjectData* newFrozenMapHelper(int nElms);
-ObjectData* newFrozenSetHelper(int nElms);
+ObjectData* newImmVectorHelper(int nElms);
+ObjectData* newImmMapHelper(int nElms);
+ObjectData* newImmSetHelper(int nElms);
 ObjectData* newPairHelper();
 
 StringData* concat_is(int64_t v1, StringData* v2);
@@ -195,7 +194,7 @@ newInstance(Class* cls) {
   assert(cls);
   auto* inst = ObjectData::newInstance(cls);
   if (UNLIKELY(RuntimeOption::EnableObjDestructCall)) {
-    g_vmContext->m_liveBCObjs.insert(inst);
+    g_context->m_liveBCObjs.insert(inst);
   }
   return inst;
 }

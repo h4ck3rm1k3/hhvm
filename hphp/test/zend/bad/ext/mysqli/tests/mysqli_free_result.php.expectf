@@ -1,0 +1,21 @@
+a
+NULL
+b
+
+Warning: %s
+NULL
+c
+bool(false)
+%s(0) ""
+[005]
+
+Warning: %s
+NULL
+d
+bool(false)
+%s(0) ""
+[007]
+
+Warning: %s
+NULL
+done!

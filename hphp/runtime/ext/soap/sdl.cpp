@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    | Copyright (c) 1997-2010 The PHP Group                                |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
@@ -19,8 +19,10 @@
 #include <string>
 
 #include <boost/lexical_cast.hpp>
+#include <memory>
 
 #include "hphp/runtime/ext/soap/soap.h"
+#include "hphp/util/text-util.h"
 
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
@@ -969,7 +971,7 @@ sdlPtr load_wsdl(char *struri, HttpClient *http) {
         function->binding = tmpbinding;
 
         {
-          std::string tmp = Util::toLower(function->functionName);
+          std::string tmp = toLower(function->functionName);
           sdlFunctionMap::iterator iter = ctx.sdl->functions.find(tmp);
           if (iter != ctx.sdl->functions.end()) {
             ctx.sdl->functions[boost::lexical_cast<std::string>
@@ -978,7 +980,7 @@ sdlPtr load_wsdl(char *struri, HttpClient *http) {
             ctx.sdl->functions[tmp] = function;
           }
           if (function->requestName != function->functionName) {
-            ctx.sdl->requests[Util::toLower(function->requestName)] = function;
+            ctx.sdl->requests[toLower(function->requestName)] = function;
           }
         }
         trav2 = trav2->next;

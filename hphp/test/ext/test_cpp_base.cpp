@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -21,8 +21,7 @@
 #include "hphp/runtime/base/builtin-functions.h"
 #include "hphp/runtime/ext/ext_variable.h"
 #include "hphp/runtime/ext/ext_apc.h"
-#include "hphp/runtime/ext/ext_mysql.h"
-#include "hphp/runtime/ext/ext_curl.h"
+#include "hphp/runtime/ext/mysql/ext_mysql.h"
 #include "hphp/runtime/base/shared-store-base.h"
 #include "hphp/runtime/base/runtime-option.h"
 #include "hphp/runtime/server/ip-block-map.h"
@@ -224,7 +223,7 @@ bool TestCppBase::TestArray() {
   {
     Variant arr = make_map_array("n1", "v1", "n2", "v2");
     arr.escalate();
-    for (ArrayIter iter = arr.begin(arr, true); !iter->end(); iter->next()){
+    for (ArrayIter iter = arr.begin(arr, true); !iter->end(); iter->next()) {
       arr.lvalAt(iter->first()).reset();
     }
     VS(arr, Array::Create());
@@ -242,7 +241,7 @@ bool TestCppBase::TestArray() {
     VERIFY(arr0.toInt32() == 0);
     VERIFY(arr0.toInt64() == 0);
     VERIFY(arr0.toDouble() == 0.0);
-    VERIFY(arr0.toString()->empty());
+    VERIFY(arr0.toString().empty());
 
     Array arr1 = Array::Create("test");
     VERIFY(arr1.toBoolean() == true);
@@ -452,66 +451,6 @@ bool TestCppBase::TestArray() {
     VS(arr, make_map_array("n0", "s2", "n1", "s3"));
   }
 
-  // slice
-  {
-    Array arr = make_packed_array("test1", "test2");
-    Array sub = arr.slice(1, 1, true);
-    VS(sub, make_map_array(1, "test2"));
-  }
-  {
-    Array arr = make_packed_array("test1", "test2");
-    Array sub = arr.slice(1, 1, false);
-    VS(sub, make_packed_array("test2"));
-  }
-  {
-    Array arr = make_map_array("n1", "test1", "n2", "test2");
-    Array sub = arr.slice(1, 1, true);
-    VS(sub, make_map_array("n2", "test2"));
-  }
-  {
-    Array arr = make_map_array("n1", "test1", "n2", "test2");
-    Array sub = arr.slice(1, 1, false);
-    VS(sub, make_map_array("n2", "test2"));
-  }
-
-  // escalation
-  {
-    Array arr;
-    arr.lvalAt(0).lvalAt(0) = 1.2;
-    VS(arr, make_packed_array(make_packed_array(1.2)));
-  }
-  {
-    Array arr;
-    arr.lvalAt(s_name).lvalAt(0) = 1.2;
-    VS(arr, make_map_array(s_name, make_packed_array(1.2)));
-  }
-  {
-    Array arr = Array::Create();
-    arr.lvalAt(0).lvalAt(0) = 1.2;
-    VS(arr, make_packed_array(make_packed_array(1.2)));
-  }
-  {
-    Array arr = Array::Create();
-    arr.lvalAt(s_name).lvalAt(0) = 1.2;
-    VS(arr, make_map_array(s_name, make_packed_array(1.2)));
-  }
-  {
-    Array arr = Array::Create("test");
-    arr.lvalAt(0) = make_packed_array(1.2);
-    VS(arr, make_packed_array(make_packed_array(1.2)));
-  }
-  {
-    Array arr = Array::Create("test");
-    arr.lvalAt(s_name).lvalAt(0) = 1.2;
-    VS(arr, make_map_array(0, "test", s_name, make_packed_array(1.2)));
-  }
-  {
-    Array arr = Array::Create();
-    arr.append("apple");
-    arr.set(2, "pear");
-    VS(arr[2], "pear");
-  }
-
   {
     Array arr = make_map_array(0, "a", 1, "b");
     VERIFY(arr->isVectorData());
@@ -553,102 +492,6 @@ bool TestCppBase::TestVariant() {
     VERIFY(v.toInt32() == 123);
   }
 
-  // offset
-  {
-    Variant v = "test";
-    VS(v.rvalAt(0), "t");
-  }
-  {
-    Variant v;
-    v.lvalAt(0) = String("v0");
-    v.lvalAt(1) = String("v1");
-    VERIFY(equal(v[0], String("v0")));
-    VERIFY(equal(v[1], String("v1")));
-  }
-  {
-    Variant v;
-    v.lvalAt() = String("test");
-    VS(v, make_packed_array("test"));
-  }
-  {
-    Variant v;
-    v.lvalAt(1) = String("test");
-    VS(v[1], "test");
-    VS(v[Variant(1.5)], "test");
-    VS(v[s_1], "test");
-    VS(v[Variant("1")], "test");
-  }
-  {
-    Variant v;
-    v.lvalAt(Variant(1.5)) = String("test");
-    VS(v[1], "test");
-    VS(v[Variant(1.5)], "test");
-    VS(v[s_1], "test");
-    VS(v[Variant("1")], "test");
-  }
-  {
-    Variant v;
-    v.lvalAt(s_1) = String("test");
-    VS(v[1], "test");
-    VS(v[Variant(1.5)], "test");
-    VS(v[s_1], "test");
-    VS(v[Variant("1")], "test");
-  }
-  {
-    Variant v;
-    v.lvalAt(Variant("1")) = String("test");
-    VS(v[1], "test");
-    VS(v[Variant(1.5)], "test");
-    VS(v[s_1], "test");
-    VS(v[Variant("1")], "test");
-  }
-  {
-    Variant v = "asd";
-    v.set(0, "b");
-    VS(v, "bsd");
-    v.set(6, "c");
-    VS(v, "bsd   c");
-  }
-
-  // membership
-  {
-    Variant v;
-    v.lvalAt(s_n0) = String("v0");
-    v.lvalAt(s_n1) = String("v1");
-    v.remove(s_n1);
-    VS(v, make_map_array(s_n0, "v0"));
-    v.append("v2");
-    VS(v, make_map_array(s_n0, "v0", 0, "v2"));
-  }
-  {
-    Variant v;
-    v.lvalAt(s_n0) = String("v0");
-    v.lvalAt(1) = String("v1");
-    v.remove(Variant(1.5));
-    VS(v, make_map_array("n0", "v0"));
-  }
-  {
-    Variant v;
-    v.lvalAt(s_n0) = String("v0");
-    v.lvalAt(1) = String("v1");
-    v.remove(Variant("1"));
-    VS(v, make_map_array("n0", "v0"));
-  }
-  {
-    Variant v;
-    v.lvalAt(s_n0) = String("v0");
-    v.lvalAt(1) = String("v1");
-    v.remove(String("1"));
-    VS(v, make_map_array("n0", "v0"));
-  }
-  {
-    Variant v;
-    v.lvalAt(s_n0) = String("v0");
-    v.lvalAt(empty_string) = String("v1");
-    v.remove(Variant());
-    VS(v, make_map_array("n0", "v0"));
-  }
-
   // references
   {
     Variant v1("original");
@@ -661,58 +504,6 @@ bool TestCppBase::TestVariant() {
     Variant v2 = strongBind(v1);
     v2 = String("changed");
     VERIFY(equal(v1, String("changed")));
-  }
-  {
-    Variant v1 = 10;
-    Variant v2 = Array(ArrayInit(1).setRef(v1).create());
-    v1 = 20;
-    VS(v2[0], 20);
-  }
-  {
-    Variant v1 = 10;
-    Variant v2;
-    v2.lvalAt() = ref(v1);
-    v1 = 20;
-    VS(v2[0], 20);
-  }
-  {
-    Variant v1 = 10;
-    Variant v2 = make_packed_array(5);
-    v2.lvalAt() = ref(v1);
-    v1 = 20;
-    VS(v2[1], 20);
-  }
-
-  // array escalation
-  {
-    Variant arr;
-    arr.lvalAt(0).lvalAt(0) = 1.2;
-    VS(arr, make_packed_array(make_packed_array(1.2)));
-  }
-  {
-    Variant arr;
-    arr.lvalAt(s_name).lvalAt(0) = 1.2;
-    VS(arr, make_map_array(s_name, make_packed_array(1.2)));
-  }
-  {
-    Variant arr = Array::Create();
-    arr.lvalAt(0).lvalAt(0) = 1.2;
-    VS(arr, make_packed_array(make_packed_array(1.2)));
-  }
-  {
-    Variant arr = Array::Create();
-    arr.lvalAt(s_name).lvalAt(0) = 1.2;
-    VS(arr, make_map_array(s_name, make_packed_array(1.2)));
-  }
-  {
-    Variant arr = Array::Create("test");
-    arr.lvalAt(0) = make_packed_array(1.2);
-    VS(arr, make_packed_array(make_packed_array(1.2)));
-  }
-  {
-    Variant arr = Array::Create("test");
-    arr.lvalAt(s_name).lvalAt(0) = 1.2;
-    VS(arr, make_map_array(0, "test", s_name, make_packed_array(1.2)));
   }
 
   return Count(true);

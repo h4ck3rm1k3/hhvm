@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -16,6 +16,7 @@
 
 #include "hphp/test/ext/test_util.h"
 #include "hphp/util/logger.h"
+#include "hphp/util/file-util.h"
 #include "hphp/runtime/base/complex-types.h"
 #include "hphp/runtime/base/shared-string.h"
 #include "hphp/runtime/base/zend-string.h"
@@ -99,21 +100,21 @@ bool TestUtil::TestSharedString() {
 }
 
 bool TestUtil::TestCanonicalize() {
-  VERIFY(Util::canonicalize("foo") == "foo");
-  VERIFY(Util::canonicalize("/foo") == "/foo");
-  VERIFY(Util::canonicalize("./foo") == "foo");
-  VERIFY(Util::canonicalize("foo/bar") == "foo/bar");
-  VERIFY(Util::canonicalize("foo/////bar") == "foo/bar");
-  VERIFY(Util::canonicalize("foo/bar/") == "foo/bar/");
-  VERIFY(Util::canonicalize("foo/../bar") == "bar");
-  VERIFY(Util::canonicalize("./foo/../bar") == "bar");
-  VERIFY(Util::canonicalize(".////foo/xyz////..////../bar") == "bar");
-  VERIFY(Util::canonicalize("a/foo../bar") == "a/foo../bar");
-  VERIFY(Util::canonicalize("a./foo/./bar") == "a./foo/bar");
-  VERIFY(Util::canonicalize("////a/foo") == "/a/foo");
-  VERIFY(Util::canonicalize("../foo") == "../foo");
-  VERIFY(Util::canonicalize("foo/../../bar") == "../bar");
-  VERIFY(Util::canonicalize("./../../") == "../../");
+  VERIFY(FileUtil::canonicalize("foo") == "foo");
+  VERIFY(FileUtil::canonicalize("/foo") == "/foo");
+  VERIFY(FileUtil::canonicalize("./foo") == "foo");
+  VERIFY(FileUtil::canonicalize("foo/bar") == "foo/bar");
+  VERIFY(FileUtil::canonicalize("foo/////bar") == "foo/bar");
+  VERIFY(FileUtil::canonicalize("foo/bar/") == "foo/bar/");
+  VERIFY(FileUtil::canonicalize("foo/../bar") == "bar");
+  VERIFY(FileUtil::canonicalize("./foo/../bar") == "bar");
+  VERIFY(FileUtil::canonicalize(".////foo/xyz////..////../bar") == "bar");
+  VERIFY(FileUtil::canonicalize("a/foo../bar") == "a/foo../bar");
+  VERIFY(FileUtil::canonicalize("a./foo/./bar") == "a./foo/bar");
+  VERIFY(FileUtil::canonicalize("////a/foo") == "/a/foo");
+  VERIFY(FileUtil::canonicalize("../foo") == "../foo");
+  VERIFY(FileUtil::canonicalize("foo/../../bar") == "../bar");
+  VERIFY(FileUtil::canonicalize("./../../") == "../../");
   return Count(true);
 }
 

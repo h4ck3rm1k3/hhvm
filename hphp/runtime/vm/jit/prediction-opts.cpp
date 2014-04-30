@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -24,6 +24,7 @@
 #include "hphp/runtime/vm/jit/ir.h"
 #include "hphp/runtime/vm/jit/cfg.h"
 #include "hphp/runtime/vm/jit/mutation.h"
+#include "hphp/runtime/vm/jit/timer.h"
 
 namespace HPHP { namespace JIT {
 
@@ -52,6 +53,14 @@ bool instructionsAreSinkable(InputIterator first, InputIterator last) {
   return true;
 }
 
+/*
+ * Returns whether a type is generic enough to try hoisting a
+ * prediction in order to specialize it.
+ */
+bool typeSufficientlyGeneric(Type t) {
+  return t.needsReg();
+}
+
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -61,6 +70,8 @@ bool instructionsAreSinkable(InputIterator first, InputIterator last) {
  * can specialize code earlier and avoid generic operations.
  */
 void optimizePredictions(IRUnit& unit) {
+  Timer _t(Timer::optimize_predictionOpts);
+
   FTRACE(5, "PredOpts:vvvvvvvvvvvvvvvvvvvvv\n");
   SCOPE_EXIT { FTRACE(5, "PredOpts:^^^^^^^^^^^^^^^^^^^^^\n"); };
 
@@ -83,8 +94,8 @@ void optimizePredictions(IRUnit& unit) {
   auto optLdMem = [&] (IRInstruction* checkType) -> bool {
     auto const ldMem = checkType->src(0)->inst();
     if (ldMem->op() != LdMem) return false;
-    if (ldMem->src(1)->getValInt() != 0) return false;
-    if (!ldMem->typeParam().equals(Type::Cell)) return false;
+    if (ldMem->src(1)->intVal() != 0) return false;
+    if (!typeSufficientlyGeneric(ldMem->typeParam())) return false;
 
     FTRACE(5, "candidate: {}\n", ldMem->toString());
 
@@ -125,10 +136,11 @@ void optimizePredictions(IRUnit& unit) {
 
     /*
      * Specialize the LdMem left on the main trace after cloning the
-     * generic version to the exit.  We'll reflowTypes after we're
+     * generic version to the exit---give it the type the old
+     * CheckType would've produced.  We'll reflowTypes after we're
      * done with all of this to get everything downstream specialized.
      */
-    ldMem->setTypeParam(checkType->typeParam());
+    ldMem->setTypeParam(outputType(checkType));
 
     /*
      * Replace the old CheckType with a Mov from the result of the
@@ -159,7 +171,7 @@ void optimizePredictions(IRUnit& unit) {
   postorderWalk(unit, [&](Block* b) {
     for (auto& inst : *b) {
       if (inst.op() == CheckType &&
-          inst.src(0)->type().equals(Type::Cell)) {
+          typeSufficientlyGeneric(inst.src(0)->type())) {
         if (optLdMem(&inst)) {
           needsReflow = true;
           break;

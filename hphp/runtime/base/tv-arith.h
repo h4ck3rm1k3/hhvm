@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -43,6 +43,14 @@ Cell cellAdd(Cell, Cell);
  */
 TypedNum cellSub(Cell, Cell);
 TypedNum cellMul(Cell, Cell);
+
+/*
+ * Same as their corresponding non-O functions, but will cast their sources to
+ * doubles instead of doing integer overflow.
+ */
+Cell cellAddO(Cell, Cell);
+TypedNum cellSubO(Cell, Cell);
+TypedNum cellMulO(Cell, Cell);
 
 /*
  * PHP operators / and %.
@@ -88,6 +96,14 @@ void cellSubEq(Cell& c1, Cell);
 void cellMulEq(Cell& c1, Cell);
 
 /*
+ * Same as their corresponding non-O functions, but will cast their sources to
+ * doubles instead of doing integer overflow.
+ */
+void cellAddEqO(Cell& c1, Cell c2);
+void cellSubEqO(Cell& c1, Cell c2);
+void cellMulEqO(Cell& c1, Cell c2);
+
+/*
  * PHP operators /= and %=.
  *
  * Mutates the first argument in place, by combining the second
@@ -122,6 +138,8 @@ void cellBitXorEq(Cell& c1, Cell);
 void cellInc(Cell&);
 void cellDec(Cell&);
 
+void cellIncO(Cell&);
+void cellDecO(Cell&);
 
 /*
  * PHP unary operator ~.

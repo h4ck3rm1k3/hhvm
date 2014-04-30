@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -17,8 +17,6 @@
 #ifndef incl_HPHP_TYPES_H_
 #define incl_HPHP_TYPES_H_
 
-#include <boost/intrusive_ptr.hpp>
-
 #include <stdint.h>
 #include <atomic>
 #include <limits>
@@ -26,6 +24,7 @@
 #include <vector>
 #include <stack>
 #include <list>
+#include <map>
 
 #include "hphp/util/thread-local.h"
 #include "hphp/util/mutex.h"
@@ -37,15 +36,7 @@
 
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
-// forward declarations of all data types
 
-/**
- * Complex data types. Note that Numeric, Primitive, PlusOperand and Sequence
- * are actually all Variant type in implementation, but we'd keep them using
- * their own names in different places, so not to lose their inferred types.
- * Should we need to take advantage of this extra type inference information
- * in the future, we will be able to.
- */
 class String;
 class StaticString;
 class Array;
@@ -57,10 +48,6 @@ class Variant;
 class VarNR;
 class RefData;
 
-/**
- * Macros related to Variant that are needed by StringData, ObjectData,
- * and ArrayData.
- */
 extern const Variant null_variant;      // uninitialized variant
 extern const Variant init_null_variant; // php null
 extern const VarNR null_varNR;
@@ -73,36 +60,11 @@ extern const String null_string;
 extern const Array null_array;
 extern const Array empty_array;
 
-/*
- * All Refcounted types have their m_count field at the same offset
- * in the object. This offset is chosen to allow a RefData's count
- * field to pack after a TypedValue.
- *
- * Other refcounted types (ArrayData, StringData, and ObjectData)
- * have small fields that are packed into the same space.
- */
-const size_t FAST_REFCOUNT_OFFSET = 12;
-
-/*
- * All native collection class have their m_size field at the same
- * offset in the object.
- */
-const size_t FAST_COLLECTION_SIZE_OFFSET = 20;
-
-/**
- * These are underlying data structures for the above complex data types. Since
- * we use reference counting to achieve copy-on-write and automatic object
- * lifetime, we need these data objects to store real data that's shared by
- * multiple wrapper objects.
- */
 class StringData;
 class ArrayData;
 class ObjectData;
 class ResourceData;
 
-/**
- * Miscellaneous objects to help arrays to construct or to iterate.
- */
 class ArrayIter;
 class MutableArrayIter;
 
@@ -139,39 +101,34 @@ enum class Mode {
 
 namespace Collection {
 enum Type : uint16_t { // stored in ObjectData::o_subclassData
+  // values must be contiguous integers (for ArrayIter::initFuncTable)
   InvalidType = 0,
   VectorType = 1,
   MapType = 2,
-  StableMapType = 3,
-  SetType = 4,
-  PairType = 5,
-  FrozenVectorType = 6,
-  FrozenSetType = 7,
-  FrozenMapType = 8
+  SetType = 3,
+  PairType = 4,
+  ImmVectorType = 5,
+  ImmMapType = 6,
+  ImmSetType = 7,
 };
-const int MaxNumTypes = 9;
+const size_t MaxNumTypes = 8;
 
 inline Type stringToType(const char* str, size_t len) {
   switch (len) {
-    case 3:
-      if (!strcasecmp(str, "map")) return MapType;
-      break;
-    case 4:
-      if (!strcasecmp(str, "pair")) return PairType;
-      break;
     case 6:
       if (!strcasecmp(str, "hh\\set")) return SetType;
+      if (!strcasecmp(str, "hh\\map")) return MapType;
+      break;
+    case 7:
+      if (!strcasecmp(str, "hh\\pair")) return PairType;
       break;
     case 9:
-      if (!strcasecmp(str, "stablemap")) return StableMapType;
       if (!strcasecmp(str, "hh\\vector")) return VectorType;
+      if (!strcasecmp(str, "hh\\immmap")) return ImmMapType;
+      if (!strcasecmp(str, "hh\\immset")) return ImmSetType;
       break;
     case 12:
-      if (!strcasecmp(str, "hh\\frozenmap")) return FrozenMapType;
-      if (!strcasecmp(str, "hh\\frozenset")) return FrozenSetType;
-      break;
-    case 15:
-      if (!strcasecmp(str, "hh\\frozenvector")) return FrozenVectorType;
+      if (!strcasecmp(str, "hh\\immvector")) return ImmVectorType;
       break;
     default:
       break;
@@ -183,39 +140,31 @@ inline Type stringToType(const std::string& s) {
 }
 inline bool isVectorType(Collection::Type ctype) {
   return (ctype == Collection::VectorType ||
-          ctype == Collection::FrozenVectorType);
+          ctype == Collection::ImmVectorType);
 }
-
 inline bool isMapType(Collection::Type ctype) {
   return (ctype == Collection::MapType ||
-          ctype == Collection::StableMapType ||
-          ctype == Collection::FrozenMapType);
+          ctype == Collection::ImmMapType);
 }
-
 inline bool isSetType(Collection::Type ctype) {
   return (ctype == Collection::SetType ||
-          ctype == Collection::FrozenSetType);
+          ctype == Collection::ImmSetType);
 }
-
 inline bool isInvalidType(Collection::Type ctype) {
-  return (ctype == Collection::MaxNumTypes ||
-          ctype == Collection::InvalidType);
+  return (ctype == Collection::InvalidType ||
+          static_cast<size_t>(ctype) >= Collection::MaxNumTypes);
+}
+inline bool isMutableType(Collection::Type ctype) {
+  return (ctype == Collection::VectorType ||
+          ctype == Collection::MapType ||
+          ctype == Collection::SetType);
 }
 
 }
 
-/**
- * Some of these typedefs are for platform independency, including "int64".
- * Some of them are for clarity, for example, "litstr". Some of them are purely
- * for being able to vertically align type-specialized functions so they look
- * cleaner.
- */
+//////////////////////////////////////////////////////////////////////
+
 typedef const char * litstr; /* literal string */
-//typedef const String & CStrRef;
-typedef const Array & CArrRef;
-typedef const Object & CObjRef;
-typedef const Resource & CResRef;
-typedef const Variant & CVarRef;
 
 typedef const class VRefParamValue    &VRefParam;
 typedef const class RefResultValue    &RefResult;
@@ -223,20 +172,20 @@ typedef const class VariantStrongBind &CVarStrongBind;
 typedef const class VariantWithRefBind&CVarWithRefBind;
 
 inline CVarStrongBind
-strongBind(CVarRef v)     { return *(VariantStrongBind*)&v; }
+strongBind(const Variant& v)     { return *(VariantStrongBind*)&v; }
 inline CVarStrongBind
 strongBind(RefResult v)   { return *(VariantStrongBind*)&v; }
 inline CVarWithRefBind
-withRefBind(CVarRef v)    { return *(VariantWithRefBind*)&v; }
+withRefBind(const Variant& v)    { return *(VariantWithRefBind*)&v; }
 
-inline CVarRef
+inline const Variant&
 variant(CVarStrongBind v) { return *(Variant*)&v; }
-inline CVarRef
+inline const Variant&
 variant(CVarWithRefBind v){ return *(Variant*)&v; }
-inline CVarRef
+inline const Variant&
 variant(RefResult v)      { return *(Variant*)&v; }
-inline CVarRef
-variant(CVarRef v)        { return v; }
+inline const Variant&
+variant(const Variant& v)        { return v; }
 
 /**
  * ref() can be used to cause strong binding
@@ -245,7 +194,7 @@ variant(CVarRef v)        { return v; }
  *   a = b;      // weak binding: a will copy or copy-on-write
  *
  */
-inline RefResult ref(CVarRef v) {
+inline RefResult ref(const Variant& v) {
   return *(RefResultValue*)&v;
 }
 
@@ -256,96 +205,6 @@ inline RefResult ref(Variant& v) {
 class Class;
 
 ///////////////////////////////////////////////////////////////////////////////
-// code injection classes
-
-class RequestInjectionData {
-public:
-  static const ssize_t MemExceededFlag      = 1 << 0;
-  static const ssize_t TimedOutFlag         = 1 << 1;
-  static const ssize_t SignaledFlag         = 1 << 2;
-  static const ssize_t EventHookFlag        = 1 << 3;
-  static const ssize_t PendingExceptionFlag = 1 << 4;
-  static const ssize_t InterceptFlag        = 1 << 5;
-  // Set by the debugger to break out of loops in translated code.
-  static const ssize_t DebuggerSignalFlag   = 1 << 6;
-  static const ssize_t LastFlag             = DebuggerSignalFlag;
-
-  RequestInjectionData()
-    : cflagsPtr(nullptr),
-      m_timeoutSeconds(-1), m_hasTimer(false), m_timerActive(false),
-      m_debugger(false), m_debuggerIntr(false), m_coverage(false),
-      m_jit(false) {
-  }
-
-  ~RequestInjectionData();
-
-  inline std::atomic<ssize_t>* getConditionFlags() {
-    assert(cflagsPtr);
-    return cflagsPtr;
-  }
-
-  std::atomic<ssize_t>* cflagsPtr;  // this points to the real condition flags,
-                                    // somewhere in the thread's targetcache
-
- private:
-#ifndef __APPLE__
-  timer_t m_timer_id;    // id of our timer
-#endif
-  int m_timeoutSeconds;  // how many seconds to timeout
-  bool m_hasTimer;       // Whether we've created our timer yet
-  std::atomic<bool> m_timerActive;
-                         // Set true when we activate a timer,
-                         // cleared when the signal handler runs
-  bool m_debugger;       // whether there is a DebuggerProxy attached to me
-  bool m_debuggerIntr;   // indicating we should force interrupt for debugger
-  bool m_coverage;       // is coverage being collected
-  bool m_jit;            // is the jit enabled
- public:
-  int getTimeout() const { return m_timeoutSeconds; }
-  void setTimeout(int seconds);
-  int getRemainingTime() const;
-  void resetTimer(int seconds = 0);
-  void onTimeout();
-  bool getJit() const { return m_jit; }
-  bool getDebugger() const { return m_debugger; }
-  void setDebugger(bool d) {
-    m_debugger = d;
-    updateJit();
-  }
-  static constexpr uint32_t debuggerReadOnlyOffset() {
-    return offsetof(RequestInjectionData, m_debugger);
-  }
-  bool getDebuggerIntr() const { return m_debuggerIntr; }
-  void setDebuggerIntr(bool d) {
-    m_debuggerIntr = d;
-    updateJit();
-  }
-  bool getCoverage() const { return m_coverage; }
-  void setCoverage(bool flag) {
-    m_coverage = flag;
-    updateJit();
-  }
-  void updateJit();
-
-  std::stack<void *> interrupts;   // CmdInterrupts this thread's handling
-
-  void reset();
-
-  void setMemExceededFlag();
-  void setTimedOutFlag();
-  void clearTimedOutFlag();
-  void setSignaledFlag();
-  void setEventHookFlag();
-  void clearEventHookFlag();
-  void setPendingExceptionFlag();
-  void clearPendingExceptionFlag();
-  void setInterceptFlag();
-  void clearInterceptFlag();
-  void setDebuggerSignalFlag();
-  ssize_t fetchAndClearFlags();
-
-  void onSessionInit();
-};
 
 class GlobalNameValueTableWrapper;
 class ObjectAllocatorBase;
@@ -353,122 +212,14 @@ class Profiler;
 class CodeCoverage;
 typedef GlobalNameValueTableWrapper GlobalVariables;
 
-int object_alloc_size_to_index(size_t);
-size_t object_alloc_index_to_size(int);
-
-// implemented in runtime/base/thread-info
-typedef boost::intrusive_ptr<ArrayData> ArrayHolder;
-void intrusive_ptr_add_ref(ArrayData* a);
-void intrusive_ptr_release(ArrayData* a);
-
-class ThreadInfo {
-public:
-  enum Executing {
-    Idling,
-    RuntimeFunctions,
-    ExtensionFunctions,
-    UserFunctions,
-    NetworkIO,
-  };
-
-  static void GetExecutionSamples(std::map<Executing, int> &counts);
-
-public:
-  static DECLARE_THREAD_LOCAL_NO_CHECK(ThreadInfo, s_threadInfo);
-
-  RequestInjectionData m_reqInjectionData;
-
-  // For infinite recursion detection.  m_stacklimit is the lowest
-  // address the stack can grow to.
-  char *m_stacklimit;
-
-  // Either null, or populated by initialization of ThreadInfo as an
-  // approximation of the highest address of the current thread's
-  // stack.
-  static __thread char* t_stackbase;
-
-  // This is the amount of "slack" in stack usage checks - if the
-  // stack pointer gets within this distance from the end (minus
-  // overhead), throw an infinite recursion exception.
-  static const int StackSlack = 1024 * 1024;
-
-  MemoryManager* m_mm;
-
-  // This pointer is set by ProfilerFactory
-  Profiler *m_profiler;
-  CodeCoverage *m_coverage;
-
-  Executing m_executing;
-
-  // A C++ exception which will be thrown by the next surprise check.
-  Exception* m_pendingException;
-
-  ThreadInfo();
-  ~ThreadInfo();
-
-  void onSessionInit();
-  void onSessionExit();
-  void setPendingException(Exception* e);
-  void clearPendingException();
-
-  static bool valid(ThreadInfo* info);
-};
-
-extern void throw_infinite_recursion_exception();
-extern void throw_call_non_object() ATTRIBUTE_NORETURN;
-
-inline void* stack_top_ptr() {
-  DECLARE_STACK_POINTER(sp);
-  return sp;
-}
-
-inline bool stack_in_bounds(ThreadInfo *&info) {
-  return stack_top_ptr() >= info->m_stacklimit;
-}
-
-// The ThreadInfo pointer itself must be from the current stack frame.
-inline void check_recursion(ThreadInfo *&info) {
-  if (!stack_in_bounds(info)) {
-    throw_infinite_recursion_exception();
-  }
-}
-
-// implemented in runtime/base/builtin-functions.cpp
-extern ssize_t check_request_surprise(ThreadInfo *info);
-
-// implemented in runtime/ext/ext_hotprofiler.cpp
-extern void begin_profiler_frame(Profiler *p, const char *symbol);
-extern void end_profiler_frame(Profiler *p, const char *symbol);
-
 ///////////////////////////////////////////////////////////////////////////////
-
-class ExecutionProfiler {
-public:
-  ExecutionProfiler(ThreadInfo *info, bool builtin) : m_info(info) {
-    m_executing = m_info->m_executing;
-    m_info->m_executing =
-      builtin ? ThreadInfo::ExtensionFunctions : ThreadInfo::UserFunctions;
-  }
-  explicit ExecutionProfiler(ThreadInfo::Executing executing) {
-    m_info = ThreadInfo::s_threadInfo.getNoCheck();
-    m_executing = m_info->m_executing;
-    m_info->m_executing = executing;
-  }
-  ~ExecutionProfiler() {
-    m_info->m_executing = m_executing;
-  }
-private:
-  ThreadInfo *m_info;
-  ThreadInfo::Executing m_executing;
-};
 
 class AccessFlags {
 public:
   enum Type {
     None = 0,
     Error = 1,
-    CheckExist = 2,
-    Key = 4,
+    Key = 2,
     Error_Key = Error | Key,
   };
   static Type IsKey(bool s) { return s ? Key : None; }
@@ -477,13 +228,6 @@ public:
 
 #define ACCESSPARAMS_DECL AccessFlags::Type flags = AccessFlags::None
 #define ACCESSPARAMS_IMPL AccessFlags::Type flags
-
-/*
- * Non-enumerated version of type for referring to opcodes or the
- * bytecode stream.  (Use the enum Op in hhbc.h for an enumerated
- * version.)
- */
-typedef uint8_t Opcode;
 
 /*
  * Program counters in the bytecode interpreter.
@@ -603,6 +347,8 @@ enum Attr {
   AttrNative        = (1 << 23), //                     X    //
   AttrVMEntry       = (1 << 24), //                     X    //
   AttrHPHPSpecific  = (1 << 25), //                     X    //
+  AttrIsFoldable    = (1 << 26), //                     X    //
+  AttrNoFCallBuiltin= (1 << 27), //                     X    //
 };
 
 inline Attr operator|(Attr a, Attr b) { return Attr((int)a | (int)b); }

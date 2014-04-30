@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -18,7 +18,7 @@
 
 #include "hphp/util/disasm.h"
 #include "hphp/util/trace.h"
-#include "hphp/runtime/vm/jit/translator-x64.h"
+#include "hphp/runtime/vm/jit/mc-generator.h"
 
 namespace HPHP { namespace JIT {
 
@@ -27,9 +27,9 @@ TRACE_SET_MOD(ustubs);
 //////////////////////////////////////////////////////////////////////
 
 TCA UniqueStubs::add(const char* name, TCA start) {
-  auto const inAStubs = start > tx64->code.stubs().base();
-  UNUSED auto const stop = inAStubs ? tx64->code.stubs().frontier()
-    : tx64->code.main().frontier();
+  auto const inAStubs = start > mcg->code.stubs().base();
+  UNUSED auto const stop = inAStubs ? mcg->code.stubs().frontier()
+    : mcg->code.main().frontier();
 
   FTRACE(1, "unique stub: {} {} -- {:4} bytes: {}\n",
          inAStubs ? "astubs @ "
@@ -47,8 +47,8 @@ TCA UniqueStubs::add(const char* name, TCA start) {
           }()
          );
 
-  tx64->recordGdbStub(
-    tx64->code.blockFor(start),
+  mcg->recordGdbStub(
+    mcg->code.blockFor(start),
     start,
     strdup(folly::format("HHVM::{}", name).str().c_str())
   );

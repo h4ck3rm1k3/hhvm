@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -24,6 +24,7 @@
 #include "hphp/runtime/vm/unit.h"
 #include "hphp/runtime/base/zend-string.h"
 #include "hphp/runtime/base/stats.h"
+#include "hphp/util/text-util.h"
 
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
@@ -651,8 +652,8 @@ void staticArrayStreamer(ArrayData* ad, std::ostream& out) {
       case KindOfStaticString:
       case KindOfString: {
         out << "\""
-            << Util::escapeStringForCPP(key.getStringData()->data(),
-                                        key.getStringData()->size())
+            << escapeStringForCPP(key.getStringData()->data(),
+                                  key.getStringData()->size())
             << "\"";
         break;
       }
@@ -674,8 +675,8 @@ void staticArrayStreamer(ArrayData* ad, std::ostream& out) {
       case KindOfStaticString:
       case KindOfString: {
         out << "\""
-            << Util::escapeStringForCPP(val.getStringData()->data(),
-                                        val.getStringData()->size())
+            << escapeStringForCPP(val.getStringData()->data(),
+                                  val.getStringData()->size())
             << "\"";
         break;
       }
@@ -796,7 +797,7 @@ MemberCode parseMemberCode(const char* s) {
 
 std::string instrToString(const Op* it, const Unit* u /* = NULL */) {
   std::stringstream out;
-  const Op* iStart = it;
+  PC iStart = reinterpret_cast<PC>(it);
   Op op = *it;
   ++it;
   switch (op) {
@@ -880,7 +881,7 @@ std::string instrToString(const Op* it, const Unit* u /* = NULL */) {
   } else if (u) {                                                 \
     const StringData* sd = u->lookupLitstrId(id);                 \
     out << sep << "\"" <<                                         \
-      Util::escapeStringForCPP(sd->data(), sd->size()) << "\"";   \
+      escapeStringForCPP(sd->data(), sd->size()) << "\"";         \
   } else {                                                        \
     out << sep << id;                                             \
   }                                                               \
@@ -898,7 +899,7 @@ std::string instrToString(const Op* it, const Unit* u /* = NULL */) {
     }                                           \
     Offset o = readData<Offset>(it);            \
     if (u != nullptr) {                         \
-      if (iStart + o == (Op*)u->entry() - 1) {  \
+      if (iStart + o == u->entry() - 1) {       \
         out << "Invalid";                       \
       } else {                                  \
         out << u->offsetOf(iStart + o);         \
@@ -1018,6 +1019,12 @@ static const char* IsTypeOp_names[] = {
 #undef ISTYPE_OP
 };
 
+static const char* InitPropOp_names[] = {
+#define INITPROP_OP(x) #x,
+  INITPROP_OPS
+#undef INITPROP_OP
+};
+
 static const char* AssertTOp_names[] = {
 #define ASSERTT_OP(op) #op,
   ASSERTT_OPS
@@ -1094,6 +1101,7 @@ template<class T> folly::Optional<T> nameToSubop(const char* str) {
   }                                                         \
   template folly::Optional<subop> nameToSubop(const char*);
 
+X(InitPropOp)
 X(IsTypeOp)
 X(AssertTOp)
 X(AssertObjOp)

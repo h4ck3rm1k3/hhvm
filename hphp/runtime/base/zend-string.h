@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    | Copyright (c) 1998-2010 Zend Technologies Ltd. (http://www.zend.com) |
    +----------------------------------------------------------------------+
    | This source file is subject to version 2.00 of the Zend license,     |
@@ -55,7 +55,8 @@ inline int string_strcmp(const char *s1, int len1, const char *s2, int len2) {
   if (!retval) {
     return (len1 - len2);
   }
-  return retval;
+
+  return (retval > 0) - (retval < 0);
 }
 /**
  * Compare two binary strings of the first n bytes.
@@ -255,7 +256,7 @@ inline bool string_validate_base(int base) {
 char *string_hex2bin(const char *input, int &len);
 Variant string_base_to_numeric(const char *s, int len, int base);
 char *string_long_to_base(unsigned long value, int base);
-char *string_numeric_to_base(CVarRef value, int base);
+char *string_numeric_to_base(const Variant& value, int base);
 
 /**
  * Translates characters in str_from into characters in str_to one by one,

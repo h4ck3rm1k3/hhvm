@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -241,6 +241,7 @@ struct Func {
     return strncmp("86", methName->data(), 2) == 0;
   }
   bool isNoInjection() const { return bool(m_attrs & AttrNoInjection); }
+  bool isFoldable() const { return bool(m_attrs & AttrIsFoldable); }
 
   bool mayHaveThis() const {
     return isPseudoMain() || (isMethod() && !isStatic());
@@ -269,10 +270,16 @@ struct Func {
     return shared()->m_id;
   }
   Offset base() const { return shared()->m_base; }
-  const inline Opcode* getEntry() const {
+  PC getEntry() const {
     return m_unit->entry() + shared()->m_base;
   }
   Offset past() const { return shared()->m_past; }
+  bool contains(PC pc) const {
+    return contains(Offset(pc - unit()->entry()));
+  }
+  bool contains(Offset offset) const {
+    return offset >= base() && offset < past();
+  }
   int line1() const { return shared()->m_line1; }
   int line2() const { return shared()->m_line2; }
   DataType returnType() const { return shared()->m_returnType; }
@@ -461,7 +468,9 @@ struct Func {
   }
 
 public: // Offset accessors for the translator.
-#define X(f) static ptrdiff_t f##Off() { return offsetof(Func, m_##f); }
+#define X(f) static constexpr ptrdiff_t f##Off() {      \
+    return offsetof(Func, m_##f);                       \
+  }
   X(attrs);
   X(unit);
   X(cls);
@@ -538,35 +547,40 @@ private:
   Func* findCachedClone(Class* cls) const;
 
 private:
-  Unit* m_unit;
-  Class* m_cls;      // The Class that provided this method implementation
-  Class* m_baseCls;  // The first Class in the inheritance hierarchy that
-                     // declared this method; note that this may be an abstract
-                     // class that did not provide an implementation
-  const StringData* m_name;
-  const StringData* m_fullName;
-  SharedDataPtr m_shared;
-  union {
-    const NamedEntity* m_namedEntity;
-    Slot m_methodSlot;
-  };
-  uint64_t m_refBitVal;
-  mutable RDS::Link<Func*> m_cachedFunc;
+  /*
+   * Fields are organized in reverse order of frequency of use
+   * Do not re-order without checking perf
+   */
 #ifdef DEBUG
   int m_magic; // For asserts only.
 #endif
-  int m_maxStackCells;
-  int m_numParams;
-  Attr m_attrs;
-  FuncId m_funcId;
-  uint32_t m_profCounter;        // profile counter used to detect hot functions
+  const StringData* m_fullName;
+  uint32_t m_profCounter{0};     // profile counter used to detect hot functions
+  unsigned char* volatile m_funcBody;  // Accessed from assembly.
+  mutable RDS::Link<Func*> m_cachedFunc{RDS::kInvalidHandle};
+  FuncId m_funcId{InvalidFuncId};
+  const StringData* m_name;
+  Class* m_baseCls{nullptr};// The first Class in the inheritance hierarchy that
+                            // declared this method; note that this may be an
+                            // abstract class that did not provide an
+                            // implementation
+  union {
+    const NamedEntity* m_namedEntity{nullptr};
+    Slot m_methodSlot;
+  };
+  Class* m_cls{nullptr};  // The Class that provided this method implementation
+  // TODO(#1114385) intercept should work via invalidation.
+  mutable char m_maybeIntercepted; // -1, 0, or 1.  Accessed atomically.
   bool m_hasPrivateAncestor : 1; // This flag indicates if any of this
                                  // Class's ancestors provide a
                                  // "private" implementation for this
                                  // method
-  // TODO(#1114385) intercept should work via invalidation.
-  mutable char m_maybeIntercepted; // -1, 0, or 1.  Accessed atomically.
-  unsigned char* volatile m_funcBody;  // Accessed from assembly.
+  int m_maxStackCells{0};
+  uint64_t m_refBitVal{0};
+  Unit* m_unit;
+  SharedDataPtr m_shared;
+  int m_numParams{0};
+  Attr m_attrs;
   // This must be the last field declared in this structure
   // and the Func class should not be inherited from.
   unsigned char* volatile m_prologueTable[kNumFixedPrologues];
@@ -729,9 +743,11 @@ public:
   const UserAttributeMap& getUserAttributes() const {
     return m_userAttributes;
   }
-  int parseUserAttributes(Attr &attrs) const;
+  bool hasUserAttribute(const StringData* name) const {
+    auto it = m_userAttributes.find(name);
+    return it != m_userAttributes.end();
+  }
   int parseNativeAttributes(Attr &attrs) const;
-  int parseHipHopAttributes(Attr &attrs) const;
 
   void commit(RepoTxn& txn) const;
   Func* create(Unit& unit, PreClass* preClass = nullptr) const;

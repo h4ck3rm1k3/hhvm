@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -82,18 +82,18 @@ static inline int unserializeImpl(const String& sdata, Variant& data) {
   return DebuggerWireHelpers::NoError;
 }
 
-int DebuggerWireHelpers::WireSerialize(CArrRef data, String& sdata) {
-  TRACE(7, "DebuggerWireHelpers::WireSerialize(CArrRef data,\n");
+int DebuggerWireHelpers::WireSerialize(const Array& data, String& sdata) {
+  TRACE(7, "DebuggerWireHelpers::WireSerialize(const Array& data,\n");
   return serializeImpl(data, sdata);
 }
 
-int DebuggerWireHelpers::WireSerialize(CObjRef data, String& sdata) {
-  TRACE(7, "DebuggerWireHelpers::WireSerialize(CObjRef data,\n");
+int DebuggerWireHelpers::WireSerialize(const Object& data, String& sdata) {
+  TRACE(7, "DebuggerWireHelpers::WireSerialize(const Object& data,\n");
   return serializeImpl(data, sdata);
 }
 
-int DebuggerWireHelpers::WireSerialize(CVarRef data, String& sdata) {
-  TRACE(7, "DebuggerWireHelpers::WireSerialize(CVarRef data,\n");
+int DebuggerWireHelpers::WireSerialize(const Variant& data, String& sdata) {
+  TRACE(7, "DebuggerWireHelpers::WireSerialize(const Variant& data,\n");
   return serializeImpl(data, sdata);
 }
 

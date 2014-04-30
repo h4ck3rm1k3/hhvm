@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -32,18 +32,8 @@ public:
   virtual bool hasRetExp() const { return m_exp != nullptr; }
   ExpressionPtr getRetExp() const { return m_exp; }
 
-  // During analysis we tag ReturnStatement with a list of the locals
-  // that are known not to need decrefs at the time of this statement.
-  const std::vector<std::string>& nonRefcountedLocals() const {
-    return m_nonRefcountedLocals;
-  }
-  void addNonRefcounted(const std::string& s) {
-    m_nonRefcountedLocals.push_back(s);
-  }
-
 private:
   ExpressionPtr m_exp;
-  std::vector<std::string> m_nonRefcountedLocals;
 };
 
 ///////////////////////////////////////////////////////////////////////////////

@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -67,7 +67,7 @@ FatalErrorException::FatalErrorException(int, const char *msg, ...) {
 }
 
 FatalErrorException::FatalErrorException(const std::string &msg,
-                                         CArrRef backtrace) {
+                                         const Array& backtrace) {
   m_msg = msg;
   m_btp = backtrace.get();
 }
@@ -81,7 +81,7 @@ Array ExtendedException::getBackTrace() const {
  * If you wait too long, getFP() will be NULL.
  */
 void ExtendedException::computeBacktrace(bool skipFrame /* = false */) {
-  m_btp = g_vmContext->debugBacktrace(skipFrame, true).get();
+  m_btp = g_context->debugBacktrace(skipFrame, true).get();
 }
 
 InvalidArgumentException::InvalidArgumentException(int, const char *fmt, ...) {

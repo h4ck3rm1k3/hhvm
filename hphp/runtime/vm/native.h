@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -86,11 +86,11 @@
  * These macros only differ in the following ways:
  * - They accept a classname in addition to the function name
  * - The registered name of the function is "ClassName->FunctionName"
- * - Prototypes include a prepended CObjRef parameter (named this_)
+ * - Prototypes include a prepended const Object& parameter (named this_)
  */
 #define HHVM_MN(cn,fn) c_ ## cn ## _ni_ ## fn
 #define HHVM_METHOD(cn, fn, ...) \
-        HHVM_MN(cn,fn)(CObjRef this_, ##__VA_ARGS__)
+        HHVM_MN(cn,fn)(const Object& this_, ##__VA_ARGS__)
 #define HHVM_NAMED_ME(cn,fn,mimpl) Native::registerBuiltinFunction(\
                           makeStaticString(#cn "->" #fn), \
                           mimpl)
@@ -115,6 +115,12 @@
 
 namespace HPHP { namespace Native {
 //////////////////////////////////////////////////////////////////////////////
+
+// Maximum number of args for a native using double params
+constexpr int kMaxBuiltinArgs = 5;
+
+// Maximum number of args for a native using only int-like params
+constexpr int kMaxBuiltinArgsNoDouble = 15;
 
 enum Attr {
   AttrNone = 0,
@@ -152,7 +158,7 @@ TypedValue* functionWrapper(ActRec* ar);
  * Method version of nativeFunctionWrapper() above.
  *
  * Also prepends a calling context:
- *   CObjRef for instance methods
+ *   const Object& for instance methods
  *   Class* for static methods
  */
 TypedValue* methodWrapper(ActRec* ar);
@@ -206,34 +212,42 @@ inline BuiltinFunction GetBuiltinFunction(const char* fname,
 //////////////////////////////////////////////////////////////////////////////
 // Global constants
 
+typedef std::map<const StringData*,TypedValue> ConstantMap;
+extern ConstantMap s_constant_map;
+
 inline
 bool registerConstant(const StringData* cnsName, Cell cns) {
   assert(cellIsPlausible(cns));
+  s_constant_map[cnsName] = cns;
   return Unit::defCns(cnsName, &cns, true);
 }
 
 template<DataType DType>
 typename std::enable_if<
-  !std::is_same<typename detail::DataTypeCPPType<DType>::type,void>::value,
+  !std::is_same<typename DataTypeCPPType<DType>::type,void>::value,
   bool>::type
 registerConstant(const StringData* cnsName,
-                 typename detail::DataTypeCPPType<DType>::type val) {
+                 typename DataTypeCPPType<DType>::type val) {
   return registerConstant(cnsName, make_tv<DType>(val));
 }
 
 template<DataType DType>
 typename std::enable_if<
-  std::is_same<typename detail::DataTypeCPPType<DType>::type,void>::value,
+  std::is_same<typename DataTypeCPPType<DType>::type,void>::value,
   bool>::type
 registerConstant(const StringData* cnsName) {
   return registerConstant(cnsName, make_tv<DType>());
 }
 
+inline
+const ConstantMap& getConstants() {
+  return s_constant_map;
+}
+
 //////////////////////////////////////////////////////////////////////////////
 // Class Constants
 
-typedef std::map<const StringData*,TypedValue> ClassConstantMap;
-typedef hphp_hash_map<const StringData*, ClassConstantMap,
+typedef hphp_hash_map<const StringData*, ConstantMap,
                       string_data_hash, string_data_isame> ClassConstantMapMap;
 extern ClassConstantMapMap s_class_constant_map;
 
@@ -250,17 +264,17 @@ bool registerClassConstant(const StringData *clsName,
 
 template<DataType DType>
 typename std::enable_if<
-  !std::is_same<typename detail::DataTypeCPPType<DType>::type,void>::value,
+  !std::is_same<typename DataTypeCPPType<DType>::type,void>::value,
   bool>::type
 registerClassConstant(const StringData* clsName,
                       const StringData* cnsName,
-                      typename detail::DataTypeCPPType<DType>::type val) {
+                      typename DataTypeCPPType<DType>::type val) {
   return registerClassConstant(clsName, cnsName, make_tv<DType>(val));
 }
 
 template<DataType DType>
 typename std::enable_if<
-  std::is_same<typename detail::DataTypeCPPType<DType>::type,void>::value,
+  std::is_same<typename DataTypeCPPType<DType>::type,void>::value,
   bool>::type
 registerClassConstant(const StringData* clsName,
                       const StringData* cnsName) {
@@ -268,7 +282,7 @@ registerClassConstant(const StringData* clsName,
 }
 
 inline
-const ClassConstantMap* getClassConstants(const StringData* clsName) {
+const ConstantMap* getClassConstants(const StringData* clsName) {
   auto clsit = s_class_constant_map.find(const_cast<StringData*>(clsName));
   if (clsit == s_class_constant_map.end()) {
     return nullptr;

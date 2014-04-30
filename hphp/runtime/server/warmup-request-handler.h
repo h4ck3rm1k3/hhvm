@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -50,7 +50,7 @@ private:
 class WarmupRequestHandlerFactory :
   public std::enable_shared_from_this<WarmupRequestHandlerFactory> {
 public:
-  WarmupRequestHandlerFactory(ServerPtr server,
+  WarmupRequestHandlerFactory(Server *server,
                               uint32_t additionalThreads,
                               uint32_t reqCount,
                               int timeout)
@@ -69,9 +69,8 @@ private:
   std::atomic<uint32_t> m_reqNumber;
   uint32_t const m_warmupReqThreshold;
   int m_timeout;
-  // The server has a shared pointer to us, so use a weak pointer to the
-  // server to avoid a circular reference.
-  std::weak_ptr<Server> m_server;
+  // The server owns this object so will by definition outlive us
+  Server *m_server;
 };
 
 ///////////////////////////////////////////////////////////////////////////////

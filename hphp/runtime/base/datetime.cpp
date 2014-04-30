@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -454,6 +454,7 @@ void DateTime::internalModify(timelib_rel_time *rel,
   m_time->have_relative = have_relative;
 #ifdef TIMELIB_HAVE_INTERVAL
   m_time->relative.have_weekday_relative = rel->have_weekday_relative;
+  m_time->relative.weekday_behavior = rel->weekday_behavior;
 #endif
   m_time->sse_uptodate = 0;
   update();
@@ -610,8 +611,40 @@ String DateTime::rfcFormat(const String& format) const {
                  rfc_colon ? ":" : "", abs((offset % 3600) / 60));
       }
       break;
-    case 'T': s.append(utc() ? "GMT" : m_time->tz_abbr); break;
-    case 'e': s.append(utc() ? "UTC" : m_tz->name()); break;
+    case 'T':
+      if (utc()) {
+        s.append("GMT");
+      } else {
+        if (m_time->zone_type != TIMELIB_ZONETYPE_OFFSET) {
+          s.append(m_time->tz_abbr);
+        } else {
+          auto offset = m_time->z * -60;
+          char abbr[9] = {0};
+          snprintf(abbr, 9, "GMT%c%02d%02d",
+            ((offset < 0) ? '-' : '+'),
+            abs(offset / 3600),
+            abs((offset % 3600) / 60));
+          s.append(abbr);
+        }
+      }
+      break;
+    case 'e':
+      if (utc()) {
+        s.append("UTC");
+      } else {
+        if (m_time->zone_type != TIMELIB_ZONETYPE_OFFSET) {
+          s.append(m_tz->name());
+        } else {
+          auto offset = m_time->z * -60;
+          char abbr[7] = {0};
+          snprintf(abbr, 7, "%c%02d:%02d",
+            ((offset < 0) ? '-' : '+'),
+            abs(offset / 3600),
+            abs((offset % 3600) / 60));
+          s.append(abbr);
+        }
+      }
+      break;
     case 'Z': s.append(utc() ? 0 : this->offset()); break;
     case 'c':
       if (utc()) {
@@ -943,19 +976,11 @@ Variant DateTime::getSunInfo(SunInfoFormat retformat,
                     "SUNFUNCS_RET_DOUBLE");
     return false;
   }
-  bool error;
   double altitude = 90 - zenith;
-  if (utc_offset == -99999.0) {
-    if (utc()) {
-      utc_offset = 0;
-    } else {
-      utc_offset = m_tz->offset(toTimeStamp(error)) / 3600;
-    }
-  }
-
-  double h_rise, h_set; timelib_sll sunrise, sunset, transit;
+  double h_rise, h_set;
+  timelib_sll sunrise, sunset, transit;
   int rs = timelib_astro_rise_set_altitude(m_time.get(), longitude, latitude,
-                                           altitude, altitude > -1 ? 1 : 0,
+                                           altitude, 1,
                                            &h_rise, &h_set, &sunrise, &sunset,
                                            &transit);
   if (rs != 0) {

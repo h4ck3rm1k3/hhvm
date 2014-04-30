@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -18,6 +18,7 @@
 #define incl_HPHP_TYPEANNOTATION_H_
 
 #include "hphp/util/deprecated/base.h"
+#include <vector>
 #include "hphp/runtime/base/datatype.h"
 #include "hphp/compiler/code_generator.h"
 
@@ -102,14 +103,11 @@ public:
     return ret;
   }
 
-  /*
-   * Return whether this TypeAnnotation is equal to the "mixed" type.
-   */
-  bool isMixed() const { return !m_name.compare("mixed"); }
+  bool isMixed() const { return !strcasecmp(m_name.c_str(), "HH\\mixed"); }
 
-  bool isVoid() const { return !m_name.compare("void"); }
+  bool isVoid() const { return !strcasecmp(m_name.c_str(), "void"); }
 
-  bool isThis() const { return !m_name.compare("this"); }
+  bool isThis() const { return !strcasecmp(m_name.c_str(), "this"); }
 
   /*
    * Returns whether this TypeAnnotation is "simple"---as described

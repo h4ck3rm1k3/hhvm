@@ -71,7 +71,9 @@ class ReflectionParameter implements Reflector {
       return;
     }
 
-    if (is_string($func)) {
+    if ($func instanceof Closure) {
+      $params = (new ReflectionFunction($func))->getParameters();
+    } else if (is_string($func)) {
       $double_colon = strpos($func, "::");
       if ($double_colon === false) {
         $params = (new ReflectionFunction($func))->getParameters();
@@ -237,14 +239,10 @@ class ReflectionParameter implements Reflector {
     $ltype = strtolower($this->info['type']);
     if (hphp_scalar_typehints_enabled()) {
       $nonClassTypehints = array(
-        'bool' => 1,
-        'boolean' => 1,
-        'int' => 1,
-        'integer' => 1,
-        'real' => 1,
-        'double' => 1,
-        'float' => 1,
-        'string' => 1,
+        'HH\bool' => 1,
+        'HH\int' => 1,
+        'HH\float' => 1,
+        'HH\string' => 1,
         'array' => 1
       );
       if (isset($nonClassTypehints[$ltype])) {
@@ -256,16 +254,27 @@ class ReflectionParameter implements Reflector {
     return new ReflectionClass($this->info['type']);
   }
 
+  private static function stripHHPrefix($str) {
+    if (!is_string($str)) return $str;
+    return str_ireplace(
+      array('HH\\bool', 'HH\\int', 'HH\\float', 'HH\\string', 'HH\\num',
+            'HH\\resource'),
+      array('bool',     'int',     'float',     'string',     'num',
+            'resource'),
+      $str
+    );
+  }
+
   public function getTypehintText() {
     if (isset($this->info['type'])) {
-      return $this->info['type'];
+      return self::stripHHPrefix($this->info['type']);
     }
     return '';
   }
 
   public function getTypeText() {
     if (isset($this->info['type_hint'])) {
-      return $this->info['type_hint'];
+      return self::stripHHPrefix($this->info['type_hint']);
     }
     return '';
   }
@@ -733,9 +742,20 @@ class ReflectionFunctionAbstract {
     return $count;
   }
 
+  private static function stripHHPrefix($str) {
+    if (!is_string($str)) return $str;
+    return str_ireplace(
+      array('HH\\bool', 'HH\\int', 'HH\\float', 'HH\\string', 'HH\\num',
+            'HH\\resource'),
+      array('bool',     'int',     'float',     'string',     'num',
+            'resource'),
+      $str
+    );
+  }
+
   public function getReturnTypeText() {
     if (isset($this->info['return_type'])) {
-      return $this->info['return_type'];
+      return self::stripHHPrefix($this->info['return_type']);
     }
     return '';
   }
@@ -929,6 +949,13 @@ class ReflectionClass implements Reflector {
     if (!$this->info) {
       $this->info = self::fetch_recur($this->obj ?: $this->name);
       $this->info['properties'] += $this->info['private_properties'];
+      if (!$this->info['reorder_parent_properties']) {
+        $this->info['properties_index'] +=
+          $this->info['private_properties_index'];
+        $index = array_values($this->info['properties_index']);
+        array_multisort($index, $this->info['properties'],
+                        $this->info['properties_index']);
+      }
     }
     return $this->info;
   }
@@ -950,21 +977,12 @@ class ReflectionClass implements Reflector {
 
     $info['attributes_rec'] = $info['attributes'];
 
-    $abstract = isset($info['abstract']) || isset($info['interface']);
-    // flattening the trees, so it's easier for lookups
-    foreach ($info['interfaces'] as $interface => $_) {
-      $p = self::fetch_recur($interface);
-      if ($abstract) $info['methods'] += $p['methods'];
-      $info['constants'] += $p['constants'];
-      $info['interfaces'] += $p['interfaces'];
-    }
-
     $parent = $info['parent'];
     if (!empty($parent)) {
       $p = self::fetch_recur($parent);
       if (isset($p['interface'])) {
         $info['interfaces'][$parent] = 1;
-      } else {
+      } elseif ($info['reorder_parent_properties']) {
         // To match Zend, parent properties should come after
         // child properties in ReflectionProperty order.
         // First, clone the $info['properties'] array for foreach so we don't
@@ -990,6 +1008,16 @@ class ReflectionClass implements Reflector {
       $info['interfaces'] += $p['interfaces'];
       $info['attributes_rec'] += $p['attributes_rec'];
     }
+
+    $abstract = isset($info['abstract']) || isset($info['interface']);
+    // flattening the trees, so it's easier for lookups
+    foreach ($info['interfaces'] as $interface => $_) {
+      $p = self::fetch_recur($interface);
+      if ($abstract) $info['methods'] += $p['methods'];
+      $info['constants'] += $p['constants'];
+      $info['interfaces'] += $p['interfaces'];
+    }
+
     if (is_string($name)) {
       self::$fetched[$name] = $info;
     }
@@ -1784,12 +1812,7 @@ class ReflectionClass implements Reflector {
     if (!interface_exists($cls)) {
       throw new ReflectionException("Interface $cls does not exist");
     }
-    foreach ($this->fetch('interfaces') as $name => $_) {
-      if (strcasecmp($cls, $name) == 0) {
-        return true;
-      }
-    }
-    return false;
+    return $this->isSubclassOf($cls);
   }
 
   // This doc comment block generated by idl/sysdoc.php
@@ -2248,9 +2271,20 @@ class ReflectionProperty implements Reflector {
     return $this->info['doc'];
   }
 
+  private static function stripHHPrefix($str) {
+    if (!is_string($str)) return $str;
+    return str_ireplace(
+      array('HH\\bool', 'HH\\int', 'HH\\float', 'HH\\string', 'HH\\num',
+            'HH\\resource'),
+      array('bool',     'int',     'float',     'string',     'num',
+            'resource'),
+      $str
+    );
+  }
+
   public function getTypeText() {
     if (isset($this->info['type'])) {
-      return $this->info['type'];
+      return self::stripHHPrefix($this->info['type']);
     }
     return '';
   }
@@ -2377,12 +2411,15 @@ implements Reflector {
    */
   public function invoke($obj) {
     if ($this->info['accessible']) {
+      if ($this->isStatic()) {
+        // Docs says to pass null, but Zend completely ignores the argument
+        $obj = null;
+      }
       $args = func_get_args();
       array_shift($args);
       return hphp_invoke_method($obj, $this->info['class'], $this->info['name'],
                                 $args);
-    }
-    else {
+    } else {
       $className = $this->info['class'];
       $funcName = $this->info['name'];
       $access = $this->info['access'];

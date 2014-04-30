@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    | Copyright (c) 1997-2010 The PHP Group                                |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
@@ -20,6 +20,10 @@
 
 #include <dlfcn.h>
 #include <sys/time.h> // gettimeofday
+#include <limits>
+#include <memory>
+#include <set>
+#include <vector>
 
 #include "hphp/runtime/ext/ext_variable.h"
 #include "hphp/runtime/ext/ext_fb.h"
@@ -33,7 +37,7 @@
 #include "hphp/util/hdf.h"
 #include "hphp/runtime/base/ini-setting.h"
 
-using HPHP::Util::ScopedMem;
+using HPHP::ScopedMem;
 
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
@@ -81,15 +85,17 @@ void apcExtension::moduleLoad(Hdf config) {
 
   apc["NoTTLPrefix"].get(NoTTLPrefix);
 
-  UseUncounted = apc["MemModelTreadmill"].getBool(false);
+  UseUncounted = apc["MemModelTreadmill"].getBool(
+      RuntimeOption::ServerExecutionMode());
+
+  IniSetting::Bind(this, IniSetting::PHP_INI_SYSTEM, "apc.enabled", &Enable);
+  IniSetting::Bind(this, IniSetting::PHP_INI_SYSTEM, "apc.stat",
+                   RuntimeOption::RepoAuthoritative ? "0" : "1", &Stat);
+  IniSetting::Bind(this, IniSetting::PHP_INI_SYSTEM, "apc.enable_cli",
+                   &EnableCLI);
 }
 
 void apcExtension::moduleInit() {
-  IniSetting::SetGlobalDefault("apc.enabled","1");
-  IniSetting::SetGlobalDefault("apc.stat",
-                               RuntimeOption::RepoAuthoritative
-                               ? "0" : "1");
-  IniSetting::SetGlobalDefault("apc.enable_cli", "1");
   if (UseFileStorage) {
     s_apc_file_storage.enable(FileStoragePrefix,
                               FileStorageChunkSize,
@@ -124,18 +130,21 @@ int apcExtension::TTLLimit = -1;
 bool apcExtension::UseFileStorage = false;
 int64_t apcExtension::FileStorageChunkSize = int64_t(1LL << 29);
 int64_t apcExtension::FileStorageMaxSize = int64_t(1LL << 32);
-std::string apcExtension::FileStoragePrefix;
+std::string apcExtension::FileStoragePrefix = "/tmp/apc_store";
 int apcExtension::FileStorageAdviseOutPeriod = 1800;
-std::string apcExtension::FileStorageFlagKey;
+std::string apcExtension::FileStorageFlagKey = "_madvise_out";
 bool apcExtension::ConcurrentTableLockFree = false;
 bool apcExtension::FileStorageKeepFileLinked = false;
 std::vector<std::string> apcExtension::NoTTLPrefix;
 bool apcExtension::UseUncounted = false;
+bool apcExtension::Stat = true;
+// Different from zend default but matches what we've been returning for years
+bool apcExtension::EnableCLI = true;
 
 static apcExtension s_apc_extension;
 
 ///////////////////////////////////////////////////////////////////////////////
-Variant f_apc_store(CVarRef key_or_array, CVarRef var /* = null_variant */,
+Variant f_apc_store(const Variant& key_or_array, const Variant& var /* = null_variant */,
                     int64_t ttl /* = 0 */, int64_t cache_id /* = 0 */) {
   if (!apcExtension::Enable) return false;
 
@@ -176,7 +185,7 @@ Variant f_apc_store(CVarRef key_or_array, CVarRef var /* = null_variant */,
  * Stores the key in a similar fashion as "priming" would do (no TTL limit).
  * Using this function is equivalent to adding your key to apc_prime.so.
  */
-bool f_apc_store_as_primed_do_not_use(const String& key, CVarRef var,
+bool f_apc_store_as_primed_do_not_use(const String& key, const Variant& var,
                                       int64_t cache_id /* = 0 */) {
   if (!apcExtension::Enable) return false;
 
@@ -188,7 +197,7 @@ bool f_apc_store_as_primed_do_not_use(const String& key, CVarRef var,
   return s_apc_store[cache_id].store(key, var, 0, true, false);
 }
 
-Variant f_apc_add(CVarRef key_or_array, CVarRef var /* = null_variant */,
+Variant f_apc_add(const Variant& key_or_array, const Variant& var /* = null_variant */,
                   int64_t ttl /* = 0 */, int64_t cache_id /* = 0 */) {
   if (!apcExtension::Enable) return false;
 
@@ -225,7 +234,7 @@ Variant f_apc_add(CVarRef key_or_array, CVarRef var /* = null_variant */,
   return s_apc_store[cache_id].store(strKey, var, ttl, false);
 }
 
-Variant f_apc_fetch(CVarRef key, VRefParam success /* = null */,
+Variant f_apc_fetch(const Variant& key, VRefParam success /* = null */,
                     int64_t cache_id /* = 0 */) {
   if (!apcExtension::Enable) return false;
 
@@ -265,7 +274,7 @@ Variant f_apc_fetch(CVarRef key, VRefParam success /* = null */,
   return v;
 }
 
-Variant f_apc_delete(CVarRef key, int64_t cache_id /* = 0 */) {
+Variant f_apc_delete(const Variant& key, int64_t cache_id /* = 0 */) {
   if (!apcExtension::Enable) return false;
 
   if (cache_id < 0 || cache_id >= MAX_SHARED_STORE) {
@@ -342,7 +351,7 @@ bool f_apc_cas(const String& key, int64_t old_cas, int64_t new_cas,
   return s_apc_store[cache_id].cas(key, old_cas, new_cas);
 }
 
-Variant f_apc_exists(CVarRef key, int64_t cache_id /* = 0 */) {
+Variant f_apc_exists(const Variant& key, int64_t cache_id /* = 0 */) {
   if (!apcExtension::Enable) return false;
 
   if (cache_id < 0 || cache_id >= MAX_SHARED_STORE) {
@@ -519,7 +528,7 @@ size_t get_const_map_size() {
 }
 
 //define in ext_fb.cpp
-extern void const_load_set(const String& key, CVarRef value);
+extern void const_load_set(const String& key, const Variant& value);
 
 ///////////////////////////////////////////////////////////////////////////////
 // Constant and APC priming with uncompressed data
@@ -1211,7 +1220,7 @@ int apc_rfc1867_progress(apc_rfc1867_data *rfc1867ApcData,
       double now = my_time();
       multipart_event_end *data = (multipart_event_end *)event_data;
       rfc1867ApcData->bytes_processed = data->post_bytes_processed;
-      if(now>rfc1867ApcData->start_time) {
+      if (now>rfc1867ApcData->start_time) {
         rfc1867ApcData->rate =
           8.0*rfc1867ApcData->bytes_processed/(now-rfc1867ApcData->start_time);
       } else {
@@ -1237,7 +1246,7 @@ int apc_rfc1867_progress(apc_rfc1867_data *rfc1867ApcData,
 ///////////////////////////////////////////////////////////////////////////////
 // apc serialization
 
-String apc_serialize(CVarRef value) {
+String apc_serialize(const Variant& value) {
   VariableSerializer::Type sType =
     apcExtension::EnableApcSerialize ?
       VariableSerializer::Type::APCSerialize :
@@ -1297,7 +1306,7 @@ void reserialize(VariableUnserializer *uns, StringBuffer &buf) {
       String v;
       v.unserialize(uns);
       assert(!v.isNull());
-      if (v->isStatic()) {
+      if (v.get()->isStatic()) {
         union {
           char pointer[8];
           StringData *sd;

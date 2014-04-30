@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -23,29 +23,10 @@
 ///////////////////////////////////////////////////////////////////////////////
 // statics
 
-static std::vector<HPHP::ServerPtr> AllServers;
-static void on_kill(int sig) {
-  signal(sig, SIG_DFL);
-  for (unsigned int i = 0; i < AllServers.size(); i++) {
-    AllServers[i]->stop();
-  }
-  raise(sig);
-}
-
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
 
 bool Server::StackTraceOnError = true;
-
-void Server::InstallStopSignalHandlers(ServerPtr server) {
-  if (AllServers.empty()) {
-    signal(SIGTERM, on_kill);
-    signal(SIGUSR1, on_kill);
-  }
-
-  AllServers.push_back(server);
-}
-
 ///////////////////////////////////////////////////////////////////////////////
 
 Server::Server(const std::string &address, int port, int threadCount)
@@ -95,6 +76,12 @@ ServerFactoryPtr ServerFactoryRegistry::getFactory(const std::string &name) {
   Lock lock(m_lock);
   auto it = m_factories.find(name);
   if (it == m_factories.end()) {
+    if (name == "libevent") {
+      throw ServerException(
+        "HHVM no longer supports the built-in webserver as of 3.0.0. Please "
+        "use your own webserver (nginx or apache) talking to HHVM over "
+        "fastcgi. https://github.com/facebook/hhvm/wiki/FastCGI");
+    }
     throw ServerException("no factory for server type \"%s\"", name.c_str());
   }
   return it->second;

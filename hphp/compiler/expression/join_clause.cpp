@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -104,7 +104,7 @@ void JoinClause::outputCodeModel(CodeGenerator &cg) {
   auto numProps = 5;
   if (!m_group.empty()) numProps++;
   cg.printObjectHeader("JoinClause", numProps);
-  cg.printPropertyHeader("variable");
+  cg.printPropertyHeader("identifier");
   cg.printValue(m_var);
   cg.printPropertyHeader("collection");
   m_coll->outputCodeModel(cg);

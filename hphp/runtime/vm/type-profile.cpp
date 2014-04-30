@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -298,11 +298,6 @@ PredVal predictType(TypeProfileKey key) {
   // Probabilities over 1.0 are possible due to racy updates.
   if (maxProb > 1.0) maxProb = 1.0;
   return std::make_pair(pred, maxProb);
-}
-
-bool isProfileOpcode(const PC& pc) {
-  auto const op = toOp(*pc);
-  return op == OpRetC || op == OpCGetM;
 }
 
 }

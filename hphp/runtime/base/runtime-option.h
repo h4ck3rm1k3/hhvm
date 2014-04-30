@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -24,6 +24,7 @@
 #include <set>
 
 #include <boost/container/flat_set.hpp>
+#include <memory>
 
 #include "hphp/util/hash-map-typedefs.h"
 #include "hphp/util/functional.h"
@@ -37,6 +38,8 @@ struct IpBlockMap;
 struct SatelliteServerInfo;
 struct FilesMatch;
 struct Hdf;
+
+constexpr int kDefaultInitialStaticStringTableSize = 500000;
 
 /**
  * Configurable options set from command line or configurable file at startup
@@ -71,7 +74,6 @@ public:
   static bool InjectedStackTrace;
   static int InjectedStackTraceLimit; // limit the size of the backtrace
   static bool NoSilencer;
-  static bool EnableApplicationLog;
   static bool CallUserHandlerOnFatals;
   static bool ThrowExceptionOnBadMethodCall;
   static int RuntimeErrorReportingLevel;
@@ -89,8 +91,8 @@ public:
   static bool EnableHipHopErrors;
   static bool AssertActive;
   static bool AssertWarning;
-  static int NoticeFrequency; // output 1 out of NoticeFrequency notices
-  static int WarningFrequency;
+  static int64_t NoticeFrequency; // output 1 out of NoticeFrequency notices
+  static int64_t WarningFrequency;
   static int RaiseDebuggingFrequency;
   static int64_t SerializationSizeLimit;
   static int64_t StringOffsetLimit;
@@ -124,6 +126,7 @@ public:
   static bool ServerStatCache;
   static std::vector<std::string> ServerWarmupRequests;
   static boost::container::flat_set<std::string> ServerHighPriorityEndPoints;
+  static bool ServerExitOnBindFail;
   static int PageletServerThreadCount;
   static bool PageletServerThreadRoundRobin;
   static int PageletServerThreadDropCacheTimeoutSeconds;
@@ -143,6 +146,7 @@ public:
   static bool ServerEvilShutdown;
   static int ServerShutdownListenWait;
   static int ServerShutdownListenNoWork;
+  static std::vector<std::string> ServerNextProtocols;
   static int GzipCompressionLevel;
   static std::string ForceCompressionURL;
   static std::string ForceCompressionCookie;
@@ -262,7 +266,6 @@ public:
   static std::set<std::string> ProxyURLs;
   static std::vector<std::string> ProxyPatterns;
   static bool AlwaysUseRelativePath;
-  static std::string IniFile;
 
   static int  HttpDefaultTimeout;
   static int  HttpSlowQueryThreshold;
@@ -285,8 +288,6 @@ public:
   static bool EnableStats;
   static bool EnableWebStats;
   static bool EnableMemoryStats;
-  static bool EnableAPCStats;
-  static bool EnableAPCKeyStats;
   static bool EnableMemcacheStats;
   static bool EnableMemcacheKeyStats;
   static bool EnableSQLStats;
@@ -297,16 +298,6 @@ public:
   static int StatsSlotDuration;
   static int StatsMaxSlot;
 
-  static bool EnableAPCSizeStats;
-  static bool EnableAPCSizeGroup;
-  static std::vector<std::string> APCSizeSpecialPrefix;
-  static std::vector<std::string> APCSizePrefixReplace;
-  static std::vector<std::string> APCSizeSpecialMiddle;
-  static std::vector<std::string> APCSizeMiddleReplace;
-  static std::vector<std::string> APCSizeSkipPrefix;
-  static bool EnableAPCSizeDetail;
-  static bool EnableAPCFetchStats;
-  static bool APCSizeCountPrime;
   static bool EnableHotProfiler;
   static int32_t ProfilerTraceBuffer;
   static double ProfilerTraceExpansion;
@@ -317,7 +308,7 @@ public:
   static int64_t DropCacheCycle;
   static int64_t MaxSQLRowCount;
   static int64_t MaxMemcacheKeyCount;
-  static int  SocketDefaultTimeout;
+  static int64_t SocketDefaultTimeout;
   static bool LockCodeMemory;
   static int MaxArrayChain;
   static bool WarnOnCollectionToArray;
@@ -353,6 +344,9 @@ public:
   static bool EnableArgsInBacktraces;
   static bool EnableZendCompat;
   static bool TimeoutsUseWallTime;
+  static bool CheckFlushOnUserClose;
+  static bool EvalAuthoritativeMode;
+  static bool IntsOverflowToInts;
 
   static int GetScannerType();
 
@@ -382,7 +376,13 @@ public:
   F(uint64_t, JitAStubsSize,           64 << 20)                        \
   F(uint64_t, JitGlobalDataSize,       kJitGlobalDataDef)               \
   F(bool, AllowHhas,                   false)                           \
-  F(bool, CheckExtendedTypeHints,      true)                            \
+  /* CheckReturnTypeHints:
+     0 - no checks or enforcement
+     1 - raises E_WARNING if regular type hint or soft type hint fails
+     2 - raises E_RECOVERABLE_ERROR if regular type hint fails, raises
+         E_WARNING if soft type hint fails; note that in repo mode the
+         error handler is not allowed to resume on recoverable errors */ \
+  F(int32_t, CheckReturnTypeHints,     2)                               \
   F(bool, JitNoGdb,                    true)                            \
   F(bool, SpinOnCrash,                 false)                           \
   F(uint32_t, DumpRingBufferOnCrash,   0)                               \
@@ -410,40 +410,45 @@ public:
   F(bool, JitStressLease,              false)                           \
   F(bool, JitKeepDbgFiles,             false)                           \
   F(bool, JitEnableRenameFunction,     false)                           \
+  F(bool, JitUseVtuneAPI,              false)                           \
                                                                         \
   F(bool, JitDisabledByHphpd,          false)                           \
   F(bool, JitTransCounters,            false)                           \
+  F(bool, HHIRBytecodeControlFlow,     false)                           \
   F(bool, HHIRCse,                     true)                            \
   F(bool, HHIRSimplification,          true)                            \
   F(bool, HHIRGenOpts,                 true)                            \
   F(bool, HHIRJumpOpts,                true)                            \
-  F(bool, HHIRRefcountOpts,            true)                            \
+  F(bool, HHIRRefcountOpts,            hhirRefcountOptsDefault())       \
   F(bool, HHIRRefcountOptsAlwaysSink,  false)                           \
   F(bool, HHIRExtraOptPass,            true)                            \
-  F(uint32_t, HHIRNumFreeRegs,         -1)                              \
+  F(uint32_t, HHIRNumFreeRegs,         64)                              \
   F(bool, HHIREnableGenTimeInlining,   true)                            \
   F(uint32_t, HHIRInliningMaxCost,     13)                              \
   F(uint32_t, HHIRAlwaysInlineMaxCost, 10)                              \
   F(uint32_t, HHIRInliningMaxDepth,    4)                               \
   F(uint32_t, HHIRInliningMaxReturnDecRefs, 3)                          \
   F(bool, HHIRInlineFrameOpts,         false)                           \
-  F(bool, HHIRGenerateAsserts,         debug)                           \
+  /* 1 (the default) gives most asserts. 2 adds less commonly           \
+   * useful/more expensive asserts. */                                  \
+  F(uint32_t, HHIRGenerateAsserts,     debug)                           \
   F(bool, HHIRDirectExit,              true)                            \
   F(bool, HHIRDeadCodeElim,            true)                            \
   F(bool, HHIRPredictionOpts,          true)                            \
   F(bool, HHIRStressCodegenBlocks,     false)                           \
   /* Register allocation flags */                                       \
-  F(bool, HHIRXls,                     false)                           \
   F(bool, HHIREnableCalleeSavedOpt,    true)                            \
   F(bool, HHIREnablePreColoring,       true)                            \
   F(bool, HHIREnableCoalescing,        true)                            \
   F(bool, HHIRAllocSIMDRegs,           true)                            \
   /* Region compiler flags */                                           \
+  F(string,   JitRegionSelector,       regionSelectorDefault())         \
+  F(bool,     JitCompareRegions,       false)                           \
   F(bool,     JitPGO,                  pgoDefault())                    \
+  F(string,   JitPGORegionSelector,    "hottrace")                      \
   F(uint64_t, JitPGOThreshold,         kDefaultJitPGOThreshold)         \
   F(bool,     JitPGOHotOnly,           ServerExecutionMode())           \
   F(bool,     JitPGOUsePostConditions, true)                            \
-  F(string,   JitRegionSelector,       regionSelectorDefault())         \
   F(uint32_t, HotFuncThreshold,        10)                              \
   F(bool, HHIRValidateRefCount,        debug)                           \
   F(bool, HHIRRelaxGuards,             hhirRelaxGuardsDefault())        \
@@ -457,13 +462,15 @@ public:
   F(bool, MapTCHuge,                   hugePagesSoundNice())            \
   F(bool, MapHotTextHuge,              hugePagesSoundNice())            \
   F(bool, MapTgtCacheHuge,             false)                           \
-  F(int32_t, MaxLowMemHugePages,       hugePagesSoundNice() ? 8 : 0)   \
+  F(int32_t, MaxLowMemHugePages,       hugePagesSoundNice() ? 8 : 0)    \
   F(uint32_t, TCNumHugeHotMB,          16)                              \
   F(uint32_t, TCNumHugeColdMB,         4)                               \
   F(bool, RandomHotFuncs,              false)                           \
   F(bool, DisableSomeRepoAuthNotices,  true)                            \
+  F(bool, CheckRepoAuthDeserialize,    false)                           \
   F(uint32_t, InitialNamedEntityTableSize,  30000)                      \
-  F(uint32_t, InitialStaticStringTableSize, 100000)                     \
+  F(uint32_t, InitialStaticStringTableSize,                             \
+                        kDefaultInitialStaticStringTableSize)           \
   F(uint32_t, PCRETableSize, kPCREInitialTableSize)                     \
   F(bool, EnableNuma, ServerExecutionMode())                            \
   F(bool, EnableNumaLocal, ServerExecutionMode())                       \
@@ -540,6 +547,9 @@ public:
   static int HHProfServerFilterMinAllocPerReq;
   static int HHProfServerFilterMinBytesPerReq;
 
+  // SimpleXML options
+  static bool SimpleXMLEmptyNamespaceMatchesAll;
+
 #ifdef FACEBOOK
   // fb303 server
   static bool EnableFb303Server;
@@ -553,6 +563,7 @@ public:
   // Do not commit code guarded by this flag, for evaluation only.
   static int EnableAlternative;
 };
+static_assert(sizeof(RuntimeOption) == 1, "no instance variables");
 
 ///////////////////////////////////////////////////////////////////////////////
 }

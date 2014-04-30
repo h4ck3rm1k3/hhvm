@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -37,10 +37,12 @@ public:
 
   // test $_ variables
   bool TestServerVariables();
+
   // test things that need more than one request
   bool TestInteraction();
   bool TestGet();
   bool TestPost();
+  bool TestExpectContinue();
   bool TestCookie();
 
   // test transport related extension functions
@@ -49,7 +51,6 @@ public:
 
   // test multithreaded request processing
   bool TestRequestHandling();
-  bool TestSimpleServer();
 
   // test inheriting server fd
   virtual bool TestInheritFdServer();
@@ -72,6 +73,7 @@ public:
 protected:
   void RunServer();
   void StopServer();
+  void KillServer();
   bool VerifyServerResponse(const char *input, const char *output,
                             const char *url, const char *method,
                             const char *header, const char *postdata,

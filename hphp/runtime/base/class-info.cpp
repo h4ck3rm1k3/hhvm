@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -15,6 +15,7 @@
 */
 
 #include "hphp/runtime/base/class-info.h"
+#include <vector>
 #include "hphp/runtime/base/static-string-table.h"
 #include "hphp/runtime/base/array-util.h"
 #include "hphp/runtime/base/complex-types.h"
@@ -23,7 +24,6 @@
 #include "hphp/runtime/base/variable-serializer.h"
 #include "hphp/runtime/base/variable-unserializer.h"
 #include "hphp/runtime/ext/extension.h"
-#include "hphp/util/util.h"
 #include "hphp/util/lock.h"
 #include "hphp/util/logger.h"
 
@@ -36,7 +36,6 @@ using std::string;
 bool ClassInfo::s_loaded = false;
 ClassInfo *ClassInfo::s_systemFuncs = nullptr;
 ClassInfo::ClassMap ClassInfo::s_class_like;
-ClassInfoHook *ClassInfo::s_hook = nullptr;
 
 Array ClassInfo::GetSystemFunctions() {
   assert(s_loaded);
@@ -55,14 +54,12 @@ Array ClassInfo::GetUserFunctions() {
   assert(s_loaded);
 
   Array ret = Array::Create();
-  if (s_hook) {
-    Array dyn = s_hook->getUserFunctions();
-    if (!dyn.isNull()) {
-      ret.merge(dyn);
-      // De-dup values, then renumber (for aesthetics).
-      ret = ArrayUtil::StringUnique(ret).toArrRef();
-      ret->renumber();
-    }
+  Array dyn = g_context->getUserFunctionsInfo();
+  if (!dyn.isNull()) {
+    ret.merge(dyn);
+    // De-dup values, then renumber (for aesthetics).
+    ret = ArrayUtil::StringUnique(ret).toArrRef();
+    ret->renumber();
   }
   return ret;
 }
@@ -79,8 +76,8 @@ const ClassInfo::MethodInfo *ClassInfo::FindFunction(const String& name) {
   assert(s_loaded);
 
   const MethodInfo *ret = s_systemFuncs->getMethodInfo(name);
-  if (ret == nullptr && s_hook) {
-    ret = s_hook->findFunction(name);
+  if (ret == nullptr) {
+    ret = g_context->findFunctionInfo(name);
   }
   return ret;
 }
@@ -89,9 +86,11 @@ const ClassInfo *ClassInfo::FindClassInterfaceOrTrait(const String& name) {
   assert(!name.isNull());
   assert(s_loaded);
 
-  if (s_hook) {
-    const ClassInfo *r = s_hook->findClassLike(name);
-    if (r) return r;
+  const ClassInfo *r;
+  if ((r = g_context->findClassInfo(name)) != nullptr ||
+      (r = g_context->findInterfaceInfo(name)) != nullptr ||
+      (r = g_context->findTraitInfo(name)) != nullptr) {
+    return r;
   }
 
   ClassMap::const_iterator iter = s_class_like.find(name);
@@ -174,31 +173,29 @@ Array ClassInfo::GetClassLike(unsigned mask, unsigned value) {
     if (!info || (info->m_attribute & mask) != value) continue;
     ret.append(info->m_name);
   }
-  if (s_hook) {
-    if (value & IsInterface) {
-      Array dyn = s_hook->getInterfaces();
-      if (!dyn.isNull()) {
-        ret.merge(dyn);
-        // De-dup values, then renumber (for aesthetics).
-        ret = ArrayUtil::StringUnique(ret).toArrRef();
-        ret->renumber();
-      }
-    } else if (value & IsTrait) {
-      Array dyn = s_hook->getTraits();
-      if (!dyn.isNull()) {
-        ret.merge(dyn);
-        // De-dup values, then renumber (for aesthetics).
-        ret = ArrayUtil::StringUnique(ret).toArrRef();
-        ret->renumber();
-      }
-    } else {
-      Array dyn = s_hook->getClasses();
-      if (!dyn.isNull()) {
-        ret.merge(dyn);
-        // De-dup values, then renumber (for aesthetics).
-        ret = ArrayUtil::StringUnique(ret).toArrRef();
-        ret->renumber();
-      }
+  if (value & IsInterface) {
+    Array dyn = Unit::getInterfacesInfo();
+    if (!dyn.isNull()) {
+      ret.merge(dyn);
+      // De-dup values, then renumber (for aesthetics).
+      ret = ArrayUtil::StringUnique(ret).toArrRef();
+      ret->renumber();
+    }
+  } else if (value & IsTrait) {
+    Array dyn = Unit::getTraitsInfo();
+    if (!dyn.isNull()) {
+      ret.merge(dyn);
+      // De-dup values, then renumber (for aesthetics).
+      ret = ArrayUtil::StringUnique(ret).toArrRef();
+      ret->renumber();
+    }
+  } else {
+    Array dyn = Unit::getClassesInfo();
+    if (!dyn.isNull()) {
+      ret.merge(dyn);
+      // De-dup values, then renumber (for aesthetics).
+      ret = ArrayUtil::StringUnique(ret).toArrRef();
+      ret->renumber();
     }
   }
   return ret;
@@ -208,10 +205,10 @@ ClassInfo::ConstantInfo::ConstantInfo() :
     valueLen(0), callback(nullptr), deferred(true) {
 }
 
-CVarRef ClassInfo::ConstantInfo::getDeferredValue() const {
+const Variant& ClassInfo::ConstantInfo::getDeferredValue() const {
   assert(deferred);
   if (callback) {
-    CVarRef (*f)()=(CVarRef(*)())callback;
+    const Variant& (*f)()=(const Variant&(*)())callback;
     return (*f)();
   }
   EnvConstants* g = get_env_constants();
@@ -234,14 +231,14 @@ Variant ClassInfo::ConstantInfo::getValue() const {
   return value;
 }
 
-void ClassInfo::ConstantInfo::setValue(CVarRef value) {
+void ClassInfo::ConstantInfo::setValue(const Variant& value) {
   VariableSerializer vs(VariableSerializer::Type::Serialize);
   String s = vs.serialize(value, true);
   svalue = std::string(s.data(), s.size());
   deferred = false;
 }
 
-void ClassInfo::ConstantInfo::setStaticValue(CVarRef v) {
+void ClassInfo::ConstantInfo::setStaticValue(const Variant& v) {
   value = v;
   value.setEvalScalar();
   deferred = false;
@@ -282,7 +279,7 @@ Variant ClassInfo::UserAttributeInfo::getValue() const {
   return value;
 }
 
-void ClassInfo::UserAttributeInfo::setStaticValue(CVarRef v) {
+void ClassInfo::UserAttributeInfo::setStaticValue(const Variant& v) {
   value = v;
   value.setEvalScalar();
 }
@@ -333,7 +330,7 @@ bool ClassInfo::GetClassMethods(MethodVec &ret, const ClassInfo *classInfo) {
   return true;
 }
 
-void ClassInfo::GetClassSymbolNames(CArrRef names, bool interface, bool trait,
+void ClassInfo::GetClassSymbolNames(const Array& names, bool interface, bool trait,
                                     std::vector<String> &classes,
                                     std::vector<String> *clsMethods,
                                     std::vector<String> *clsProperties,
@@ -796,4 +793,3 @@ ClassInfo::MethodInfo::~MethodInfo() {
 
 ///////////////////////////////////////////////////////////////////////////////
 }
-

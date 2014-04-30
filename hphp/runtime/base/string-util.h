@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -100,7 +100,7 @@ public:
    */
   static Variant Explode(const String& input, const String& delimiter,
                          int limit = 0x7FFFFFFF);
-  static String  Implode(CVarRef items, const String& delim); // == Join()
+  static String  Implode(const Variant& items, const String& delim); // == Join()
   static Variant Split(const String& str, int split_length = 1);
   static Variant ChunkSplit(
     const String& body, int chunklen = 76,
@@ -110,9 +110,9 @@ public:
    * Encoding/decoding.
    */
   static String HtmlEncode(const String& input, QuoteStyle quoteStyle,
-                           const char *charset, bool nbsp);
+                           const char *charset, bool dEncode, bool htmlEnt);
   static String HtmlEncode(const String& input, const int64_t qsBitmask,
-                           const char *charset, bool nbsp);
+                           const char *charset, bool dEncode, bool htmlEnt);
   static String HtmlEncodeExtra(const String& input, QuoteStyle quoteStyle,
                                 const char *charset, bool nbsp, Array extra);
   static String HtmlDecode(const String& input, QuoteStyle quoteStyle,
@@ -142,6 +142,8 @@ public:
   static String MD5(const String& input, bool raw = false);
   static String SHA1(const String& input, bool raw = false);
 };
+
+size_t safe_address(size_t nmemb, size_t size, size_t offset);
 
 ///////////////////////////////////////////////////////////////////////////////
 }

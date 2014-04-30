@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -21,6 +21,11 @@
 #include <sstream>
 #include <boost/format.hpp>
 #include <boost/bind.hpp>
+#include <atomic>
+#include <map>
+#include <set>
+#include <utility>
+#include <vector>
 #include "hphp/compiler/analysis/alias_manager.h"
 #include "hphp/compiler/analysis/file_scope.h"
 #include "hphp/compiler/analysis/class_scope.h"
@@ -46,12 +51,11 @@
 #include "hphp/compiler/expression/expression_list.h"
 #include "hphp/compiler/expression/array_pair_expression.h"
 #include "hphp/compiler/expression/simple_function_call.h"
-#include "hphp/runtime/ext/ext_json.h"
 #include "hphp/runtime/base/zend-printf.h"
 #include "hphp/runtime/base/program-functions.h"
 #include "hphp/util/atomic.h"
 #include "hphp/util/logger.h"
-#include "hphp/util/util.h"
+#include "hphp/util/text-util.h"
 #include "hphp/util/hash.h"
 #include "hphp/util/process.h"
 #include "hphp/util/job-queue.h"
@@ -197,7 +201,7 @@ BlockScopePtr AnalysisResult::findConstantDeclarer(
 
 ClassScopePtr AnalysisResult::findClass(const std::string &name) const {
   AnalysisResultConstPtr ar = shared_from_this();
-  string lname = Util::toLower(name);
+  string lname = toLower(name);
   StringToClassScopePtrMap::const_iterator sysIter =
     m_systemClasses.find(lname);
   if (sysIter != m_systemClasses.end()) return sysIter->second;
@@ -214,7 +218,7 @@ ClassScopePtr AnalysisResult::findClass(const std::string &name,
   AnalysisResultPtr ar = shared_from_this();
   if (by == PropertyName) return ClassScopePtr();
 
-  string lname = Util::toLower(name);
+  string lname = toLower(name);
   if (by == MethodName) {
     StringToClassScopePtrVecMap::iterator iter =
       m_methodToClassDecs.find(lname);
@@ -289,7 +293,7 @@ ClassScopePtr AnalysisResult::findExactClass(ConstructPtr cs,
 bool AnalysisResult::checkClassPresent(ConstructPtr cs,
                                        const std::string &name) const {
   if (name == "self" || name == "parent") return true;
-  std::string lowerName = Util::toLower(name);
+  std::string lowerName = toLower(name);
   if (ClassScopePtr currentCls = cs->getClassScope()) {
     if (lowerName == currentCls->getName() ||
         currentCls->derivesFrom(shared_from_this(), lowerName,
@@ -457,8 +461,8 @@ void AnalysisResult::markRedeclaringClasses() {
    * as redeclaring for now.
    */
   for (auto& kv : m_classAliases) {
-    assert(kv.first == Util::toLower(kv.first));
-    assert(kv.second == Util::toLower(kv.second));
+    assert(kv.first == toLower(kv.first));
+    assert(kv.second == toLower(kv.second));
     markRedeclaring(kv.first);
     markRedeclaring(kv.second);
   }
@@ -470,7 +474,7 @@ void AnalysisResult::markRedeclaringClasses() {
    * that things like 'instanceof Foo' will not mean the same thing.
    */
   for (auto& name : m_typeAliasNames) {
-    assert(Util::toLower(name) == name);
+    assert(toLower(name) == name);
     markRedeclaring(name);
   }
 }
@@ -696,7 +700,7 @@ void AnalysisResult::analyzeProgram(bool system /* = false */) {
   // Analyze some special cases
   for (set<string>::const_iterator it = Option::VolatileClasses.begin();
        it != Option::VolatileClasses.end(); ++it) {
-    ClassScopePtr cls = findClass(Util::toLower(*it));
+    ClassScopePtr cls = findClass(toLower(*it));
     if (cls && cls->isUserClass()) {
       cls->setVolatile();
     }
@@ -735,10 +739,10 @@ void AnalysisResult::analyzeProgram(bool system /* = false */) {
       cls->setStaticDynamic(ar);
     }
     StringToFunctionScopePtrMap methods;
-    cls->collectMethods(ar, methods);
+    cls->collectMethods(ar, methods, true /* include privates */);
     bool needAbstractMethodImpl =
       (!cls->isAbstract() && !cls->isInterface() &&
-       !cls->derivesFromRedeclaring() &&
+       cls->derivesFromRedeclaring() == Derivation::Normal &&
        !cls->getAttribute(ClassScope::UsesUnknownTrait));
     for (StringToFunctionScopePtrMap::const_iterator iterMethod =
            methods.begin(); iterMethod != methods.end(); ++iterMethod) {
@@ -757,7 +761,7 @@ void AnalysisResult::analyzeProgram(bool system /* = false */) {
   string cname;
   BOOST_FOREACH(tie(cname, cls), m_systemClasses) {
     StringToFunctionScopePtrMap methods;
-    cls->collectMethods(ar, methods);
+    cls->collectMethods(ar, methods, true /* include privates */);
     for (StringToFunctionScopePtrMap::const_iterator iterMethod =
            methods.begin(); iterMethod != methods.end(); ++iterMethod) {
       m_methodToClassDecs[iterMethod->first].push_back(cls);
@@ -813,7 +817,7 @@ void AnalysisResult::analyzePerfectVirtuals() {
       ClassScopePtr cls = iter->second[i];
 
       // being conservative, not to do redeclaring classes at all
-      if (cls->derivesFromRedeclaring()) {
+      if (cls->derivesFromRedeclaring() == Derivation::Redeclaring) {
         addClassRootMethods(ar, cls, redeclaringMethods);
         continue;
       }

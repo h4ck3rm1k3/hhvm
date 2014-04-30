@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -38,7 +38,7 @@ void CmdOut::onSetup(DebuggerProxy &proxy, CmdInterrupt &interrupt) {
   TRACE(2, "CmdOut::onSetup\n");
   assert(!m_complete); // Complete cmds should not be asked to do work.
   m_stackDepth = proxy.getStackDepth();
-  m_vmDepth = g_vmContext->m_nesting;
+  m_vmDepth = g_context->m_nesting;
 
   // Simply setup a "step out breakpoint" and let the program run.
   setupStepOuts();
@@ -55,7 +55,7 @@ void CmdOut::onBeginInterrupt(DebuggerProxy &proxy, CmdInterrupt &interrupt) {
     return;
   }
 
-  int currentVMDepth = g_vmContext->m_nesting;
+  int currentVMDepth = g_context->m_nesting;
   int currentStackDepth = proxy.getStackDepth();
 
   // Deeper or same depth? Keep running.
@@ -79,9 +79,9 @@ void CmdOut::onBeginInterrupt(DebuggerProxy &proxy, CmdInterrupt &interrupt) {
   cleanupStepOuts();
   int depth = decCount();
   if (depth == 0) {
-    PC pc = g_vmContext->getPC();
+    PC pc = g_context->getPC();
     // Step over PopR following a call
-    if (toOp(*pc) == OpPopR) {
+    if (*reinterpret_cast<const Op*>(pc) == Op::PopR) {
       m_skippingOverPopR = true;
       m_needsVMInterrupt = true;
     } else {

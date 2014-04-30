@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -16,7 +16,14 @@
 #ifndef incl_HPHP_JIT_ARG_GROUP_H
 #define incl_HPHP_JIT_ARG_GROUP_H
 
+#include "hphp/runtime/base/smart-containers.h"
+#include "hphp/runtime/vm/jit/phys-loc.h"
+#include "hphp/runtime/vm/jit/reg-alloc.h"
+
 namespace HPHP { namespace JIT {
+
+class SSATmp;
+struct IRInstruction;
 
 //////////////////////////////////////////////////////////////////////
 
@@ -42,7 +49,7 @@ struct CallDest {
   PhysReg reg1;
 };
 
-const CallDest kVoidDest { DestType::None };
+const CallDest kVoidDest { DestType::None, InvalidReg, InvalidReg };
 
 //////////////////////////////////////////////////////////////////////
 
@@ -106,8 +113,8 @@ private:
 struct ArgGroup {
   typedef smart::vector<ArgDesc> ArgVec;
 
-  explicit ArgGroup(const RegAllocInfo::RegMap& regs)
-      : m_regs(regs), m_override(nullptr)
+  explicit ArgGroup(const IRInstruction* inst, const RegAllocInfo::RegMap& regs)
+    : m_inst(inst), m_regs(regs), m_override(nullptr)
   {}
 
   size_t numRegArgs() const { return m_regArgs.size(); }
@@ -146,32 +153,32 @@ struct ArgGroup {
     return *this;
   }
 
-  ArgGroup& ssa(SSATmp* tmp) {
-    push_arg(ArgDesc(tmp, m_regs[tmp]));
+  ArgGroup& ssa(int i) {
+    push_arg(ArgDesc(m_inst->src(i), m_regs.src(i)));
     return *this;
   }
 
   /*
    * Pass tmp as a TypedValue passed by value.
    */
-  ArgGroup& typedValue(SSATmp* tmp) {
+  ArgGroup& typedValue(int i) {
     // If there's exactly one register argument slot left, the whole TypedValue
     // goes on the stack instead of being split between a register and the
     // stack.
     if (m_regArgs.size() == X64::kNumRegisterArgs - 1) {
       m_override = &m_stkArgs;
     }
-    packed_tv ? type(tmp).ssa(tmp) : ssa(tmp).type(tmp);
+    packed_tv ? type(i).ssa(i) : ssa(i).type(i);
     m_override = nullptr;
     return *this;
   }
 
-  ArgGroup& vectorKeyIS(SSATmp* key) {
-    return vectorKeyImpl(key, true);
+  ArgGroup& memberKeyIS(int i) {
+    return memberKeyImpl(i, true);
   }
 
-  ArgGroup& vectorKeyS(SSATmp* key) {
-    return vectorKeyImpl(key, false);
+  ArgGroup& memberKeyS(int i) {
+    return memberKeyImpl(i, false);
   }
 
 private:
@@ -188,8 +195,8 @@ private:
   /*
    * For passing the m_type field of a TypedValue.
    */
-  ArgGroup& type(SSATmp* tmp) {
-    push_arg(ArgDesc(tmp, m_regs[tmp], false));
+  ArgGroup& type(int i) {
+    push_arg(ArgDesc(m_inst->src(i), m_regs.src(i), false));
     return *this;
   }
 
@@ -198,13 +205,16 @@ private:
     return *this;
   }
 
-  ArgGroup& vectorKeyImpl(SSATmp* key, bool allowInt) {
-    if (key->isString() || (allowInt && key->isA(Type::Int))) {
-      return packed_tv ? none().ssa(key) : ssa(key).none();
+  ArgGroup& memberKeyImpl(int i, bool allowInt) {
+    auto key = m_inst->src(i);
+    if (key->isA(Type::Str) || (allowInt && key->isA(Type::Int))) {
+      return ssa(i);
     }
-    return typedValue(key);
+    return typedValue(i);
   }
 
+private:
+  const IRInstruction* m_inst;
   const RegAllocInfo::RegMap& m_regs;
   ArgVec* m_override; // used to force args to go into a specific ArgVec
   ArgVec m_regArgs;

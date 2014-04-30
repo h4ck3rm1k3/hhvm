@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -17,12 +17,14 @@
 #ifndef incl_HPHP_SORT_HELPERS_H_
 #define incl_HPHP_SORT_HELPERS_H_
 
-#include "hphp/runtime/base/complex-types.h"
 #include "hphp/runtime/base/builtin-functions.h"
 #include "hphp/runtime/base/comparisons.h"
+#include "hphp/runtime/base/type-string.h"
+#include "hphp/runtime/base/type-variant.h"
 #include "hphp/runtime/base/zend-functions.h"
 #include "hphp/runtime/base/zend-string.h"
 #include "hphp/runtime/base/sort-flags.h"
+
 #include "hphp/util/safesort.h"
 
 namespace HPHP {
@@ -274,7 +276,7 @@ struct ElmUCompare {
         *acc.getValue(left).asCell(),
         *acc.getValue(right).asCell()
       };
-      g_vmContext->invokeFuncFew(ret.asTypedValue(), *ctx, 2, args);
+      g_context->invokeFuncFew(ret.asTypedValue(), *ctx, 2, args);
     }
     if (ret.isInteger()) {
       return ret.toInt64() < 0;
@@ -310,7 +312,7 @@ struct ElmUCompare {
         *acc.getValue(right).asCell(),
         *acc.getValue(left).asCell()
       };
-      g_vmContext->invokeFuncFew(ret2.asTypedValue(), *ctx, 2, args);
+      g_context->invokeFuncFew(ret2.asTypedValue(), *ctx, 2, args);
       if (ret2.isBoolean()) {
         return ret2.toBoolean();
       }

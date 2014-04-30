@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -15,6 +15,8 @@
 */
 
 #include "hphp/runtime/debugger/cmd/cmd_extended.h"
+#include <memory>
+#include <vector>
 #include "hphp/runtime/debugger/cmd/all.h"
 #include "hphp/util/logger.h"
 
@@ -143,7 +145,7 @@ const ExtendedCommandMap &CmdExtended::getCommandMap() {
   return GetExtendedCommandMap();
 }
 
-void CmdExtended::invokeList(DebuggerClient &client, const std::string &cls){
+void CmdExtended::invokeList(DebuggerClient &client, const std::string &cls) {
   DebuggerCommandPtr cmd = CreateExtendedCommand(cls);
   if (cmd) {
     cmd->list(client);
@@ -159,7 +161,7 @@ bool CmdExtended::invokeHelp(DebuggerClient &client, const std::string &cls) {
   return false;
 }
 
-bool CmdExtended::invokeClient(DebuggerClient &client, const std::string &cls){
+bool CmdExtended::invokeClient(DebuggerClient &client, const std::string &cls) {
   client.usageLogCommand("extended", cls);
   DebuggerCommandPtr cmd = CreateExtendedCommand(cls);
   if (cmd) {

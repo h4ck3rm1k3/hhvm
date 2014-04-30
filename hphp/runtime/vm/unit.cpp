@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -21,13 +21,14 @@
 #include <tbb/concurrent_unordered_map.h>
 #include <boost/algorithm/string.hpp>
 
+#include "folly/Memory.h"
 #include "folly/ScopeGuard.h"
 
 #include "hphp/compiler/option.h"
 #include "hphp/util/lock.h"
-#include "hphp/util/util.h"
 #include "hphp/util/atomic.h"
 #include "hphp/util/read-only-arena.h"
+#include "hphp/util/file-util.h"
 #include "hphp/parser/parser.h"
 
 #include "hphp/runtime/ext/ext_variable.h"
@@ -37,7 +38,7 @@
 #include "hphp/runtime/vm/disas.h"
 #include "hphp/runtime/base/rds.h"
 #include "hphp/runtime/vm/jit/translator-inline.h"
-#include "hphp/runtime/vm/jit/translator-x64.h"
+#include "hphp/runtime/vm/jit/mc-generator.h"
 #include "hphp/runtime/vm/verifier/check.h"
 #include "hphp/runtime/base/strings.h"
 #include "hphp/runtime/vm/func-inline.h"
@@ -48,13 +49,19 @@
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
 
-using Util::getDataRef;
-
 TRACE_SET_MOD(hhbc);
 
-static const StaticString s_stdin("STDIN");
-static const StaticString s_stdout("STDOUT");
-static const StaticString s_stderr("STDERR");
+const StaticString s_stdin("STDIN");
+const StaticString s_stdout("STDOUT");
+const StaticString s_stderr("STDERR");
+
+/**
+ * Read typed data from an offset relative to a base address
+ */
+template <class T>
+T& getDataRef(void* base, unsigned offset) {
+  return *(T*)((char*)base + offset);
+}
 
 ReadOnlyArena& get_readonly_arena() {
   static ReadOnlyArena arena(RuntimeOption::EvalHHBCArenaChunkSize);
@@ -412,17 +419,7 @@ void LitstrTable::insert(RepoTxn& txn, UnitOrigin uo) {
 //=============================================================================
 // Unit.
 
-Unit::Unit()
-    : m_sn(-1), m_bc(nullptr), m_bclen(0),
-      m_bc_meta(nullptr), m_bc_meta_len(0), m_filepath(nullptr),
-      m_dirpath(nullptr), m_md5(),
-      m_mergeInfo(nullptr),
-      m_cacheOffset(0),
-      m_repoId(-1),
-      m_mergeState(UnitMergeStateUnmerged),
-      m_cacheMask(0),
-      m_mergeOnly(false),
-      m_pseudoMainCache(nullptr) {
+Unit::Unit() {
   tvWriteUninit(&m_mainReturn);
 }
 
@@ -466,11 +463,11 @@ Unit::~Unit() {
 }
 
 void* Unit::operator new(size_t sz) {
-  return Util::low_malloc(sz);
+  return low_malloc(sz);
 }
 
 void Unit::operator delete(void* p, size_t sz) {
-  Util::low_free(p);
+  low_free(p);
 }
 
 bool Unit::compileTimeFatal(const StringData*& msg, int& line) const {
@@ -480,11 +477,11 @@ bool Unit::compileTimeFatal(const StringData*& msg, int& line) const {
   //
   // Decode enough of pseudomain to determine whether it contains a
   // compile-time fatal, and if so, extract the error message and line number.
-  const Opcode* entry = getMain()->getEntry();
-  const Opcode* pc = entry;
+  auto entry = reinterpret_cast<const Op*>(getMain()->getEntry());
+  auto pc = entry;
   // String <id>; Fatal;
   // ^^^^^^
-  if (toOp(*pc) != OpString) {
+  if (*pc != Op::String) {
     return false;
   }
   pc++;
@@ -494,7 +491,7 @@ bool Unit::compileTimeFatal(const StringData*& msg, int& line) const {
   pc += sizeof(Id);
   // String <id>; Fatal;
   //              ^^^^^
-  if (toOp(*pc) != OpFatal) {
+  if (*pc != Op::Fatal) {
     return false;
   }
   msg = lookupLitstrId(id);
@@ -507,7 +504,7 @@ bool Unit::parseFatal(const StringData*& msg, int& line) const {
     return false;
   }
 
-  const Opcode* pc = getMain()->getEntry();
+  auto pc = getMain()->getEntry();
 
   // two opcodes + String's ID
   pc += sizeof(Id) + 2;
@@ -519,7 +516,7 @@ bool Unit::parseFatal(const StringData*& msg, int& line) const {
 class FrameRestore {
  public:
   explicit FrameRestore(const PreClass* preClass) {
-    VMExecutionContext* ec = g_vmContext;
+    auto const ec = g_context.getNoCheck();
     ActRec* fp = ec->getFP();
     PC pc = ec->getPC();
 
@@ -541,7 +538,8 @@ class FrameRestore {
       tmp.m_savedRbp = (uint64_t)fp;
       tmp.m_savedRip = 0;
       tmp.m_func = preClass->unit()->getMain();
-      tmp.m_soff = !fp ? 0
+      tmp.m_soff = !fp
+        ? 0
         : fp->m_func->unit()->offsetOf(pc) - fp->m_func->base();
       tmp.setThis(nullptr);
       tmp.m_varEnv = 0;
@@ -556,7 +554,7 @@ class FrameRestore {
     }
   }
   ~FrameRestore() {
-    VMExecutionContext* ec = g_vmContext;
+    auto const ec = g_context.getNoCheck();
     if (m_top) {
       ec->m_stack.top() = m_top;
       ec->m_fp = m_fp;
@@ -778,7 +776,7 @@ void Unit::defTypeAlias(Id id) {
 }
 
 void Unit::renameFunc(const StringData* oldName, const StringData* newName) {
-  // renameFunc() should only be used by VMExecutionContext::createFunction.
+  // renameFunc() should only be used by ExecutionContext::createFunction.
   // We do a linear scan over all the functions in the unit searching for the
   // func with a given name; in practice this is okay because the units created
   // by create_function() will always have the function being renamed at the
@@ -920,8 +918,8 @@ void Unit::initialMerge() {
               break;
             case UnitMergeKindReqDoc: {
               StringData* s = (StringData*)((char*)obj - (int)k);
-              HPHP::Eval::PhpFile* efile =
-                g_vmContext->lookupIncludeRoot(s, InclOpDocRoot, nullptr, this);
+              auto const efile = g_context->lookupIncludeRoot(s,
+                InclOpFlags::DocRoot, nullptr, this);
               assert(efile);
               Unit* unit = efile->unit();
               unit->initialMerge();
@@ -1067,7 +1065,7 @@ void Unit::defDynamicSystemConstant(const StringData* cnsName,
 }
 
 static void setGlobal(StringData* name, TypedValue *value) {
-  g_vmContext->m_globalVarEnv->set(name, value);
+  g_context->m_globalVarEnv->set(name, value);
 }
 
 void Unit::merge() {
@@ -1413,9 +1411,9 @@ void Unit::mergeImpl(void* tcbase, UnitMergeInfo* mi) {
               Stats::inc(Stats::PseudoMain_Reentered);
               TypedValue ret;
               VarEnv* ve = nullptr;
-              ActRec* fp = g_vmContext->m_fp;
+              ActRec* fp = g_context->m_fp;
               if (!fp) {
-                ve = g_vmContext->m_globalVarEnv;
+                ve = g_context->m_globalVarEnv;
               } else {
                 if (fp->hasVarEnv()) {
                   ve = fp->m_varEnv;
@@ -1425,7 +1423,7 @@ void Unit::mergeImpl(void* tcbase, UnitMergeInfo* mi) {
                   // local scope.
                 }
               }
-              g_vmContext->invokeFunc(&ret, unit->getMain(), init_null_variant,
+              g_context->invokeFunc(&ret, unit->getMain(), init_null_variant,
                                       nullptr, nullptr, ve);
               tvRefcountedDecRef(&ret);
             } else {
@@ -1539,20 +1537,24 @@ LineToOffsetRangeVecMap Unit::getLineToOffsetRangeVecMap() const {
     }
     baseOff = pastOff;
   }
-  ((Unit*)this)->m_lineToOffsetRangeVecMap = map;
+  const_cast<Unit*>(this)->m_lineToOffsetRangeVecMap = map;
   return m_lineToOffsetRangeVecMap;
 }
 
 // This uses range lookups so offsets in the middle of instructions are
 // supported.
-int Unit::getLineNumber(Offset pc) const {
-  LineEntry key = LineEntry(pc, -1);
-  auto it = upper_bound(m_lineTable.begin(), m_lineTable.end(), key);
-  if (it != m_lineTable.end()) {
+int getLineNumber(const LineTable& table, Offset pc) {
+  auto const key = LineEntry(pc, -1);
+  auto it = std::upper_bound(begin(table), end(table), key);
+  if (it != end(table)) {
     assert(pc < it->pastOffset());
     return it->val();
   }
   return -1;
+}
+
+int Unit::getLineNumber(Offset pc) const {
+  return HPHP::getLineNumber(m_lineTable, pc);
 }
 
 bool getSourceLoc(const SourceLocTable& table, Offset pc, SourceLoc& sLoc) {
@@ -1633,9 +1635,11 @@ void Unit::prettyPrint(std::ostream& out, PrintOpts opts) const {
   int prevLineNum = -1;
   MetaHandle metaHand;
   while (it < &m_bc[stopOffset]) {
-    assert(funcIt == funcMap.end() || funcIt->first >= offsetOf(it));
+    assert(funcIt == funcMap.end() ||
+      funcIt->first >= offsetOf(it));
     if (opts.showFuncs) {
-      if (funcIt != funcMap.end() && funcIt->first == offsetOf(it)) {
+      if (funcIt != funcMap.end() &&
+          funcIt->first == offsetOf(it)) {
         out.put('\n');
         funcIt->second->prettyPrint(out);
         ++funcIt;
@@ -1668,12 +1672,6 @@ void Unit::prettyPrint(std::ostream& out, PrintOpts opts) const {
               out << "*";
             }
             break;
-          case Unit::MetaInfo::Kind::String: {
-            const StringData* sd = lookupLitstrId(info.m_data);
-            out << " i" << argKind << arg << ":s=" <<
-              std::string(sd->data(), sd->size());
-            break;
-          }
           case Unit::MetaInfo::Kind::Class: {
             const StringData* sd = lookupLitstrId(info.m_data);
             out << " i" << argKind << arg << ":c=" << sd->data();
@@ -1689,9 +1687,6 @@ void Unit::prettyPrint(std::ostream& out, PrintOpts opts) const {
             break;
           case Unit::MetaInfo::Kind::GuardedCls:
             out << " GuardedCls";
-            break;
-          case Unit::MetaInfo::Kind::NonRefCounted:
-            out << " :nrc=" << info.m_data;
             break;
           case Unit::MetaInfo::Kind::None:
             assert(false);
@@ -1806,8 +1801,9 @@ void UnitRepoProxy::createSchema(int repoId, RepoTxn& txn) {
   }
 }
 
-Unit* UnitRepoProxy::load(const std::string& name, const MD5& md5) {
-  UnitEmitter ue(md5);
+bool UnitRepoProxy::loadHelper(UnitEmitter& ue,
+                               const std::string& name,
+                               const MD5& md5) {
   ue.setFilepath(makeStaticString(name));
   // Look for a repo that contains a unit with matching MD5.
   int repoId;
@@ -1819,7 +1815,7 @@ Unit* UnitRepoProxy::load(const std::string& name, const MD5& md5) {
   if (repoId < 0) {
     TRACE(3, "No repo contains '%s' (0x%016" PRIx64  "%016" PRIx64 ")\n",
              name.c_str(), md5.q[0], md5.q[1]);
-    return nullptr;
+    return false;
   }
   try {
     getUnitLitstrs(repoId).get(ue);
@@ -1833,10 +1829,23 @@ Unit* UnitRepoProxy::load(const std::string& name, const MD5& md5) {
           PRIx64 ") from '%s': %s\n",
           name.c_str(), md5.q[0], md5.q[1], m_repo.repoName(repoId).c_str(),
           re.msg().c_str());
-    return nullptr;
+    return false;
   }
   TRACE(3, "Repo loaded '%s' (0x%016" PRIx64 "%016" PRIx64 ") from '%s'\n",
            name.c_str(), md5.q[0], md5.q[1], m_repo.repoName(repoId).c_str());
+  return true;
+}
+
+std::unique_ptr<UnitEmitter>
+UnitRepoProxy::loadEmitter(const std::string& name, const MD5& md5) {
+  auto ue = folly::make_unique<UnitEmitter>(md5);
+  if (!loadHelper(*ue, name, md5)) ue.reset();
+  return ue;
+}
+
+Unit* UnitRepoProxy::load(const std::string& name, const MD5& md5) {
+  UnitEmitter ue(md5);
+  if (!loadHelper(ue, name, md5)) return nullptr;
   return ue.create();
 }
 
@@ -2480,11 +2489,10 @@ bool UnitEmitter::insert(UnitOrigin unitOrigin, RepoTxn& txn) {
     for (unsigned i = 0; i < m_arrays.size(); ++i) {
       urp.insertUnitArray(repoId).insert(txn, usn, i, m_arrays[i].serialized);
     }
-    for (FeVec::const_iterator it = m_fes.begin(); it != m_fes.end(); ++it) {
+    for (auto it = m_fes.begin(); it != m_fes.end(); ++it) {
       (*it)->commit(txn);
     }
-    for (PceVec::const_iterator it = m_pceVec.begin(); it != m_pceVec.end();
-         ++it) {
+    for (auto it = m_pceVec.begin(); it != m_pceVec.end(); ++it) {
       (*it)->commit(txn);
     }
 
@@ -2564,8 +2572,8 @@ Unit* UnitEmitter::create() {
   u->m_mainReturn = m_mainReturn;
   u->m_mergeOnly = m_mergeOnly;
   {
-    const std::string& dirname = Util::safe_dirname(m_filepath->data(),
-                                                    m_filepath->size());
+    const std::string& dirname = FileUtil::safe_dirname(m_filepath->data(),
+                                                        m_filepath->size());
     u->m_dirpath = makeStaticString(dirname);
   }
   u->m_md5 = m_md5;
@@ -2587,7 +2595,7 @@ Unit* UnitEmitter::create() {
   size_t ix = m_fes.size() + m_hoistablePceIdList.size();
   if (m_mergeOnly && !m_allClassesHoistable) {
     size_t extra = 0;
-    for (MergeableStmtVec::const_iterator it = m_mergeableStmts.begin();
+    for (auto it = m_mergeableStmts.begin();
          it != m_mergeableStmts.end(); ++it) {
       extra++;
       if (!RuntimeOption::RepoAuthoritative && SystemLib::s_inited) {
@@ -2611,7 +2619,7 @@ Unit* UnitEmitter::create() {
   UnitMergeInfo *mi = UnitMergeInfo::alloc(ix);
   u->m_mergeInfo = mi;
   ix = 0;
-  for (FeVec::const_iterator it = m_fes.begin(); it != m_fes.end(); ++it) {
+  for (auto it = m_fes.begin(); it != m_fes.end(); ++it) {
     Func* func = (*it)->create(*u);
     if (func->top()) {
       if (!mi->m_firstHoistableFunc) {
@@ -2633,7 +2641,7 @@ Unit* UnitEmitter::create() {
   }
   mi->m_firstMergeablePreClass = ix;
   if (u->m_mergeOnly && !m_allClassesHoistable) {
-    for (MergeableStmtVec::const_iterator it = m_mergeableStmts.begin();
+    for (auto it = m_mergeableStmts.begin();
          it != m_mergeableStmts.end(); ++it) {
       switch (it->first) {
         case UnitMergeKindClass:

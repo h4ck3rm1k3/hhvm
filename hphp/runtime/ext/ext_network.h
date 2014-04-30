@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    | Copyright (c) 1997-2010 The PHP Group                                |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
@@ -19,7 +19,7 @@
 #define incl_HPHP_EXT_NETWORK_H_
 
 #include "hphp/runtime/base/base-includes.h"
-#include "hphp/runtime/ext/ext_stream.h"
+#include "hphp/runtime/ext/stream/ext_stream.h"
 #include "hphp/util/network.h"
 #include <syslog.h>
 
@@ -54,7 +54,7 @@ bool f_getmxrr(const String& hostname, VRefParam mxhosts,
 ///////////////////////////////////////////////////////////////////////////////
 // socket
 
-Variant sockopen_impl(const Util::HostURL &hosturl,
+Variant sockopen_impl(const HostURL &hosturl,
                       VRefParam errnum, VRefParam errstr,
                       double timeout = -1.0, bool persistent = false);
 Variant f_fsockopen(const String& hostname, int port = -1,
@@ -65,11 +65,11 @@ Variant f_pfsockopen(const String& hostname, int port = -1,
                      VRefParam errnum = uninit_null(),
                      VRefParam errstr = uninit_null(), double timeout = -1.0);
 
-Variant f_socket_get_status(CResRef stream);
+Variant f_socket_get_status(const Resource& stream);
 
-bool f_socket_set_blocking(CResRef stream, int mode);
+bool f_socket_set_blocking(const Resource& stream, int mode);
 
-bool f_socket_set_timeout(CResRef stream, int seconds,
+bool f_socket_set_timeout(const Resource& stream, int seconds,
                           int microseconds = 0);
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -83,7 +83,7 @@ Array f_headers_list();
 
 bool f_headers_sent(VRefParam file = uninit_null(), VRefParam line = uninit_null());
 
-bool f_header_register_callback(CVarRef callback);
+bool f_header_register_callback(const Variant& callback);
 
 void f_header_remove(const String& name = null_string);
 

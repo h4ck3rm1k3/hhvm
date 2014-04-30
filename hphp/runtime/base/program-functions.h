@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -29,13 +29,19 @@ namespace HPHP {
  * Main entry point of the entire program.
  */
 int execute_program(int argc, char **argv);
-void execute_command_line_begin(int argc, char **argv, int xhprof);
+void execute_command_line_begin(int argc, char **argv, int xhprof,
+                                const std::vector<std::string>& config);
 void execute_command_line_end(int xhprof, bool coverage, const char *program);
 
 /**
  * Setting up environment variables.
  */
-void process_env_variables(Variant &variables);
+void process_env_variables(Array& variables);
+
+/**
+ * Reset all the ini settings from the config file
+ */
+void process_ini_settings(const std::string& name);
 
 /**
  * Inserting a variable into specified symbol table.
@@ -47,7 +53,9 @@ void process_env_variables(Variant &variables);
  * cookie name for the same path and we should not overwrite more
  * specific cookies with the less specific ones.
  */
-void register_variable(Variant &variables, char *name, CVarRef value,
+void register_variable(Array& variables,
+                       char* name,
+                       const Variant& value,
                        bool overwrite = true);
 
 String canonicalize_path(const String& path, const char* root, int rootLen);
@@ -72,7 +80,7 @@ void hphp_session_init();
 ExecutionContext* hphp_context_init();
 bool hphp_invoke_simple(const std::string &filename, bool warmupOnly = false);
 bool hphp_invoke(ExecutionContext *context, const std::string &cmd,
-                 bool func, CArrRef funcParams, VRefParam funcRet,
+                 bool func, const Array& funcParams, VRefParam funcRet,
                  const std::string &reqInitFunc, const std::string &reqInitDoc,
                  bool &error, std::string &errorMsg,
                  bool once = true, bool warmupOnly = false,

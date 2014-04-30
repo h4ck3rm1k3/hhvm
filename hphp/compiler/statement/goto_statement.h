@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -34,13 +34,10 @@ public:
   const std::string &label() { return m_label; }
 
   void invalidate(ParserBase::GotoError error);
-  int getId() const { return m_id; }
-  void setId(int id) { m_id = id; }
   void setLabel(const std::string &label) { m_label = label; }
 private:
   std::string m_label;
   ParserBase::GotoError m_error;
-  int m_id;
 };
 
 ///////////////////////////////////////////////////////////////////////////////

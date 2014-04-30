@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    | Copyright (c) 1997-2010 The PHP Group                                |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
@@ -17,7 +17,7 @@
 
 #include "hphp/runtime/ext/reflection/ext_reflection.h"
 #include "hphp/runtime/ext/ext_closure.h"
-#include "hphp/runtime/ext/ext_debugger.h"
+#include "hphp/runtime/ext/debugger/ext_debugger.h"
 #include "hphp/runtime/ext/ext_misc.h"
 #include "hphp/runtime/ext/ext_string.h"
 #include "hphp/runtime/base/externals.h"
@@ -82,6 +82,9 @@ const StaticString
   s_methods("methods"),
   s_properties("properties"),
   s_private_properties("private_properties"),
+  s_properties_index("properties_index"),
+  s_private_properties_index("private_properties_index"),
+  s_reorder_parent_properties("reorder_parent_properties"),
   s_attributes("attributes"),
   s_function("function"),
   s_trait_aliases("trait_aliases"),
@@ -97,7 +100,7 @@ const StaticString
   s_closure_scope_class("closure_scope_class"),
   s_reflectionexception("ReflectionException");
 
-static Class* get_cls(CVarRef class_or_object) {
+static Class* get_cls(const Variant& class_or_object) {
   Class* cls = nullptr;
   if (class_or_object.is(KindOfObject)) {
     ObjectData* obj = class_or_object.toCObjRef().get();
@@ -475,7 +478,7 @@ static void set_function_info(Array &ret, const Func* func) {
           // undefined class constants can cause the eval() to
           // fatal. Zend lets such fatals propagate, so don't bother catching
           // exceptions here.
-          CVarRef v = g_vmContext->getEvaledArg(
+          const Variant& v = g_context->getEvaledArg(
             fpi.phpCode(),
             func->cls() ? func->cls()->nameRef() : func->nameRef()
           );
@@ -709,7 +712,7 @@ static void set_method_info(Array &ret, const Func* func, const Class* cls) {
                             resolved_func ? resolved_func : func);
 }
 
-static Array get_method_info(const ClassInfo *cls, CVarRef name) {
+static Array get_method_info(const ClassInfo *cls, const Variant& name) {
   if (!cls) return Array();
   ClassInfo *owner;
   ClassInfo::MethodInfo *meth = cls->hasMethod(
@@ -722,7 +725,7 @@ static Array get_method_info(const ClassInfo *cls, CVarRef name) {
   return ret;
 }
 
-Array HHVM_FUNCTION(hphp_get_method_info, CVarRef class_or_object,
+Array HHVM_FUNCTION(hphp_get_method_info, const Variant& class_or_object,
                     const String &meth_name) {
   auto const cls = get_cls(class_or_object);
   if (!cls) return Array();
@@ -749,7 +752,7 @@ Array HHVM_FUNCTION(hphp_get_method_info, CVarRef class_or_object,
   return ret;
 }
 
-Array HHVM_FUNCTION(hphp_get_closure_info, CObjRef closure) {
+Array HHVM_FUNCTION(hphp_get_closure_info, const Object& closure) {
   Array mi = HHVM_FN(hphp_get_method_info)(closure->o_getClassName(), s___invoke);
   mi.set(s_name, s_closure_in_braces);
   mi.set(s_closureobj, closure);
@@ -872,7 +875,12 @@ static Array get_class_info(const ClassInfo *cls) {
   {
     Array arr = Array::Create();
     Array arrPriv = Array::Create();
-    for (auto const& prop : cls->getPropertiesVec()) {
+    Array arrIdx = Array::Create();
+    Array arrPrivIdx = Array::Create();
+    auto const propertiesVec = cls->getPropertiesVec();
+    const int propertiesCount = propertiesVec.size();
+    for (int i = 0; i < propertiesCount; ++i) {
+      auto const& prop = propertiesVec[i];
       Array info = Array::Create();
       info.add(s_default, true_varNR);
       set_property_info(info, prop, cls);
@@ -880,12 +888,17 @@ static Array get_class_info(const ClassInfo *cls) {
       if (prop->attribute & ClassInfo::IsPrivate) {
         assert(prop->owner == cls);
         arrPriv.set(prop->name, info);
+        arrPrivIdx.set(prop->name, i);
       } else {
         arr.set(prop->name, info);
+        arrIdx.set(prop->name, i);
       }
     }
     ret.set(s_properties, VarNR(arr));
     ret.set(s_private_properties, VarNR(arrPriv));
+    ret.set(s_properties_index, VarNR(arrIdx));
+    ret.set(s_private_properties_index, VarNR(arrPrivIdx));
+    ret.set(s_reorder_parent_properties, true_varNR);
   }
 
   // constants
@@ -915,7 +928,7 @@ static Array get_class_info(const ClassInfo *cls) {
   return ret;
 }
 
-Array HHVM_FUNCTION(hphp_get_class_info, CVarRef name) {
+Array HHVM_FUNCTION(hphp_get_class_info, const Variant& name) {
   auto cls = get_cls(name);
   if (!cls) return Array();
   if (cls->clsInfo()) {
@@ -934,8 +947,15 @@ Array HHVM_FUNCTION(hphp_get_class_info, CVarRef name) {
   // interfaces
   {
     Array arr = Array::Create();
-    for (auto const& interface : cls->declInterfaces()) {
+    for (auto const& interface: cls->declInterfaces()) {
       arr.set(interface->nameRef(), VarNR(1));
+    }
+    auto const& allIfaces = cls->allInterfaces();
+    if (allIfaces.size() > cls->declInterfaces().size()) {
+      for (int i = 0; i < allIfaces.size(); ++i) {
+        auto const& interface = allIfaces[i];
+        arr.set(interface->nameRef(), VarNR(1));
+      }
     }
     ret.set(s_interfaces, VarNR(arr));
   }
@@ -1027,6 +1047,8 @@ Array HHVM_FUNCTION(hphp_get_class_info, CVarRef name) {
   {
     Array arr = Array::Create();
     Array arrPriv = Array::Create();
+    Array arrIdx = Array::Create();
+    Array arrPrivIdx = Array::Create();
 
     const Class::Prop* properties = cls->declProperties();
     auto const& propInitVec = cls->declPropInit();
@@ -1040,11 +1062,13 @@ Array HHVM_FUNCTION(hphp_get_class_info, CVarRef name) {
         if (prop.m_class == cls) {
           set_instance_prop_info(info, &prop, default_val);
           arrPriv.set(*(String*)(&prop.m_name), VarNR(info));
+          arrPrivIdx.set(*(String*)(&prop.m_name), prop.m_idx);
         }
         continue;
       }
       set_instance_prop_info(info, &prop, default_val);
       arr.set(*(String*)(&prop.m_name), VarNR(info));
+      arrIdx.set(*(String*)(&prop.m_name), prop.m_idx);
     }
 
     const Class::SProp* staticProperties = cls->staticProperties();
@@ -1057,26 +1081,33 @@ Array HHVM_FUNCTION(hphp_get_class_info, CVarRef name) {
         if (prop.m_class == cls) {
           set_static_prop_info(info, &prop);
           arrPriv.set(*(String*)(&prop.m_name), VarNR(info));
+          arrPrivIdx.set(*(String*)(&prop.m_name), prop.m_idx);
         }
         continue;
       }
       set_static_prop_info(info, &prop);
       arr.set(*(String*)(&prop.m_name), VarNR(info));
+      arrIdx.set(*(String*)(&prop.m_name), prop.m_idx);
     }
 
     if (name.isObject()) {
       auto obj = name.toObject();
       if (obj->hasDynProps()) {
+        int curIdx = nProps + nSProps;
         for (ArrayIter it(obj->dynPropArray().get()); !it.end(); it.next()) {
           Array info = Array::Create();
           set_dyn_prop_info(info, it.first(), cls->name());
           arr.set(it.first(), VarNR(info));
+          arrIdx.set(it.first(), curIdx++);
         }
       }
     }
 
     ret.set(s_properties, VarNR(arr));
     ret.set(s_private_properties, VarNR(arrPriv));
+    ret.set(s_properties_index, VarNR(arrIdx));
+    ret.set(s_private_properties_index, VarNR(arrPrivIdx));
+    ret.set(s_reorder_parent_properties, false_varNR);
   }
 
   // constants
@@ -1139,12 +1170,12 @@ Array HHVM_FUNCTION(hphp_get_function_info, const String& name) {
   return ret;
 }
 
-Variant HHVM_FUNCTION(hphp_invoke, const String& name, CVarRef params) {
+Variant HHVM_FUNCTION(hphp_invoke, const String& name, const Variant& params) {
   return invoke(name.data(), params);
 }
 
-Variant HHVM_FUNCTION(hphp_invoke_method, CVarRef obj, const String& cls,
-                                          const String& name, CVarRef params) {
+Variant HHVM_FUNCTION(hphp_invoke_method, const Variant& obj, const String& cls,
+                                          const String& name, const Variant& params) {
   if (obj.isNull()) {
     return invoke_static_method(cls, name, params);
   }
@@ -1152,23 +1183,23 @@ Variant HHVM_FUNCTION(hphp_invoke_method, CVarRef obj, const String& cls,
   return o->o_invoke(name, params);
 }
 
-Object HHVM_FUNCTION(hphp_create_object, const String& name, CVarRef params) {
-  return g_vmContext->createObject(name.get(), params);
+Object HHVM_FUNCTION(hphp_create_object, const String& name, const Variant& params) {
+  return g_context->createObject(name.get(), params);
 }
 
 Object HHVM_FUNCTION(hphp_create_object_without_constructor,
                       const String& name) {
-  return g_vmContext->createObject(name.get(), init_null_variant, false);
+  return g_context->createObject(name.get(), init_null_variant, false);
 }
 
-Variant HHVM_FUNCTION(hphp_get_property, CObjRef obj, const String& cls,
+Variant HHVM_FUNCTION(hphp_get_property, const Object& obj, const String& cls,
                                          const String& prop) {
   return obj->o_get(prop, true /* error */, cls);
 }
 
-void HHVM_FUNCTION(hphp_set_property, CObjRef obj, const String& cls,
-                                      const String& prop, CVarRef value) {
-  if (!cls.empty() && RuntimeOption::RepoAuthoritative) {
+void HHVM_FUNCTION(hphp_set_property, const Object& obj, const String& cls,
+                                      const String& prop, const Variant& value) {
+  if (!cls.empty() && RuntimeOption::EvalAuthoritativeMode) {
     raise_error(
       "We've already made many assumptions about private variables. "
       "You can't change accessibility in Whole Program mode"
@@ -1188,7 +1219,7 @@ Variant HHVM_FUNCTION(hphp_get_static_property, const String& cls,
   VMRegAnchor _;
   bool visible, accessible;
   TypedValue* tv = class_->getSProp(
-    force ? class_ : arGetContextClass(g_vmContext->getFP()),
+    force ? class_ : arGetContextClass(g_context->getFP()),
     prop.get(), visible, accessible
   );
   if (tv == nullptr) {
@@ -1203,7 +1234,7 @@ Variant HHVM_FUNCTION(hphp_get_static_property, const String& cls,
 }
 
 void HHVM_FUNCTION(hphp_set_static_property, const String& cls,
-                                             const String& prop, CVarRef value,
+                                             const String& prop, const Variant& value,
                                              bool force) {
   StringData* sd = cls.get();
   Class* class_ = Unit::lookupClass(sd);
@@ -1213,7 +1244,7 @@ void HHVM_FUNCTION(hphp_set_static_property, const String& cls,
   VMRegAnchor _;
   bool visible, accessible;
   TypedValue* tv = class_->getSProp(
-    force ? class_ : arGetContextClass(g_vmContext->getFP()),
+    force ? class_ : arGetContextClass(g_context->getFP()),
     prop.get(), visible, accessible
   );
   if (tv == nullptr) {
@@ -1237,14 +1268,14 @@ bool HHVM_FUNCTION(hphp_scalar_typehints_enabled) {
   return RuntimeOption::EnableHipHopSyntax;
 }
 
-ObjectData* Reflection::AllocReflectionExceptionObject(CVarRef message) {
+ObjectData* Reflection::AllocReflectionExceptionObject(const Variant& message) {
   ObjectData* inst = ObjectData::newInstance(s_ReflectionExceptionClass);
   TypedValue ret;
   {
     /* Increment refcount across call to ctor, so the object doesn't */
     /* get destroyed when ctor's frame is torn down */
     CountableHelper cnt(inst);
-    g_vmContext->invokeFunc(&ret,
+    g_context->invokeFunc(&ret,
                             s_ReflectionExceptionClass->getCtor(),
                             make_packed_array(message),
                             inst);

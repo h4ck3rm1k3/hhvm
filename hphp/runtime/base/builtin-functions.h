@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -18,6 +18,7 @@
 #define incl_HPHP_BUILTIN_FUNCTIONS_H_
 
 #include "hphp/runtime/base/execution-context.h"
+#include "hphp/runtime/base/request-event-handler.h"
 #include "hphp/runtime/base/types.h"
 #include "hphp/runtime/base/complex-types.h"
 #include "hphp/runtime/base/intercept.h"
@@ -38,6 +39,7 @@
  * and wiping it out.
  */
 # include <sys/param.h>
+#include <algorithm>
 # ifdef isset
 #  undef isset
 # endif
@@ -93,33 +95,33 @@ void NEVER_INLINE throw_invalid_property_name(const String& name)
 void NEVER_INLINE throw_null_object_prop();
 void NEVER_INLINE throw_null_get_object_prop();
 void NEVER_INLINE raise_null_object_prop();
-void throw_exception(CObjRef e);
+void throw_exception(const Object& e);
 
 ///////////////////////////////////////////////////////////////////////////////
 // type testing
 
-inline bool is_null(CVarRef v)   { return v.isNull();}
-inline bool is_not_null(CVarRef v) { return !v.isNull();}
-inline bool is_bool(CVarRef v)   { return v.is(KindOfBoolean);}
-inline bool is_int(CVarRef v)    { return v.isInteger();}
-inline bool is_double(CVarRef v) { return v.is(KindOfDouble);}
-inline bool is_string(CVarRef v) { return v.isString();}
-inline bool is_array(CVarRef v)  { return v.is(KindOfArray);}
-inline bool is_object(CVarRef var) { return var.is(KindOfObject); }
-inline bool is_empty_string(CVarRef v) {
+inline bool is_null(const Variant& v)   { return v.isNull();}
+inline bool is_not_null(const Variant& v) { return !v.isNull();}
+inline bool is_bool(const Variant& v)   { return v.is(KindOfBoolean);}
+inline bool is_int(const Variant& v)    { return v.isInteger();}
+inline bool is_double(const Variant& v) { return v.is(KindOfDouble);}
+inline bool is_string(const Variant& v) { return v.isString();}
+inline bool is_array(const Variant& v)  { return v.is(KindOfArray);}
+inline bool is_object(const Variant& var) { return var.is(KindOfObject); }
+inline bool is_empty_string(const Variant& v) {
   return v.isString() && v.getStringData()->empty();
 }
 
 ///////////////////////////////////////////////////////////////////////////////
 // misc functions
 
-bool array_is_valid_callback(CArrRef arr);
+bool array_is_valid_callback(const Array& arr);
 
-Variant f_call_user_func_array(CVarRef function, CArrRef params,
+Variant f_call_user_func_array(const Variant& function, const Array& params,
                                bool bound = false);
 
 const HPHP::Func*
-vm_decode_function(CVarRef function,
+vm_decode_function(const Variant& function,
                    ActRec* ar,
                    bool forwarding,
                    ObjectData*& this_,
@@ -128,7 +130,7 @@ vm_decode_function(CVarRef function,
                    bool warn = true);
 
 inline void
-vm_decode_function(CVarRef function,
+vm_decode_function(const Variant& function,
                    ActRec* ar,
                    bool forwarding,
                    CallCtx& ctx,
@@ -138,14 +140,14 @@ vm_decode_function(CVarRef function,
 }
 
 ActRec* vm_get_previous_frame();
-Variant vm_call_user_func(CVarRef function, CVarRef params,
+Variant vm_call_user_func(const Variant& function, const Variant& params,
                           bool forwarding = false);
 
 /**
  * Invoking an arbitrary static method.
  */
 Variant invoke_static_method(const String& s, const String& method,
-                             CVarRef params, bool fatal = true);
+                             const Variant& params, bool fatal = true);
 
 /**
  * Fallback when a dynamic function call fails to find a user function
@@ -154,7 +156,7 @@ Variant invoke_static_method(const String& s, const String& method,
  */
 Variant invoke_failed(const char *func,
                       bool fatal = true);
-Variant invoke_failed(CVarRef func,
+Variant invoke_failed(const Variant& func,
                       bool fatal = true);
 
 Variant o_invoke_failed(const char *cls, const char *meth,
@@ -189,39 +191,6 @@ void check_collection_cast_to_array();
 
 Object create_object_only(const String& s);
 Object create_object(const String& s, const Array &params, bool init = true);
-
-inline bool isContainer(const Cell& c) {
-  assert(cellIsPlausible(c));
-  return c.m_type == KindOfArray ||
-         (c.m_type == KindOfObject && c.m_data.pobj->isCollection());
-}
-
-inline bool isContainer(CVarRef v) {
-  return isContainer(*v.asCell());
-}
-
-inline bool isContainerOrNull(const Cell& c) {
-  assert(cellIsPlausible(c));
-  return IS_NULL_TYPE(c.m_type) || c.m_type == KindOfArray ||
-         (c.m_type == KindOfObject && c.m_data.pobj->isCollection());
-}
-
-inline bool isContainerOrNull(CVarRef v) {
-  return isContainerOrNull(*v.asCell());
-}
-
-inline size_t getContainerSize(const Cell& c) {
-  assert(isContainer(c));
-  if (c.m_type == KindOfArray) {
-    return c.m_data.parr->size();
-  }
-  assert(c.m_type == KindOfObject && c.m_data.pobj->isCollection());
-  return c.m_data.pobj->getCollectionSize();
-}
-
-inline size_t getContainerSize(CVarRef v) {
-  return getContainerSize(*v.asCell());
-}
 
 /**
  * Argument count handling.
@@ -273,12 +242,8 @@ Variant throw_fatal_unset_static_property(const char *s, const char *prop);
 /**
  * Exceptions injected code throws
  */
-void throw_infinite_recursion_exception();
 Exception* generate_request_timeout_exception();
 Exception* generate_memory_exceeded_exception();
-void throw_call_non_object() ATTRIBUTE_NORETURN;
-void throw_call_non_object(const char *methodName)
-  ATTRIBUTE_NORETURN;
 
 // unserializable default value arguments such as TimeStamp::Current()
 // are serialized as "\x01"
@@ -289,23 +254,23 @@ char const kUnserializableString[] = "\x01";
  * two functions in runtime/base, as there are functions in
  * runtime/base that depend on these two functions.
  */
-String f_serialize(CVarRef value);
+String f_serialize(const Variant& value);
 Variant unserialize_ex(const String& str,
                        VariableUnserializer::Type type,
-                       CArrRef class_whitelist = null_array);
+                       const Array& class_whitelist = null_array);
 Variant unserialize_ex(const char* str, int len,
                        VariableUnserializer::Type type,
-                       CArrRef class_whitelist = null_array);
+                       const Array& class_whitelist = null_array);
 
 inline Variant unserialize_from_buffer(const char* str, int len,
-                                       CArrRef class_whitelist = null_array) {
+                                       const Array& class_whitelist = null_array) {
   return unserialize_ex(str, len,
                         VariableUnserializer::Type::Serialize,
                         class_whitelist);
 }
 
 inline Variant unserialize_from_string(const String& str,
-                                       CArrRef class_whitelist = null_array) {
+                                       const Array& class_whitelist = null_array) {
   return unserialize_from_buffer(str.data(), str.size(), class_whitelist);
 }
 
@@ -331,7 +296,7 @@ bool function_exists(const String& function_name);
  * For autoload support
  */
 
-class AutoloadHandler : public RequestEventHandler {
+class AutoloadHandler final : public RequestEventHandler {
   enum Result {
     Failure,
     Success,
@@ -341,7 +306,7 @@ class AutoloadHandler : public RequestEventHandler {
 
   struct HandlerBundle {
     HandlerBundle() = delete;
-    HandlerBundle(CVarRef handler,
+    HandlerBundle(const Variant& handler,
                   smart::unique_ptr<CufIter>& cufIter) :
       m_handler(handler) {
       m_cufIter = std::move(cufIter);
@@ -373,8 +338,8 @@ public:
   virtual void requestShutdown();
 
   Array getHandlers();
-  bool addHandler(CVarRef handler, bool prepend);
-  void removeHandler(CVarRef handler);
+  bool addHandler(const Variant& handler, bool prepend);
+  void removeHandler(const Variant& handler);
   void removeAllHandlers();
   bool isRunning();
 
@@ -382,14 +347,14 @@ public:
   bool autoloadFunc(StringData* name);
   bool autoloadConstant(StringData* name);
   bool autoloadType(const String& name);
-  bool setMap(CArrRef map, const String& root);
+  bool setMap(const Array& map, const String& root);
   DECLARE_STATIC_REQUEST_LOCAL(AutoloadHandler, s_instance);
 
 private:
   template <class T>
   Result loadFromMap(const String& name, const String& kind, bool toLower,
                      const T &checkExists);
-  static String getSignature(CVarRef handler);
+  static String getSignature(const Variant& handler);
 
   Array m_map;
   String m_map_root;

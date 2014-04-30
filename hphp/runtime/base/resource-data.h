@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -17,15 +17,17 @@
 #ifndef incl_HPHP_RESOURCE_DATA_H_
 #define incl_HPHP_RESOURCE_DATA_H_
 
-#ifndef incl_HPHP_INSIDE_HPHP_COMPLEX_TYPES_H_
-#error Directly including 'resource_data.h' is prohibited. \
-       Include 'complex_types.h' instead.
-#endif
-
-#include "hphp/runtime/base/complex-types.h"
+#include "hphp/runtime/base/countable.h"
 #include "hphp/runtime/base/sweepable.h"
 
+#include "hphp/util/thread-local.h"
+
 namespace HPHP {
+
+class Array;
+class String;
+class VariableSerializer;
+
 ///////////////////////////////////////////////////////////////////////////////
 
 /**
@@ -33,9 +35,11 @@ namespace HPHP {
  */
 class ResourceData {
  private:
-  static DECLARE_THREAD_LOCAL_NO_CHECK(int, os_max_resource_id);
+  static __thread int os_max_resource_id;
 
  public:
+  static void resetMaxId() { os_max_resource_id = 0; }
+
   ResourceData();
 
  private:
@@ -60,29 +64,23 @@ class ResourceData {
 
   int32_t o_getId() const { return o_id; }
   void o_setId(int id); // only for BuiltinFiles
-  static int GetMaxResourceId();
 
   const String& o_getClassName() const;
   virtual const String& o_getClassNameHook() const;
   virtual const String& o_getResourceName() const;
   virtual bool isInvalid() const { return false; }
 
-  bool o_toBoolean() const { return 1; }
+  bool o_toBoolean() const { return true; }
   int64_t o_toInt64() const { return o_id; }
   double o_toDouble() const { return o_id; }
-  String o_toString() const {
-    return String("Resource id #") + String(o_id);
-  }
+  String o_toString() const;
   Array o_toArray() const;
 
   void serialize(VariableSerializer* serializer) const;
   void serializeImpl(VariableSerializer* serializer) const;
-  void dump() const;
 
  private:
-  static void compileTimeAssertions() {
-    static_assert(offsetof(ResourceData, m_count) == FAST_REFCOUNT_OFFSET, "");
-  }
+  static void compileTimeAssertions();
 
   //============================================================================
   // ResourceData fields
@@ -182,9 +180,6 @@ protected:
     delete this;
   }
 };
-
-typedef std::map<std::string, ResourceData*> ResourceMap;
-typedef std::map<std::string, ResourceMap> ResourceMapMap;
 
 ///////////////////////////////////////////////////////////////////////////////
 

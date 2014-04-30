@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -35,7 +35,7 @@ namespace HPHP {
 /**
  * Invoking an arbitrary user-defined function.
  */
-Variant invoke(const char *function, CVarRef params, strhash_t hash = -1,
+Variant invoke(const char *function, const Variant& params, strhash_t hash = -1,
     bool tryInterp = true, bool fatal = true);
 
 /**

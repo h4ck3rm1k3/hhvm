@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -18,24 +18,24 @@
 #define incl_HPHP_FILE_H_
 
 #include "hphp/runtime/base/types.h"
+#include "hphp/runtime/base/request-event-handler.h"
 #include "hphp/runtime/base/complex-types.h"
 #include "hphp/runtime/base/request-local.h"
+#include "hphp/runtime/base/smart-containers.h"
+
+struct stat;
 
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
 
 class StreamContext;
 
-class FileData : public RequestEventHandler {
+class FileData final : public RequestEventHandler {
 public:
   FileData() : m_pcloseRet(0) {}
   void clear() { m_pcloseRet = 0; }
-  virtual void requestInit() {
-    clear();
-  }
-  virtual void requestShutdown() {
-    clear();
-  }
+  void requestInit() override { clear(); }
+  void requestShutdown() override { clear(); }
   int m_pcloseRet;
 };
 
@@ -56,7 +56,7 @@ public:
   static String TranslatePathWithFileCache(const String& filename);
   static String TranslateCommand(const String& cmd);
   static Variant Open(const String& filename, const String& mode,
-                      int options = 0, CVarRef context = uninit_null());
+                      int options = 0, const Variant& context = uninit_null());
 
   static bool IsVirtualDirectory(const String& filename);
   static bool IsPlainFilePath(const String& filename);
@@ -64,7 +64,9 @@ public:
 public:
   static const int USE_INCLUDE_PATH;
 
-  explicit File(bool nonblocking = true);
+  explicit File(bool nonblocking = true,
+                const String& wrapper_type = null_string,
+                const String& stream_type = empty_string);
   virtual ~File();
 
   static StaticString& classnameof() {
@@ -89,9 +91,26 @@ public:
 
   /**
    * How to close this type of file.
+   *
+   * Your implementaitn should call invokeFiltersOnClose() before anything else
+   * to make sure that any user-provided php_user_filter instances get to flush
+   * and clean up.
    */
   virtual bool close() = 0;
   virtual bool isClosed() const { return m_closed;}
+
+  /* Use:
+   * - read() when fetching data to return to PHP
+   * - readImpl() when you want raw unbuffered data; for example, if you use
+   *   the Socket class to implement a network-based extension, use readImpl
+   *   to avoid the internal buffer, stream filters, and so on
+   * - filteredRead() (wrapper around readImpl()) to call user-supplied stream
+   *   filters if you reimplement read()
+   *
+   * Stream filters are only supported for read() - the fgetc() and seek()
+   * behavior in Zend is undocumented, surprising, and not supported
+   * in HHVM.
+   */
 
   /**
    * Read one chunk of input. Returns a null string on failure or eof.
@@ -100,6 +119,19 @@ public:
   virtual int getc();
   virtual String read(int64_t length);
   virtual String read();
+
+  /* Use:
+   * - write() in response to a PHP code that is documented as writing to a
+   *   stream
+   * - writeImpl() if you want C-like behavior, instead of PHP-like behavior;
+   *   for example, if you write a network-based extension using Socket
+   * - filteredWrite() if you re-implement write() to provide support for PHP
+   *   user filters
+   *
+   * Stream filters are only supported for write() - the fputc() and seek()
+   * behavior in Zend is undocumented, surprising, and not supported
+   * in HHVM.
+   */
 
   /**
    * Write one chunk of output. Returns bytes written.
@@ -120,11 +152,19 @@ public:
   virtual bool truncate(int64_t size);
   virtual bool lock(int operation);
   virtual bool lock(int operation, bool &wouldblock);
+  virtual bool stat(struct stat *sb);
 
   virtual Array getMetaData();
   virtual Array getWrapperMetaData() { return null_array; }
-  virtual const char *getStreamType() const { return "";}
-  virtual StreamContext *getStreamContext() { return m_stream_context; }
+  String getWrapperType() const;
+  String getStreamType() const { return m_streamType; }
+  Resource &getStreamContext() { return m_streamContext; }
+  void setStreamContext(Resource &context) { m_streamContext = context; }
+  void appendReadFilter(Resource &filter);
+  void appendWriteFilter(Resource &filter);
+  void prependReadFilter(Resource &filter);
+  void prependWriteFilter(Resource &filter);
+  bool removeFilter(Resource &filter);
 
   int64_t bufferedLen() { return m_writepos - m_readpos; }
 
@@ -148,12 +188,12 @@ public:
   /**
    * Write to file with specified format and arguments.
    */
-  int64_t printf(const String& format, CArrRef args);
+  int64_t printf(const String& format, const Array& args);
 
   /**
    * Write one line of csv record.
    */
-  int64_t writeCSV(CArrRef fields, char delimiter = ',', char enclosure = '"');
+  int64_t writeCSV(const Array& fields, char delimiter = ',', char enclosure = '"');
 
   /**
    * Read one line of csv record.
@@ -182,18 +222,38 @@ protected:
 
   // fields useful for both reads and writes
   int64_t m_position; // the current cursor position
+  bool m_eof;
 
   std::string m_name;
   std::string m_mode;
 
-  StreamContext *m_stream_context;
+  StringData* m_wrapperType;
+  StringData* m_streamType;
+  Resource m_streamContext;
+  smart::list<Resource> m_readFilters;
+  smart::list<Resource> m_writeFilters;
 
+  void invokeFiltersOnClose();
   void closeImpl();
   virtual void sweep() FOLLY_OVERRIDE;
 
+  /**
+   * call readImpl(m_buffer, CHUNK_SIZE), passing through stream filters if any.
+   */
+  int64_t filteredReadToBuffer();
+
+  /**
+   * call writeImpl, passing through stream filters if any.
+   */
+  int64_t filteredWrite(const char* buffer, int64_t length);
 private:
   static const int CHUNK_SIZE = 8192;
   char *m_buffer;
+  int64_t m_bufferSize;
+
+  String applyFilters(const String& buffer,
+                      smart::list<Resource>& filters,
+                      bool closing);
 };
 
 ///////////////////////////////////////////////////////////////////////////////

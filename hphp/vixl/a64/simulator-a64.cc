@@ -25,6 +25,7 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include "hphp/vixl/a64/simulator-a64.h"
+#include "hphp/util/thread-local.h"
 #include "folly/Format.h"
 #include <math.h>
 
@@ -116,6 +117,7 @@ Simulator::~Simulator() {
 void Simulator::Run() {
   while (pc_ != kEndOfSimAddress) {
     ExecuteInstruction();
+    ++instr_count_;
   }
 }
 
@@ -911,6 +913,9 @@ uint8_t* Simulator::AddressModeHelper(unsigned addr_reg,
     // Misalignment will cause a stack alignment fault.
     ALIGNMENT_EXCEPTION();
   }
+  if (addr_reg == 31) {
+    assert(is_on_stack(reinterpret_cast<void*>(address + offset)));
+  }
   if ((addrmode == PreIndex) || (addrmode == PostIndex)) {
     assert(offset != 0);
     set_xreg(addr_reg, address + offset, Reg31IsStackPointer);
@@ -929,6 +934,7 @@ uint64_t Simulator::MemoryRead(const uint8_t* address, unsigned num_bytes) {
   assert((num_bytes > 0) && (num_bytes <= sizeof(uint64_t)));
   uint64_t read = 0;
   memcpy(&read, address, num_bytes);
+  ++load_count_;
   return read;
 }
 
@@ -969,6 +975,7 @@ void Simulator::MemoryWrite(uint8_t* address,
   assert(address != nullptr);
   assert((num_bytes > 0) && (num_bytes <= sizeof(uint64_t)));
   memcpy(address, &value, num_bytes);
+  ++store_count_;
 }
 
 
@@ -2010,6 +2017,7 @@ void Simulator::VisitSystem(Instruction* instr) {
         switch (instr->ImmSystemRegister()) {
           case NZCV: set_xreg(instr->Rt(), nzcv().RawValue()); break;
           case FPCR: set_xreg(instr->Rt(), fpcr().RawValue()); break;
+          case TPIDR_EL0: set_xreg(instr->Rt(), HPHP::tlsBase()); break;
           default: not_implemented();
         }
         break;
@@ -2094,7 +2102,7 @@ void Simulator::DoHostCall(Instruction* instr) {
   uint32_t argc;
   assert(sizeof(*instr) == 1);
   memcpy(&argc, instr + kHostCallCountOffset, sizeof(argc));
-  assert(argc < 6);
+  assert(argc < 7);
 
   typedef intptr_t(*Native0Ptr)(void);
   typedef intptr_t(*Native1Ptr)(intptr_t);
@@ -2103,6 +2111,8 @@ void Simulator::DoHostCall(Instruction* instr) {
   typedef intptr_t(*Native4Ptr)(intptr_t, intptr_t, intptr_t, intptr_t);
   typedef intptr_t(*Native5Ptr)(intptr_t, intptr_t, intptr_t, intptr_t,
                                 intptr_t);
+  typedef intptr_t(*Native6Ptr)(intptr_t, intptr_t, intptr_t, intptr_t,
+                                intptr_t, intptr_t);
 
   intptr_t result;
 
@@ -2128,6 +2138,10 @@ void Simulator::DoHostCall(Instruction* instr) {
       case 5:
         result = reinterpret_cast<Native5Ptr>(xreg(16))(
           xreg(0), xreg(1), xreg(2), xreg(3), xreg(4));
+        break;
+      case 6:
+        result = reinterpret_cast<Native6Ptr>(xreg(16))(
+          xreg(0), xreg(1), xreg(2), xreg(3), xreg(4), xreg(5));
         break;
       default:
         not_reached();

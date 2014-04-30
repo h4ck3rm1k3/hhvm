@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -18,6 +18,10 @@
 #define incl_HPHP_FUNCTION_SCOPE_H_
 
 #include "hphp/compiler/expression/user_attribute.h"
+#include <list>
+#include <set>
+#include <utility>
+#include <vector>
 #include "hphp/compiler/analysis/block_scope.h"
 #include "hphp/compiler/option.h"
 #include "hphp/compiler/json.h"
@@ -106,6 +110,7 @@ public:
   bool isNative() const;
   bool isFinal() const;
   bool isMagic() const;
+  bool isBuiltin() const override { return !getStmt() || isNative(); }
   bool isRefParam(int index) const;
   bool isRefReturn() const { return m_refReturn;}
   bool isDynamicInvoke() const { return m_dynamicInvoke; }
@@ -158,8 +163,6 @@ public:
   const std::string &name() const {
     return getName();
   }
-
-  virtual std::string getId() const;
 
   int getRedeclaringId() const {
     return m_redeclaring;
@@ -219,8 +222,8 @@ public:
   /*
    * If this is a builtin function and does not need an ActRec
    */
-  bool needsActRec() const;
-  void setNeedsActRec();
+  bool noFCallBuiltin() const;
+  void setNoFCallBuiltin();
 
   /*
    * If this is a builtin (C++ or PHP) and can be redefined
@@ -344,6 +347,8 @@ public:
 
   UserAttributeMap& userAttributes() { return m_userAttributes;}
 
+  std::vector<std::string> getUserAttributeStringParams(const std::string& key);
+
   /**
    * Override BlockScope::outputPHP() to generate return type.
    */
@@ -379,10 +384,6 @@ public:
 
   void getClosureUseVars(ParameterExpressionPtrIdxPairVec &useVars,
                          bool filterUsed = true);
-
-  bool needsAnonClosureClass(ParameterExpressionPtrVec &useVars);
-
-  bool needsAnonClosureClass(ParameterExpressionPtrIdxPairVec &useVars);
 
   void addCaller(BlockScopePtr caller, bool careAboutReturn = true);
   void addNewObjCaller(BlockScopePtr caller);

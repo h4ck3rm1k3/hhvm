@@ -701,7 +701,7 @@ JApplicationWebRouterBaseTest::testParseRoute with data set #1
 JApplicationWebRouterBaseTest::testParseRoute with data set #10
 .
 JApplicationWebRouterBaseTest::testParseRoute with data set #11
-F
+.
 JApplicationWebRouterBaseTest::testParseRoute with data set #12
 .
 JApplicationWebRouterBaseTest::testParseRoute with data set #13
@@ -927,9 +927,9 @@ JArchiveTarTest::testExtract
 JArchiveTarTest::testIsSupported
 .
 JArchiveTest::testExtractBzip2
-E
+S
 JArchiveTest::testExtractGzip
-E
+S
 JArchiveTest::testExtractTar
 .
 JArchiveTest::testExtractZip
@@ -1273,27 +1273,27 @@ JCacheStorageTest::testRemove
 JCacheStorageTest::testStore
 .
 JCacheStorageTest_Main::testCacheClearGroup with data set #0
-F
+E
 JCacheStorageTest_Main::testCacheClearGroup with data set #1
 .
 JCacheStorageTest_Main::testCacheClearGroup with data set #2
-E
+F
 JCacheStorageTest_Main::testCacheClearGroup with data set #3
 F
 JCacheStorageTest_Main::testCacheClearNotGroup with data set #0
-F
+E
 JCacheStorageTest_Main::testCacheClearNotGroup with data set #1
 .
 JCacheStorageTest_Main::testCacheClearNotGroup with data set #2
-E
+F
 JCacheStorageTest_Main::testCacheClearNotGroup with data set #3
 F
 JCacheStorageTest_Main::testCacheHit with data set #0
-F
+.
 JCacheStorageTest_Main::testCacheHit with data set #1
 .
 JCacheStorageTest_Main::testCacheHit with data set #2
-.
+F
 JCacheStorageTest_Main::testCacheHit with data set #3
 F
 JCacheStorageTest_Main::testCacheMiss with data set #0
@@ -1305,19 +1305,19 @@ JCacheStorageTest_Main::testCacheMiss with data set #2
 JCacheStorageTest_Main::testCacheMiss with data set #3
 .
 JCacheStorageTest_Main::testCacheRemove with data set #0
-F
+.
 JCacheStorageTest_Main::testCacheRemove with data set #1
 .
 JCacheStorageTest_Main::testCacheRemove with data set #2
-.
+F
 JCacheStorageTest_Main::testCacheRemove with data set #3
 F
 JCacheStorageTest_Main::testCacheTimeout with data set #0
-F
+.
 JCacheStorageTest_Main::testCacheTimeout with data set #1
 .
 JCacheStorageTest_Main::testCacheTimeout with data set #2
-.
+F
 JCacheStorageTest_Main::testCacheTimeout with data set #3
 F
 JCacheStorageWincacheTest::testClean
@@ -1430,8 +1430,6 @@ JCategoriesTest::testGet
 S
 JCategoriesTest::testGetInstance
 .
-JCategoryNodeTest::testSetParent
-FATAL
 JClientFtpTest::testChdir
 I
 JClientFtpTest::testChmod
@@ -2945,11 +2943,11 @@ JDateTest::testToUnix with data set "Australia/BrisbaneGMT"
 JDateTest::testToUnix with data set "basic"
 .
 JDateTest::test__construct with data set "DateTime tzCT"
-.
+F
 JDateTest::test__construct with data set "basic"
 .
 JDateTest::test__construct with data set "tzCT"
-.
+F
 JDateTest::test__construct with data set "unix"
 .
 JDateTest::test__get with data set "day"
@@ -3024,14 +3022,6 @@ JDocumentJSONTest::testGetAndSetName
 .
 JDocumentJSONTest::testRender
 .
-JDocumentOpensearchTest::testAddImage
-I
-JDocumentOpensearchTest::testAddItem
-I
-JDocumentOpensearchTest::testRender
-.
-JDocumentOpensearchTest::testSetShortName
-I
 JDocumentRAWTest::testRender
 .
 JDocumentRendererAtomTest::testRender
@@ -5453,13 +5443,13 @@ JFormFieldHeadertagTest::testGetInput
 JFormFieldHelpsiteTest::testGetInput
 .
 JFormFieldHiddenTest::testGetInput
-E
+.
 JFormFieldImageListTest::testGetInput
 .
 JFormFieldIntegersTest::testGetInput
 .
 JFormFieldIntegersTest::testGetOptions
-F
+.
 JFormFieldLanguageTest::testGetInput
 .
 JFormFieldListTest::testGetInput
@@ -5903,31 +5893,31 @@ JFormTest::testBind
 JFormTest::testConstruct
 .
 JFormTest::testFilter
-E
+.
 JFormTest::testFilterField
 I
 JFormTest::testFindField
-F
+.
 JFormTest::testFindFieldsByFieldset
 .
 JFormTest::testFindFieldsByGroup
-F
+.
 JFormTest::testFindGroup
-F
+.
 JFormTest::testGetErrors
 .
 JFormTest::testGetField
-E
+.
 JFormTest::testGetFieldAttribute
 .
 JFormTest::testGetFieldset
 .
 JFormTest::testGetFieldsets
-F
+.
 JFormTest::testGetFormControl
 .
 JFormTest::testGetGroup
-F
+.
 JFormTest::testGetInput
 E
 JFormTest::testGetInstance
@@ -5939,7 +5929,7 @@ JFormTest::testGetName
 JFormTest::testGetValue
 .
 JFormTest::testLoad
-F
+.
 JFormTest::testLoadField
 .
 JFormTest::testLoadFieldType
@@ -5971,9 +5961,9 @@ JFormTest::testSetFields
 JFormTest::testSetValue
 .
 JFormTest::testSyncPaths
-F
+.
 JFormTest::testValidate
-F
+.
 JFormTest::testValidateField
 .
 JFormTest::testValidateField_missingRule
@@ -6513,15 +6503,15 @@ E
 JGoogleDataPicasaAlbumTest::testSave
 E
 JGoogleDataPicasaAlbumTest::testSetAccess
-F
+.
 JGoogleDataPicasaAlbumTest::testSetLocation
-F
+.
 JGoogleDataPicasaAlbumTest::testSetOption
 .
 JGoogleDataPicasaAlbumTest::testSetSummary
 .
 JGoogleDataPicasaAlbumTest::testSetTime
-F
+.
 JGoogleDataPicasaAlbumTest::testSetTitle
 .
 JGoogleDataPicasaAlbumTest::testUpload
@@ -6567,7 +6557,7 @@ JGoogleDataPicasaPhotoTest::testRefresh
 JGoogleDataPicasaPhotoTest::testSave
 .
 JGoogleDataPicasaPhotoTest::testSetAccess
-F
+.
 JGoogleDataPicasaPhotoTest::testSetOption
 .
 JGoogleDataPicasaPhotoTest::testSetSummary
@@ -7082,8 +7072,6 @@ JHtmlGridTest::testSort
 I
 JHtmlGridTest::testState
 I
-JHtmlIconsTest::testButtons
-.
 JHtmlJGridTest::testCheckedout
 I
 JHtmlJGridTest::testPublished
@@ -7345,115 +7333,115 @@ JImageFilterTest::testConstructor
 JImageFilterTest::testConstructorInvalidArgument
 .
 JImageTest::testConstructor
-E
+.
 JImageTest::testCrop with data set #0
-E
+.
 JImageTest::testCrop with data set #1
-E
+.
 JImageTest::testCrop with data set #2
-E
+.
 JImageTest::testCropWithoutLoadedImage
-F
+.
 JImageTest::testDestroy
-E
+.
 JImageTest::testFilter
-E
+.
 JImageTest::testFilterWithInvalidFilterType
-F
+.
 JImageTest::testFilterWithoutLoadedImage
-F
+.
 JImageTest::testGetFilterInstance
-E
+.
 JImageTest::testGetHeight
-E
+.
 JImageTest::testGetHeightWithoutLoadedImage
-F
+.
 JImageTest::testGetImageFilePropertiesWithInvalidFile
 .
 JImageTest::testGetWidth
-E
+.
 JImageTest::testGetWidthWithoutLoadedImage
-F
+.
 JImageTest::testIsTransparentWithoutLoadedImage
-F
+.
 JImageTest::testOpaqueIsNotTransparent
-E
+.
 JImageTest::testPrepareDimensions with data set #0
-E
+.
 JImageTest::testPrepareDimensions with data set #1
-E
+.
 JImageTest::testPrepareDimensions with data set #2
-E
+.
 JImageTest::testPrepareDimensions with data set #3
-E
+.
 JImageTest::testPrepareDimensions with data set #4
-E
+.
 JImageTest::testPrepareDimensions with data set #5
-E
+.
 JImageTest::testPrepareDimensions with data set #6
-E
+.
 JImageTest::testPrepareDimensionsWithInvalidScale
-F
+.
 JImageTest::testResize
-E
+.
 JImageTest::testResizeNoFile
-F
+.
 JImageTest::testResizeTransparent
-E
+.
 JImageTest::testRotate
-E
+.
 JImageTest::testRotateWithoutLoadedImage
-F
+.
 JImageTest::testSanitizeHeight with data set #0
-E
+.
 JImageTest::testSanitizeHeight with data set #1
-E
+.
 JImageTest::testSanitizeHeight with data set #2
-E
+.
 JImageTest::testSanitizeHeight with data set #3
-E
+.
 JImageTest::testSanitizeHeight with data set #4
-E
+.
 JImageTest::testSanitizeHeight with data set #5
-E
+.
 JImageTest::testSanitizeOffset with data set #0
-E
+.
 JImageTest::testSanitizeOffset with data set #1
-E
+.
 JImageTest::testSanitizeWidth with data set #0
-E
+.
 JImageTest::testSanitizeWidth with data set #1
-E
+.
 JImageTest::testSanitizeWidth with data set #2
-E
+.
 JImageTest::testSanitizeWidth with data set #3
-E
+.
 JImageTest::testSanitizeWidth with data set #4
-E
+.
 JImageTest::testSanitizeWidth with data set #5
-E
+.
 JImageTest::testToFileDefault
-E
+.
 JImageTest::testToFileGif
-E
+.
 JImageTest::testToFileInvalid
-F
+.
 JImageTest::testToFileJpg
-E
+.
 JImageTest::testToFilePng
-E
+.
 JImageTest::testTransparentIsTransparent
-E
+.
 JImageTest::testloadFile
-E
+.
 JImageTest::testloadFileBmp
-F
+.
 JImageTest::testloadFileGif
-E
+.
 JImageTest::testloadFilePng
-E
+.
 JImageTest::testloadFileWithInvalidFile
-F
+.
 JInputCliTest::testGet
 .
 JInputCliTest::testGetFromServer
@@ -8073,7 +8061,7 @@ JLogEntryTest::testBadPriorityValues
 JLogEntryTest::testCategorySanitization
 .
 JLogEntryTest::testDefaultValues
-.
+F
 JLogLoggerCallbackTest::testAddEntry
 .
 JLogLoggerCallbackTest::testConstructor01
@@ -8877,68 +8865,6 @@ JOpenstreetmapUserTest::testReplacePreferencesFailure
 JPaginationObjectTest::testConstructor with data set #0
 .
 JPaginationObjectTest::testConstructor with data set #1
-.
-JPaginationTest::testBuildDataObject with data set #0
-.
-JPaginationTest::testConstructor with data set #0
-.
-JPaginationTest::testConstructor with data set #1
-.
-JPaginationTest::testConstructor with data set #2
-.
-JPaginationTest::testConstructor with data set #3
-.
-JPaginationTest::testConstructor with data set #4
-.
-JPaginationTest::testGet with data set #0
-.
-JPaginationTest::testGet with data set #1
-.
-JPaginationTest::testGet with data set #2
-.
-JPaginationTest::testGet with data set #3
-.
-JPaginationTest::testGetAdditionalUrlParam
-.
-JPaginationTest::testGetData with data set #0
-.
-JPaginationTest::testGetLimitBox with data set #0
-.
-JPaginationTest::testGetPagesCounter with data set #0
-.
-JPaginationTest::testGetPagesCounter with data set #1
-.
-JPaginationTest::testGetPagesLinks with data set #0
-E
-JPaginationTest::testGetRowOffset
-.
-JPaginationTest::testItemActive with data set #0
-E
-JPaginationTest::testItemInactive with data set #0
-.
-JPaginationTest::testListRender with data set #0
-.
-JPaginationTest::testOrderDownIcon with data set #0
-.
-JPaginationTest::testOrderDownIcon with data set #1
-.
-JPaginationTest::testOrderDownIcon with data set #2
-.
-JPaginationTest::testOrderUpIcon with data set #0
-.
-JPaginationTest::testOrderUpIcon with data set #1
-.
-JPaginationTest::testOrderUpIcon with data set #2
-.
-JPaginationTest::testSet with data set #0
-.
-JPaginationTest::testSet with data set #1
-.
-JPaginationTest::testSet with data set #2
-.
-JPaginationTest::testSetAdditionalUrlParam
-.
-JPaginationTest::testSetEmptyAdditionalUrlParam
 .
 JPathTest::testCanChmod
 I
@@ -10086,10 +10012,6 @@ JToolbarButtonCustomTest::testFetchButton
 .
 JToolbarButtonCustomTest::testFetchId
 .
-JToolbarButtonHelpTest::testFetchButton
-F
-JToolbarButtonHelpTest::testFetchId
-.
 JToolbarButtonLinkTest::testFetchButton
 .
 JToolbarButtonLinkTest::testFetchId
@@ -10775,36 +10697,6 @@ JTwitterStatusesTest::testTweetWithMedia with data set #0
 JTwitterStatusesTest::testTweetWithMedia with data set #1
 .
 JTwitterStatusesTest::testTweetWithMediaFailure
-.
-JTwitterTest::testGetOption
-.
-JTwitterTest::testSetOption
-.
-JTwitterTest::test__GetBlock
-.
-JTwitterTest::test__GetDirectMessages
-E
-JTwitterTest::test__GetFavorites
-.
-JTwitterTest::test__GetFriends
-.
-JTwitterTest::test__GetHelp
-.
-JTwitterTest::test__GetLists
-.
-JTwitterTest::test__GetOther
-.
-JTwitterTest::test__GetPlaces
-.
-JTwitterTest::test__GetProfile
-.
-JTwitterTest::test__GetSearch
-.
-JTwitterTest::test__GetStatuses
-.
-JTwitterTest::test__GetTrends
-.
-JTwitterTest::test__GetUsers
 .
 JTwitterTrendsTest::testGetClosest
 .

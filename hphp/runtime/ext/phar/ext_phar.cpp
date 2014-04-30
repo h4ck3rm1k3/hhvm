@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    | Copyright (c) 1997-2010 The PHP Group                                |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
@@ -41,7 +41,7 @@ static const StaticString
 static class PharStreamWrapper : public Stream::Wrapper {
  public:
   virtual File* open(const String& filename, const String& mode,
-                     int options, CVarRef context) {
+                     int options, const Variant& context) {
     static const char cz[] = "phar://";
     if (strncmp(filename.data(), cz, sizeof(cz) - 1)) {
       return nullptr;
@@ -50,7 +50,7 @@ static class PharStreamWrapper : public Stream::Wrapper {
     static Func* f = SystemLib::s_PharClass->lookupMethod(s_openPhar.get());
 
     Variant ret;
-    g_vmContext->invokeFunc(
+    g_context->invokeFunc(
       ret.asTypedValue(),
       f,
       make_packed_array(filename),
@@ -78,7 +78,7 @@ static class PharStreamWrapper : public Stream::Wrapper {
       assert(!ret.toBoolean());
       return -1;
     }
-    CArrRef stat = ret.toArray();
+    const Array& stat = ret.toArray();
     buf->st_size = stat[s_size].asInt64Val();
     buf->st_atime = stat[s_atime].asInt64Val();
     buf->st_mtime = stat[s_mtime].asInt64Val();
@@ -94,7 +94,7 @@ static class PharStreamWrapper : public Stream::Wrapper {
   virtual Directory* opendir(const String& path) {
     static Func* f = SystemLib::s_PharClass->lookupMethod(s_opendir.get());
     Variant ret;
-    g_vmContext->invokeFunc(
+    g_context->invokeFunc(
       ret.asTypedValue(),
       f,
       make_packed_array(path),
@@ -113,7 +113,7 @@ static class PharStreamWrapper : public Stream::Wrapper {
   Variant callStat(const String& path) {
     static Func* f = SystemLib::s_PharClass->lookupMethod(s_stat.get());
     Variant ret;
-    g_vmContext->invokeFunc(
+    g_context->invokeFunc(
       ret.asTypedValue(),
       f,
       make_packed_array(path),

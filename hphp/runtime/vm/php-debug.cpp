@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -21,7 +21,7 @@
 #include <vector>
 
 #include "hphp/util/debug.h"
-#include "hphp/util/util.h"
+#include "hphp/util/text-util.h"
 #include "hphp/util/trace.h"
 
 #ifndef DEBUG
@@ -46,7 +46,7 @@ struct PhpDebugger {
     const char *env = getenv("PHPBREAKPOINTS");
     if (env) {
       vector<string> names;
-      Util::split(',', env, names, true /*ignoreEmpty*/);
+      split(',', env, names, true /*ignoreEmpty*/);
       for (size_t i = 0; i < names.size(); ++i) {
         enabledFunctions.insert(names[i]);
       }

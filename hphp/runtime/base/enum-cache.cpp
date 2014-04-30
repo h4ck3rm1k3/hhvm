@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -15,6 +15,7 @@
 */
 
 #include "hphp/runtime/base/enum-cache.h"
+#include <memory>
 
 namespace HPHP {
 
@@ -29,7 +30,7 @@ const EnumCache::EnumValues* EnumCache::getValues(
     const Class* klass,
     bool recurse) {
   if (klass->classVecLen() == 1 ||
-      !enumName->same(klass->classVec()[0]->name())) {
+      !enumName.get()->same(klass->classVec()[0]->name())) {
     std::string msg;
     msg += klass->name()->data();
     msg += " must derive from Enum";
@@ -49,7 +50,7 @@ void EnumCache::deleteValues(const Class* klass) {
   }
 }
 
-void EnumCache::failLookup(CVarRef msg) {
+void EnumCache::failLookup(const Variant& msg) {
   Object e(SystemLib::AllocExceptionObject(msg));
   throw e;
 }

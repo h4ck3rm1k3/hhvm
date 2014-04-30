@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -251,12 +251,12 @@ struct MInstrInfo {
     return m_instr;
   }
 
-  const MInstrAttr& getAttr(LocationCode lc) const {
+  MInstrAttr getAttr(LocationCode lc) const {
     assert(lc < NumLocationCodes);
     return m_baseOps[lc];
   }
 
-  const MInstrAttr& getAttr(MemberCode mc) const {
+  MInstrAttr getAttr(MemberCode mc) const {
     assert(mc < NumMemberCodes);
     return m_intermediateOps[mc];
   }
@@ -314,18 +314,40 @@ const char* memberCodeString(MemberCode mc);
 // Same semantics as parseLocationCode, but for member codes.
 MemberCode parseMemberCode(const char*);
 
-#define INCDEC_OPS \
-  INCDEC_OP(PreInc) \
-  INCDEC_OP(PostInc) \
-  INCDEC_OP(PreDec) \
-  INCDEC_OP(PostDec)
-constexpr int kNumIncDecOps = 4;
+#define INCDEC_OPS    \
+  INCDEC_OP(PreInc)   \
+  INCDEC_OP(PostInc)  \
+  INCDEC_OP(PreDec)   \
+  INCDEC_OP(PostDec)  \
+                      \
+  INCDEC_OP(PreIncO)  \
+  INCDEC_OP(PostIncO) \
+  INCDEC_OP(PreDecO)  \
+  INCDEC_OP(PostDecO) \
 
 enum class IncDecOp : uint8_t {
 #define INCDEC_OP(incDecOp) incDecOp,
   INCDEC_OPS
 #undef INCDEC_OP
 };
+
+inline bool isPre(IncDecOp op) {
+  return
+    op == IncDecOp::PreInc || op == IncDecOp::PreIncO ||
+    op == IncDecOp::PreDec || op == IncDecOp::PreDecO;
+}
+
+inline bool isInc(IncDecOp op) {
+  return
+    op == IncDecOp::PreInc || op == IncDecOp::PreIncO ||
+    op == IncDecOp::PostInc || op == IncDecOp::PostIncO;
+}
+
+inline bool isIncDecO(IncDecOp op) {
+  return
+    op == IncDecOp::PreIncO || op == IncDecOp::PreDecO ||
+    op == IncDecOp::PostIncO || op == IncDecOp::PostDecO;
+}
 
 #define ISTYPE_OPS                             \
   ISTYPE_OP(Null)                              \
@@ -341,6 +363,16 @@ enum class IsTypeOp : uint8_t {
 #define ISTYPE_OP(op) op,
   ISTYPE_OPS
 #undef ISTYPE_OP
+};
+
+#define INITPROP_OPS    \
+  INITPROP_OP(Static)   \
+  INITPROP_OP(NonStatic)
+
+enum class InitPropOp : uint8_t {
+#define INITPROP_OP(op) op,
+  INITPROP_OPS
+#undef INITPROP_OP
 };
 
 // NB: right now hphp/hhbbc/abstract-interp.cpp depends on this enum
@@ -422,8 +454,10 @@ enum class FatalOp : uint8_t {
   SETOP_OP(OrEqual,     OpBitOr) \
   SETOP_OP(XorEqual,    OpBitXor) \
   SETOP_OP(SlEqual,     OpShl) \
-  SETOP_OP(SrEqual,     OpShr)
-constexpr int kNumSetOpOps = 11;
+  SETOP_OP(SrEqual,     OpShr)  \
+  SETOP_OP(PlusEqualO,  OpAddO) \
+  SETOP_OP(MinusEqualO, OpSubO) \
+  SETOP_OP(MulEqualO,   OpMulO)
 
 enum class SetOpOp : uint8_t {
 #define SETOP_OP(setOpOp, bcOp) setOpOp,
@@ -466,8 +500,7 @@ enum class BareThisOp : uint8_t {
   O(Double,          ONE(DA),          NOV,             ONE(CV),    NF) \
   O(String,          ONE(SA),          NOV,             ONE(CV),    NF) \
   O(Array,           ONE(AA),          NOV,             ONE(CV),    NF) \
-  O(NewArray,        NA,               NOV,             ONE(CV),    NF) \
-  O(NewArrayReserve, ONE(IVA),         NOV,             ONE(CV),    NF) \
+  O(NewArray,        ONE(IVA),         NOV,             ONE(CV),    NF) \
   O(NewPackedArray,  ONE(IVA),         CMANY,           ONE(CV),    NF) \
   O(NewStructArray,  ONE(VSA),         SMANY,           ONE(CV),    NF) \
   O(AddElemC,        NA,               THREE(CV,CV,CV), ONE(CV),    NF) \
@@ -482,12 +515,16 @@ enum class BareThisOp : uint8_t {
   O(CnsU,            TWO(SA,SA),       NOV,             ONE(CV),    NF) \
   O(ClsCns,          ONE(SA),          ONE(AV),         ONE(CV),    NF) \
   O(ClsCnsD,         TWO(SA,SA),       NOV,             ONE(CV),    NF) \
+  O(NameA,           NA,               ONE(AV),         ONE(CV),    NF) \
   O(File,            NA,               NOV,             ONE(CV),    NF) \
   O(Dir,             NA,               NOV,             ONE(CV),    NF) \
   O(Concat,          NA,               TWO(CV,CV),      ONE(CV),    NF) \
   O(Add,             NA,               TWO(CV,CV),      ONE(CV),    NF) \
   O(Sub,             NA,               TWO(CV,CV),      ONE(CV),    NF) \
   O(Mul,             NA,               TWO(CV,CV),      ONE(CV),    NF) \
+  O(AddO,            NA,               TWO(CV,CV),      ONE(CV),    NF) \
+  O(SubO,            NA,               TWO(CV,CV),      ONE(CV),    NF) \
+  O(MulO,            NA,               TWO(CV,CV),      ONE(CV),    NF) \
   O(Div,             NA,               TWO(CV,CV),      ONE(CV),    NF) \
   O(Mod,             NA,               TWO(CV,CV),      ONE(CV),    NF) \
   O(Sqrt,            NA,               ONE(CV),         ONE(CV),    NF) \
@@ -630,6 +667,7 @@ enum class BareThisOp : uint8_t {
   O(FPassS,          ONE(IVA),         TWO(AV,CV),      ONE(FV),    FF) \
   O(FPassM,          TWO(IVA,MA),      MMANY,           ONE(FV),    FF) \
   O(FCall,           ONE(IVA),         FMANY,           ONE(RV),    CF_FF) \
+  O(FCallD,          THREE(IVA,SA,SA), FMANY,           ONE(RV),    CF_FF) \
   O(FCallArray,      NA,               ONE(FV),         ONE(RV),    CF_FF) \
   O(FCallBuiltin,    THREE(IVA,IVA,SA),CVUMANY,         ONE(RV),    CF) \
   O(CufSafeArray,    NA,               THREE(RV,CV,CV), ONE(CV),    NF) \
@@ -674,6 +712,8 @@ enum class BareThisOp : uint8_t {
   O(InterfaceExists, NA,               TWO(CV,CV),      ONE(CV),    NF) \
   O(TraitExists,     NA,               TWO(CV,CV),      ONE(CV),    NF) \
   O(VerifyParamType, ONE(IVA),         NOV,             NOV,        NF) \
+  O(VerifyRetTypeC,  NA,               ONE(CV),         ONE(CV),    NF) \
+  O(VerifyRetTypeV,  NA,               ONE(VV),         ONE(VV),    NF) \
   O(Self,            NA,               NOV,             ONE(AV),    NF) \
   O(Parent,          NA,               NOV,             ONE(AV),    NF) \
   O(LateBoundCls,    NA,               NOV,             ONE(AV),    NF) \
@@ -703,6 +743,9 @@ enum class BareThisOp : uint8_t {
   O(ArrayIdx,        NA,               THREE(CV,CV,CV), ONE(CV),    NF) \
   O(Floor,           NA,               ONE(CV),         ONE(CV),    NF) \
   O(Ceil,            NA,               ONE(CV),         ONE(CV),    NF) \
+  O(CheckProp,       ONE(SA),          NOV,             ONE(CV),    NF) \
+  O(InitProp,        TWO(SA,                                            \
+                       OA(InitPropOp)),ONE(CV),         NOV,        NF) \
   O(HighInvalid,     NA,               NOV,             NOV,        NF) \
 
 enum class Op : uint8_t {
@@ -729,12 +772,6 @@ inline constexpr bool operator>=(Op a, Op b) {
 
 inline bool isValidOpcode(Op op) {
   return op > OpLowInvalid && op < OpHighInvalid;
-}
-
-inline Op toOp(Opcode o) {
-  Op op = Op(o);
-  assert(isValidOpcode(op));
-  return op;
 }
 
 const MInstrInfo& getMInstrInfo(Op op);
@@ -923,6 +960,7 @@ void staticArrayStreamer(ArrayData*, std::ostream&);
  * Convert subopcodes or opcodes into strings.
  */
 const char* opcodeToName(Op op);
+const char* subopToName(InitPropOp);
 const char* subopToName(IsTypeOp);
 const char* subopToName(AssertTOp);
 const char* subopToName(AssertObjOp);
@@ -988,10 +1026,10 @@ inline bool isFPush(Op opcode) {
 
 inline bool isFCallStar(Op opcode) {
   switch (opcode) {
-    case OpFCall:
-    case OpFCallArray:
+    case Op::FCall:
+    case Op::FCallD:
+    case Op::FCallArray:
       return true;
-
     default:
       return false;
   }
@@ -1067,10 +1105,6 @@ inline bool isSwitch(Op op) {
   }
 }
 
-inline bool isSwitch(Opcode op) {
-  return isSwitch(toOp(op));
-}
-
 template<typename Out, typename In>
 Out& readData(In*& it) {
   Out& r = *(Out*)it;
@@ -1091,9 +1125,9 @@ void foreachSwitchTarget(const Op* op, L func) {
 }
 
 template<typename L>
-void foreachSwitchString(Opcode* op, L func) {
-  assert(toOp(*op) == OpSSwitch);
-  readData<Opcode>(op);
+void foreachSwitchString(const Op* op, L func) {
+  assert(*op == Op::SSwitch);
+  readData<Op>(op);
   int32_t size = readData<int32_t>(op) - 1; // the last item is the default
   for (int i = 0; i < size; ++i) {
     func(readData<Id>(op));

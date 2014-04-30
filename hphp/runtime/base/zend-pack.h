@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    | Copyright (c) 1998-2010 Zend Technologies Ltd. (http://www.zend.com) |
    +----------------------------------------------------------------------+
    | This source file is subject to version 2.00 of the Zend license,     |
@@ -37,7 +37,7 @@ public:
    * to the format argument. pack() idea stolen from Perl (implemented formats
    * behave the same as there).
    */
-  Variant pack(const String& fmt, CArrRef argv);
+  Variant pack(const String& fmt, const Array& argv);
 
   /**
    * Unpack binary string into named array elements according to format
@@ -76,7 +76,7 @@ private:
   int big_endian_int32_map[4];
   int little_endian_int32_map[4];
 
-  void pack(CVarRef val, int size, int *map, char *output);
+  void pack(const Variant& val, int size, int *map, char *output);
   int32_t unpack(const char *data, int size, int issigned, int *map);
 };
 

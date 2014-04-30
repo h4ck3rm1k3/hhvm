@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -67,17 +67,13 @@ inline TypedValue* zend_wrap_func(
   zPrepArgs(ar);
 
   // Using Variant so exceptions will decref them
-  Variant return_value_var(
-    RefData::Make(*init_null_variant.asTypedValue()),
-    Variant::noInc
-  );
-  TypedValue* return_value = return_value_var.asTypedValue();
+  Variant return_value_var(Variant::NullInit{});
+  auto const return_value = return_value_var.asTypedValue();
+  tvBox(return_value);
 
-  Variant this_ptr_var(
-    RefData::Make(*init_null_variant.asTypedValue()),
-    Variant::noInc
-  );
-  TypedValue* this_ptr = this_ptr_var.asTypedValue();
+  Variant this_ptr_var(Variant::NullInit{});
+  auto const this_ptr = this_ptr_var.asTypedValue();
+  tvBox(this_ptr);
 
   if (ar->hasThis()) {
     tvWriteObject(

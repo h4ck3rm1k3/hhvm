@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -20,8 +20,6 @@
 #include "hphp/runtime/base/file.h"
 #include "hphp/runtime/base/user-fs-node.h"
 
-struct stat;
-
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -29,7 +27,7 @@ class UserFile : public File, public UserFSNode {
 public:
   DECLARE_RESOURCE_ALLOCATION(UserFile);
 
-  explicit UserFile(Class *cls, CVarRef context = uninit_null());
+  explicit UserFile(Class *cls, const Variant& context = uninit_null());
   virtual ~UserFile();
 
   // overriding ResourceData
@@ -61,6 +59,7 @@ public:
     return lock(operation, wouldBlock);
   }
   virtual bool lock(int operation, bool &wouldBlock);
+  virtual bool stat(struct stat* buf);
 
   int access(const String& path, int mode);
   int lstat(const String& path, struct stat* buf);
@@ -71,7 +70,8 @@ public:
   bool rmdir(const String& path, int options);
 
 private:
-  int statImpl(const String& path, struct stat* stat_sb, int flags = 0);
+  int urlStat(const String& path, struct stat* stat_sb, int flags = 0);
+  bool flushImpl(bool strict);
 
 protected:
   const Func* m_StreamOpen;
@@ -84,13 +84,12 @@ protected:
   const Func* m_StreamFlush;
   const Func* m_StreamTruncate;
   const Func* m_StreamLock;
+  const Func* m_StreamStat;
   const Func* m_UrlStat;
   const Func* m_Unlink;
   const Func* m_Rename;
   const Func* m_Mkdir;
   const Func* m_Rmdir;
-
-  bool m_opened;
 };
 
 ///////////////////////////////////////////////////////////////////////////////

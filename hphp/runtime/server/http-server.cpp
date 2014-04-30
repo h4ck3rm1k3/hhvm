@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -22,6 +22,7 @@
 #include "hphp/runtime/base/externals.h"
 #include "hphp/runtime/base/http-client.h"
 #include "hphp/runtime/base/memory-manager.h"
+#include "hphp/runtime/base/pprof-server.h"
 #include "hphp/runtime/base/program-functions.h"
 #include "hphp/runtime/base/runtime-option.h"
 #include "hphp/runtime/base/thread-init-fini.h"
@@ -38,6 +39,7 @@
 #include "hphp/util/logger.h"
 #include "hphp/util/process.h"
 #include "hphp/util/ssl-init.h"
+#include "hphp/util/file-util.h"
 
 #include <sys/types.h>
 #include <signal.h>
@@ -56,6 +58,18 @@ std::shared_ptr<HttpServer> HttpServer::Server;
 time_t HttpServer::StartTime;
 
 const int kNumProcessors = sysconf(_SC_NPROCESSORS_ONLN);
+
+static void on_kill(int sig) {
+  signal(sig, SIG_DFL);
+  // There is a small race condition here with HttpServer::reset in
+  // program-functions.cpp, but it can only happen if we get a signal while
+  // shutting down.  The fix is to add a lock to HttpServer::Server but it seems
+  // like overkill.
+  if (HttpServer::Server) {
+    HttpServer::Server->stopOnSignal();
+  }
+  raise(sig);
+}
 
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -84,14 +98,14 @@ HttpServer::HttpServer()
   options.m_serverFD = RuntimeOption::ServerPortFd;
   options.m_sslFD = RuntimeOption::SSLPortFd;
   options.m_takeoverFilename = RuntimeOption::TakeoverFilename;
-  m_pageServer = serverFactory->createServer(options);
+  m_pageServer = std::move(serverFactory->createServer(options));
   m_pageServer->addTakeoverListener(this);
 
   if (additionalThreads) {
     auto handlerFactory = std::make_shared<WarmupRequestHandlerFactory>(
-        m_pageServer, additionalThreads,
-        RuntimeOption::ServerWarmupThrottleRequestCount,
-        RuntimeOption::RequestTimeoutSeconds);
+      m_pageServer.get(), additionalThreads,
+      RuntimeOption::ServerWarmupThrottleRequestCount,
+      RuntimeOption::RequestTimeoutSeconds);
     m_pageServer->setRequestHandlerFactory([handlerFactory] {
       return handlerFactory->createHandler();
     });
@@ -108,19 +122,19 @@ HttpServer::HttpServer()
   ServerOptions admin_options
     (RuntimeOption::ServerIP, RuntimeOption::AdminServerPort,
      RuntimeOption::AdminThreadCount);
-  m_adminServer = serverFactory->createServer(admin_options);
+  m_adminServer = std::move(serverFactory->createServer(admin_options));
   m_adminServer->setRequestHandlerFactory<AdminRequestHandler>(
     RuntimeOption::RequestTimeoutSeconds);
 
   for (unsigned int i = 0; i < RuntimeOption::SatelliteServerInfos.size();
        i++) {
     auto info = RuntimeOption::SatelliteServerInfos[i];
-    auto satellite = SatelliteServer::Create(info);
+    auto satellite(std::move(SatelliteServer::Create(info)));
     if (satellite) {
       if (info->getType() == SatelliteServer::Type::KindOfDanglingPageServer) {
-        m_danglings.push_back(satellite);
+        m_danglings.push_back(std::move(satellite));
       } else {
-        m_satellites.push_back(satellite);
+        m_satellites.push_back(std::move(satellite));
       }
     }
   }
@@ -129,15 +143,15 @@ HttpServer::HttpServer()
     std::shared_ptr<SatelliteServerInfo> xboxInfo(new XboxServerInfo());
     auto satellite = SatelliteServer::Create(xboxInfo);
     if (satellite) {
-      m_satellites.push_back(satellite);
+      m_satellites.push_back(std::move(satellite));
     }
   }
 
   StaticContentCache::TheCache.load();
   hphp_process_init();
 
-  Server::InstallStopSignalHandlers(m_pageServer);
-  Server::InstallStopSignalHandlers(m_adminServer);
+  signal(SIGTERM, on_kill);
+  signal(SIGUSR1, on_kill);
 
   if (!RuntimeOption::StartupDocument.empty()) {
     Hdf hdf;
@@ -280,6 +294,11 @@ void HttpServer::runOrExitProcess() {
     }
   }
 
+  if (RuntimeOption::HHProfServerEnabled) {
+    Logger::Info("Starting up profiling server");
+    HeapProfileServer::Server = std::make_shared<HeapProfileServer>();
+  }
+
   if (!Eval::Debugger::StartServer()) {
     Logger::Error("Unable to start debugger server");
     startupFailure();
@@ -346,6 +365,9 @@ void HttpServer::waitForServers() {
   if (RuntimeOption::AdminServerPort) {
     m_adminServer->waitForEnd();
   }
+  if (RuntimeOption::HHProfServerEnabled) {
+    HeapProfileServer::Server.reset();
+  }
   // all other servers invoke waitForEnd on stop
 }
 
@@ -376,6 +398,15 @@ void HttpServer::abortServers() {
   }
   if (RuntimeOption::ServerPort) {
     m_pageServer->stop();
+  }
+}
+
+void HttpServer::stopOnSignal() {
+  if (m_pageServer) {
+    m_pageServer->stop();
+  }
+  if (m_adminServer) {
+    m_adminServer->stop();
   }
 }
 
@@ -464,7 +495,7 @@ void HttpServer::checkMemory() {
 
 void HttpServer::getSatelliteStats(
     std::vector<std::pair<std::string, int>> *stats) {
-  for (auto i : m_satellites) {
+  for (const auto& i : m_satellites) {
     std::pair<std::string, int> active("satellite." + i->getName() + ".load",
                                        i->getActiveWorker());
     std::pair<std::string, int> queued("satellite." + i->getName() + ".queued",
@@ -491,6 +522,8 @@ bool HttpServer::startServer(bool pageServer) {
       }
       return true;
     } catch (FailedToListenException &e) {
+      if (RuntimeOption::ServerExitOnBindFail) return false;
+
       if (i == 0) {
         Logger::Info("shutting down old HPHP server by /stop command");
       }
@@ -505,6 +538,7 @@ bool HttpServer::startServer(bool pageServer) {
         return false;
       }
 
+      // TODO: fix /stop (t3725397)
       HttpClient http;
       std::string url = "http://";
       url += RuntimeOption::ServerIP;
@@ -525,7 +559,7 @@ bool HttpServer::startServer(bool pageServer) {
           std::string cmd = "bash -c '! fuser ";
           cmd += RuntimeOption::ServerFileSocket;
           cmd += "'";
-          if (Util::ssystem(cmd.c_str()) == 0) {
+          if (FileUtil::ssystem(cmd.c_str()) == 0) {
             unlink(RuntimeOption::ServerFileSocket.c_str());
           }
         }
@@ -584,7 +618,7 @@ bool HttpServer::startServer(bool pageServer) {
           std::string cmd = "lsof -t -i :";
           cmd += lexical_cast<std::string>(port);
           cmd += " | xargs kill -9";
-          Util::ssystem(cmd.c_str());
+          FileUtil::ssystem(cmd.c_str());
         }
         sleep(1);
       }

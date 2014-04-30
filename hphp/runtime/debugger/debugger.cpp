@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -15,14 +15,16 @@
 */
 
 #include "hphp/runtime/debugger/debugger.h"
+#include <set>
+#include <stack>
+#include <vector>
 #include "hphp/runtime/debugger/debugger_server.h"
 #include "hphp/runtime/debugger/debugger_client.h"
 #include "hphp/runtime/debugger/cmd/cmd_interrupt.h"
 #include "hphp/runtime/base/hphp-system.h"
-#include "hphp/runtime/vm/jit/translator-x64.h"
+#include "hphp/runtime/vm/jit/mc-generator.h"
 #include "hphp/runtime/vm/jit/translator-inline.h"
 #include "hphp/util/text-color.h"
-#include "hphp/util/util.h"
 #include "hphp/util/logger.h"
 
 namespace HPHP { namespace Eval {
@@ -272,7 +274,7 @@ void Debugger::Interrupt(int type, const char *program,
 // as "BreakPointReached". Currently this results in spurious work in the
 // debugger.
 void Debugger::InterruptVMHook(int type /* = BreakPointReached */,
-                               CVarRef e /* = null_variant */) {
+                               const Variant& e /* = null_variant */) {
   TRACE(2, "Debugger::InterruptVMHook\n");
   // Computing the interrupt site here pulls in more data from the Unit to
   // describe the current execution point.
@@ -516,7 +518,7 @@ void Debugger::removeProxy(DebuggerProxyPtr proxy) {
   m_proxyMap.erase(dummySid);
   // Clear the debugger blacklist PC upon last detach if JIT is used
   if (RuntimeOption::EvalJit && countConnectedProxy() == 0) {
-    JIT::tx64->clearDbgBL();
+    JIT::tx->clearDbgBL();
   }
 }
 
@@ -599,7 +601,7 @@ void Debugger::updateProxySandbox(DebuggerProxyPtr proxy,
     // don't have the sandbox on file yet. create a sandbox info with
     // no path for now. Sandbox path will be updated upon first request
     // with that sandbox arrives
-    DSandboxInfoPtr sb(new DSandboxInfo(sandboxId->toCPPString()));
+    DSandboxInfoPtr sb(new DSandboxInfo(sandboxId->toCppString()));
     proxy->updateSandbox(sb);
   }
 }
@@ -651,25 +653,25 @@ void Debugger::UsageLogInterrupt(const std::string &mode,
 
 DebuggerDummyEnv::DebuggerDummyEnv() {
   TRACE(2, "DebuggerDummyEnv::DebuggerDummyEnv\n");
-  g_vmContext->enterDebuggerDummyEnv();
+  g_context->enterDebuggerDummyEnv();
 }
 
 DebuggerDummyEnv::~DebuggerDummyEnv() {
   TRACE(2, "DebuggerDummyEnv::~DebuggerDummyEnv\n");
-  g_vmContext->exitDebuggerDummyEnv();
+  g_context->exitDebuggerDummyEnv();
 }
 
 ///////////////////////////////////////////////////////////////////////////////
 
 EvalBreakControl::EvalBreakControl(bool noBreak) {
   TRACE(2, "EvalBreakControl::EvalBreakControl\n");
-  m_noBreakSave = g_vmContext->m_dbgNoBreak;
-  g_vmContext->m_dbgNoBreak = noBreak;
+  m_noBreakSave = g_context->m_dbgNoBreak;
+  g_context->m_dbgNoBreak = noBreak;
 }
 
 EvalBreakControl::~EvalBreakControl() {
   TRACE(2, "EvalBreakControl::~EvalBreakControl\n");
-  g_vmContext->m_dbgNoBreak = m_noBreakSave;
+  g_context->m_dbgNoBreak = m_noBreakSave;
 }
 
 ///////////////////////////////////////////////////////////////////////////////

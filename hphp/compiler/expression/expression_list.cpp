@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -15,6 +15,8 @@
 */
 
 #include "hphp/compiler/expression/expression_list.h"
+#include <set>
+#include <vector>
 #include "hphp/compiler/expression/scalar_expression.h"
 #include "hphp/compiler/expression/simple_variable.h"
 #include "hphp/compiler/expression/unary_op_expression.h"
@@ -239,7 +241,7 @@ void ExpressionList::stripConcat() {
       BinaryOpExpressionPtr b
         (static_pointer_cast<BinaryOpExpression>(e));
       if (b->getOp() == '.') {
-        if(!b->getExp1()->isArray() && !b->getExp2()->isArray()) {
+        if (!b->getExp1()->isArray() && !b->getExp2()->isArray()) {
           e = b->getExp1();
           el.insertElement(b->getExp2(), i + 1);
           continue;
@@ -508,7 +510,7 @@ unsigned int ExpressionList::checkLitstrKeys() const {
     if (!ret) return 0;
     if (!value.isString()) return 0;
     String str = value.toString();
-    if (str->isInteger()) return 0;
+    if (str.isInteger()) return 0;
     string s(str.data(), str.size());
     keys.insert(s);
   }

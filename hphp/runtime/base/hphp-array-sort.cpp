@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -15,11 +15,13 @@
 */
 
 #include "hphp/runtime/base/hphp-array.h"
+
 #include "hphp/runtime/base/array-init.h"
 #include "hphp/runtime/base/array-iterator.h"
-#include "hphp/runtime/base/sort-helpers.h"
-#include "hphp/runtime/base/complex-types.h"
 #include "hphp/runtime/base/execution-context.h"
+#include "hphp/runtime/base/sort-helpers.h"
+#include "hphp/runtime/base/tv-helpers.h"
+
 #include "hphp/runtime/vm/jit/translator-inline.h"
 
 // inline methods of HphpArray
@@ -250,17 +252,17 @@ void HphpArray::Asort(ArrayData* ad, int sort_flags, bool ascending) {
     return true;                                                \
   } while (0)
 
-bool HphpArray::Uksort(ArrayData* ad, CVarRef cmp_function) {
+bool HphpArray::Uksort(ArrayData* ad, const Variant& cmp_function) {
   auto a = asHphpArray(ad);
   USER_SORT_BODY(KeyAccessor, false);
 }
 
-bool HphpArray::Usort(ArrayData* ad, CVarRef cmp_function) {
+bool HphpArray::Usort(ArrayData* ad, const Variant& cmp_function) {
   auto a = asHphpArray(ad);
   USER_SORT_BODY(ValAccessor, true);
 }
 
-bool HphpArray::Uasort(ArrayData* ad, CVarRef cmp_function) {
+bool HphpArray::Uasort(ArrayData* ad, const Variant& cmp_function) {
   auto a = asHphpArray(ad);
   USER_SORT_BODY(ValAccessor, false);
 }

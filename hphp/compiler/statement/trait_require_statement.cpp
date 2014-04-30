@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -18,6 +18,7 @@
 #include "hphp/compiler/statement/class_statement.h"
 #include "hphp/compiler/analysis/class_scope.h"
 #include "hphp/compiler/code_model_enums.h"
+#include "hphp/util/text-util.h"
 
 namespace HPHP {
 
@@ -48,7 +49,7 @@ void TraitRequireStatement::onParseRecur(AnalysisResultConstPtr ar,
                    "Only traits can require in class scope");
   }
 
-  ar->parseOnDemandByClass(Util::toLower(m_required));
+  ar->parseOnDemandByClass(toLower(m_required));
   scope->addTraitRequirement(m_required, m_extends);
 }
 

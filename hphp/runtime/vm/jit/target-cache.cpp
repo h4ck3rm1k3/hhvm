@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -19,6 +19,7 @@
 #include <string>
 #include <vector>
 #include <mutex>
+#include <limits>
 
 #include "hphp/runtime/base/strings.h"
 #include "hphp/runtime/base/complex-types.h"
@@ -31,10 +32,9 @@
 #include "hphp/runtime/vm/jit/jump-smash.h"
 #include "hphp/runtime/vm/jit/write-lease.h"
 #include "hphp/runtime/vm/treadmill.h"
+#include "hphp/util/text-util.h"
 
 namespace HPHP { namespace JIT {
-
-using namespace HPHP::MethodLookup;
 
 TRACE_SET_MOD(targetcache);
 
@@ -59,7 +59,7 @@ T* handleToPtr(RDS::Handle h) {
 
 template<class Cache>
 typename Cache::Pair* keyToPair(Cache* cache, const StringData* k) {
-  assert(Util::isPowerOfTwo(Cache::kNumLines));
+  assert(folly::isPowTwo(Cache::kNumLines));
   return cache->m_pairs + (k->hash() & (Cache::kNumLines - 1));
 }
 
@@ -92,7 +92,7 @@ const Func* FuncCache::lookup(RDS::Handle handle, StringData* sd) {
       JIT::VMRegAnchor _;
       func = Unit::loadFunc(sd);
       if (!func) {
-        raise_error("Undefined function: %s", sd->data());
+        raise_error("Call to undefined function %s()", sd->data());
       }
     }
     func->validate();
@@ -156,11 +156,11 @@ static void methodCacheFatal(ActRec* ar,
                              StringData* name,
                              Class* ctx) {
   try {
-    g_vmContext->lookupMethodCtx(
+    g_context->lookupMethodCtx(
       cls,
       name,
       ctx,
-      MethodLookup::CallType::ObjMethod,
+      CallType::ObjMethod,
       true /* raise error */
     );
     not_reached();
@@ -191,11 +191,11 @@ static void methodCacheSlowerPath(MethodCache* mce,
                                   StringData* name,
                                   Class* cls) {
   auto const ctx = reinterpret_cast<ActRec*>(ar->m_savedRbp)->m_func->cls();
-  auto func = g_vmContext->lookupMethodCtx(
+  auto func = g_context->lookupMethodCtx(
     cls,
     name,
     ctx,
-    MethodLookup::CallType::ObjMethod,
+    CallType::ObjMethod,
     false /* raise error */
   );
 
@@ -506,8 +506,9 @@ void pmethodCacheMissPath(MethodCache* mce,
     imm = fval << 32 | cval;
   }
   if (!smashMov(pdata->smashImmAddr, imm)) {
-    // someone beat us to it
-    return methodCacheSlowerPath<Fatal>(mce, ar, name, cls);
+    // Someone beat us to it.  Bail early so we don't double-free
+    // pdata.
+    return;
   }
 
   // Regardless of whether the inline cache was populated, smash the
@@ -567,8 +568,7 @@ SPropCache::lookupSProp(const Class *cls, const StringData *name, Class* ctx) {
   if (UNLIKELY(!visible || !accessible)) {
     if (!raiseOnError) return NULL;
     std::string propertyName;
-    Util::string_printf(propertyName, "%s::%s",
-                  cls->name()->data(), name->data());
+    string_printf(propertyName, "%s::%s", cls->name()->data(), name->data());
     raise_error("Invalid static property access: %s", propertyName.c_str());
   }
   return val;
@@ -666,8 +666,8 @@ StaticMethodCache::lookup(RDS::Handle handle, const NamedEntity *ne,
         clsName->data(), methName->data(), __builtin_return_address(0));
 
   const Func* f;
-  VMExecutionContext* ec = g_vmContext;
-  const Class* cls = Unit::loadClass(ne, clsName);
+  auto const ec = g_context.getNoCheck();
+  auto const cls = Unit::loadClass(ne, clsName);
   if (UNLIKELY(!cls)) {
     raise_error(Strings::UNKNOWN_CLASS, clsName->data());
   }
@@ -704,7 +704,7 @@ StaticMethodFCache::lookup(RDS::Handle handle, const Class* cls,
   Stats::inc(Stats::TgtCache_StaticMethodFHit, -1);
 
   const Func* f;
-  VMExecutionContext* ec = g_vmContext;
+  auto const ec = g_context.getNoCheck();
   LookupResult res = ec->lookupClsMethod(f, cls, methName,
                                          nullptr,
                                          arGetContextClass((ActRec*)vmfp),

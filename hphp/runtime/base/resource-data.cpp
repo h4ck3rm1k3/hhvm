@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -14,10 +14,10 @@
    +----------------------------------------------------------------------+
 */
 
-#include "hphp/runtime/base/complex-types.h"
+#include "hphp/runtime/base/builtin-functions.h"
 #include "hphp/runtime/base/variable-serializer.h"
 #include "hphp/runtime/base/execution-context.h"
-#include "hphp/runtime/base/builtin-functions.h"
+#include "hphp/runtime/base/types.h"
 
 #include "hphp/system/systemlib.h"
 
@@ -25,22 +25,18 @@ namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
 
 // resources have a separate id space
-IMPLEMENT_THREAD_LOCAL_NO_CHECK(int, ResourceData::os_max_resource_id);
+__thread int ResourceData::os_max_resource_id;
 
 ResourceData::ResourceData() : m_count(0) {
   assert(uintptr_t(this) % sizeof(TypedValue) == 0);
-  int& pmax = *os_max_resource_id;
+  int& pmax = os_max_resource_id;
   if (pmax < 3) pmax = 3; // reserving 1, 2, 3 for STDIN, STDOUT, STDERR
   o_id = ++pmax;
 }
 
-int ResourceData::GetMaxResourceId() {
-  return *(os_max_resource_id.getCheck());
-}
-
 void ResourceData::o_setId(int id) {
   assert(id >= 1 && id <= 3); // only for STDIN, STDOUT, STDERR
-  int &pmax = *os_max_resource_id;
+  int &pmax = os_max_resource_id;
   if (o_id != id) {
     if (o_id == pmax) --pmax;
     o_id = id;
@@ -48,19 +44,19 @@ void ResourceData::o_setId(int id) {
 }
 
 ResourceData::~ResourceData() {
-  int &pmax = *os_max_resource_id;
+  int &pmax = os_max_resource_id;
   if (o_id && o_id == pmax) {
     --pmax;
   }
   o_id = -1;
 }
 
-Array ResourceData::o_toArray() const {
-  return empty_array;
+String ResourceData::o_toString() const {
+  return String("Resource id #") + String(o_id);
 }
 
-void ResourceData::dump() const {
-  o_toArray().dump();
+Array ResourceData::o_toArray() const {
+  return empty_array;
 }
 
 const StaticString s_Unknown("Unknown");
@@ -94,6 +90,10 @@ void ResourceData::serialize(VariableSerializer* serializer) const {
     serializeImpl(serializer);
   }
   serializer->decNestedLevel((void*)this);
+}
+
+void ResourceData::compileTimeAssertions() {
+  static_assert(offsetof(ResourceData, m_count) == FAST_REFCOUNT_OFFSET, "");
 }
 
 ///////////////////////////////////////////////////////////////////////////////

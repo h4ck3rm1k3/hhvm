@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -55,6 +55,10 @@ IMPLEMENT_THREAD_LOCAL(Repo, t_dh);
 
 Repo& Repo::get() {
   return *t_dh.get();
+}
+
+void Repo::shutdown() {
+  t_dh.destroy();
 }
 
 SimpleMutex Repo::s_lock;
@@ -191,6 +195,37 @@ Unit* Repo::loadUnit(const std::string& name, const MD5& md5) {
     return nullptr;
   }
   return m_urp.load(name, md5);
+}
+
+std::vector<std::pair<std::string,MD5>> Repo::enumerateUnits() {
+  std::vector<std::pair<std::string,MD5>> ret;
+
+  try {
+    RepoStmt stmt(*this);
+    stmt.prepare(
+      folly::format(
+        "SELECT path, md5 FROM {};", table(RepoIdCentral, "FileMd5")
+      ).str()
+    );
+    RepoTxn txn(*this);
+    RepoTxnQuery query(txn, stmt);
+
+    for (query.step(); query.row(); query.step()) {
+      std::string path;
+      MD5 md5;
+
+      query.getStdString(0, path);
+      query.getMd5(1, md5);
+
+      ret.emplace_back(path, md5);
+    }
+
+    txn.commit();
+  } catch (RepoExc& e) {
+    fprintf(stderr, "failed to enumerate units: %s\n", e.what());
+  }
+
+  return ret;
 }
 
 void Repo::InsertFileHashStmt::insert(RepoTxn& txn, const StringData* path,
@@ -437,24 +472,29 @@ void Repo::disconnect() {
 }
 
 void Repo::initCentral() {
-  std::vector<std::string> failPaths;
+  std::string error;
 
   assert(m_dbc == nullptr);
+  auto tryPath = [this, &error](const char* path) {
+    std::string subErr;
+    if (!openCentral(path, subErr)) return false;
+
+    folly::format(&error, "  {}\n", subErr.empty() ? path : subErr);
+    return true;
+  };
 
   // Try Repo.Central.Path (or HHVM_REPO_CENTRAL_PATH).
   if (!RuntimeOption::RepoCentralPath.empty()) {
-    if (!openCentral(RuntimeOption::RepoCentralPath.c_str())) {
+    if (!tryPath(RuntimeOption::RepoCentralPath.c_str())) {
       return;
     }
-    failPaths.push_back(RuntimeOption::RepoCentralPath);
   }
 
   const char* HHVM_REPO_CENTRAL_PATH = getenv("HHVM_REPO_CENTRAL_PATH");
   if (HHVM_REPO_CENTRAL_PATH != nullptr) {
-    if (!openCentral(HHVM_REPO_CENTRAL_PATH)) {
+    if (!tryPath(HHVM_REPO_CENTRAL_PATH)) {
       return;
     }
-    failPaths.push_back(HHVM_REPO_CENTRAL_PATH);
   }
 
   // Try "$HOME/.hhvm.hhbc".
@@ -462,10 +502,9 @@ void Repo::initCentral() {
   if (HOME != nullptr) {
     std::string centralPath = HOME;
     centralPath += "/.hhvm.hhbc";
-    if (!openCentral(centralPath.c_str())) {
+    if (!tryPath(centralPath.c_str())) {
       return;
     }
-    failPaths.push_back(centralPath);
   }
 
   // Try the equivalent of "$HOME/.hhvm.hhbc", but look up the home directory
@@ -480,26 +519,18 @@ void Repo::initCentral() {
           && (HOME == nullptr || strcmp(HOME, pwbufp->pw_dir))) {
         std::string centralPath = pwbufp->pw_dir;
         centralPath += "/.hhvm.hhbc";
-        if (!openCentral(centralPath.c_str())) {
+        if (!tryPath(centralPath.c_str())) {
           return;
         }
-        failPaths.push_back(centralPath);
       }
     }
   }
 
+  error = "Failed to initialize central HHBC repository:\n" + error;
   // Database initialization failed; this is an unrecoverable state.
-  for (auto const& p : failPaths) {
-    Logger::Error("Failed to initialize central HHBC repository at '%s'",
-                  p.c_str());
-  }
-  // TODO(#3518905): this fails in practice sometimes if file
-  // descriptor limits are too low, which is why the assertion
-  // suggests that.  But we should restructure this code so we know
-  // here why each failPath failed and can log the real reasons
-  // instead of guessing.
-  always_assert(!"Failed to connect to HHBC repo (possibly "
-                 "out of file descriptors?); aborting");
+  Logger::Error("%s", error.c_str());
+
+  always_assert_log(false, [&error] { return error; });
 }
 
 static int busyHandler(void* opaque, int nCalls) {
@@ -522,17 +553,20 @@ std::string Repo::insertSchema(const char* path) {
   return result;
 }
 
-bool Repo::openCentral(const char* path) {
-  std::string repoPath = insertSchema(path);
+bool Repo::openCentral(const char* rawPath, std::string& errorMsg) {
+  std::string repoPath = insertSchema(rawPath);
   // SQLITE_OPEN_NOMUTEX specifies that the connection be opened such
   // that no mutexes are used to protect the database connection from other
   // threads.  However, multiple connections can still be used concurrently,
   // because SQLite as a whole is thread-safe.
-  if (sqlite3_open_v2(repoPath.c_str(), &m_dbc,
-                      SQLITE_OPEN_NOMUTEX |
-                      SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, nullptr)) {
+  if (int err = sqlite3_open_v2(repoPath.c_str(), &m_dbc,
+                                SQLITE_OPEN_NOMUTEX |
+                                SQLITE_OPEN_READWRITE |
+                                SQLITE_OPEN_CREATE, nullptr)) {
     TRACE(1, "Repo::%s() failed to open candidate central repo '%s'\n",
              __func__, repoPath.c_str());
+    errorMsg = folly::format("Failed to open {}: {} - {}",
+                             repoPath, err, sqlite3_errmsg(m_dbc)).str();
     return true;
   }
   // Register a busy handler to avoid spurious SQLITE_BUSY errors.
@@ -545,6 +579,8 @@ bool Repo::openCentral(const char* path) {
   } catch (RepoExc& re) {
     TRACE(1, "Repo::%s() failed to initialize connection to canditate repo"
              " '%s': %s\n", __func__, repoPath.c_str(), re.what());
+    errorMsg = folly::format("Failed to initialize connection to {}: {}",
+                             repoPath, re.what()).str();
     return true;
   }
   // sqlite3_open_v2() will silently open in read-only mode if file permissions
@@ -555,6 +591,8 @@ bool Repo::openCentral(const char* path) {
   if (initSchema(RepoIdCentral, centralWritable) || !centralWritable) {
     TRACE(1, "Repo::initSchema() failed for candidate central repo '%s'\n",
              repoPath.c_str());
+    errorMsg = folly::format("Failed to initialize schema in {}",
+                             repoPath).str();
     return true;
   }
   m_centralRepo = repoPath;
@@ -785,4 +823,36 @@ bool Repo::writable(int repoId) {
   return true;
 }
 
- } // HPHP::VM
+//////////////////////////////////////////////////////////////////////
+
+void batchCommit(std::vector<std::unique_ptr<UnitEmitter>> ues) {
+  auto& repo = Repo::get();
+
+  // Attempt batch commit.  This can legitimately fail due to multiple input
+  // files having identical contents.
+  bool err = false;
+  {
+    RepoTxn txn(repo);
+
+    for (auto& ue : ues) {
+      if (repo.insertUnit(ue.get(), UnitOrigin::File, txn)) {
+        err = true;
+        break;
+      }
+    }
+    if (!err) {
+      txn.commit();
+    }
+  }
+
+  // Commit units individually if an error occurred during batch commit.
+  if (err) {
+    for (auto& ue : ues) {
+      repo.commitUnit(ue.get(), UnitOrigin::File);
+    }
+  }
+}
+
+//////////////////////////////////////////////////////////////////////
+
+}

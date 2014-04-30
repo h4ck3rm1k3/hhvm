@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -16,6 +16,7 @@
 
 
 #include "hphp/compiler/analysis/block_scope.h"
+#include <utility>
 
 #include "hphp/compiler/analysis/analysis_result.h"
 #include "hphp/compiler/expression/expression.h"
@@ -25,6 +26,7 @@
 #include "hphp/compiler/analysis/class_scope.h"
 #include "hphp/compiler/analysis/function_scope.h"
 #include "hphp/compiler/analysis/file_scope.h"
+#include "hphp/util/text-util.h"
 
 using namespace HPHP;
 
@@ -44,17 +46,13 @@ BlockScope::BlockScope(const std::string &name, const std::string &docComment,
     m_inVisitScopes(false), m_needsReschedule(false),
     m_rescheduleFlags(0), m_selfUser(0) {
   m_originalName = name;
-  m_name = Util::toLower(name);
+  m_name = toLower(name);
   m_variables = VariableTablePtr(new VariableTable(*this));
   m_constants = ConstantTablePtr(new ConstantTable(*this));
 
   Lock lock(SymbolTable::AllSymbolTablesMutex);
   SymbolTable::AllSymbolTables.push_back(m_variables);
   SymbolTable::AllSymbolTables.push_back(m_constants);
-}
-
-std::string BlockScope::getId() const {
-  return CodeGenerator::FormatLabel(getName());
 }
 
 void BlockScope::incLoopNestedLevel() {
@@ -155,7 +153,7 @@ bool BlockScope::hasUser(BlockScopeRawPtr user, int useKinds) const {
 }
 
 void BlockScope::addUse(BlockScopeRawPtr user, int useKinds) {
-  if ((is(ClassScope) || is(FunctionScope)) && getStmt()) {
+  if ((is(ClassScope) || is(FunctionScope)) && !isBuiltin()) {
 
     if (user.get() == this) {
       m_selfUser |= useKinds;

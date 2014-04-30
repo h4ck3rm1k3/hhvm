@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -256,17 +256,11 @@ ExpressionPtr AssignmentExpression::preOptimize(AnalysisResultConstPtr ar) {
               g_context->setThrowAllErrors(true);
               if (aoff) {
                 if (!aoff->getScalarValue(o)) break;
-                if (v.isString()) {
-                  if (!o.isInteger() ||
-                      o.toInt64Val() < 0 ||
-                      o.toInt64Val() >= v.toCStrRef().size()) {
-                    // warnings should be raised...
-                    break;
-                  }
-                }
-                v.set(o, r);
+                if (!v.isArray()) break;
+                v.toArrRef().set(o, r);
               } else {
-                v.append(r);
+                if (!v.isArray()) break;
+                v.toArrRef().append(r);
               }
               g_context->setThrowAllErrors(false);
             } catch (...) {

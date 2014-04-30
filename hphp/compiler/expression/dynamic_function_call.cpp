@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -21,7 +21,6 @@
 #include "hphp/compiler/expression/simple_function_call.h"
 #include "hphp/compiler/analysis/function_scope.h"
 #include "hphp/compiler/analysis/class_scope.h"
-#include "hphp/util/util.h"
 #include "hphp/compiler/option.h"
 #include "hphp/compiler/analysis/variable_table.h"
 
@@ -78,13 +77,18 @@ ExpressionPtr DynamicFunctionCall::preOptimize(AnalysisResultConstPtr ar) {
     if (m_nameExp->getScalarValue(v) &&
         v.isString()) {
       string name = v.toString().c_str();
-      ExpressionPtr cls = m_class;
-      if (!cls && !m_className.empty()) {
-        cls = makeScalarExpression(ar, m_className);
+      // if the name starts with a '\' give up any early optimizations and
+      // let FPushFunc manage the namespace normalizations at runtime
+      // (some static analyzer may still be able to optimize it - e.g. HHBBC)
+      if (name[0] != '\\') {
+        ExpressionPtr cls = m_class;
+        if (!cls && !m_className.empty()) {
+          cls = makeScalarExpression(ar, m_className);
+        }
+        return ExpressionPtr(NewSimpleFunctionCall(
+          getScope(), getLocation(),
+          name, false, m_params, cls));
       }
-      return ExpressionPtr(NewSimpleFunctionCall(
-        getScope(), getLocation(),
-        name, false, m_params, cls));
     }
   }
   return ExpressionPtr();
@@ -118,7 +122,6 @@ TypePtr DynamicFunctionCall::inferTypes(AnalysisResultPtr ar, TypePtr type,
 void DynamicFunctionCall::outputCodeModel(CodeGenerator &cg) {
   if (m_class || !m_className.empty()) {
     cg.printObjectHeader("ClassMethodCallExpression", 4);
-    cg.printPropertyHeader("className");
     StaticClassName::outputCodeModel(cg);
     cg.printPropertyHeader("methodExpression");
   } else {

@@ -235,10 +235,6 @@ class bcmathExtension : public Extension {
  public:
   bcmathExtension() : Extension("bcmath", NO_EXTENSION_VERSION_YET) {}
   virtual void moduleInit() {
-    IniSetting::Bind(this, "bcmath.scale", "0",
-                     ini_on_update_long, ini_get_long,
-                     &BCG(bc_precision));
-
     HHVM_FE(bcscale);
     HHVM_FE(bcadd);
     HHVM_FE(bcsub);
@@ -251,6 +247,13 @@ class bcmathExtension : public Extension {
     HHVM_FE(bcsqrt);
     loadSystemlib();
   }
+
+  virtual void threadInit() {
+    IniSetting::Bind(this, IniSetting::PHP_INI_ALL,
+                     "bcmath.scale", "0",
+                     &BCG(bc_precision));
+  }
+
 } s_bcmath_extension;
 
 ///////////////////////////////////////////////////////////////////////////////

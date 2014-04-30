@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -18,6 +18,7 @@
 #define incl_HPHP_VM_EXTRADATA_H_
 
 #include "hphp/util/ringbuffer.h"
+#include <algorithm>
 #include "hphp/runtime/vm/jit/ir.h"
 #include "hphp/runtime/vm/jit/types.h"
 #include "hphp/runtime/vm/jit/phys-loc.h"
@@ -126,18 +127,18 @@ struct LocalId : IRExtraData {
 struct LocalData : LocalId {
   explicit LocalData(uint32_t id, SSATmp* src)
     : LocalId(id)
-    , valSrc(src)
+    , typeSrc(src)
   {}
 
   bool cseEquals(const LocalData& o) const {
-    return LocalId::cseEquals(o) && valSrc == o.valSrc;
+    return LocalId::cseEquals(o) && typeSrc == o.typeSrc;
   }
   size_t cseHash() const {
-    return hash_int64_pair(LocalId::cseHash(), int64_t(valSrc));
+    return hash_int64_pair(LocalId::cseHash(), int64_t(typeSrc));
   }
   std::string show() const;
 
-  SSATmp* valSrc;
+  SSATmp* typeSrc;
 };
 
 struct IterId : IRExtraData {
@@ -150,6 +151,19 @@ struct IterId : IRExtraData {
   std::string show() const { return folly::to<std::string>(iterId); }
 
   uint32_t iterId;
+};
+
+struct IterData : IRExtraData {
+  explicit IterData(uint32_t iter, uint32_t key, uint32_t val)
+    : iterId(iter), keyId(key), valId(val)
+  {}
+  std::string show() const {
+    return folly::format("{}::{}::{}", iterId, valId, valId).str();
+  }
+
+  uint32_t iterId;
+  uint32_t keyId;
+  uint32_t valId;
 };
 
 struct ClassData : IRExtraData {
@@ -173,9 +187,11 @@ struct FuncData : IRExtraData {
 };
 
 struct ClsMethodData : IRExtraData {
-  ClsMethodData(const StringData* cls, const StringData* method)
+  ClsMethodData(const StringData* cls, const StringData* method,
+                const NamedEntity* ne = nullptr)
     : clsName(cls)
     , methodName(method)
+    , namedEntity(ne)
   {}
 
   std::string show() const {
@@ -192,6 +208,7 @@ struct ClsMethodData : IRExtraData {
 
   const StringData* clsName;
   const StringData* methodName;
+  const NamedEntity* namedEntity;
 };
 
 struct FPushCufData : IRExtraData {
@@ -211,26 +228,6 @@ struct FPushCufData : IRExtraData {
 
   uint32_t args;
   uint32_t iterId;
-};
-
-struct ConstData : IRExtraData {
-  template<class T>
-  explicit ConstData(T data)
-    : m_dataBits(constToBits(data))
-  {}
-
-  template<class T>
-  T as() const {
-    T ret;
-    std::memcpy(&ret, &m_dataBits, sizeof ret);
-    return ret;
-  }
-
-  bool cseEquals(ConstData o) const { return m_dataBits == o.m_dataBits; }
-  size_t cseHash() const { return std::hash<uintptr_t>()(m_dataBits); }
-
-private:
-  uintptr_t m_dataBits;
 };
 
 /*
@@ -278,9 +275,11 @@ struct ActRecInfo : IRExtraData {
   int32_t numArgs;
 
   std::string show() const {
-    auto numArgsAndCtorFlag = ActRec::decodeNumArgs(numArgs);
-    return folly::to<std::string>(numArgsAndCtorFlag.first,
-                                  numArgsAndCtorFlag.second ? ",ctor" : "",
+    ActRec ar;
+    ar.m_numArgsAndGenCtorFlags = numArgs;
+    return folly::to<std::string>(ar.numArgs(),
+                                  ar.isFromFPushCtor() ? ",ctor" : "",
+                                  ar.inGenerator() ? ",gen" : "",
                                   invName ? " M" : "");
   }
 };
@@ -353,20 +352,22 @@ struct PropByteOffset : IRExtraData {
 };
 
 /*
- * DefInlineFP is present when we need to create a frame for inlining.
- * This instruction also carries some metadata used by tracebuilder to
- * track state during an inlined call.
+ * DefInlineFP is present when we need to create a frame for inlining.  This
+ * instruction also carries some metadata used by IRBuilder to track state
+ * during an inlined call.
  */
 struct DefInlineFPData : IRExtraData {
   std::string show() const {
     return folly::to<std::string>(
-      target->fullName()->data(), "(),", retBCOff, ',', retSPOff
+      target->fullName()->data(), "(),", retBCOff, ',', retSPOff,
+      retTypePred < Type::Gen ? (',' + retTypePred.toString()) : ""
     );
   }
 
   const Func* target;
   Offset retBCOff;
   Offset retSPOff;
+  Type retTypePred;
 };
 
 /*
@@ -725,6 +726,38 @@ struct NewStructData : IRExtraData {
   std::string show() const;
 };
 
+struct RawMemData : IRExtraData {
+# define RAW_MEM_DATA_TYPES                     \
+  RAW_TYPE(ContLabel)                           \
+  RAW_TYPE(ContIndex)                           \
+  RAW_TYPE(ContState)                           \
+  RAW_TYPE(ContEntry)                           \
+  RAW_TYPE(StrLen)                              \
+  RAW_TYPE(FuncNumParams)                       \
+
+  enum Type : uint8_t {
+#   define RAW_TYPE(name) name,
+    RAW_MEM_DATA_TYPES
+#   undef RAW_TYPE
+  };
+# define RAW_TYPE(name) +1
+  static constexpr size_t kNumTypes = RAW_MEM_DATA_TYPES;
+# undef RAW_TYPE
+
+  struct Info {
+    const int64_t offset;
+    const int size;
+    const JIT::Type type;
+  };
+
+  explicit RawMemData(Type t) : type(t) {}
+
+  Type type;
+
+  const Info& info() const;
+  std::string show() const;
+};
+
 //////////////////////////////////////////////////////////////////////
 
 #define X(op, data)                                                   \
@@ -739,7 +772,6 @@ X(LdSSwitchDestSlow,            LdSSwitchData);
 X(GuardLoc,                     LocalId);
 X(CheckLoc,                     LocalId);
 X(AssertLoc,                    LocalId);
-X(OverrideLocVal,               LocalId);
 X(LdLocAddr,                    LocalData);
 X(LdLoc,                        LocalData);
 X(DecRefLoc,                    LocalId);
@@ -749,18 +781,31 @@ X(IterFree,                     IterId);
 X(MIterFree,                    IterId);
 X(CIterFree,                    IterId);
 X(DecodeCufIter,                IterId);
-X(AllocObjFast,                 ClassData);
+X(IterInit,                     IterData);
+X(IterInitK,                    IterData);
+X(IterNext,                     IterData);
+X(IterNextK,                    IterData);
+X(WIterInit,                    IterData);
+X(WIterInitK,                   IterData);
+X(WIterNext,                    IterData);
+X(WIterNextK,                   IterData);
+X(MIterInit,                    IterData);
+X(MIterInitK,                   IterData);
+X(MIterNext,                    IterData);
+X(MIterNextK,                   IterData);
+X(ConstructInstance,            ClassData);
+X(InitProps,                    ClassData);
+X(InitSProps,                   ClassData);
+X(NewInstanceRaw,               ClassData);
+X(InitObjProps,                 ClassData);
 X(LdCtx,                        FuncData);
 X(CufIterSpillFrame,            FPushCufData);
-X(DefConst,                     ConstData);
-X(LdConst,                      ConstData);
 X(SpillFrame,                   ActRecInfo);
 X(GuardStk,                     StackOffset);
 X(CheckStk,                     StackOffset);
 X(CastStk,                      StackOffset);
 X(CoerceStk,                    StackOffset);
 X(AssertStk,                    StackOffset);
-X(AssertStkVal,                 StackOffset);
 X(ReDefSP,                      ReDefSPData);
 X(ReDefGeneratorSP,             ReDefGeneratorSPData);
 X(DefSP,                        StackOffset);
@@ -797,6 +842,12 @@ X(ReqBindJmpLt,                 ReqBindJccData);
 X(ReqBindJmpLte,                ReqBindJccData);
 X(ReqBindJmpEq,                 ReqBindJccData);
 X(ReqBindJmpNeq,                ReqBindJccData);
+X(ReqBindJmpGtInt,              ReqBindJccData);
+X(ReqBindJmpGteInt,             ReqBindJccData);
+X(ReqBindJmpLtInt,              ReqBindJccData);
+X(ReqBindJmpLteInt,             ReqBindJccData);
+X(ReqBindJmpEqInt,              ReqBindJccData);
+X(ReqBindJmpNeqInt,             ReqBindJccData);
 X(ReqBindJmpSame,               ReqBindJccData);
 X(ReqBindJmpNSame,              ReqBindJccData);
 X(ReqBindJmpInstanceOfBitmask,  ReqBindJccData);
@@ -809,6 +860,12 @@ X(SideExitJmpLt,                SideExitJccData);
 X(SideExitJmpLte,               SideExitJccData);
 X(SideExitJmpEq,                SideExitJccData);
 X(SideExitJmpNeq,               SideExitJccData);
+X(SideExitJmpGtInt,             SideExitJccData);
+X(SideExitJmpGteInt,            SideExitJccData);
+X(SideExitJmpLtInt,             SideExitJccData);
+X(SideExitJmpLteInt,            SideExitJccData);
+X(SideExitJmpEqInt,             SideExitJccData);
+X(SideExitJmpNeqInt,            SideExitJccData);
 X(SideExitJmpSame,              SideExitJccData);
 X(SideExitJmpNSame,             SideExitJccData);
 X(SideExitJmpInstanceOfBitmask, SideExitJccData);
@@ -831,6 +888,10 @@ X(RBTrace,                      RBTraceData);
 X(Shuffle,                      ShuffleData);
 X(ThingExists,                  ClassKindData);
 X(NewStructArray,               NewStructData);
+X(LdRaw,                        RawMemData);
+X(StRaw,                        RawMemData);
+X(LdContArRaw,                  RawMemData);
+X(StContArRaw,                  RawMemData);
 
 #undef X
 

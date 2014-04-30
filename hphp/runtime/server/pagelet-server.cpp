@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -36,9 +36,9 @@ namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
 
 PageletTransport::PageletTransport(
-    const String& url, CArrRef headers, const String& postData,
+    const String& url, const Array& headers, const String& postData,
     const String& remoteHost, const set<std::string> &rfc1867UploadedFiles,
-    CArrRef files, int timeoutSeconds)
+    const Array& files, int timeoutSeconds)
     : m_refCount(0),
       m_timeoutSeconds(timeoutSeconds),
       m_done(false),
@@ -145,15 +145,6 @@ void PageletTransport::onSendEndImpl() {
 bool PageletTransport::isUploadedFile(const String& filename) {
   return m_rfc1867UploadedFiles.find(filename.c_str()) !=
          m_rfc1867UploadedFiles.end();
-}
-
-bool PageletTransport::moveUploadedFile(const String& filename,
-    const String& destination) {
-  if (!isUploadedFile(filename.c_str())) {
-    Logger::Error("%s is not an uploaded file.", filename.c_str());
-    return false;
-  }
-  return moveUploadedFileHelper(filename, destination);
 }
 
 bool PageletTransport::getFiles(std::string &files) {
@@ -314,10 +305,10 @@ class PageletTask : public SweepableResourceData {
 public:
   DECLARE_RESOURCE_ALLOCATION(PageletTask)
 
-  PageletTask(const String& url, CArrRef headers, const String& post_data,
+  PageletTask(const String& url, const Array& headers, const String& post_data,
               const String& remote_host,
               const std::set<std::string> &rfc1867UploadedFiles,
-              CArrRef files, int timeoutSeconds) {
+              const Array& files, int timeoutSeconds) {
     m_job = new PageletTransport(url, headers, remote_host, post_data,
                                  rfc1867UploadedFiles, files, timeoutSeconds);
     m_job->incRefCount();
@@ -375,10 +366,10 @@ void PageletServer::Stop() {
 }
 
 Resource PageletServer::TaskStart(
-  const String& url, CArrRef headers,
+  const String& url, const Array& headers,
   const String& remote_host,
   const String& post_data /* = null_string */,
-  CArrRef files /* = null_array */,
+  const Array& files /* = null_array */,
   int timeoutSeconds /* = -1 */,
   PageletServerTaskEvent *event /* = nullptr*/
 ) {
@@ -417,7 +408,7 @@ Resource PageletServer::TaskStart(
   return null_resource;
 }
 
-int64_t PageletServer::TaskStatus(CResRef task) {
+int64_t PageletServer::TaskStatus(const Resource& task) {
   PageletTask *ptask = task.getTyped<PageletTask>();
   PageletTransport *job = ptask->getJob();
   if (!job->isPipelineEmpty()) {
@@ -429,7 +420,7 @@ int64_t PageletServer::TaskStatus(CResRef task) {
   return PAGELET_NOT_READY;
 }
 
-String PageletServer::TaskResult(CResRef task, Array &headers, int &code,
+String PageletServer::TaskResult(const Resource& task, Array &headers, int &code,
                                  int64_t timeout_ms) {
   PageletTask *ptask = task.getTyped<PageletTask>();
   return ptask->getJob()->getResults(headers, code, timeout_ms);

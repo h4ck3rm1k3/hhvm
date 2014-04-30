@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -79,10 +79,10 @@ void initFuncTypeProfileData(const Func* func) {
 
 const char* getTypeString(const TypedValue* value) {
   if (value->m_type == KindOfObject) {
-    return value->m_data.pobj->o_getClassName()->data();
+    return value->m_data.pobj->o_getClassName().data();
   }
   if (value->m_type == KindOfResource) {
-    return value->m_data.pres->o_getClassName()->data();
+    return value->m_data.pres->o_getClassName().data();
   }
   return getDataTypeString(value->m_type).c_str();
 }

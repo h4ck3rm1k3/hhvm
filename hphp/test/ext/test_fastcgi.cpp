@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -19,15 +19,13 @@
 #include "hphp/compiler/builtin_symbols.h"
 #include "hphp/compiler/code_generator.h"
 #include "hphp/compiler/analysis/analysis_result.h"
-#include "hphp/util/util.h"
 #include "hphp/util/process.h"
 #include "hphp/compiler/option.h"
 #include "hphp/util/async-func.h"
-#include "hphp/runtime/ext/ext_curl.h"
 #include "hphp/runtime/ext/ext_network.h"
 #include "hphp/runtime/ext/ext_socket.h"
 #include "hphp/runtime/ext/ext_options.h"
-#include "hphp/runtime/ext/ext_json.h"
+#include "hphp/runtime/ext/json/ext_json.h"
 #include "hphp/runtime/ext/ext_file.h"
 #include "hphp/runtime/base/runtime-option.h"
 #include "hphp/runtime/base/types.h"
@@ -38,6 +36,8 @@
 #include <memory>
 #include <cmath>
 #include <cstdio>
+#include <algorithm>
+#include <iterator>
 
 using namespace HPHP;
 
@@ -90,7 +90,7 @@ bool TestMessage::bodyFromStr(const String& input) {
   return true;
 }
 
-bool TestMessage::fromJson(CVarRef json) {
+bool TestMessage::fromJson(const Variant& json) {
   if (!json.isArray()) {
     printf("Invalid format of a message\n");
     return false;
@@ -164,7 +164,7 @@ bool TestMessage::fromJson(CVarRef json) {
 
 ///////////////////////////////////////////////////////////////////////////////
 
-bool TestMessageExchange::fromJson(CVarRef json) {
+bool TestMessageExchange::fromJson(const Variant& json) {
   if (json.isNull()) {
     printf("Not a valid JSON\n");
     return false;
@@ -270,7 +270,7 @@ bool TestFastCGIServer::LoadExchangeFromJson(const std::string& path,
   }
   std::string json_str((std::istreambuf_iterator<char>(f)),
                         std::istreambuf_iterator<char>());
-  Variant json = f_json_decode(json_str, true);
+  Variant json = HHVM_FN(json_decode)(json_str, true);
   if (!result.fromJson(json)) {
     printf("Error loading message exchange file: %s\n", path.c_str());
     return false;

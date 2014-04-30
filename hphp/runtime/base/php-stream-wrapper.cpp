@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -26,6 +26,11 @@
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
 
+const StaticString s_php("PHP");
+const StaticString s_input("Input");
+const StaticString s_temp("TEMP");
+const StaticString s_memory("MEMORY");
+
 File *PhpStreamWrapper::openFD(const char *sFD) {
   if (!RuntimeOption::ClientExecutionMode()) {
     raise_warning("Direct access to file descriptors "
@@ -47,12 +52,12 @@ File *PhpStreamWrapper::openFD(const char *sFD) {
     return nullptr;
   }
 
-  return NEWOBJ(PlainFile)(dup(nFD), true);
+  return NEWOBJ(PlainFile)(dup(nFD), true, s_php);
 }
 
 
 File* PhpStreamWrapper::open(const String& filename, const String& mode,
-                             int options, CVarRef context) {
+                             int options, const Variant& context) {
   if (strncasecmp(filename.c_str(), "php://", 6)) {
     return nullptr;
   }
@@ -60,21 +65,28 @@ File* PhpStreamWrapper::open(const String& filename, const String& mode,
   const char *req = filename.c_str() + sizeof("php://") - 1;
 
   if (!strcasecmp(req, "stdin")) {
-    return NEWOBJ(PlainFile)(dup(STDIN_FILENO), true);
+    return NEWOBJ(PlainFile)(dup(STDIN_FILENO), true, s_php);
   }
   if (!strcasecmp(req, "stdout")) {
-    return NEWOBJ(PlainFile)(dup(STDOUT_FILENO), true);
+    return NEWOBJ(PlainFile)(dup(STDOUT_FILENO), true, s_php);
   }
   if (!strcasecmp(req, "stderr")) {
-    return NEWOBJ(PlainFile)(dup(STDERR_FILENO), true);
+    return NEWOBJ(PlainFile)(dup(STDERR_FILENO), true, s_php);
   }
   if (!strncasecmp(req, "fd/", sizeof("fd/") - 1)) {
     return openFD(req + sizeof("fd/") - 1);
   }
 
-  if (!strncasecmp(req, "temp", sizeof("temp") - 1) ||
-      !strcasecmp(req, "memory")) {
-    std::unique_ptr<TempFile> file(NEWOBJ(TempFile)());
+  if (!strncasecmp(req, "temp", sizeof("temp") - 1)) {
+    std::unique_ptr<TempFile> file(NEWOBJ(TempFile)(true, s_php, s_temp));
+    if (!file->valid()) {
+      raise_warning("Unable to create temporary file");
+      return nullptr;
+    }
+    return file.release();
+  }
+  if (!strcasecmp(req, "memory")) {
+    std::unique_ptr<TempFile> file(NEWOBJ(TempFile)(true, s_php, s_memory));
     if (!file->valid()) {
       raise_warning("Unable to create temporary file");
       return nullptr;
@@ -84,7 +96,7 @@ File* PhpStreamWrapper::open(const String& filename, const String& mode,
 
   if (!strcasecmp(req, "input")) {
     auto raw_post = g_context->getRawPostData();
-    return NEWOBJ(MemFile)(raw_post.c_str(), raw_post.size());
+    return NEWOBJ(MemFile)(raw_post.c_str(), raw_post.size(), s_php, s_input);
   }
 
   if (!strcasecmp(req, "output")) {

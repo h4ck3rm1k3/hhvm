@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -32,12 +32,12 @@
  * level associated with it;  Enable tracing a module by setting the TRACE
  * environment variable to a comma-separated list of module:level pairs. E.g.:
  *
- * env TRACE=tx64:1,bcinterp:3,tmp0:1 ./hhvm/hhvm ...
+ * env TRACE=mcg:1,bcinterp:3,tmp0:1 ./hhvm/hhvm ...
  *
  * In a source file, select the compilation unit's module by calling the
  * TRACE_SET_MODE macro. E.g.,
  *
- *   TRACE_SET_MOD(tx64);
+ *   TRACE_SET_MOD(mcg);
  *
  *   ...
  *   TRACE(0, "See this for any trace-enabled build: %d\n", foo);
@@ -65,7 +65,7 @@
  * Example:
  *
  *   {
- *     Trace::Bump bumper{Trace::tx64, 2};
+ *     Trace::Bump bumper{Trace::mcg, 2};
  *     FTRACE(1, "asd\n");  // only fires at level >= 3
  *   }
  *   FTRACE(1, "asd\n");    // back to normal
@@ -74,7 +74,7 @@
  * There is also support for conditionally bumping in the bumper:
  *
  *   {
- *     Trace::Bump bumper{Trace::tx64, 2, somePredicate(foo)};
+ *     Trace::Bump bumper{Trace::mcg, 2, somePredicate(foo)};
  *     // Only bumped if somePredicate(foo) returned true.
  *   }
  *
@@ -89,8 +89,8 @@ namespace Trace {
       TM(tprefix)     /* Meta: prefix with string */          \
       TM(traceAsync)  /* Meta: lazy writes to disk */ \
       TM(trans)       \
-      TM(tx64)        \
-      TM(tx64stats)   \
+      TM(mcg)        \
+      TM(mcgstats)   \
       TM(ringbuffer)  \
       TM(ustubs)      \
       TM(unwind)      \
@@ -102,6 +102,8 @@ namespace Trace {
       TM(regalloc)    \
       TM(bcinterp)    \
       TM(interpOne)   \
+      TM(dispatchBB)  \
+      TM(dispatchN)   \
       TM(refcount)    \
       TM(asmx64)      \
       TM(runtime)     \
@@ -111,8 +113,11 @@ namespace Trace {
       TM(stats)       \
       TM(emitter)     \
       TM(hhbbc)       \
+      TM(hhbbc_index) \
       TM(hhbbc_time)  \
+      TM(hhbbc_emit)  \
       TM(hhbbc_dump)  \
+      TM(hhbbc_dce)   \
       TM(hhbc)        \
       TM(stat)        \
       TM(fr)          \
@@ -131,6 +136,7 @@ namespace Trace {
       TM(region)      \
       TM(atomicvector)\
       TM(datablock)   \
+      TM(jittime)     \
       /* Stress categories, to exercise rare paths */ \
       TM(stress_txInterpPct)    \
       TM(stress_txInterpSeed)   \
@@ -226,6 +232,37 @@ inline bool moduleEnabledRelease(Module tm, int level = 1) {
   return levels[tm] + tl_levels[tm] >= level;
 }
 
+// Trace::Bump that is on for release tracing.
+struct BumpRelease {
+  BumpRelease(Module mod, int adjust, bool condition = true)
+    : m_live(condition)
+    , m_mod(mod)
+    , m_adjust(adjust)
+  {
+    if (m_live) tl_levels[m_mod] -= m_adjust;
+  }
+
+  BumpRelease(BumpRelease&& o)
+    : m_live(o.m_live)
+    , m_mod(o.m_mod)
+    , m_adjust(o.m_adjust)
+  {
+    o.m_live = false;
+  }
+
+  ~BumpRelease() {
+    if (m_live) tl_levels[m_mod] += m_adjust;
+  }
+
+  BumpRelease(const BumpRelease&) = delete;
+  BumpRelease& operator=(const BumpRelease&) = delete;
+
+private:
+  bool m_live;
+  Module m_mod;
+  int m_adjust;
+};
+
 //////////////////////////////////////////////////////////////////////
 
 #if (defined(DEBUG) || defined(USE_TRACE)) /* { */
@@ -281,35 +318,7 @@ struct Indent {
 };
 
 // See doc comment above for usage.
-struct Bump {
-  Bump(Module mod, int adjust, bool condition = true)
-    : m_live(condition)
-    , m_mod(mod)
-    , m_adjust(adjust)
-  {
-    if (m_live) tl_levels[m_mod] -= m_adjust;
-  }
-
-  Bump(Bump&& o)
-    : m_live(o.m_live)
-    , m_mod(o.m_mod)
-    , m_adjust(o.m_adjust)
-  {
-    o.m_live = false;
-  }
-
-  ~Bump() {
-    if (m_live) tl_levels[m_mod] += m_adjust;
-  }
-
-  Bump(const Bump&) = delete;
-  Bump& operator=(const Bump&) = delete;
-
-private:
-  bool m_live;
-  Module m_mod;
-  int m_adjust;
-};
+using Bump = BumpRelease;
 
 inline std::string indent() {
   return std::string(indentDepth, ' ');

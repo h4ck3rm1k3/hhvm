@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    | Copyright (c) 1997-2010 The PHP Group                                |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
@@ -32,22 +32,22 @@
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
 
-bool HHVM_FUNCTION(bzclose, CResRef bz) {
+bool HHVM_FUNCTION(bzclose, const Resource& bz) {
   return f_fclose(bz);
 }
 
-Variant HHVM_FUNCTION(bzread, CResRef bz, int length /* = 1024 */) {
+Variant HHVM_FUNCTION(bzread, const Resource& bz, int length /* = 1024 */) {
   return f_fread(bz, length);
 }
 
-Variant HHVM_FUNCTION(bzwrite, CResRef bz, const String& data,
+Variant HHVM_FUNCTION(bzwrite, const Resource& bz, const String& data,
                                int length /* = 0 */) {
   return f_fwrite(bz, data, length);
 }
 
 const StaticString s_r("r"), s_w("w");
 
-Variant HHVM_FUNCTION(bzopen, CVarRef filename, const String& mode) {
+Variant HHVM_FUNCTION(bzopen, const Variant& filename, const String& mode) {
   if (mode != s_r && mode != s_w) {
     raise_warning(
       "'%s' is not a valid mode for bzopen(). "
@@ -112,22 +112,22 @@ Variant HHVM_FUNCTION(bzopen, CVarRef filename, const String& mode) {
   return handle;
 }
 
-bool HHVM_FUNCTION(bzflush, CResRef bz) {
+bool HHVM_FUNCTION(bzflush, const Resource& bz) {
   CHECK_BZFILE(bz, f);
   return f->flush();
 }
 
-Variant HHVM_FUNCTION(bzerrstr, CResRef bz) {
+Variant HHVM_FUNCTION(bzerrstr, const Resource& bz) {
   CHECK_BZFILE(bz, f);
   return f->errstr();
 }
 
-Variant HHVM_FUNCTION(bzerror, CResRef bz) {
+Variant HHVM_FUNCTION(bzerror, const Resource& bz) {
   CHECK_BZFILE(bz, f);
   return f->error();
 }
 
-Variant HHVM_FUNCTION(bzerrno, CResRef bz) {
+Variant HHVM_FUNCTION(bzerrno, const Resource& bz) {
   CHECK_BZFILE(bz, f);
   return f->errnu();
 }
@@ -188,13 +188,13 @@ Variant HHVM_FUNCTION(bzdecompress, const String& source, int small /* = 0 */) {
     /* compression is better then 2:1, need to allocate more memory */
     bzs.avail_out = source_len;
     size = (bzs.total_out_hi32 * (unsigned int) -1) + bzs.total_out_lo32;
-    dest = (char *) Util::safe_realloc(dest, size + bzs.avail_out + 1);
+    dest = (char *) safe_realloc(dest, size + bzs.avail_out + 1);
     bzs.next_out = dest + size;
   }
 
   if (error == BZ_STREAM_END || error == BZ_OK) {
     size = (bzs.total_out_hi32 * (unsigned int) -1) + bzs.total_out_lo32;
-    dest = (char *)Util::safe_realloc(dest, size + 1);
+    dest = (char *)safe_realloc(dest, size + 1);
     dest[size] = '\0';
     String ret = String(dest, size, AttachString);
     BZ2_bzDecompressEnd(&bzs);

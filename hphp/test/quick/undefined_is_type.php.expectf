@@ -1,23 +1,34 @@
 set:     
-nul:     HipHop Notice: Undefined variable: a in %s on line 6
+nul:     
+Notice: Undefined variable: a in %s on line 14
 1
-str:     HipHop Notice: Undefined variable: a in %s on line 7
+str:     
+Notice: Undefined variable: a in %s on line 15
 
-obj:     HipHop Notice: Undefined variable: a in %s on line 8
+obj:     
+Notice: Undefined variable: a in %s on line 16
 
-arr:     HipHop Notice: Undefined variable: a in %s on line 9
+arr:     
+Notice: Undefined variable: a in %s on line 17
 
-int:     HipHop Notice: Undefined variable: a in %s on line 10
+int:     
+Notice: Undefined variable: a in %s on line 18
 
-integer: HipHop Notice: Undefined variable: a in %s on line 11
+integer: 
+Notice: Undefined variable: a in %s on line 19
 
-long:    HipHop Notice: Undefined variable: a in %s on line 12
+long:    
+Notice: Undefined variable: a in %s on line 20
 
-real:    HipHop Notice: Undefined variable: a in %s on line 13
+real:    
+Notice: Undefined variable: a in %s on line 21
 
-double:  HipHop Notice: Undefined variable: a in %s on line 14
+double:  
+Notice: Undefined variable: a in %s on line 22
 
-float:   HipHop Notice: Undefined variable: a in %s on line 15
+float:   
+Notice: Undefined variable: a in %s on line 23
 
-bool:    HipHop Notice: Undefined variable: a in %s on line 16
+bool:    
+Notice: Undefined variable: a in %s on line 24
 

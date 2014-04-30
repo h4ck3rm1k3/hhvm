@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -21,14 +21,13 @@
 #include "hphp/runtime/base/zend-printf.h"
 #include "hphp/runtime/base/zend-functions.h"
 #include "hphp/runtime/base/zend-string.h"
-#include <math.h>
 #include <cmath>
 #include "hphp/runtime/base/runtime-option.h"
 #include "hphp/runtime/base/array-iterator.h"
 #include "hphp/runtime/base/request-local.h"
 #include "hphp/runtime/base/utf8-decode.h"
-#include "hphp/runtime/ext/JSON_parser.h"
-#include "hphp/runtime/ext/ext_json.h"
+#include "hphp/runtime/ext/json/JSON_parser.h"
+#include "hphp/runtime/ext/json/ext_json.h"
 #include "hphp/runtime/ext/ext_collections.h"
 
 namespace HPHP {
@@ -46,7 +45,7 @@ VariableSerializer::VariableSerializer(Type type, int option /* = 0 */,
   : m_type(type), m_option(option), m_buf(nullptr), m_indent(0),
     m_valueCount(0), m_referenced(false), m_refCount(1), m_maxCount(maxRecur),
     m_levelDebugger(0) {
-  m_maxLevelDebugger = g_context->getDebuggerPrintLevel();
+  m_maxLevelDebugger = g_context->debuggerSettings.printLevel;
   if (type == Type::Serialize ||
       type == Type::APCSerialize ||
       type == Type::DebuggerSerialize) {
@@ -75,7 +74,7 @@ void VariableSerializer::setResourceInfo(const String& rsrcName, int rsrcId) {
   m_objCode = 0;
 }
 
-String VariableSerializer::serialize(CVarRef v, bool ret) {
+String VariableSerializer::serialize(const Variant& v, bool ret) {
   StringBuffer buf;
   m_buf = &buf;
   if (ret) {
@@ -94,7 +93,7 @@ String VariableSerializer::serialize(CVarRef v, bool ret) {
   return null_string;
 }
 
-String VariableSerializer::serializeValue(CVarRef v, bool limit) {
+String VariableSerializer::serializeValue(const Variant& v, bool limit) {
   StringBuffer buf;
   m_buf = &buf;
   if (limit) {
@@ -105,7 +104,7 @@ String VariableSerializer::serializeValue(CVarRef v, bool limit) {
   return m_buf->detach();
 }
 
-String VariableSerializer::serializeWithLimit(CVarRef v, int limit) {
+String VariableSerializer::serializeWithLimit(const Variant& v, int limit) {
   if (m_type == Type::Serialize || m_type == Type::JSON ||
       m_type == Type::APCSerialize || m_type == Type::DebuggerSerialize) {
     assert(false);
@@ -195,12 +194,15 @@ void VariableSerializer::write(int64_t v) {
 }
 
 void VariableSerializer::write(double v) {
+  auto const precision = 14;
+  auto const serde_precision = 17;
+
   switch (m_type) {
   case Type::JSON:
     if (!std::isinf(v) && !std::isnan(v)) {
       char *buf;
       if (v == 0.0) v = 0.0; // so to avoid "-0" output
-      vspprintf(&buf, 0, "%.*k", 14, v);
+      vspprintf(&buf, 0, "%.*k", precision, v);
       m_buf->append(buf);
       free(buf);
     } else {
@@ -217,7 +219,7 @@ void VariableSerializer::write(double v) {
       char *buf;
       if (v == 0.0) v = 0.0; // so to avoid "-0" output
       bool isExport = m_type == Type::VarExport || m_type == Type::PHPOutput;
-      vspprintf(&buf, 0, isExport ? "%.*H" : "%.*G", 14, v);
+      vspprintf(&buf, 0, isExport ? "%.*H" : "%.*G", precision, v);
       m_buf->append(buf);
       // In PHPOutput mode, we always want doubles to parse as
       // doubles, so make sure there's a decimal point.
@@ -232,7 +234,7 @@ void VariableSerializer::write(double v) {
     {
       char *buf;
       if (v == 0.0) v = 0.0; // so to avoid "-0" output
-      vspprintf(&buf, 0, "float(%.*G)", 14, v);
+      vspprintf(&buf, 0, "float(%.*G)", precision, v);
       indent();
       m_buf->append(buf);
       free(buf);
@@ -252,7 +254,7 @@ void VariableSerializer::write(double v) {
     } else {
       char *buf;
       if (v == 0.0) v = 0.0; // so to avoid "-0" output
-      vspprintf(&buf, 0, "%.*H", 14, v);
+      vspprintf(&buf, 0, "%.*H", serde_precision, v);
       m_buf->append(buf);
       free(buf);
     }
@@ -292,6 +294,7 @@ static void appendJsonEscape(StringBuffer& sb,
       break;
     }
     if (c == UTF8_ERROR) {
+      json_set_last_error_code(json_error_codes::JSON_ERROR_UTF8);
       // discard the part that has been already decoded.
       sb.resize(start);
       sb.append("null", 4);
@@ -481,7 +484,7 @@ void VariableSerializer::write(const char *v, int len /* = -1 */,
 }
 
 void VariableSerializer::write(const String& v) {
-  if (m_type == Type::APCSerialize && !v.isNull() && v->isStatic()) {
+  if (m_type == Type::APCSerialize && !v.isNull() && v.get()->isStatic()) {
     union {
       char buf[8];
       StringData *sd;
@@ -495,10 +498,10 @@ void VariableSerializer::write(const String& v) {
   }
 }
 
-void VariableSerializer::write(CObjRef v) {
+void VariableSerializer::write(const Object& v) {
   if (!v.isNull() && m_type == Type::JSON) {
 
-    if (v.instanceof(SystemLib::s_JsonSerializableClass)) {
+    if (v.instanceof(s_JsonSerializable)) {
       assert(!v->isCollection());
       Variant ret = v->o_invoke_few_args(s_jsonSerialize, 0);
       // for non objects or when $this is returned
@@ -513,8 +516,7 @@ void VariableSerializer::write(CObjRef v) {
       if (v->isCollection()) {
         collectionSerialize(v.get(), this);
       } else {
-        Array props(ArrayData::Create());
-        v->o_getArray(props, true);
+        Array props = v->o_toArray(true);
         setObjectInfo(v->o_getClassName(), v->o_getId(), 'O');
         props.serialize(this);
       }
@@ -525,7 +527,7 @@ void VariableSerializer::write(CObjRef v) {
   }
 }
 
-void VariableSerializer::write(CVarRef v, bool isArrayKey /* = false */) {
+void VariableSerializer::write(const Variant& v, bool isArrayKey /* = false */) {
   setReferenced(v.isReferenced());
   setRefCount(v.getRefCount());
   if (!isArrayKey && v.isObject()) {
@@ -900,7 +902,7 @@ void VariableSerializer::writeArrayKey(Variant key) {
   }
 }
 
-void VariableSerializer::writeCollectionKey(CVarRef key) {
+void VariableSerializer::writeCollectionKey(const Variant& key) {
   if (m_type == Type::Serialize || m_type == Type::APCSerialize ||
       m_type == Type::DebuggerSerialize) {
     m_valueCount++;
@@ -941,7 +943,7 @@ void VariableSerializer::writeCollectionKeylessPrefix() {
   }
 }
 
-void VariableSerializer::writeArrayValue(CVarRef value) {
+void VariableSerializer::writeArrayValue(const Variant& value) {
   // Do not count referenced values after the first
   if ((m_type == Type::Serialize || m_type == Type::APCSerialize ||
        m_type == Type::DebuggerSerialize) &&

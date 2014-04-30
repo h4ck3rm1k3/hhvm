@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    | Copyright (c) 1998-2010 Zend Technologies Ltd. (http://www.zend.com) |
    +----------------------------------------------------------------------+
    | This source file is subject to version 2.00 of the Zend license,     |
@@ -17,6 +17,7 @@
 
 #include "hphp/runtime/base/zend-url.h"
 #include "hphp/runtime/base/zend-string.h"
+#include "hphp/runtime/base/string-util.h"
 
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
@@ -141,7 +142,7 @@ bool url_parse(Url &output, const char *str, int length) {
       pp++;
     }
 
-    if (pp-p < 6 && (*pp == '/' || *pp == '\0')) {
+    if (pp - p > 0 && pp-p < 6 && (*pp == '/' || *pp == '\0')) {
       memcpy(port_buf, p, (pp-p));
       port_buf[pp-p] = '\0';
       auto port = atoi(port_buf);
@@ -150,9 +151,15 @@ bool url_parse(Url &output, const char *str, int length) {
       } else {
         return false;
       }
+    } else if (p == pp && *pp == '\0') {
+      return false;
+    } else if (*s == '/' && *(s+1) == '/') { /* relative-scheme URL */
+      s += 2;
     } else {
       goto just_path;
     }
+  } else if (*s == '/' && *(s+1) == '/') { /* relative-scheme URL */
+    s += 2;
   } else {
     just_path:
     ue = s + length;
@@ -336,7 +343,7 @@ char *url_encode(const char *s, int &len) {
 
   from = (unsigned char const *)s;
   end = (unsigned char const *)s + len;
-  start = to = (unsigned char *)malloc(3 * len + 1);
+  start = to = (unsigned char *)malloc(safe_address(3,  len, 1));
 
   while (from < end) {
     c = *from++;
@@ -442,7 +449,7 @@ char *url_raw_encode(const char *s, int &len) {
   register int x, y;
   unsigned char *str;
 
-  str = (unsigned char *)malloc(3 * len + 1);
+  str = (unsigned char *)malloc(safe_address(3, len, 1));
   for (x = 0, y = 0; len--; x++, y++) {
     str[y] = (unsigned char) s[x];
     if ((str[y] < '0' && str[y] != '-' && str[y] != '.') ||

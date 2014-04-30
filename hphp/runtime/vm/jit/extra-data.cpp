@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -16,13 +16,15 @@
 
 #include "hphp/runtime/vm/jit/extra-data.h"
 
+#include "hphp/runtime/ext/ext_continuation.h"
 #include "hphp/runtime/vm/jit/ssa-tmp.h"
+#include "hphp/util/text-util.h"
 
 namespace HPHP { namespace JIT {
 
 std::string LocalData::show() const {
   return folly::to<std::string>(LocalId::show(), ',',
-                                valSrc ? valSrc->toString() : "null");
+                                typeSrc ? typeSrc->toString() : "null");
 }
 
 std::string NewStructData::show() const {
@@ -30,11 +32,36 @@ std::string NewStructData::show() const {
   auto delim = "";
   for (uint32_t i = 0; i < numKeys; i++) {
     os << delim << "\"" <<
-       Util::escapeStringForCPP(keys[i]->data(), keys[i]->size()) <<
+       escapeStringForCPP(keys[i]->data(), keys[i]->size()) <<
        "\"";
     delim = ",";
   }
   return os.str();
+}
+
+const RawMemData::Info& RawMemData::info() const {
+  static const Info infos[] = {
+    {CONTOFF(m_label),           sz::dword, JIT::Type::Int},
+    {CONTOFF(m_index),           sz::qword, JIT::Type::Int},
+    {c_Continuation::stateOff(), sz::byte,  JIT::Type::Int},
+    {CONTOFF(m_entry),           sz::qword, JIT::Type::TCA},
+    {StringData::sizeOff(),      sz::dword, JIT::Type::Int},
+    {Func::numParamsOff(),       sz::dword, JIT::Type::Int},
+  };
+  static_assert(sizeof infos / sizeof infos[0] == kNumTypes,
+                "Incorrect size of infos array");
+
+  always_assert(type < kNumTypes);
+  return infos[type];
+}
+
+std::string RawMemData::show() const {
+  switch (type) {
+#   define RAW_TYPE(name) case name: return #name;
+    RAW_MEM_DATA_TYPES
+#   undef RAW_TYPE
+  }
+  not_reached();
 }
 
 //////////////////////////////////////////////////////////////////////

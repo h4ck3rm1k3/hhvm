@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -18,6 +18,11 @@
 #define incl_HPHP_CLASS_SCOPE_H_
 
 #include "hphp/compiler/analysis/block_scope.h"
+#include <list>
+#include <map>
+#include <set>
+#include <utility>
+#include <vector>
 #include "hphp/compiler/analysis/function_container.h"
 #include "hphp/compiler/statement/class_statement.h"
 #include "hphp/compiler/statement/method_statement.h"
@@ -38,6 +43,11 @@ DECLARE_BOOST_TYPES(ClassScope);
 DECLARE_BOOST_TYPES(FileScope);
 
 class Symbol;
+
+enum class Derivation {
+  Normal,
+  Redeclaring,    // At least one ancestor class or interface is redeclared.
+};
 
 /**
  * A class scope corresponds to a class declaration. We store all
@@ -90,11 +100,6 @@ public:
     Abstract = 16,
     Final = 32
   };
-  enum Derivation {
-    FromNormal = 0,
-    DirectFromRedeclared,
-    IndirectFromRedeclared
-  };
 
   enum JumpTableName {
     JumpTableCallInfo
@@ -121,8 +126,6 @@ public:
   const std::string &getOriginalName() const;
   std::string getDocName() const;
 
-  virtual std::string getId() const;
-
   void checkDerivation(AnalysisResultPtr ar, hphp_string_iset &seen);
   const std::string &getOriginalParent() const { return m_parent; }
 
@@ -141,6 +144,7 @@ public:
   bool isExtensionClass() const { return getAttribute(Extension); }
   bool isDynamic() const { return m_dynamic; }
   bool isBaseClass() const { return m_bases.empty(); }
+  bool isBuiltin() const { return !getStmt(); }
 
   /**
    * Whether this class name was declared twice or more.
@@ -205,8 +209,7 @@ public:
    */
   void collectMethods(AnalysisResultPtr ar,
                       StringToFunctionScopePtrMap &func,
-                      bool collectPrivate = true,
-                      bool forInvoke = false);
+                      bool collectPrivate);
 
   /**
    * Whether or not we can directly call ObjectData::o_invoke() when lookup

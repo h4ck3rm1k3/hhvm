@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -52,7 +52,7 @@ struct TypeAlias {
  * validate parameter type hints for a type alias at runtime.
  */
 struct TypeAliasReq {
-  DataType kind;          // may be KindOfAny for "mixed"
+  DataType kind;          // may be KindOfAny for "HH\\mixed"
   bool nullable;          // for option types, like ?Foo
   Class* klass;           // nullptr if kind != KindOfObject
   const StringData* name; // needed for error messages; nullptr if not defined

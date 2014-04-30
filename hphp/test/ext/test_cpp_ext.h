@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -34,15 +34,15 @@ public:
 
 inline void evalCodeForCppExt(const String& code_str) {
   String prefixedCode = concat("<?php ", code_str);
-  Unit* unit = g_vmContext->compileEvalString(prefixedCode.get());
+  Unit* unit = g_context->compileEvalString(prefixedCode.get());
   TypedValue retVal;
-  g_vmContext->invokeUnit(&retVal, unit);
+  g_context->invokeUnit(&retVal, unit);
   tvRefcountedDecRef(&retVal);
 }
 
 #define DECLARE_TEST_FUNCTIONS(s)                                       \
   char *argv[] = { const_cast<char*>(which.c_str()), nullptr };         \
-  execute_command_line_begin(1, argv, false);                           \
+  execute_command_line_begin(1, argv, false, {});                       \
   evalCodeForCppExt(s);                                                 \
                                                                         \
   SCOPE_EXIT {                                                          \

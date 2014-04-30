@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -19,11 +19,11 @@
 
 #define HPHPD_CLIENT_SETTINGS \
   HPHPD_CLIENT_SETTING(BypassCheck,         bool,  false)         \
-  HPHPD_CLIENT_SETTING(PrintLevel,          int,   -1)            \
+  HPHPD_CLIENT_SETTING(PrintLevel,          int,   5)             \
   HPHPD_CLIENT_SETTING(StackArgs,           bool,  true)          \
   HPHPD_CLIENT_SETTING(MaxCodeLines,        int,   -1)            \
   HPHPD_CLIENT_SETTING(SmallStep,           bool,  false)         \
-  HPHPD_CLIENT_SETTING(ShortPrintCharCount, int,   -1)            \
+  HPHPD_CLIENT_SETTING(ShortPrintCharCount, int,   200)           \
 
 class DebuggerClientSettings {
 public:
@@ -46,9 +46,8 @@ public:
 type getDebuggerClient##name () const {                 \
   return m_dbgClientSettings.m_s##name;                 \
 }                                                       \
-void setDebuggerClient##name (type in##name) {          \
+void setDebuggerClient##name (const type &in##name) {   \
   m_dbgClientSettings.m_s##name = in##name;             \
-  m_config[#name] = m_dbgClientSettings.m_s##name;      \
   saveConfig();                                         \
 }                                                       \
 

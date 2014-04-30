@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -70,6 +70,12 @@ void emitCheckSurpriseFlagsEnter(CodeBlock& mainCode, CodeBlock& stubsCode,
 void emitTransCounterInc(vixl::MacroAssembler& a);
 
 /*
+ * Immediately saves the VM sp, fp and pc (the latter two contingent on the
+ * flags argument) to the ExecutionContext.
+ */
+void emitEagerVMRegSave(vixl::MacroAssembler& a, RegSaveFlags flags);
+
+/*
  * Emits an incref after checking only the static bit, not the type.
  */
 void emitIncRefKnownType(vixl::MacroAssembler& a,
@@ -102,7 +108,7 @@ inline void emitTLSLoad(vixl::MacroAssembler& a,
   a.   Pop  (x29, x30);
 
   a.   Add  (rReturnReg, rReturnReg,
-             uintptr_t(&datum.m_node.m_p) - JIT::tlsBase());
+             uintptr_t(&datum.m_node.m_p) - tlsBase());
   // Now rReturnReg holds a pointer to *a pointer to* the object.
   a.   Ldr  (destReg, rReturnReg[0]);
 }

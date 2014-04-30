@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -26,13 +26,16 @@ namespace HPHP {
 
 ///////////////////////////////////////////////////////////////////////////////
 
-MemFile::MemFile()
-  : File(false), m_data(nullptr), m_len(-1), m_cursor(0), m_malloced(false) {
+MemFile::MemFile(const String& wrapper, const String& stream)
+  : File(false, wrapper, stream), m_data(nullptr), m_len(-1), m_cursor(0),
+    m_malloced(false) {
   m_isLocal = true;
 }
 
-MemFile::MemFile(const char *data, int64_t len)
-  : File(false), m_data(nullptr), m_len(len), m_cursor(0), m_malloced(true) {
+MemFile::MemFile(const char *data, int64_t len,
+                 const String& wrapper, const String& stream)
+  : File(false, wrapper, stream), m_data(nullptr), m_len(len), m_cursor(0),
+    m_malloced(true) {
   m_data = (char*)malloc(len + 1);
   if (m_data && len) {
     memcpy(m_data, data, len);
@@ -42,11 +45,11 @@ MemFile::MemFile(const char *data, int64_t len)
 }
 
 MemFile::~MemFile() {
-  closeImpl();
+  close();
 }
 
 void MemFile::sweep() {
-  closeImpl();
+  close();
   File::sweep();
 }
 
@@ -88,6 +91,7 @@ bool MemFile::open(const String& filename, const String& mode) {
 }
 
 bool MemFile::close() {
+  invokeFiltersOnClose();
   return closeImpl();
 }
 

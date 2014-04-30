@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -162,14 +162,15 @@ struct PhysReg {
       // initialized here because they depend on a RuntimeOption so they can't
       // be inited at static init time.
       if (kNumGP == 0 || kNumSIMD == 0) {
-        if (JIT::arch() == JIT::Arch::X64) {
-          kNumGP = X64::kNumGPRegs;
-          kNumSIMD = X64::kNumSIMDRegs;
-        } else if (JIT::arch() == JIT::Arch::ARM) {
-          kNumGP = ARM::kNumGPRegs;
-          kNumSIMD = ARM::kNumSIMDRegs;
-        } else {
-          not_implemented();
+        switch (arch()) {
+          case Arch::X64:
+            kNumGP = X64::kNumGPRegs;
+            kNumSIMD = X64::kNumSIMDRegs;
+            break;
+          case Arch::ARM:
+            kNumGP = ARM::kNumGPRegs;
+            kNumSIMD = ARM::kNumSIMDRegs;
+            break;
         }
       }
     }
@@ -223,7 +224,7 @@ private:
   friend struct RegSet;
   explicit constexpr PhysReg(int n) : n(n) {}
 
-  int n;
+  int8_t n;
 };
 
 constexpr PhysReg InvalidReg;

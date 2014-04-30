@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -41,8 +41,9 @@ void printInstr(const Unit* unit, PC pc) {
 
 std::string blockToString(const Block* b, const Graph* g, const Unit* u) {
   std::stringstream out;
-  out << "B" << b->id << ":" << u->offsetOf((Opcode*)b->start) <<
-         "-" << u->offsetOf((Opcode*)b->last) <<
+  out << "B" << b->id << ":"
+      << u->offsetOf(b->start) <<
+         "-" << u->offsetOf(b->last) <<
          " rpo=" << b->rpo_id <<
          " succ=";
   for (BlockPtrRange j = succBlocks(b); !j.empty(); ) {
@@ -106,9 +107,11 @@ void printGml(const Unit* unit) {
     for (LinearBlocks j = linearBlocks(g); !j.empty();) {
       const Block* b = j.popFront();
       std::stringstream strbuf;
-      unit->prettyPrint(strbuf,
-                        Unit::PrintOpts().range(unit->offsetOf(b->start),
-                                                unit->offsetOf(b->end)));
+      unit->prettyPrint(
+        strbuf,
+        Unit::PrintOpts().range(
+          unit->offsetOf(b->start),
+          unit->offsetOf(b->end)));
       std::string code = strbuf.str();
       for (int i = 0, n = code.size(); i < n; ++i) {
         if (code[i] == '"') code[i] = '\'';

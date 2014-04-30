@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    | Copyright (c) 1997-2010 The PHP Group                                |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
@@ -17,7 +17,7 @@
 
 #include "hphp/runtime/ext/ext_file.h"
 #include "hphp/runtime/ext/ext_string.h"
-#include "hphp/runtime/ext/ext_stream.h"
+#include "hphp/runtime/ext/stream/ext_stream.h"
 #include "hphp/runtime/ext/ext_options.h"
 #include "hphp/runtime/ext/ext_hash.h"
 #include "hphp/runtime/base/runtime-option.h"
@@ -33,10 +33,11 @@
 #include "hphp/runtime/base/stream-wrapper-registry.h"
 #include "hphp/runtime/base/file-stream-wrapper.h"
 #include "hphp/runtime/base/directory.h"
+#include "hphp/runtime/base/thread-info.h"
 #include "hphp/system/systemlib.h"
 #include "hphp/util/logger.h"
-#include "hphp/util/util.h"
 #include "hphp/util/process.h"
+#include "hphp/util/file-util.h"
 #include "folly/String.h"
 #include <dirent.h>
 #include <glob.h>
@@ -51,8 +52,9 @@
 #include <grp.h>
 #include <pwd.h>
 #include <fnmatch.h>
+#include <vector>
 
-#define CHECK_HANDLE_BASE(handle, f, ret) \
+#define CHECK_HANDLE_BASE(handle, f, ret)               \
   File *f = handle.getTyped<File>(true, true);          \
   if (f == nullptr || f->isClosed()) {                  \
     raise_warning("Not a valid stream resource");       \
@@ -191,7 +193,7 @@ const int64_t k_STREAM_URL_STAT_QUIET = 2;
 
 Variant f_fopen(const String& filename, const String& mode,
                 bool use_include_path /* = false */,
-                CVarRef context /* = null */) {
+                const Variant& context /* = null */) {
   if (!context.isNull() &&
       (!context.isResource() ||
        !context.toResource().getTyped<StreamContext>())) {
@@ -220,29 +222,29 @@ Variant f_popen(const String& command, const String& mode) {
   return handle;
 }
 
-bool f_fclose(CResRef handle) {
+bool f_fclose(const Resource& handle) {
   CHECK_HANDLE(handle, f);
   return CHECK_ERROR(f->close());
 }
 
-Variant f_pclose(CResRef handle) {
+Variant f_pclose(const Resource& handle) {
   CHECK_HANDLE(handle, f);
   CHECK_ERROR(f->close());
   return s_file_data->m_pcloseRet;
 }
 
-Variant f_fseek(CResRef handle, int64_t offset,
+Variant f_fseek(const Resource& handle, int64_t offset,
                 int64_t whence /* = k_SEEK_SET */) {
   CHECK_HANDLE(handle, f);
   return CHECK_ERROR(f->seek(offset, whence)) ? 0 : -1;
 }
 
-bool f_rewind(CResRef handle) {
+bool f_rewind(const Resource& handle) {
   CHECK_HANDLE(handle, f);
   return CHECK_ERROR(f->rewind());
 }
 
-Variant f_ftell(CResRef handle) {
+Variant f_ftell(const Resource& handle) {
   CHECK_HANDLE(handle, f);
   int64_t ret = f->tell();
   if (!CHECK_ERROR(ret != -1)) {
@@ -251,28 +253,25 @@ Variant f_ftell(CResRef handle) {
   return ret;
 }
 
-bool f_feof(CResRef handle) {
+bool f_feof(const Resource& handle) {
   CHECK_HANDLE(handle, f);
   return f->eof();
 }
 
-Variant f_fstat(CResRef handle) {
-  PlainFile *file = handle.getTyped<PlainFile>(true, true);
-  if (!file) {
-    raise_warning("Not a valid stream resource");
-    return false;
-  }
+Variant f_fstat(const Resource& handle) {
+  CHECK_HANDLE(handle, f);
   struct stat sb;
-  CHECK_SYSTEM(fstat(file->fd(), &sb));
+  if (!CHECK_ERROR(f->stat(&sb)))
+    return false;
   return stat_impl(&sb);
 }
 
-Variant f_fread(CResRef handle, int64_t length) {
+Variant f_fread(const Resource& handle, int64_t length) {
   CHECK_HANDLE(handle, f);
   return f->read(length);
 }
 
-Variant f_fgetc(CResRef handle) {
+Variant f_fgetc(const Resource& handle) {
   CHECK_HANDLE(handle, f);
   int result = f->getc();
   if (result == EOF) {
@@ -281,7 +280,7 @@ Variant f_fgetc(CResRef handle) {
   return String::FromChar(result);
 }
 
-Variant f_fgets(CResRef handle, int64_t length /* = 0 */) {
+Variant f_fgets(const Resource& handle, int64_t length /* = 0 */) {
   if (length < 0) {
     throw_invalid_argument("length (negative): %" PRId64, length);
     return false;
@@ -294,7 +293,7 @@ Variant f_fgets(CResRef handle, int64_t length /* = 0 */) {
   return false;
 }
 
-Variant f_fgetss(CResRef handle, int64_t length /* = 0 */,
+Variant f_fgetss(const Resource& handle, int64_t length /* = 0 */,
                  const String& allowable_tags /* = null_string */) {
   Variant ret = f_fgets(handle, length);
   if (!same(ret, false)) {
@@ -303,55 +302,55 @@ Variant f_fgetss(CResRef handle, int64_t length /* = 0 */,
   return ret;
 }
 
-Variant f_fscanf(int _argc, CResRef handle, const String& format,
-                 CArrRef _argv /* = null_array */) {
+Variant f_fscanf(int _argc, const Resource& handle, const String& format,
+                 const Array& _argv /* = null_array */) {
   CHECK_HANDLE(handle, f);
   return f_sscanf(_argc, f->readLine(), format, _argv);
 }
 
-Variant f_fpassthru(CResRef handle) {
+Variant f_fpassthru(const Resource& handle) {
   CHECK_HANDLE(handle, f);
   return f->print();
 }
 
-Variant f_fwrite(CResRef handle, const String& data, int64_t length /* = 0 */) {
+Variant f_fwrite(const Resource& handle, const String& data, int64_t length /* = 0 */) {
   CHECK_HANDLE(handle, f);
   int64_t ret = f->write(data, length);
   if (ret < 0) ret = 0;
   return ret;
 }
 
-Variant f_fputs(CResRef handle, const String& data, int64_t length /* = 0 */) {
+Variant f_fputs(const Resource& handle, const String& data, int64_t length /* = 0 */) {
   CHECK_HANDLE(handle, f);
   int64_t ret = f->write(data, length);
   if (ret < 0) ret = 0;
   return ret;
 }
 
-Variant f_fprintf(int _argc, CResRef handle, const String& format,
-                  CArrRef _argv /* = null_array */) {
+Variant f_fprintf(int _argc, const Resource& handle, const String& format,
+                  const Array& _argv /* = null_array */) {
   CHECK_HANDLE(handle, f);
   return f->printf(format, _argv);
 }
 
-Variant f_vfprintf(CResRef handle, const String& format, CArrRef args) {
+Variant f_vfprintf(const Resource& handle, const String& format, const Array& args) {
   CHECK_HANDLE(handle, f);
   return f->printf(format, args);
 }
 
-bool f_fflush(CResRef handle) {
+bool f_fflush(const Resource& handle) {
   CHECK_HANDLE(handle, f);
   return CHECK_ERROR(f->flush());
 }
 
-bool f_ftruncate(CResRef handle, int64_t size) {
+bool f_ftruncate(const Resource& handle, int64_t size) {
   CHECK_HANDLE(handle, f);
   return CHECK_ERROR(f->truncate(size));
 }
 
 static int flock_values[] = { LOCK_SH, LOCK_EX, LOCK_UN };
 
-bool f_flock(CResRef handle, int operation, VRefParam wouldblock /* = null */) {
+bool f_flock(const Resource& handle, int operation, VRefParam wouldblock /* = null */) {
   CHECK_HANDLE(handle, f);
   bool block = false;
   int act;
@@ -377,7 +376,7 @@ bool f_flock(CResRef handle, int operation, VRefParam wouldblock /* = null */) {
   }                                                     \
   char NAME ## _char = NAME.charAt(0);                  \
 
-Variant f_fputcsv(CResRef handle, CArrRef fields,
+Variant f_fputcsv(const Resource& handle, const Array& fields,
                   const String& delimiter /* = "," */,
                   const String& enclosure /* = "\"" */) {
   FCSV_CHECK_ARG(delimiter);
@@ -387,7 +386,7 @@ Variant f_fputcsv(CResRef handle, CArrRef fields,
   return f->writeCSV(fields, delimiter_char, enclosure_char);
 }
 
-Variant f_fgetcsv(CResRef handle, int64_t length /* = 0 */,
+Variant f_fgetcsv(const Resource& handle, int64_t length /* = 0 */,
                   const String& delimiter /* = "," */,
                   const String& enclosure /* = "\"" */,
                   const String& escape /* = "\\" */) {
@@ -412,7 +411,7 @@ Variant f_fgetcsv(CResRef handle, int64_t length /* = 0 */,
 
 Variant f_file_get_contents(const String& filename,
                             bool use_include_path /* = false */,
-                            CVarRef context /* = null */,
+                            const Variant& context /* = null */,
                             int64_t offset /* = -1 */,
                             int64_t maxlen /* = -1 */) {
   Variant stream = f_fopen(filename, "rb", use_include_path, context);
@@ -420,10 +419,11 @@ Variant f_file_get_contents(const String& filename,
   return f_stream_get_contents(stream.toResource(), maxlen, offset);
 }
 
-Variant f_file_put_contents(const String& filename, CVarRef data,
+Variant f_file_put_contents(const String& filename, const Variant& data,
                             int flags /* = 0 */,
-                            CVarRef context /* = null */) {
-  Variant fvar = File::Open(filename, (flags & PHP_FILE_APPEND) ? "ab" : "wb");
+                            const Variant& context /* = null */) {
+  Variant fvar = File::Open(filename, (flags & PHP_FILE_APPEND) ? "ab" : "wb",
+                            flags, context);
   if (!fvar.toBoolean()) {
     return false;
   }
@@ -491,14 +491,16 @@ Variant f_file_put_contents(const String& filename, CVarRef data,
     break;
   }
 
-  if (numbytes < 0) {
+  // like fwrite(), fclose() can error when fflush()ing
+  if (numbytes < 0 || !f->close()) {
     return false;
   }
+
   return numbytes;
 }
 
 Variant f_file(const String& filename, int flags /* = 0 */,
-               CVarRef context /* = null */) {
+               const Variant& context /* = null */) {
   Variant contents = f_file_get_contents(filename,
                                          flags & PHP_FILE_USE_INCLUDE_PATH,
                                          context);
@@ -556,7 +558,7 @@ Variant f_file(const String& filename, int flags /* = 0 */,
 }
 
 Variant f_readfile(const String& filename, bool use_include_path /* = false */,
-                   CVarRef context /* = null */) {
+                   const Variant& context /* = null */) {
   Variant f = f_fopen(filename, "rb", use_include_path, context);
   if (same(f, false)) {
     Logger::Verbose("%s/%d: %s", __FUNCTION__, __LINE__,
@@ -569,10 +571,21 @@ Variant f_readfile(const String& filename, bool use_include_path /* = false */,
 
 bool f_move_uploaded_file(const String& filename, const String& destination) {
   Transport *transport = g_context->getTransport();
-  if (transport) {
-    return transport->moveUploadedFile(filename, destination);
+  if (!transport || !transport->isUploadedFile(filename)) {
+    return false;
   }
-  return false;
+
+  if (f_rename(filename, destination)) {
+    return true;
+  }
+
+  // If rename didn't work, fall back to copy followed by unlink
+  if (!f_copy(filename, destination)) {
+    return false;
+  }
+  f_unlink(filename);
+
+  return true;
 }
 
 Variant f_parse_ini_file(const String& filename,
@@ -586,7 +599,7 @@ Variant f_parse_ini_file(const String& filename,
   String translated = File::TranslatePath(filename);
   if (translated.empty() || !f_file_exists(translated)) {
     if (filename[0] != '/') {
-      String cfd = g_vmContext->getContainingFileName();
+      String cfd = g_context->getContainingFileName();
       if (!cfd.empty()) {
         int npos = cfd.rfind('/');
         if (npos >= 0) {
@@ -605,33 +618,6 @@ Variant f_parse_ini_string(const String& ini,
                            bool process_sections /* = false */,
                            int scanner_mode /* = k_INI_SCANNER_NORMAL */) {
   return IniSetting::FromString(ini, "", process_sections, scanner_mode);
-}
-
-Variant f_parse_hdf_file(const String& filename) {
-  Variant content = f_file_get_contents(filename);
-  if (same(content, false)) return false;
-  return f_parse_hdf_string(content.toString());
-}
-
-Variant f_parse_hdf_string(const String& input) {
-  Hdf hdf;
-  hdf.fromString(input.data());
-  return ArrayUtil::FromHdf(hdf);
-}
-
-bool f_write_hdf_file(CArrRef data, const String& filename) {
-  Hdf hdf;
-  ArrayUtil::ToHdf(data, hdf);
-  const char *str = hdf.toString();
-  Variant ret = f_file_put_contents(filename, str);
-  return !same(ret, false);
-}
-
-String f_write_hdf_string(CArrRef data) {
-  Hdf hdf;
-  ArrayUtil::ToHdf(data, hdf);
-  const char *str = hdf.toString();
-  return String(str, CopyString);
 }
 
 Variant f_md5_file(const String& filename, bool raw_output /* = false */) {
@@ -722,8 +708,7 @@ Variant f_linkinfo(const String& filename) {
 }
 
 bool f_is_writable(const String& filename) {
-  struct stat sb;
-  if (statSyscall(filename, &sb)) {
+  if (filename.empty()) {
     return false;
   }
   CHECK_SYSTEM(accessSyscall(filename, W_OK));
@@ -757,8 +742,9 @@ bool f_is_writeable(const String& filename) {
 }
 
 bool f_is_readable(const String& filename) {
-  struct stat sb;
-  CHECK_SYSTEM(statSyscall(filename, &sb, true));
+  if (filename.empty()) {
+    return false;
+  }
   CHECK_SYSTEM(accessSyscall(filename, R_OK, true));
   return true;
   /*
@@ -786,8 +772,9 @@ bool f_is_readable(const String& filename) {
 }
 
 bool f_is_executable(const String& filename) {
-  struct stat sb;
-  CHECK_SYSTEM(statSyscall(filename, &sb));
+  if (filename.empty()) {
+    return false;
+  }
   CHECK_SYSTEM(accessSyscall(filename, X_OK));
   return true;
   /*
@@ -905,14 +892,16 @@ Variant f_realpath(const String& path) {
       StaticContentCache::TheFileCache->exists(translated.data(), false)) {
     return translated;
   }
-  if (accessSyscall(path, F_OK) == 0) {
-    char resolved_path[PATH_MAX];
-    if (!realpath(translated.c_str(), resolved_path)) {
-      return false;
-    }
-    return String(resolved_path, CopyString);
+  // Zend doesn't support streams in realpath
+  Stream::Wrapper* w = Stream::getWrapperFromURI(path);
+  if (!dynamic_cast<FileStreamWrapper*>(w)) {
+    return false;
   }
-  return false;
+  char resolved_path[PATH_MAX];
+  if (!realpath(translated.c_str(), resolved_path)) {
+    return false;
+  }
+  return String(resolved_path, CopyString);
 }
 
 #define PHP_PATHINFO_DIRNAME    1
@@ -1007,7 +996,7 @@ bool f_chmod(const String& filename, int64_t mode) {
   return true;
 }
 
-static int get_uid(CVarRef user) {
+static int get_uid(const Variant& user) {
   int uid;
   if (user.isString()) {
     String suser = user.toString();
@@ -1024,21 +1013,21 @@ static int get_uid(CVarRef user) {
   return uid;
 }
 
-bool f_chown(const String& filename, CVarRef user) {
+bool f_chown(const String& filename, const Variant& user) {
   int uid = get_uid(user);
   if (uid == 0) return false;
   CHECK_SYSTEM(chown(File::TranslatePath(filename).data(), uid, (gid_t)-1));
   return true;
 }
 
-bool f_lchown(const String& filename, CVarRef user) {
+bool f_lchown(const String& filename, const Variant& user) {
   int uid = get_uid(user);
   if (uid == 0) return false;
   CHECK_SYSTEM(lchown(File::TranslatePath(filename).data(), uid, (gid_t)-1));
   return true;
 }
 
-static int get_gid(CVarRef group) {
+static int get_gid(const Variant& group) {
   int gid;
   if (group.isString()) {
     String sgroup = group.toString();
@@ -1055,14 +1044,14 @@ static int get_gid(CVarRef group) {
   return gid;
 }
 
-bool f_chgrp(const String& filename, CVarRef group) {
+bool f_chgrp(const String& filename, const Variant& group) {
   int gid = get_gid(group);
   if (gid == 0) return false;
   CHECK_SYSTEM(chown(File::TranslatePath(filename).data(), (uid_t)-1, gid));
   return true;
 }
 
-bool f_lchgrp(const String& filename, CVarRef group) {
+bool f_lchgrp(const String& filename, const Variant& group) {
   int gid = get_gid(group);
   if (gid == 0) return false;
   CHECK_SYSTEM(lchown(File::TranslatePath(filename).data(), (uid_t)-1, gid));
@@ -1098,7 +1087,7 @@ bool f_touch(const String& filename, int64_t mtime /* = 0 */,
 }
 
 bool f_copy(const String& source, const String& dest,
-            CVarRef context /* = null */) {
+            const Variant& context /* = null */) {
   if (!context.isNull() || !File::IsPlainFilePath(source) ||
       !File::IsPlainFilePath(dest)) {
     Variant sfile = f_fopen(source, "r", false, context);
@@ -1110,22 +1099,26 @@ bool f_copy(const String& source, const String& dest,
       return false;
     }
 
-    return f_stream_copy_to_stream(sfile.toResource(),
-      dfile.toResource()).toBoolean();
+    if (!f_stream_copy_to_stream(sfile.toResource(),
+                                 dfile.toResource()).toBoolean()) {
+      return false;
+    }
+
+    return f_fclose(dfile.toResource());
   } else {
     int ret =
       RuntimeOption::UseDirectCopy ?
-      Util::directCopy(File::TranslatePath(source).data(),
+      FileUtil::directCopy(File::TranslatePath(source).data(),
           File::TranslatePath(dest).data())
       :
-      Util::copy(File::TranslatePath(source).data(),
+      FileUtil::copy(File::TranslatePath(source).data(),
           File::TranslatePath(dest).data());
     return (ret == 0);
   }
 }
 
 bool f_rename(const String& oldname, const String& newname,
-              CVarRef context /* = null */) {
+              const Variant& context /* = null */) {
   Stream::Wrapper* w = Stream::getWrapperFromURI(oldname);
   if (w != Stream::getWrapperFromURI(newname)) {
     raise_warning("Can't rename a file on different streams");
@@ -1135,7 +1128,7 @@ bool f_rename(const String& oldname, const String& newname,
   return true;
 }
 
-int64_t f_umask(CVarRef mask /* = null_variant */) {
+int64_t f_umask(const Variant& mask /* = null_variant */) {
   int oldumask = umask(077);
   if (mask.isNull()) {
     umask(oldumask);
@@ -1145,7 +1138,7 @@ int64_t f_umask(CVarRef mask /* = null_variant */) {
   return oldumask;
 }
 
-bool f_unlink(const String& filename, CVarRef context /* = null */) {
+bool f_unlink(const String& filename, const Variant& context /* = null */) {
   Stream::Wrapper* w = Stream::getWrapperFromURI(filename);
   CHECK_SYSTEM(w->unlink(filename));
   return true;
@@ -1236,7 +1229,7 @@ Variant f_glob(const String& pattern, int flags /* = 0 */) {
   }
   int nret = glob(work_pattern.data(), flags & GLOB_FLAGMASK, NULL, &globbuf);
   if (nret == GLOB_NOMATCH || !globbuf.gl_pathc || !globbuf.gl_pathv) {
-    if (RuntimeOption::SafeFileAccess) {
+    if (ThreadInfo::s_threadInfo->m_reqInjectionData.hasSafeFileAccess()) {
       if (!f_is_dir(work_pattern)) {
         return false;
       }
@@ -1316,14 +1309,14 @@ Variant f_tmpfile() {
 // directory functions
 
 bool f_mkdir(const String& pathname, int64_t mode /* = 0777 */,
-             bool recursive /* = false */, CVarRef context /* = null */) {
+             bool recursive /* = false */, const Variant& context /* = null */) {
   Stream::Wrapper* w = Stream::getWrapperFromURI(pathname);
   int options = recursive ? k_STREAM_MKDIR_RECURSIVE : 0;
   CHECK_SYSTEM(w->mkdir(pathname, mode, options));
   return true;
 }
 
-bool f_rmdir(const String& dirname, CVarRef context /* = null */) {
+bool f_rmdir(const String& dirname, const Variant& context /* = null */) {
   Stream::Wrapper* w = Stream::getWrapperFromURI(dirname);
   int options = 0;
   CHECK_SYSTEM(w->rmdir(dirname, options));
@@ -1332,7 +1325,7 @@ bool f_rmdir(const String& dirname, CVarRef context /* = null */) {
 
 String f_dirname(const String& path) {
   char *buf = strndup(path.data(), path.size());
-  int len = Util::dirname_helper(buf, path.size());
+  int len = FileUtil::dirname_helper(buf, path.size());
   return String(buf, len, AttachString);
 }
 
@@ -1375,7 +1368,7 @@ const StaticString
   s_handle("handle"),
   s_path("path");
 
-static Directory *get_dir(CResRef dir_handle) {
+static Directory *get_dir(const Resource& dir_handle) {
   if (dir_handle.isNull()) {
     auto defaultDir = s_directory_data->defaultDirectory;
     if (defaultDir.isNull()) {
@@ -1404,7 +1397,7 @@ Variant f_dir(const String& directory) {
   return d;
 }
 
-Variant f_opendir(const String& path, CVarRef context /* = null */) {
+Variant f_opendir(const String& path, const Variant& context /* = null */) {
   Stream::Wrapper* w = Stream::getWrapperFromURI(path);
   Directory *p = w->opendir(path);
   if (!p) {
@@ -1414,7 +1407,7 @@ Variant f_opendir(const String& path, CVarRef context /* = null */) {
   return Resource(p);
 }
 
-Variant f_readdir(CResRef dir_handle /* = null */) {
+Variant f_readdir(const Resource& dir_handle /* = null */) {
   Directory *dir = get_dir(dir_handle);
   if (!dir) {
     return false;
@@ -1422,7 +1415,7 @@ Variant f_readdir(CResRef dir_handle /* = null */) {
   return dir->read();
 }
 
-void f_rewinddir(CResRef dir_handle /* = null */) {
+void f_rewinddir(const Resource& dir_handle /* = null */) {
   Directory *dir = get_dir(dir_handle);
   if (!dir) {
     return;
@@ -1439,7 +1432,7 @@ static bool StringAscending(const String& s1, const String& s2) {
 }
 
 Variant f_scandir(const String& directory, bool descending /* = false */,
-                  CVarRef context /* = null */) {
+                  const Variant& context /* = null */) {
   Stream::Wrapper* w = Stream::getWrapperFromURI(directory);
   Directory *dir = w->opendir(directory);
   if (!dir) {
@@ -1470,7 +1463,7 @@ Variant f_scandir(const String& directory, bool descending /* = false */,
   return ret;
 }
 
-void f_closedir(CResRef dir_handle /* = null */) {
+void f_closedir(const Resource& dir_handle /* = null */) {
   Directory *d = get_dir(dir_handle);
   if (!d) {
     return;

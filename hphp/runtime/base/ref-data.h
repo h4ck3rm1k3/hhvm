@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -17,12 +17,13 @@
 #ifndef incl_HPHP_REF_DATA_H
 #define incl_HPHP_REF_DATA_H
 
-#ifndef incl_HPHP_INSIDE_HPHP_COMPLEX_TYPES_H_
-#error Directly including 'ref_data.h' is prohibited. \
-       Include 'complex_types.h' instead.
-#endif
+#include "hphp/runtime/base/countable.h"
+#include "hphp/runtime/base/memory-manager.h"
+#include "hphp/runtime/base/typed-value.h"
 
 namespace HPHP {
+
+class Variant;
 
 /*
  * We heap allocate a RefData when we make a reference to something.
@@ -103,9 +104,6 @@ struct RefData {
   }
 
   IMPLEMENT_COUNTABLENF_METHODS_NO_STATIC
-
-  // Memory allocator methods
-  void dump() const;
 
   const TypedValue* tv() const {
     assert(m_magic == Magic::kMagic);
@@ -264,12 +262,7 @@ public:
   ~RefData();
 
 private:
-  static void compileTimeAsserts() {
-    static_assert(offsetof(RefData, m_count) ==
-                  FAST_REFCOUNT_OFFSET, "");
-    static_assert(sizeof(RefData::m_count) ==
-                  TypedValueAux::auxSize, "");
-  }
+  static void compileTimeAsserts();
 
 #if defined(DEBUG) || defined(PACKED_TV)
 private:
@@ -294,20 +287,16 @@ public:
     TypedValueAux m_tv;
     struct {
       void* shadow_data;
-      int32_t shadow_type;
+      DataType shadow_type;
+      union {
+        struct {
+          mutable uint8_t m_cow;
+          mutable uint8_t m_z;
+        };
+        mutable uint16_t m_cowAndZ;
+      };
       mutable RefCount m_count; // refcount field
     };
-  };
-  // TODO Task #2893407: At present the m_cow and m_z fields cause the
-  // RefData structure to take up more than 16 bytes. If we use int8_t
-  // instead of int32_t for TypedValue::m_type and TypedValueAux::m_type,
-  // we can fit all of RefData's fields into 16 bytes.
-  union {
-    struct {
-      mutable uint8_t m_cow;
-      mutable uint8_t m_z;
-    };
-    mutable uint32_t m_cowAndZ;
   };
 #endif
 };

@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -15,7 +15,8 @@
 */
 
 #include "hphp/compiler/type_annotation.h"
-#include "hphp/util/util.h"
+#include <vector>
+#include "hphp/util/text-util.h"
 
 namespace HPHP {
 
@@ -38,7 +39,8 @@ std::string TypeAnnotation::vanillaName() const {
   if (m_nullable || m_soft || m_typevar || m_function) {
     return "";
   }
-  if (!m_name.compare("mixed") || !m_name.compare("this")) {
+  if (!strcasecmp(m_name.c_str(), "HH\\mixed") ||
+      !strcasecmp(m_name.c_str(), "this")) {
     return "";
   }
   return m_name;
@@ -72,21 +74,23 @@ DataType TypeAnnotation::dataType(bool expectedType /*= false */) const {
     return KindOfObject;
   }
   if (m_typeArgs) {
-    return !m_name.compare("array") ? KindOfArray : KindOfObject;
+    return !strcasecmp(m_name.c_str(), "array") ? KindOfArray : KindOfObject;
   }
   if (!expectedType && (m_nullable || m_soft)) {
     return KindOfUnknown;
   }
-  if (!m_name.compare("null") || !m_name.compare("void")) {
+  if (!strcasecmp(m_name.c_str(), "null") ||
+      !strcasecmp(m_name.c_str(), "void")) {
     return KindOfNull;
   }
-  if (!m_name.compare("bool"))     return KindOfBoolean;
-  if (!m_name.compare("int"))      return KindOfInt64;
-  if (!m_name.compare("float"))    return KindOfDouble;
-  if (!m_name.compare("string"))   return KindOfString;
-  if (!m_name.compare("array"))    return KindOfArray;
-  if (!m_name.compare("resource")) return KindOfResource;
-  if (!m_name.compare("mixed"))    return KindOfUnknown;
+  if (!strcasecmp(m_name.c_str(), "HH\\bool"))     return KindOfBoolean;
+  if (!strcasecmp(m_name.c_str(), "HH\\int"))      return KindOfInt64;
+  if (!strcasecmp(m_name.c_str(), "HH\\float"))    return KindOfDouble;
+  if (!strcasecmp(m_name.c_str(), "HH\\num"))      return KindOfUnknown;
+  if (!strcasecmp(m_name.c_str(), "HH\\string"))   return KindOfString;
+  if (!strcasecmp(m_name.c_str(), "array"))        return KindOfArray;
+  if (!strcasecmp(m_name.c_str(), "HH\\resource")) return KindOfResource;
+  if (!strcasecmp(m_name.c_str(), "HH\\mixed"))    return KindOfUnknown;
 
   return KindOfObject;
 }
@@ -132,8 +136,8 @@ void TypeAnnotation::xhpTypeName(std::string &name) const {
     name += m_name;
   }
   // un-mangle back
-  Util::replaceAll(name, "__", ":");
-  Util::replaceAll(name, "_", "-");
+  replaceAll(name, "__", ":");
+  replaceAll(name, "_", "-");
 }
 
 void TypeAnnotation::tupleTypeName(std::string &name) const {
@@ -182,16 +186,22 @@ void TypeAnnotation::outputCodeModel(CodeGenerator& cg) {
   }
   typeArgsElem = m_typeArgs;
 
-  auto numProps = 3;
+  auto numProps = 1;
+  if (m_nullable) numProps++;
+  if (m_soft) numProps++;
   if (m_function) numProps++;
   if (numTypeArgs > 0) numProps++;
   cg.printObjectHeader("TypeExpression", numProps);
   cg.printPropertyHeader("name");
   cg.printValue(m_tuple ? "tuple" : m_name);
-  cg.printPropertyHeader("isNullable");
-  cg.printBool((bool)m_nullable);
-  cg.printPropertyHeader("isSoft");
-  cg.printBool((bool)m_soft);
+  if (m_nullable) {
+    cg.printPropertyHeader("isNullable");
+    cg.printBool(true);
+  }
+  if (m_soft) {
+    cg.printPropertyHeader("isSoft");
+    cg.printBool(true);
+  }
   if (m_function) {
     cg.printPropertyHeader("returnType");
     typeArgsElem->outputCodeModel(cg);

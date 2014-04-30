@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -16,6 +16,7 @@
 #include "hphp/runtime/debugger/break_point.h"
 
 #include <boost/lexical_cast.hpp>
+#include <vector>
 
 #include "hphp/runtime/debugger/debugger.h"
 #include "hphp/runtime/debugger/debugger_proxy.h"
@@ -81,7 +82,7 @@ std::string InterruptSite::desc() const {
   return ret;
 }
 
-InterruptSite::InterruptSite(bool hardBreakPoint, CVarRef error)
+InterruptSite::InterruptSite(bool hardBreakPoint, const Variant& error)
     : m_error(error), m_activationRecord(nullptr),
       m_callingSite(nullptr), m_class(nullptr),
       m_file((StringData*)nullptr),
@@ -90,7 +91,7 @@ InterruptSite::InterruptSite(bool hardBreakPoint, CVarRef error)
       m_funcEntry(false) {
   TRACE(2, "InterruptSite::InterruptSite\n");
 #define bail_on(c) if (c) { return; }
-  VMExecutionContext* context = g_vmContext;
+  auto const context = g_context.getNoCheck();
   ActRec *fp = context->getFP();
   bail_on(!fp);
   if (hardBreakPoint && fp->skipFrame()) {
@@ -113,7 +114,7 @@ InterruptSite::InterruptSite(bool hardBreakPoint, CVarRef error)
 
 // Only used to look for callers by function name. No need to
 // to retrieve source line information for this kind of site.
-InterruptSite::InterruptSite(ActRec *fp, Offset offset, CVarRef error)
+InterruptSite::InterruptSite(ActRec *fp, Offset offset, const Variant& error)
   : m_error(error), m_activationRecord(nullptr),
     m_callingSite(nullptr), m_class(nullptr),
     m_file((StringData*)nullptr),
@@ -141,7 +142,7 @@ void InterruptSite::Initialize(ActRec *fp) {
     m_char1 = m_sourceLoc.char1;
   }
   m_function = fp->m_func->name()->data();
-  if (fp->m_func->isGenerator()) {
+  if (fp->inGenerator()) {
     // Strip off "$continuation" to get the original function name
     assert(m_function.compare(m_function.length() - 13,
                               string::npos, "$continuation") == 0);
@@ -163,7 +164,7 @@ void InterruptSite::Initialize(ActRec *fp) {
 // longer than there is a guarantee that this site will be alive.
 const InterruptSite *InterruptSite::getCallingSite() const {
   if (m_callingSite != nullptr) return m_callingSite.get();
-  VMExecutionContext* context = g_vmContext;
+  auto const context = g_context.getNoCheck();
   Offset parentOffset;
   auto parentFp = context->getPrevVMState(m_activationRecord, &parentOffset);
   if (parentFp == nullptr) return nullptr;
@@ -1002,7 +1003,7 @@ bool BreakPointInfo::Match(const char *haystack, int haystack_len,
   return HPHP::same(r, 1);
 }
 
-bool BreakPointInfo::checkExceptionOrError(CVarRef e) {
+bool BreakPointInfo::checkExceptionOrError(const Variant& e) {
   TRACE(2, "BreakPointInfo::checkException\n");
   assert(!e.isNull());
   if (e.isObject()) {
@@ -1010,7 +1011,7 @@ bool BreakPointInfo::checkExceptionOrError(CVarRef e) {
       return Match(m_class.c_str(), m_class.size(),
                    e.toObject()->o_getClassName().data(), true, false);
     }
-    return e.instanceof(m_class.c_str());
+    return e.getObjectData()->o_instanceof(m_class.c_str());
   }
   return Match(m_class.c_str(), m_class.size(), ErrorClassName, m_regex,
                false);

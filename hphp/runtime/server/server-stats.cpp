@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -39,6 +39,7 @@
 #include "hphp/util/compatibility.h"
 #include "hphp/util/process.h"
 #include "hphp/util/timer.h"
+#include "hphp/util/text-util.h"
 #include "hphp/runtime/base/hardware-counter.h"
 
 namespace HPHP {
@@ -150,7 +151,7 @@ void ServerStats::Filter(list<TimeSlot*> &slots, const std::string &keys,
                          std::map<std::string, int> &wantedKeys) {
   if (!keys.empty()) {
     std::vector<std::string> rules0;
-    Util::split(',', keys.c_str(), rules0, true);
+    split(',', keys.c_str(), rules0, true);
     if (!rules0.empty()) {
 
       // prepare rules
@@ -1288,8 +1289,9 @@ ServerStatsHelper::~ServerStatsHelper() {
 #endif
 
     if (m_track & TRACK_MEMORY) {
-      int64_t mem = MM().getStats().peakUsage;
-      ServerStats::Log(string("mem.") + m_section, mem);
+      auto const& stats = MM().getStats();
+      ServerStats::Log(string("mem.") + m_section, stats.peakUsage);
+      ServerStats::Log(string("mem.allocated.") + m_section, stats.peakAlloc);
     }
 
     if (m_track & TRACK_HWINST) {

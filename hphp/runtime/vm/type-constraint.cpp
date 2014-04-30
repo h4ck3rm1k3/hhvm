@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -43,41 +43,17 @@ void TypeConstraint::init() {
       const StringData* name;
       Type type;
     } pairs[] = {
-      { makeStaticString("bool"),     { KindOfBoolean,
-                                                   MetaType::Precise }},
-      { makeStaticString("boolean"),  { KindOfBoolean,
-                                                   MetaType::Precise }},
-
-      { makeStaticString("int"),      { KindOfInt64,
-                                                   MetaType::Precise }},
-      { makeStaticString("integer"),  { KindOfInt64,
-                                                   MetaType::Precise }},
-
-      { makeStaticString("real"),     { KindOfDouble,
-                                                   MetaType::Precise }},
-      { makeStaticString("double"),   { KindOfDouble,
-                                                   MetaType::Precise }},
-      { makeStaticString("float"),    { KindOfDouble,
-                                                   MetaType::Precise }},
-
-      { makeStaticString("string"),   { KindOfString,
-                                                   MetaType::Precise }},
-
-      { makeStaticString("array"),    { KindOfArray,
-                                                   MetaType::Precise }},
-
-      { makeStaticString("resource"), { KindOfResource,
-                                                   MetaType::Precise }},
-
-      { makeStaticString("self"),     { KindOfObject,
-                                                   MetaType::Self }},
-      { makeStaticString("parent"),   { KindOfObject,
-                                                   MetaType::Parent }},
-      { makeStaticString("callable"), { KindOfObject,
-                                                   MetaType::Callable }},
-      { makeStaticString("num"),      { KindOfDouble,
-                                                   MetaType::Number }},
-
+      { makeStaticString("HH\\bool"),   { KindOfBoolean, MetaType::Precise }},
+      { makeStaticString("HH\\int"),    { KindOfInt64,   MetaType::Precise }},
+      { makeStaticString("HH\\float"),  { KindOfDouble,  MetaType::Precise }},
+      { makeStaticString("HH\\string"), { KindOfString,  MetaType::Precise }},
+      { makeStaticString("array"),      { KindOfArray,   MetaType::Precise }},
+      { makeStaticString("HH\\resource"), { KindOfResource,
+                                                         MetaType::Precise }},
+      { makeStaticString("HH\\num"),    { KindOfDouble,  MetaType::Number }},
+      { makeStaticString("self"),       { KindOfObject,  MetaType::Self }},
+      { makeStaticString("parent"),     { KindOfObject,  MetaType::Parent }},
+      { makeStaticString("callable"),   { KindOfObject,  MetaType::Callable }},
     };
     for (unsigned i = 0; i < sizeof(pairs) / sizeof(Pair); ++i) {
       s_typeNamesToTypes[pairs[i].name] = pairs[i].type;
@@ -90,10 +66,6 @@ void TypeConstraint::init() {
     m_type.dt = KindOfInvalid;
     m_type.metatype = MetaType::Precise;
     return;
-  }
-  if (m_typeName && isExtended()) {
-    assert((isNullable() || isSoft()) &&
-           "Only nullable and soft extended type hints are implemented");
   }
 
   if (m_typeName == nullptr) {
@@ -126,6 +98,49 @@ void TypeConstraint::init() {
   assert(IMPLIES(isCallable(), m_type.dt == KindOfObject));
 }
 
+std::string TypeConstraint::displayName(const Func* func /*= nullptr*/) const {
+  const StringData* tn = typeName();
+  std::string name;
+  if (isSoft()) {
+    name += '@';
+  }
+  if (isNullable() && isExtended()) {
+    name += '?';
+  }
+  if (func && isSelf()) {
+    selfToTypeName(func, &tn);
+    name += tn->data();
+  } else if (func && isParent()) {
+    parentToTypeName(func, &tn);
+    name += tn->data();
+  } else {
+    const char* str = tn->data();
+    auto len = tn->size();
+    if (len > 3 && tolower(str[0]) == 'h' && tolower(str[1]) == 'h' &&
+        str[2] == '\\') {
+      bool strip = false;
+      const char* stripped = str + 3;
+      switch (len - 3) {
+        case 3:
+          strip = (!strcasecmp(stripped, "int") ||
+                   !strcasecmp(stripped, "num"));
+          break;
+        case 4: strip = !strcasecmp(stripped, "bool"); break;
+        case 5: strip = !strcasecmp(stripped, "float"); break;
+        case 6: strip = !strcasecmp(stripped, "string"); break;
+        case 8: strip = !strcasecmp(stripped, "resource"); break;
+        default:
+          break;
+      }
+      if (strip) {
+        str = stripped;
+      }
+    }
+    name += str;
+  }
+  return name;
+}
+
 /*
  * Note:
  *
@@ -153,7 +168,7 @@ bool TypeConstraint::checkTypeAliasNonObj(const TypedValue* tv) const {
 
   auto const td = getTypeAliasWithAutoload(m_namedEntity, m_typeName);
   if (!td) return false;
-  if (td->nullable && IS_NULL_TYPE(tv->m_type)) return true;
+  if (td->nullable && tv->m_type == KindOfNull) return true;
   return td->kind == KindOfAny || equivDataTypes(td->kind, tv->m_type);
 }
 
@@ -163,20 +178,20 @@ bool TypeConstraint::checkTypeAliasObj(const TypedValue* tv) const {
 
   auto const td = getTypeAliasWithAutoload(m_namedEntity, m_typeName);
   if (!td) return false;
-  if (td->nullable && IS_NULL_TYPE(tv->m_type)) return true;
+  if (td->nullable && tv->m_type == KindOfNull) return true;
   if (td->kind != KindOfObject) return td->kind == KindOfAny;
   return td->klass && tv->m_data.pobj->instanceof(td->klass);
 }
 
 bool
-TypeConstraint::check(const TypedValue* tv, const Func* func) const {
+TypeConstraint::check(TypedValue* tv, const Func* func) const {
   assert(hasConstraint());
 
   // This is part of the interpreter runtime; perf matters.
   if (tv->m_type == KindOfRef) {
     tv = tv->m_data.pref->tv();
   }
-  if (isNullable() && IS_NULL_TYPE(tv->m_type)) { return true; }
+  if (isNullable() && tv->m_type == KindOfNull) return true;
 
   if (isNumber()) {
     return IS_INT_TYPE(tv->m_type) || IS_DOUBLE_TYPE(tv->m_type);
@@ -256,60 +271,100 @@ bool
 TypeConstraint::checkPrimitive(DataType dt) const {
   assert(m_type.dt != KindOfObject);
   assert(dt != KindOfRef);
-  if (isNullable() && IS_NULL_TYPE(dt)) { return true; }
+  if (isNullable() && dt == KindOfNull) return true;
   if (isNumber()) { return IS_INT_TYPE(dt) || IS_DOUBLE_TYPE(dt); }
   return equivDataTypes(m_type.dt, dt);
 }
 
-static const char* describe_actual_type(const TypedValue* tv) {
+static const char* describe_actual_type(const TypedValue* tv, bool isHHType) {
   tv = tvToCell(tv);
   switch (tv->m_type) {
-  case KindOfUninit:
-  case KindOfNull:          return "null";
-  case KindOfBoolean:       return "bool";
-  case KindOfInt64:         return "int";
-  case KindOfDouble:        return "double";
-  case KindOfStaticString:
-  case KindOfString:        return "string";
-  case KindOfArray:         return "array";
-  case KindOfObject:
-    return tv->m_data.pobj->o_getClassName().c_str();
-  case KindOfResource:
-    return tv->m_data.pres->o_getClassName().c_str();
-  default:
-    assert(false);
+    case KindOfUninit:
+    case KindOfNull:          return "null";
+    case KindOfBoolean:       return "bool";
+    case KindOfInt64:         return "int";
+    case KindOfDouble:        return isHHType ? "float" : "double";
+    case KindOfStaticString:
+    case KindOfString:        return "string";
+    case KindOfArray:         return "array";
+    case KindOfObject:        return tv->m_data.pobj->o_getClassName().c_str();
+    case KindOfResource:      return tv->m_data.pres->o_getClassName().c_str();
+    default:
+      assert(false);
   }
   not_reached();
 }
 
-void TypeConstraint::verifyFail(const Func* func, int paramNum,
-                                const TypedValue* tv) const {
+void TypeConstraint::verifyFail(const Func* func, TypedValue* tv,
+                                int id) const {
   JIT::VMRegAnchor _;
-
-  const StringData* tn = typeName();
-  if (isSelf()) {
-    selfToTypeName(func, &tn);
-  } else if (isParent()) {
-    parentToTypeName(func, &tn);
+  std::string name = displayName(func);
+  auto const givenType = describe_actual_type(tv, isHHType());
+  // Handle return type constraint failures
+  if (id == ReturnId) {
+    if (RuntimeOption::EvalCheckReturnTypeHints >= 2 && !isSoft()) {
+      raise_typehint_error(
+        folly::format(
+          "Value returned from {}() must be of type {}, {} given",
+          func->fullName()->data(),
+          name,
+          givenType
+        ).str()
+      );
+    } else {
+      raise_debugging(
+        folly::format(
+          "Value returned from {}() must be of type {}, {} given",
+          func->fullName()->data(),
+          name,
+          givenType
+        ).str()
+      );
+    }
+    return;
   }
-
-  auto const givenType = describe_actual_type(tv);
-
-  if (isExtended()) {
-    // Extended type hints raise warnings instead of recoverable
-    // errors for now, to ease migration (we used to not check these
-    // at all at runtime).
-    assert(
-      (isSoft() || isNullable()) &&
-      "Only nullable and soft extended type hints are currently implemented");
+  // Handle implicit collection->array conversion for array parameter type
+  // constraints
+  auto c = tvToCell(tv);
+  if (isArray() && !isSoft() && !func->mustBeRef(id) &&
+      c->m_type == KindOfObject && c->m_data.pobj->isCollection()) {
+    // To ease migration, the 'array' type constraint will implicitly cast
+    // collections to arrays, provided the type constraint is not soft and
+    // the parameter is not by reference. We raise a notice to let the user
+    // know that there was a type mismatch and that an implicit conversion
+    // was performed.
+    raise_notice(
+      folly::format(
+        "Argument {} to {}() must be of type {}, {} given; argument {} was "
+        "implicitly cast to array",
+        id + 1, func->fullName()->data(), name, givenType, id + 1
+      ).str()
+    );
+    tvCastToArrayInPlace(tv);
+    return;
+  }
+  // Handle parameter type constraint failures
+  if (isExtended() && isSoft()) {
+    // Soft extended type hints raise warnings instead of recoverable
+    // errors, to ease migration.
     raise_debugging(
-      "Argument %d to %s() must be of type %s, %s given",
-      paramNum + 1, func->fullName()->data(), fullName().c_str(), givenType);
+      folly::format(
+        "Argument {} to {}() must be of type {}, {} given",
+        id + 1, func->fullName()->data(), name, givenType
+      ).str()
+    );
+  } else if (isExtended() && isNullable()) {
+    raise_typehint_error(
+      folly::format(
+        "Argument {} to {}() must be of type {}, {} given",
+        id + 1, func->fullName()->data(), name, givenType
+      ).str()
+    );
   } else {
     raise_typehint_error(
       folly::format(
         "Argument {} passed to {}() must be an instance of {}, {} given",
-        paramNum + 1, func->fullName()->data(), tn->data(), givenType
+        id + 1, func->fullName()->data(), name, givenType
       ).str()
     );
   }

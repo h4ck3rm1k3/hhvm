@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    | Copyright (c) 1997-2010 The PHP Group                                |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
@@ -51,7 +51,7 @@ public:
   virtual const String& o_getClassNameHook() const { return classnameof(); }
 
   bool parse(const char *buf, int bufsize);
-  Variant extract(CVarRef filename, CVarRef callbackfunc, int decode,
+  Variant extract(const Variant& filename, const Variant& callbackfunc, int decode,
                   bool isfile);
   Variant getPartData();
   Array getStructure();

@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -15,6 +15,7 @@
 */
 
 #include "hphp/runtime/debugger/cmd/cmd_info.h"
+#include <vector>
 
 #include "folly/dynamic.h"
 #include "folly/json.h"
@@ -250,17 +251,17 @@ bool CmdInfo::onServer(DebuggerProxy &proxy) {
     for (unsigned int i = 0 ; i < sizeof(tempList)/sizeof(int); ++i) {
       for (unsigned int j = 0 ; j < tmpAcLiveLists[tempList[i]].size(); ++j) {
         m_acLiveLists[tempList[i]].push_back(
-          tmpAcLiveLists[tempList[i]][j]->toCPPString());
+          tmpAcLiveLists[tempList[i]][j].toCppString());
       }
     }
 
-    Array variables = g_vmContext->getLocalDefinedVariables(0);
+    Array variables = g_context->getLocalDefinedVariables(0);
     variables += CmdVariable::GetGlobalVariables();
     std::vector<std::string> &vars =
       m_acLiveLists[DebuggerClient::AutoCompleteVariables];
     vars.reserve(variables.size());
     for (ArrayIter iter(variables); iter; ++iter) {
-      vars.push_back("$" + iter.first().toString()->toCPPString());
+      vars.push_back("$" + iter.first().toString().toCppString());
     }
 
     return proxy.sendToClient(this);
@@ -287,7 +288,7 @@ bool CmdInfo::onServer(DebuggerProxy &proxy) {
 
 ///////////////////////////////////////////////////////////////////////////////
 
-void CmdInfo::PrintDocComments(StringBuffer &sb, CArrRef info) {
+void CmdInfo::PrintDocComments(StringBuffer &sb, const Array& info) {
   if (info[s_doc].isString()) {
     String doc = info[s_doc].toString();
     int space1 = 0; // best guess
@@ -295,10 +296,11 @@ void CmdInfo::PrintDocComments(StringBuffer &sb, CArrRef info) {
     Variant matches1, matches2;
     Variant ret1 = preg_match("#^( *)/\\*#s", doc, matches1);
     Variant ret2 = preg_match("#\n( *)\\*#s", doc, matches2);
-    if (!same(ret1, false) && !same(ret2, false)) {
+    if (!same(ret1, false) && !same(ret2, false) &&
+        matches1.isArray() && matches2.isArray()) {
       // we have perfect doc comment blocks, so we can re-adjust spaces
-      space1 = matches1[1].toString().size();
-      space2 = matches2[1].toString().size();
+      space1 = matches1.toCArrRef()[1].toString().size();
+      space2 = matches2.toCArrRef()[1].toString().size();
     }
     String spaces = f_str_repeat(" ", space2 - space1 - 1);
     sb.printf("%s%s\n", spaces.data(), doc.data());
@@ -306,7 +308,7 @@ void CmdInfo::PrintDocComments(StringBuffer &sb, CArrRef info) {
 }
 
 void CmdInfo::PrintHeader(DebuggerClient &client, StringBuffer &sb,
-                          CArrRef info) {
+                          const Array& info) {
   if (!info[s_internal].toBoolean()) {
     String file = info[s_file].toString();
     int line1 = info[s_line1].toInt32();
@@ -329,7 +331,7 @@ void CmdInfo::PrintHeader(DebuggerClient &client, StringBuffer &sb,
   PrintDocComments(sb, info);
 }
 
-String CmdInfo::GetParams(CArrRef params, bool varg,
+String CmdInfo::GetParams(const Array& params, bool varg,
                           bool detailed /* = false */) {
   StringBuffer args;
   for (ArrayIter iter(params); iter; ++iter) {
@@ -374,14 +376,14 @@ String CmdInfo::GetParams(CArrRef params, bool varg,
   return args.detach();
 }
 
-String CmdInfo::GetModifier(CArrRef info, const String& name) {
+String CmdInfo::GetModifier(const Array& info, const String& name) {
   if (info[name].toBoolean()) {
     return name + " ";
   }
   return empty_string;
 }
 
-String CmdInfo::FindSubSymbol(CArrRef symbols, const std::string &symbol) {
+String CmdInfo::FindSubSymbol(const Array& symbols, const std::string &symbol) {
   for (ArrayIter iter(symbols); iter; ++iter) {
     String key = iter.first().toString();
     if (strcasecmp(key.data(), symbol.c_str()) == 0) {
@@ -391,25 +393,25 @@ String CmdInfo::FindSubSymbol(CArrRef symbols, const std::string &symbol) {
   return String();
 }
 
-bool CmdInfo::TryConstant(StringBuffer &sb, CArrRef info,
+bool CmdInfo::TryConstant(StringBuffer &sb, const Array& info,
                           const std::string &subsymbol) {
   String key = FindSubSymbol(info[s_constants].toArray(), subsymbol);
   if (!key.isNull()) {
     sb.printf("  const %s = %s;\n", key.data(),
               DebuggerClient::FormatVariable
-              (info[s_constants][key], -1).data());
+              (info[s_constants].toArray()[key], -1).data());
     return true;
   }
   return false;
 }
 
-bool CmdInfo::TryProperty(StringBuffer &sb, CArrRef info,
+bool CmdInfo::TryProperty(StringBuffer &sb, const Array& info,
                           const std::string &subsymbol) {
   String key = FindSubSymbol(info[s_properties].toArray(),
                              subsymbol[0] == '$' ?
                              subsymbol.substr(1) : subsymbol);
   if (!key.isNull()) {
-    Array prop = info[s_properties][key].toArray();
+    Array prop = info[s_properties].toArray()[key].toArray();
     PrintDocComments(sb, prop);
     sb.printf("  %s %s$%s;\n",
               prop[s_access].toString().data(),
@@ -421,7 +423,7 @@ bool CmdInfo::TryProperty(StringBuffer &sb, CArrRef info,
                       subsymbol[0] == '$' ?
                       subsymbol.substr(1) : subsymbol);
   if (!key.isNull()) {
-    Array prop = info[s_private_properties][key].toArray();
+    Array prop = info[s_private_properties].toArray()[key].toArray();
     PrintDocComments(sb, prop);
     sb.printf("  private %s$%s;\n",
               GetModifier(prop, s_static).data(),
@@ -431,7 +433,7 @@ bool CmdInfo::TryProperty(StringBuffer &sb, CArrRef info,
   return false;
 }
 
-bool CmdInfo::TryMethod(DebuggerClient &client, StringBuffer &sb, CArrRef info,
+bool CmdInfo::TryMethod(DebuggerClient &client, StringBuffer &sb, const Array& info,
                         std::string subsymbol) {
   if (subsymbol.size() > 2 && subsymbol.substr(subsymbol.size() - 2) == "()") {
     subsymbol = subsymbol.substr(0, subsymbol.size() - 2);
@@ -439,7 +441,7 @@ bool CmdInfo::TryMethod(DebuggerClient &client, StringBuffer &sb, CArrRef info,
 
   String key = FindSubSymbol(info[s_methods].toArray(), subsymbol);
   if (!key.isNull()) {
-    Array func = info[s_methods][key].toArray();
+    Array func = info[s_methods].toArray()[key].toArray();
     PrintHeader(client, sb, func);
     sb.printf("%s %s%s%sfunction %s::%s%s(%s);\n",
               func[s_access].toString().data(),
@@ -461,7 +463,7 @@ bool CmdInfo::TryMethod(DebuggerClient &client, StringBuffer &sb, CArrRef info,
   return false;
 }
 
-String CmdInfo::GetParam(CArrRef params, int index) {
+String CmdInfo::GetParam(const Array& params, int index) {
   StringBuffer param;
   Array arg = params[index].toArray();
   if (arg[s_ref].toBoolean()) {
@@ -472,7 +474,7 @@ String CmdInfo::GetParam(CArrRef params, int index) {
   return param.detach();
 }
 
-String CmdInfo::GetTypeProfilingInfo(CArrRef profilingArray, CArrRef params) {
+String CmdInfo::GetTypeProfilingInfo(const Array& profilingArray, const Array& params) {
   StringBuffer profile;
   int index = 0;
   StringBuffer args;
@@ -503,7 +505,7 @@ String CmdInfo::GetTypeProfilingInfo(CArrRef profilingArray, CArrRef params) {
   return profile.detach();
 }
 
-void CmdInfo::PrintInfo(DebuggerClient &client, StringBuffer &sb, CArrRef info,
+void CmdInfo::PrintInfo(DebuggerClient &client, StringBuffer &sb, const Array& info,
                         const std::string &subsymbol) {
   if (info.exists(s_params)) {
     PrintHeader(client, sb, info);

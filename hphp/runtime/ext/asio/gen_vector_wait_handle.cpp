@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    | Copyright (c) 1997-2010 The PHP Group                                |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
@@ -47,8 +47,10 @@ void c_GenVectorWaitHandle::t___construct() {
   throw e;
 }
 
-void c_GenVectorWaitHandle::ti_setoncreatecallback(CVarRef callback) {
-  if (!callback.isNull() && !callback.instanceof(c_Closure::classof())) {
+void c_GenVectorWaitHandle::ti_setoncreatecallback(const Variant& callback) {
+  if (!callback.isNull() &&
+      (!callback.isObject() ||
+       !callback.getObjectData()->instanceof(c_Closure::classof()))) {
     Object e(SystemLib::AllocInvalidArgumentExceptionObject(
       "Unable to set GenVectorWaitHandle::onCreate: on_create_cb not a closure"));
     throw e;
@@ -56,8 +58,10 @@ void c_GenVectorWaitHandle::ti_setoncreatecallback(CVarRef callback) {
   AsioSession::Get()->setOnGenVectorCreateCallback(callback.getObjectDataOrNull());
 }
 
-Object c_GenVectorWaitHandle::ti_create(CVarRef dependencies) {
-  if (UNLIKELY(!dependencies.instanceof(c_Vector::classof()))) {
+Object c_GenVectorWaitHandle::ti_create(const Variant& dependencies) {
+  if (UNLIKELY(!dependencies.isObject() ||
+      dependencies.getObjectData()->getCollectionType() !=
+        Collection::VectorType)) {
     Object e(SystemLib::AllocInvalidArgumentExceptionObject(
       "Expected dependencies to be an instance of Vector"));
     throw e;
@@ -107,7 +111,7 @@ Object c_GenVectorWaitHandle::ti_create(CVarRef dependencies) {
   }
 }
 
-void c_GenVectorWaitHandle::initialize(CObjRef exception, c_Vector* deps, int64_t iter_pos, c_WaitableWaitHandle* child) {
+void c_GenVectorWaitHandle::initialize(const Object& exception, c_Vector* deps, int64_t iter_pos, c_WaitableWaitHandle* child) {
   m_exception = exception;
   m_deps = deps;
   m_iterPos = iter_pos;

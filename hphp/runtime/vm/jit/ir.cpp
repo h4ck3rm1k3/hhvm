@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -33,7 +33,6 @@
 #include "hphp/runtime/vm/jit/cse.h"
 #include "hphp/runtime/vm/jit/ir-instruction.h"
 #include "hphp/runtime/vm/jit/ir-unit.h"
-#include "hphp/runtime/vm/jit/linear-scan.h"
 #include "hphp/runtime/vm/jit/print.h"
 #include "hphp/runtime/vm/jit/simplifier.h"
 #include "hphp/runtime/vm/jit/cfg.h"
@@ -68,17 +67,18 @@ namespace {
 #define DofS(n)   HasDest
 #define DUnbox(n) HasDest
 #define DBox(n)   HasDest
+#define DFilterS(n) HasDest
 #define DParam    HasDest
 #define DAllocObj HasDest
 #define DLdRef    HasDest
 #define DThis     HasDest
-#define DArith    HasDest
 #define DMulti    NaryDest
 #define DSetElem  HasDest
 #define DStk(x)   ModifiesStack|(x)
 #define DPtrToParam HasDest
 #define DBuiltin  HasDest
 #define DSubtract(n,t) HasDest
+#define DLdRaw    HasDest
 
 struct {
   const char* name;
@@ -113,17 +113,18 @@ struct {
 #undef DofS
 #undef DUnbox
 #undef DBox
+#undef DFilterS
 #undef DParam
 #undef DAllocObj
 #undef DLdRef
 #undef DThis
-#undef DArith
 #undef DMulti
 #undef DSetElem
 #undef DStk
 #undef DPtrToParam
 #undef DBuiltin
 #undef DSubtract
+#undef DLdRaw
 
 } // namespace
 
@@ -156,7 +157,7 @@ const StringData* findClassName(SSATmp* cls) {
   assert(cls->isA(Type::Cls));
 
   if (cls->isConst()) {
-    return cls->getValClass()->preClass()->name();
+    return cls->clsVal()->preClass()->name();
   }
   // Try to get the class name from a LdCls
   IRInstruction* clsInst = cls->inst();
@@ -164,7 +165,7 @@ const StringData* findClassName(SSATmp* cls) {
     SSATmp* clsName = clsInst->src(0);
     assert(clsName->isA(Type::Str));
     if (clsName->isConst()) {
-      return clsName->getValStr();
+      return clsName->strVal();
     }
   }
   return nullptr;
@@ -204,6 +205,12 @@ bool isQueryOp(Opcode opc) {
   case Lte:
   case Eq:
   case Neq:
+  case GtInt:
+  case GteInt:
+  case LtInt:
+  case LteInt:
+  case EqInt:
+  case NeqInt:
   case Same:
   case NSame:
   case InstanceOfBitmask:
@@ -216,6 +223,24 @@ bool isQueryOp(Opcode opc) {
   }
 }
 
+bool isIntQueryOp(Opcode opc) {
+  switch (opc) {
+  case GtInt:
+  case GteInt:
+  case LtInt:
+  case LteInt:
+  case EqInt:
+  case NeqInt:
+    return true;
+  default:
+    return false;
+  }
+}
+
+bool isFusableQueryOp(Opcode opc) {
+  return isQueryOp(opc) && opc != IsType && opc != IsNType;
+}
+
 bool isQueryJmpOp(Opcode opc) {
   switch (opc) {
   case JmpGt:
@@ -224,12 +249,16 @@ bool isQueryJmpOp(Opcode opc) {
   case JmpLte:
   case JmpEq:
   case JmpNeq:
+  case JmpGtInt:
+  case JmpGteInt:
+  case JmpLtInt:
+  case JmpLteInt:
+  case JmpEqInt:
+  case JmpNeqInt:
   case JmpSame:
   case JmpNSame:
   case JmpInstanceOfBitmask:
   case JmpNInstanceOfBitmask:
-  case JmpIsType:
-  case JmpIsNType:
   case JmpZero:
   case JmpNZero:
     return true;
@@ -239,7 +268,7 @@ bool isQueryJmpOp(Opcode opc) {
 }
 
 Opcode queryToJmpOp(Opcode opc) {
-  assert(isQueryOp(opc));
+  assert(isFusableQueryOp(opc));
   switch (opc) {
   case Gt:                 return JmpGt;
   case Gte:                return JmpGte;
@@ -247,12 +276,16 @@ Opcode queryToJmpOp(Opcode opc) {
   case Lte:                return JmpLte;
   case Eq:                 return JmpEq;
   case Neq:                return JmpNeq;
+  case GtInt:              return JmpGtInt;
+  case GteInt:             return JmpGteInt;
+  case LtInt:              return JmpLtInt;
+  case LteInt:             return JmpLteInt;
+  case EqInt:              return JmpEqInt;
+  case NeqInt:             return JmpNeqInt;
   case Same:               return JmpSame;
   case NSame:              return JmpNSame;
   case InstanceOfBitmask:  return JmpInstanceOfBitmask;
   case NInstanceOfBitmask: return JmpNInstanceOfBitmask;
-  case IsType:             return JmpIsType;
-  case IsNType:            return JmpIsNType;
   default:                 always_assert(0);
   }
 }
@@ -266,12 +299,16 @@ Opcode queryJmpToQueryOp(Opcode opc) {
   case JmpLte:                return Lte;
   case JmpEq:                 return Eq;
   case JmpNeq:                return Neq;
+  case JmpGtInt:              return GtInt;
+  case JmpGteInt:             return GteInt;
+  case JmpLtInt:              return LtInt;
+  case JmpLteInt:             return LteInt;
+  case JmpEqInt:              return EqInt;
+  case JmpNeqInt:             return NeqInt;
   case JmpSame:               return Same;
   case JmpNSame:              return NSame;
   case JmpInstanceOfBitmask:  return InstanceOfBitmask;
   case JmpNInstanceOfBitmask: return NInstanceOfBitmask;
-  case JmpIsType:             return IsType;
-  case JmpIsNType:            return IsNType;
   default:                    always_assert(0);
   }
 }
@@ -284,6 +321,12 @@ Opcode jmpToSideExitJmp(Opcode opc) {
   case JmpLte:                return SideExitJmpLte;
   case JmpEq:                 return SideExitJmpEq;
   case JmpNeq:                return SideExitJmpNeq;
+  case JmpGtInt:              return SideExitJmpGtInt;
+  case JmpGteInt:             return SideExitJmpGteInt;
+  case JmpLtInt:              return SideExitJmpLtInt;
+  case JmpLteInt:             return SideExitJmpLteInt;
+  case JmpEqInt:              return SideExitJmpEqInt;
+  case JmpNeqInt:             return SideExitJmpNeqInt;
   case JmpSame:               return SideExitJmpSame;
   case JmpNSame:              return SideExitJmpNSame;
   case JmpInstanceOfBitmask:  return SideExitJmpInstanceOfBitmask;
@@ -302,6 +345,12 @@ Opcode jmpToReqBindJmp(Opcode opc) {
   case JmpLte:                return ReqBindJmpLte;
   case JmpEq:                 return ReqBindJmpEq;
   case JmpNeq:                return ReqBindJmpNeq;
+  case JmpGtInt:              return ReqBindJmpGtInt;
+  case JmpGteInt:             return ReqBindJmpGteInt;
+  case JmpLtInt:              return ReqBindJmpLtInt;
+  case JmpLteInt:             return ReqBindJmpLteInt;
+  case JmpEqInt:              return ReqBindJmpEqInt;
+  case JmpNeqInt:             return ReqBindJmpNeqInt;
   case JmpSame:               return ReqBindJmpSame;
   case JmpNSame:              return ReqBindJmpNSame;
   case JmpInstanceOfBitmask:  return ReqBindJmpInstanceOfBitmask;
@@ -321,6 +370,12 @@ Opcode negateQueryOp(Opcode opc) {
   case Lte:                 return Gt;
   case Eq:                  return Neq;
   case Neq:                 return Eq;
+  case GtInt:               return LteInt;
+  case GteInt:              return LtInt;
+  case LtInt:               return GteInt;
+  case LteInt:              return GtInt;
+  case EqInt:               return NeqInt;
+  case NeqInt:              return EqInt;
   case Same:                return NSame;
   case NSame:               return Same;
   case InstanceOfBitmask:   return NInstanceOfBitmask;
@@ -340,9 +395,46 @@ Opcode commuteQueryOp(Opcode opc) {
   case Lte:   return Gte;
   case Eq:    return Eq;
   case Neq:   return Neq;
+  case GtInt: return LtInt;
+  case GteInt:return LteInt;
+  case LtInt: return GtInt;
+  case LteInt:return GteInt;
+  case EqInt: return EqInt;
+  case NeqInt:return NeqInt;
   case Same:  return Same;
   case NSame: return NSame;
   default:      always_assert(0);
+  }
+}
+
+Opcode queryToIntQueryOp(Opcode opc) {
+  assert(isQueryOp(opc));
+  switch (opc) {
+  case Gt:    return GtInt;
+  case Gte:   return GteInt;
+  case Lt:    return LtInt;
+  case Lte:   return LteInt;
+  case Eq:    return EqInt;
+  case Neq:   return NeqInt;
+  case JmpGt:    return JmpGtInt;
+  case JmpGte:   return JmpGteInt;
+  case JmpLt:    return JmpLtInt;
+  case JmpLte:   return JmpLteInt;
+  case JmpEq:    return JmpEqInt;
+  case JmpNeq:   return JmpNeqInt;
+  case SideExitJmpGt:   return SideExitJmpGtInt;
+  case SideExitJmpGte:  return SideExitJmpGteInt;
+  case SideExitJmpLt:   return SideExitJmpLtInt;
+  case SideExitJmpLte:  return SideExitJmpLteInt;
+  case SideExitJmpEq:   return SideExitJmpEqInt;
+  case SideExitJmpNeq:  return SideExitJmpNeqInt;
+  case ReqBindJmpGt:    return ReqBindJmpGtInt;
+  case ReqBindJmpGte:   return ReqBindJmpGteInt;
+  case ReqBindJmpLt:    return ReqBindJmpLtInt;
+  case ReqBindJmpLte:   return ReqBindJmpLteInt;
+  case ReqBindJmpEq:    return ReqBindJmpEqInt;
+  case ReqBindJmpNeq:   return ReqBindJmpNeqInt;
+  default: always_assert(0);
   }
 }
 
@@ -357,4 +449,3 @@ int32_t spillValueCells(const IRInstruction* spillStack) {
 }
 
 }}
-

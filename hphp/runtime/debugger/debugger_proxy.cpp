@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -16,6 +16,10 @@
 #include "hphp/runtime/debugger/debugger_proxy.h"
 
 #include <boost/lexical_cast.hpp>
+#include <exception>
+#include <map>
+#include <stack>
+#include <vector>
 
 #include "hphp/runtime/debugger/cmd/cmd_interrupt.h"
 #include "hphp/runtime/debugger/cmd/cmd_flow_control.h"
@@ -23,6 +27,7 @@
 #include "hphp/runtime/debugger/cmd/cmd_machine.h"
 #include "hphp/runtime/debugger/debugger.h"
 #include "hphp/runtime/base/runtime-option.h"
+#include "hphp/runtime/base/thread-info.h"
 #include "hphp/runtime/ext/ext_socket.h"
 #include "hphp/runtime/vm/debugger-hook.h"
 #include "hphp/util/process.h"
@@ -779,7 +784,7 @@ Variant DebuggerProxy::ExecutePHP(const std::string &php, String &output,
     if (flags & ExecutePHPFlagsAtInterrupt) disableSignalPolling();
     switchThreadMode(origThreadMode, m_thread);
   };
-  failed = g_vmContext->evalPHPDebugger((TypedValue*)&ret, code.get(), frame);
+  failed = g_context->evalPHPDebugger((TypedValue*)&ret, code.get(), frame);
   g_context->setStdout(nullptr, nullptr);
   g_context->swapOutputBuffer(save);
   if (flags & ExecutePHPFlagsLog) {
@@ -792,8 +797,8 @@ Variant DebuggerProxy::ExecutePHP(const std::string &php, String &output,
 int DebuggerProxy::getRealStackDepth() {
   TRACE(2, "DebuggerProxy::getRealStackDepth\n");
   int depth = 0;
-  VMExecutionContext* context = g_vmContext;
-  ActRec *fp = context->getFP();
+  auto const context = g_context.getNoCheck();
+  auto fp = context->getFP();
   if (!fp) return 0;
 
   while (fp != nullptr) {
@@ -806,8 +811,8 @@ int DebuggerProxy::getRealStackDepth() {
 int DebuggerProxy::getStackDepth() {
   TRACE(2, "DebuggerProxy::getStackDepth\n");
   int depth = 0;
-  VMExecutionContext* context = g_vmContext;
-  ActRec *fp = context->getFP();
+  auto const context = g_context.getNoCheck();
+  auto fp = context->getFP();
   if (!fp) return 0;
   ActRec *prev = fp->arGetSfp();
   while (fp != prev) {

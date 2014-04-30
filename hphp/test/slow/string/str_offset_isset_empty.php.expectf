@@ -1,17 +1,20 @@
 NULL
-HipHop Warning: String offset cast occurred in %s/test/slow/string/str_offset_isset_empty.php on line 9
+
+Warning: String offset cast occurred in %s/test/slow/string/str_offset_isset_empty.php on line 9
 string(1) "A"
 bool(true)
 bool(true)
 
 bool(false)
-HipHop Warning: String offset cast occurred in %s/test/slow/string/str_offset_isset_empty.php on line 9
+
+Warning: String offset cast occurred in %s/test/slow/string/str_offset_isset_empty.php on line 9
 string(1) "A"
 bool(true)
 bool(true)
 
 bool(true)
-HipHop Warning: String offset cast occurred in %s/test/slow/string/str_offset_isset_empty.php on line 9
+
+Warning: String offset cast occurred in %s/test/slow/string/str_offset_isset_empty.php on line 9
 string(1) "B"
 bool(true)
 bool(true)
@@ -22,51 +25,51 @@ bool(true)
 bool(true)
 
 float(4)
-HipHop Warning: String offset cast occurred in %s/test/slow/string/str_offset_isset_empty.php on line 9
+
+Warning: String offset cast occurred in %s/test/slow/string/str_offset_isset_empty.php on line 9
 string(1) "E"
 bool(true)
 bool(true)
 
 float(5.3)
-HipHop Warning: String offset cast occurred in %s/test/slow/string/str_offset_isset_empty.php on line 9
+
+Warning: String offset cast occurred in %s/test/slow/string/str_offset_isset_empty.php on line 9
 string(1) "F"
 bool(true)
 bool(true)
 
 float(6.7)
-HipHop Warning: String offset cast occurred in %s/test/slow/string/str_offset_isset_empty.php on line 9
+
+Warning: String offset cast occurred in %s/test/slow/string/str_offset_isset_empty.php on line 9
 string(1) "G"
 bool(true)
 bool(true)
 
 int(-2)
-HipHop Warning: Out of bounds in %s/test/slow/string/str_offset_isset_empty.php on line 9
 string(0) ""
 bool(false)
 bool(false)
 
 float(-2.5)
-HipHop Warning: String offset cast occurred in %s/test/slow/string/str_offset_isset_empty.php on line 9
-HipHop Warning: Out of bounds in %s/test/slow/string/str_offset_isset_empty.php on line 9
+
+Warning: String offset cast occurred in %s/test/slow/string/str_offset_isset_empty.php on line 9
 string(0) ""
 bool(false)
 bool(false)
 
 int(21)
-HipHop Warning: Out of bounds in %s/test/slow/string/str_offset_isset_empty.php on line 9
 string(0) ""
 bool(false)
 bool(false)
 
 float(22.5)
-HipHop Warning: String offset cast occurred in %s/test/slow/string/str_offset_isset_empty.php on line 9
-HipHop Warning: Out of bounds in %s/test/slow/string/str_offset_isset_empty.php on line 9
+
+Warning: String offset cast occurred in %s/test/slow/string/str_offset_isset_empty.php on line 9
 string(0) ""
 bool(false)
 bool(false)
 
 int(9223372036854775807)
-HipHop Warning: Out of bounds in %s/test/slow/string/str_offset_isset_empty.php on line 9
 string(0) ""
 bool(false)
 bool(false)
@@ -113,7 +116,6 @@ bool(true)
 bool(true)
 
 string(27) "999999999999999999999999999"
-HipHop Warning: Out of bounds in %s/test/slow/string/str_offset_isset_empty.php on line 9
 string(0) ""
 bool(false)
 bool(false)
@@ -145,7 +147,8 @@ bool(false)
 
 array(0) {
 }
-HipHop Warning: String offset cast occurred in %s/test/slow/string/str_offset_isset_empty.php on line 9
+
+Warning: String offset cast occurred in %s/test/slow/string/str_offset_isset_empty.php on line 9
 string(1) "A"
 bool(false)
 bool(false)
@@ -154,18 +157,23 @@ array(1) {
   [0]=>
   int(1)
 }
-HipHop Warning: String offset cast occurred in %s/test/slow/string/str_offset_isset_empty.php on line 9
+
+Warning: String offset cast occurred in %s/test/slow/string/str_offset_isset_empty.php on line 9
 string(1) "B"
 bool(false)
 bool(false)
 
 object(stdClass)#1 (0) {
 }
-HipHop Warning: String offset cast occurred in %s/test/slow/string/str_offset_isset_empty.php on line 9
-HipHop Notice: Object of class stdClass could not be converted to int in %s/test/slow/string/str_offset_isset_empty.php on line 9
+
+Warning: String offset cast occurred in %s/test/slow/string/str_offset_isset_empty.php on line 9
+
+Notice: Object of class stdClass could not be converted to int in %s/test/slow/string/str_offset_isset_empty.php on line 9
 string(1) "B"
-HipHop Notice: Object of class stdClass could not be converted to int in %s/test/slow/string/str_offset_isset_empty.php on line 10
+
+Notice: Object of class stdClass could not be converted to int in %s/test/slow/string/str_offset_isset_empty.php on line 10
 bool(false)
-HipHop Notice: Object of class stdClass could not be converted to int in %s/test/slow/string/str_offset_isset_empty.php on line 11
+
+Notice: Object of class stdClass could not be converted to int in %s/test/slow/string/str_offset_isset_empty.php on line 11
 bool(false)
 

@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -17,13 +17,13 @@
 #include "hphp/runtime/vm/jit/ir-translator.h"
 
 #include <stdint.h>
+#include <algorithm>
 #include "hphp/runtime/base/strings.h"
 
 #include "folly/Format.h"
 #include "folly/Conv.h"
 #include "hphp/util/trace.h"
 #include "hphp/util/stack-trace.h"
-#include "hphp/util/util.h"
 
 #include "hphp/runtime/vm/bytecode.h"
 #include "hphp/runtime/vm/runtime.h"
@@ -31,15 +31,12 @@
 #include "hphp/runtime/base/runtime-option.h"
 #include "hphp/runtime/base/rds.h"
 #include "hphp/runtime/vm/jit/translator-inline.h"
-#include "hphp/runtime/vm/jit/translator-x64.h"
+#include "hphp/runtime/vm/jit/mc-generator.h"
 #include "hphp/runtime/base/stats.h"
 
 #include "hphp/runtime/vm/jit/check.h"
-#include "hphp/runtime/vm/jit/code-gen-x64.h"
 #include "hphp/runtime/vm/jit/hhbc-translator.h"
 #include "hphp/runtime/vm/jit/ir.h"
-#include "hphp/runtime/vm/jit/ir-translator.h"
-#include "hphp/runtime/vm/jit/linear-scan.h"
 #include "hphp/runtime/vm/jit/normalized-instruction.h"
 #include "hphp/runtime/vm/jit/opt.h"
 #include "hphp/runtime/vm/jit/print.h"
@@ -52,7 +49,6 @@ namespace HPHP {
 namespace JIT {
 
 using namespace reg;
-using namespace Util;
 using namespace Trace;
 using std::max;
 
@@ -90,8 +86,9 @@ static const bool debug = false;
     }                                                   \
   } while (0)
 
-IRTranslator::IRTranslator(Offset bcOff, Offset spOff, const Func* curFunc)
-  : m_hhbcTrans(bcOff, spOff, curFunc)
+IRTranslator::IRTranslator(Offset bcOff, Offset spOff, bool inGenerator,
+                           const Func* curFunc)
+  : m_hhbcTrans(bcOff, spOff, inGenerator, curFunc)
 {
 }
 
@@ -132,7 +129,7 @@ void IRTranslator::assertType(const JIT::Location& l,
 
   switch (l.space) {
     case Location::Stack: {
-      // tx64LocPhysicalOffset returns positive offsets for stack values,
+      // locPhysicalOffset returns positive offsets for stack values,
       // relative to rVmSp
       uint32_t stackOffset = locPhysicalOffset(l);
       m_hhbcTrans.assertTypeStack(stackOffset, Type(rtt));
@@ -177,21 +174,19 @@ IRTranslator::translateDiv(const NormalizedInstruction& i) {
 
 void
 IRTranslator::translateBinaryArithOp(const NormalizedInstruction& i) {
-  auto const op = i.op();
-  switch (op) {
-#define CASE(OpBc) case Op::OpBc: HHIR_EMIT(OpBc);
-    CASE(Add)
-    CASE(Sub)
-    CASE(BitAnd)
-    CASE(BitOr)
-    CASE(BitXor)
-    CASE(Mul)
-#undef CASE
-    default: {
-      not_reached();
-    };
+  switch (i.op()) {
+  case Op::Add:    HHIR_EMIT(Add);
+  case Op::Sub:    HHIR_EMIT(Sub);
+  case Op::Mul:    HHIR_EMIT(Mul);
+  case Op::AddO:   HHIR_EMIT(AddO);
+  case Op::SubO:   HHIR_EMIT(SubO);
+  case Op::MulO:   HHIR_EMIT(MulO);
+  case Op::BitAnd: HHIR_EMIT(BitAnd);
+  case Op::BitOr:  HHIR_EMIT(BitOr);
+  case Op::BitXor: HHIR_EMIT(BitXor);
+  default: break;
   }
-  NOT_REACHED();
+  not_reached();
 }
 
 void
@@ -257,21 +252,22 @@ IRTranslator::translateBranchOp(const NormalizedInstruction& i) {
   assert(i.breaksTracelet ||
          i.nextOffset == takenOffset ||
          i.nextOffset == fallthruOffset);
+  assert(!i.includeBothPaths || !i.breaksTracelet);
 
   if (i.breaksTracelet || i.nextOffset == fallthruOffset) {
     if (op == OpJmpZ) {
-      HHIR_EMIT(JmpZ,  takenOffset);
+      HHIR_EMIT(JmpZ,  takenOffset, fallthruOffset, i.includeBothPaths);
     } else {
-      HHIR_EMIT(JmpNZ, takenOffset);
+      HHIR_EMIT(JmpNZ, takenOffset, fallthruOffset, i.includeBothPaths);
     }
     return;
   }
   assert(i.nextOffset == takenOffset);
   // invert the branch
   if (op == OpJmpZ) {
-    HHIR_EMIT(JmpNZ, fallthruOffset);
+    HHIR_EMIT(JmpNZ, fallthruOffset, takenOffset, i.includeBothPaths);
   } else {
-    HHIR_EMIT(JmpZ,  fallthruOffset);
+    HHIR_EMIT(JmpZ,  fallthruOffset, takenOffset, i.includeBothPaths);
   }
 }
 
@@ -401,12 +397,7 @@ IRTranslator::translateArray(const NormalizedInstruction& i) {
 
 void
 IRTranslator::translateNewArray(const NormalizedInstruction& i) {
-  HHIR_EMIT(NewArrayReserve, 0);
-}
-
-void
-IRTranslator::translateNewArrayReserve(const NormalizedInstruction& i) {
-  HHIR_EMIT(NewArrayReserve, i.imm[0].u_IVA);
+  HHIR_EMIT(NewArray, i.imm[0].u_IVA);
 }
 
 void
@@ -427,6 +418,16 @@ IRTranslator::translateFloor(const NormalizedInstruction& i) {
 void
 IRTranslator::translateCeil(const NormalizedInstruction& i) {
   HHIR_EMIT(Ceil);
+}
+
+void
+IRTranslator::translateCheckProp(const NormalizedInstruction& i) {
+  HHIR_EMIT(CheckProp, i.imm[0].u_SA);
+}
+
+void
+IRTranslator::translateInitProp(const NormalizedInstruction& i) {
+  HHIR_EMIT(InitProp, i.imm[0].u_SA, static_cast<InitPropOp>(i.imm[1].u_OA));
 }
 
 void IRTranslator::translateAssertTL(const NormalizedInstruction& i) {
@@ -497,10 +498,21 @@ void
 IRTranslator::translateAdd(const NormalizedInstruction& i) {
   auto leftType = m_hhbcTrans.topType(1);
   auto rightType = m_hhbcTrans.topType(0);
-  if (leftType.isArray() && rightType.isArray()) {
+  if (leftType <= Type::Arr && rightType <= Type::Arr) {
     HHIR_EMIT(ArrayAdd);
   } else {
     HHIR_EMIT(Add);
+  }
+}
+
+void
+IRTranslator::translateAddO(const NormalizedInstruction& i) {
+  auto leftType = m_hhbcTrans.topType(1);
+  auto rightType = m_hhbcTrans.topType(0);
+  if (leftType <= Type::Arr && rightType <= Type::Arr) {
+    HHIR_EMIT(ArrayAdd);
+  } else {
+    HHIR_EMIT(AddO);
   }
 }
 
@@ -702,7 +714,7 @@ void IRTranslator::translateStrlen(const NormalizedInstruction& i) {
 }
 
 void IRTranslator::translateIncStat(const NormalizedInstruction& i) {
-  HHIR_EMIT(IncStat, i.imm[0].u_IVA, i.imm[1].u_IVA);
+  HHIR_EMIT(IncStat, i.imm[0].u_IVA, i.imm[1].u_IVA, false);
 }
 
 void IRTranslator::translateIdx(const NormalizedInstruction& i) {
@@ -787,7 +799,7 @@ void IRTranslator::translateFPassL(const NormalizedInstruction& ni) {
   if (ni.preppedByRef) {
     HHIR_EMIT(VGetL, locId);
   } else {
-    HHIR_EMIT(CGetL, locId);
+    HHIR_EMIT(FPassL, locId);
   }
 }
 
@@ -858,15 +870,18 @@ void
 IRTranslator::translateSetOpL(const NormalizedInstruction& i) {
   auto const opc = [&] {
     switch (static_cast<SetOpOp>(i.imm[1].u_OA)) {
-    case SetOpOp::PlusEqual:   return Add;
-    case SetOpOp::MinusEqual:  return Sub;
-    case SetOpOp::MulEqual:    return Mul;
+    case SetOpOp::PlusEqual:   return Op::Add;
+    case SetOpOp::MinusEqual:  return Op::Sub;
+    case SetOpOp::MulEqual:    return Op::Mul;
+    case SetOpOp::PlusEqualO:  return Op::AddO;
+    case SetOpOp::MinusEqualO: return Op::SubO;
+    case SetOpOp::MulEqualO:   return Op::MulO;
     case SetOpOp::DivEqual:    HHIR_UNIMPLEMENTED(SetOpL_Div);
-    case SetOpOp::ConcatEqual: return ConcatCellCell;
+    case SetOpOp::ConcatEqual: return Op::Concat;
     case SetOpOp::ModEqual:    HHIR_UNIMPLEMENTED(SetOpL_Mod);
-    case SetOpOp::AndEqual:    return BitAnd;
-    case SetOpOp::OrEqual:     return BitOr;
-    case SetOpOp::XorEqual:    return BitXor;
+    case SetOpOp::AndEqual:    return Op::BitAnd;
+    case SetOpOp::OrEqual:     return Op::BitOr;
+    case SetOpOp::XorEqual:    return Op::BitXor;
     case SetOpOp::SlEqual:     HHIR_UNIMPLEMENTED(SetOpL_Shl);
     case SetOpOp::SrEqual:     HHIR_UNIMPLEMENTED(SetOpL_Shr);
     }
@@ -877,12 +892,8 @@ IRTranslator::translateSetOpL(const NormalizedInstruction& i) {
 
 void
 IRTranslator::translateIncDecL(const NormalizedInstruction& i) {
-  const IncDecOp oplet = static_cast<IncDecOp>(i.imm[1].u_OA);
-  bool post = (oplet == IncDecOp::PostInc || oplet == IncDecOp::PostDec);
-  bool pre  = !post;
-  bool inc  = (oplet == IncDecOp::PostInc || oplet == IncDecOp::PreInc);
-
-  HHIR_EMIT(IncDecL, pre, inc, i.imm[0].u_LA);
+  auto const op = static_cast<IncDecOp>(i.imm[1].u_OA);
+  HHIR_EMIT(IncDecL, isPre(op), isInc(op), isIncDecO(op), i.imm[0].u_LA);
 }
 
 void
@@ -1089,8 +1100,8 @@ bool shouldIRInline(const Func* caller, const Func* callee, RegionIter& iter) {
     // If func has changed after an FCall, we've started an inlined call. This
     // will have to change when we support inlining recursive calls.
     if (func != iter.sk().func()) {
-      assert(isRet(op) || op == OpFCall);
-      if (op == OpFCall) {
+      assert(isRet(op) || op == Op::FCall || op == Op::FCallD);
+      if (op == Op::FCall || op == Op::FCallD) {
         funcs.push_back(iter.sk().func());
         int totalDepth = 0;
         for (auto* f : funcs) {
@@ -1118,7 +1129,15 @@ bool shouldIRInline(const Func* caller, const Func* callee, RegionIter& iter) {
       }
     }
 
-    if (op == OpFCallArray) return refuse("FCallArray");
+    if (op == Op::FCallArray) return refuse("FCallArray");
+
+    // These opcodes don't indicate any additional work in the callee,
+    // so they shouldn't count toward the inlining cost.
+    if (op == Op::AssertTL || op == Op::AssertTStk ||
+        op == Op::AssertObjL || op == Op::AssertObjStk ||
+        op == Op::PredictTL || op == Op::PredictTStk) {
+      continue;
+    }
 
     cost += 1;
 
@@ -1202,7 +1221,7 @@ IRTranslator::translateFCall(const NormalizedInstruction& i) {
       Unit::MetaHandle metaHand;
       for (auto* ni = i.calleeTrace->m_instrStream.first;
            ni; ni = ni->next) {
-        readMetaData(metaHand, *ni, m_hhbcTrans, MetaMode::Legacy);
+        readMetaData(metaHand, *ni, m_hhbcTrans, false, MetaMode::Legacy);
         translateInstr(*ni);
       }
       return;
@@ -1218,6 +1237,10 @@ IRTranslator::translateFCall(const NormalizedInstruction& i) {
 
   HHIR_EMIT(FCall, numArgs, returnBcOffset, i.funcd,
             JIT::callDestroysLocals(i, m_hhbcTrans.curFunc()));
+}
+
+void IRTranslator::translateFCallD(const NormalizedInstruction& i) {
+  translateFCall(i);
 }
 
 void
@@ -1281,6 +1304,16 @@ void
 IRTranslator::translateVerifyParamType(const NormalizedInstruction& i) {
   int param = i.imm[0].u_IVA;
   HHIR_EMIT(VerifyParamType, param);
+}
+
+void
+IRTranslator::translateVerifyRetTypeC(const NormalizedInstruction& i) {
+  HHIR_EMIT(VerifyRetTypeC);
+}
+
+void
+IRTranslator::translateVerifyRetTypeV(const NormalizedInstruction& i) {
+  HHIR_EMIT(VerifyRetTypeV);
 }
 
 void
@@ -1552,7 +1585,7 @@ IRTranslator::passPredictedAndInferredTypes(const NormalizedInstruction& i) {
     // that the type is not ref-counted.  This avoid both generating a
     // type check and dec-refing the value.
     if (i.outputPredictionStatic && isPop(i.next->op()) &&
-        !jitType.isCounted()) {
+        !jitType.maybeCounted()) {
       TRACE(1, "irPassPredictedAndInferredTypes: output inferred as %s\n",
             jitType.toString().c_str());
       m_hhbcTrans.assertTypeStack(0, JIT::Type::Uncounted);
@@ -1573,7 +1606,7 @@ static Type flavorToType(FlavorDesc f) {
   switch (f) {
     case NOV: not_reached();
 
-    case CV: return Type::Cell;  // TODO(#3029148) this could be Cell - Uninit
+    case CV: return Type::Cell;  // TODO(#3029148) this could be InitCell
     case UV: return Type::Uninit;
     case VV: return Type::BoxedCell;
     case AV: return Type::Cls;
@@ -1589,7 +1622,7 @@ void IRTranslator::translateInstr(const NormalizedInstruction& ni) {
   FTRACE(1, "\n{:-^60}\n", folly::format("translating {} with stack:\n{}",
                                          ni.toString(), ht.showStack()));
   // When profiling, we disable type predictions to avoid side exits
-  assert(JIT::tx64->mode() != TransProfile || !ni.outputPredicted);
+  assert(JIT::tx->mode() != TransProfile || !ni.outputPredicted);
 
   if (ni.guardedThis) {
     // Task #2067635: This should really generate an AssertThis
@@ -1597,14 +1630,13 @@ void IRTranslator::translateInstr(const NormalizedInstruction& ni) {
   }
 
   if (moduleEnabled(HPHP::Trace::stats, 2)) {
-    ht.emitIncStat(Stats::opcodeToIRPreStatCounter(ni.op()), 1);
+    ht.emitIncStat(Stats::opcodeToIRPreStatCounter(ni.op()), 1, false);
   }
   if (RuntimeOption::EnableInstructionCounts ||
       moduleEnabled(HPHP::Trace::stats, 3)) {
     // If the instruction takes a slow exit, the exit trace will
     // decrement the post counter for that opcode.
-    ht.emitIncStat(Stats::opcodeToIRPostStatCounter(ni.op()),
-                            1, true);
+    ht.emitIncStat(Stats::opcodeToIRPostStatCounter(ni.op()), 1, true);
   }
   ht.emitRB(RBTypeBytecodeStart, ni.source, 2);
 
@@ -1614,7 +1646,7 @@ void IRTranslator::translateInstr(const NormalizedInstruction& ni) {
     if (type != Type::Gen) m_hhbcTrans.assertTypeStack(i, type);
   }
 
-  if (RuntimeOption::EvalHHIRGenerateAsserts) {
+  if (RuntimeOption::EvalHHIRGenerateAsserts >= 2) {
     ht.emitDbgAssertRetAddr();
   }
 

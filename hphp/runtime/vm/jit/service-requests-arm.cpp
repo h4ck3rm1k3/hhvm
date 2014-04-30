@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -20,9 +20,10 @@
 
 #include "hphp/runtime/base/execution-context.h"
 #include "hphp/runtime/vm/jit/abi-arm.h"
+#include "hphp/runtime/vm/jit/code-gen-helpers-arm.h"
 #include "hphp/runtime/vm/jit/jump-smash.h"
 #include "hphp/runtime/vm/jit/service-requests.h"
-#include "hphp/runtime/vm/jit/translator-x64.h"
+#include "hphp/runtime/vm/jit/mc-generator.h"
 
 namespace HPHP { namespace JIT { namespace ARM {
 
@@ -39,12 +40,12 @@ void emitBindJ(CodeBlock& cb, CodeBlock& stubs, SrcKey dest,
     emitSmashableJump(cb, toSmash, cc);
   }
 
-  tx64->setJmpTransID(toSmash);
+  mcg->setJmpTransID(toSmash);
 
   TCA sr = (req == JIT::REQ_BIND_JMP
-            ? emitEphemeralServiceReq(tx64->code.stubs(), tx64->getFreeStub(),
+            ? emitEphemeralServiceReq(mcg->code.stubs(), mcg->getFreeStub(),
                                       req, toSmash, dest.offset())
-            : emitServiceReq(tx64->code.stubs(), req, toSmash, dest.offset()));
+            : emitServiceReq(mcg->code.stubs(), req, toSmash, dest.offset()));
 
   MacroAssembler a { cb };
   if (cb.base() == stubs.base()) {
@@ -92,8 +93,8 @@ TCA emitServiceReqWork(CodeBlock& cb, TCA start, bool persist, SRFlags flags,
   }
 
   // Save VM regs
-  a.     Str   (rVmFp, rGContextReg[offsetof(VMExecutionContext, m_fp)]);
-  a.     Str   (rVmSp, rGContextReg[offsetof(VMExecutionContext, m_stack) +
+  a.     Str   (rVmFp, rGContextReg[offsetof(ExecutionContext, m_fp)]);
+  a.     Str   (rVmSp, rGContextReg[offsetof(ExecutionContext, m_stack) +
                                     Stack::topOfStackOffset()]);
 
   if (persist) {
@@ -103,10 +104,9 @@ TCA emitServiceReqWork(CodeBlock& cb, TCA start, bool persist, SRFlags flags,
   }
   a.     Mov   (argReg(0), req);
 
-  // The x64 equivalent loads to rax. I knew this was a trap.
+  a.     Ldr   (rLinkReg, MemOperand(sp, 16, PostIndex));
   if (flags & SRFlags::JmpInsteadOfRet) {
-    a.   Ldr   (rAsm, MemOperand(sp, 8, PostIndex));
-    a.   Br    (rAsm);
+    a.   Br    (rLinkReg);
   } else {
     a.   Ret   ();
   }
@@ -135,5 +135,85 @@ void emitBindSideExit(CodeBlock& cb, CodeBlock& stubs, SrcKey dest,
                       JIT::ConditionCode cc) {
   emitBindJ(cb, stubs, dest, cc, REQ_BIND_SIDE_EXIT);
 }
+
+//////////////////////////////////////////////////////////////////////
+
+int32_t emitNativeImpl(CodeBlock& cb, const Func* func) {
+
+  BuiltinFunction builtinFuncPtr = func->builtinFuncPtr();
+
+  MacroAssembler a { cb };
+  a.  Mov  (argReg(0), rVmFp);
+  if (mcg->fixupMap().eagerRecord(func)) {
+    a.Mov  (rAsm, func->getEntry());
+    a.Str  (rAsm, rGContextReg[offsetof(ExecutionContext, m_pc)]);
+    a.Str  (rVmFp, rGContextReg[offsetof(ExecutionContext, m_fp)]);
+    a.Str  (rVmSp, rGContextReg[offsetof(ExecutionContext, m_stack) +
+                                Stack::topOfStackOffset()]);
+  }
+  auto syncPoint = emitCall(a, CppCall(builtinFuncPtr));
+
+  Offset pcOffset = 0;
+  Offset stackOff = func->numLocals();
+  mcg->fixupMap().recordSyncPoint(syncPoint, pcOffset, stackOff);
+
+  int nLocalCells = func->numSlotsInFrame();
+  a.  Ldr  (rVmFp, rVmFp[AROFF(m_savedRbp)]);
+
+  return sizeof(ActRec) + cellsToBytes(nLocalCells - 1);
+}
+
+int32_t emitBindCall(CodeBlock& mainCode, CodeBlock& stubsCode,
+                  SrcKey srcKey, const Func* funcd, int numArgs) {
+  if (isNativeImplCall(funcd, numArgs)) {
+    MacroAssembler a { mainCode };
+
+    // We need to store the return address into the AR, but we don't know it
+    // yet. Write out a mov instruction (two instructions, under the hood) with
+    // a placeholder address, and we'll overwrite it later.
+    auto toOverwrite = mainCode.frontier();
+    a.    Mov  (rAsm, toOverwrite);
+    a.    Str  (rAsm, rVmSp[cellsToBytes(numArgs) + AROFF(m_savedRip)]);
+
+    emitRegGetsRegPlusImm(a, rVmFp, rVmSp, cellsToBytes(numArgs));
+    emitCheckSurpriseFlagsEnter(mainCode, stubsCode, true, mcg->fixupMap(),
+                                Fixup(0, numArgs));
+    // rVmSp is already correctly adjusted, because there's no locals other than
+    // the arguments passed.
+
+    auto retval = emitNativeImpl(mainCode, funcd);
+    {
+      auto realRetAddr = mainCode.frontier();
+      // Go back and overwrite with the proper return address.
+      CodeCursor cc(mainCode, toOverwrite);
+      a.  Mov  (rAsm, realRetAddr);
+    }
+
+    return retval;
+  }
+
+  MacroAssembler a { mainCode };
+  emitRegGetsRegPlusImm(a, rStashedAR, rVmSp, cellsToBytes(numArgs));
+
+  ReqBindCall* req = mcg->globalData().alloc<ReqBindCall>();
+
+  auto toSmash = mainCode.frontier();
+  emitSmashableCall(mainCode, stubsCode.frontier());
+
+  MacroAssembler astubs { stubsCode };
+  astubs.  Mov  (serviceReqArgReg(1), rStashedAR);
+  // Put return address into pre-live ActRec, and restore the saved one.
+  emitStoreRetIntoActRec(astubs);
+
+  emitServiceReq(stubsCode, REQ_BIND_CALL, req);
+
+  req->m_toSmash = toSmash;
+  req->m_nArgs = numArgs;
+  req->m_sourceInstr = srcKey;
+  req->m_isImmutable = (bool)funcd;
+
+  return 0;
+}
+
 
 }}}

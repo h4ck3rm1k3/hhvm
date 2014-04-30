@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -15,6 +15,7 @@
 */
 
 #include "hphp/compiler/expression/simple_function_call.h"
+#include <map>
 #include "hphp/compiler/analysis/file_scope.h"
 #include "hphp/compiler/analysis/function_scope.h"
 #include "hphp/compiler/analysis/class_scope.h"
@@ -30,7 +31,7 @@
 #include "hphp/compiler/statement/method_statement.h"
 #include "hphp/compiler/analysis/constant_table.h"
 #include "hphp/compiler/analysis/variable_table.h"
-#include "hphp/util/util.h"
+#include "hphp/util/text-util.h"
 #include "hphp/compiler/option.h"
 #include "hphp/compiler/expression/simple_variable.h"
 #include "hphp/compiler/parser/parser.h"
@@ -382,7 +383,7 @@ void SimpleFunctionCall::analyzeProgram(AnalysisResultPtr ar) {
 
     if (!m_class && !m_className.empty()) {
       if (Option::DynamicInvokeFunctions.find(
-            Util::toLower(m_className + "::" + m_name)) !=
+            toLower(m_className + "::" + m_name)) !=
           Option::DynamicInvokeFunctions.end()) {
         setNoInline();
       }
@@ -393,7 +394,6 @@ void SimpleFunctionCall::analyzeProgram(AnalysisResultPtr ar) {
         (m_type == FunType::Define ||
          m_type == FunType::Defined ||
          m_type == FunType::FunctionExists ||
-         m_type == FunType::FBCallUserFuncSafe ||
          m_type == FunType::ClassExists ||
          m_type == FunType::InterfaceExists) &&
         m_params && m_params->getCount() >= 1) {
@@ -441,10 +441,9 @@ void SimpleFunctionCall::analyzeProgram(AnalysisResultPtr ar) {
               }
               break;
             }
-            case FunType::FBCallUserFuncSafe:
             case FunType::FunctionExists:
               {
-                FunctionScopePtr func = ar->findFunction(Util::toLower(symbol));
+                FunctionScopePtr func = ar->findFunction(toLower(symbol));
                 if (func && func->isUserFunction()) {
                   func->setVolatile();
                 }
@@ -453,7 +452,7 @@ void SimpleFunctionCall::analyzeProgram(AnalysisResultPtr ar) {
             case FunType::InterfaceExists:
             case FunType::ClassExists:
               {
-                ClassScopePtr cls = ar->findClass(Util::toLower(symbol));
+                ClassScopePtr cls = ar->findClass(toLower(symbol));
                 if (cls && cls->isUserClass()) {
                   cls->setVolatile();
                 }
@@ -528,7 +527,7 @@ void SimpleFunctionCall::analyzeProgram(AnalysisResultPtr ar) {
         (m_className.empty() ||
          (m_classScope &&
           !m_classScope->isTrait() &&
-          !m_classScope->derivesFromRedeclaring() &&
+          m_classScope->derivesFromRedeclaring() == Derivation::Normal &&
           !m_classScope->getAttribute(
             ClassScope::HasUnknownStaticMethodHandler) &&
           !m_classScope->getAttribute(
@@ -805,7 +804,7 @@ ExpressionPtr SimpleFunctionCall::optimize(AnalysisResultConstPtr ar) {
     }
   }
 
-  if (!m_classScope && !m_funcScope->isUserFunction()) {
+  if (!m_classScope) {
     if (m_type == FunType::Unknown && m_funcScope->isFoldable()) {
       Array arr;
       if (m_params) {
@@ -861,14 +860,12 @@ ExpressionPtr SimpleFunctionCall::preOptimize(AnalysisResultConstPtr ar) {
   if (!m_class && m_className.empty() &&
       (m_type == FunType::Define ||
        m_type == FunType::Defined ||
-       m_type == FunType::FBCallUserFuncSafe ||
        m_type == FunType::FunctionExists ||
        m_type == FunType::ClassExists ||
        m_type == FunType::InterfaceExists) &&
       m_params &&
       (m_type == FunType::Define ?
        unsigned(m_params->getCount() - 2) <= 1u :
-       m_type == FunType::FBCallUserFuncSafe ? m_params->getCount() >= 1 :
        m_params->getCount() == 1)) {
     ExpressionPtr value = (*m_params)[0];
     if (value->isScalar()) {
@@ -946,15 +943,13 @@ ExpressionPtr SimpleFunctionCall::preOptimize(AnalysisResultConstPtr ar) {
             }
             break;
           }
-          case FunType::FBCallUserFuncSafe:
           case FunType::FunctionExists: {
-            const std::string &lname = Util::toLower(symbol);
+            const std::string &lname = toLower(symbol);
             if (Option::DynamicInvokeFunctions.find(lname) ==
                 Option::DynamicInvokeFunctions.end()) {
               FunctionScopePtr func = ar->findFunction(lname);
               if (!func) {
-                if (m_type == FunType::FunctionExists &&
-                    Option::WholeProgram) {
+                if (Option::WholeProgram) {
                   return CONSTANT("false");
                 }
                 break;
@@ -962,14 +957,14 @@ ExpressionPtr SimpleFunctionCall::preOptimize(AnalysisResultConstPtr ar) {
               if (func->isUserFunction()) {
                 func->setVolatile();
               }
-              if (!func->isVolatile() && m_type == FunType::FunctionExists) {
+              if (!func->isVolatile()) {
                 return CONSTANT("true");
               }
             }
             break;
           }
           case FunType::InterfaceExists: {
-            ClassScopePtrVec classes = ar->findClasses(Util::toLower(symbol));
+            ClassScopePtrVec classes = ar->findClasses(toLower(symbol));
             bool interfaceFound = false;
             for (ClassScopePtrVec::const_iterator it = classes.begin();
                  it != classes.end(); ++it) {
@@ -993,7 +988,7 @@ ExpressionPtr SimpleFunctionCall::preOptimize(AnalysisResultConstPtr ar) {
             break;
           }
           case FunType::ClassExists: {
-            ClassScopePtrVec classes = ar->findClasses(Util::toLower(symbol));
+            ClassScopePtrVec classes = ar->findClasses(toLower(symbol));
             bool classFound = false;
             for (ClassScopePtrVec::const_iterator it = classes.begin();
                  it != classes.end(); ++it) {
@@ -1280,7 +1275,6 @@ TypePtr SimpleFunctionCall::inferAndCheck(AnalysisResultPtr ar, TypePtr type,
 void SimpleFunctionCall::outputCodeModel(CodeGenerator &cg) {
   if (m_class || !m_className.empty()) {
     cg.printObjectHeader("ClassMethodCallExpression", 4);
-    cg.printPropertyHeader("className");
     StaticClassName::outputCodeModel(cg);
     cg.printPropertyHeader("methodName");
   } else {
@@ -1356,7 +1350,7 @@ static int isObjCall(AnalysisResultPtr ar,
   if (!thisCls || !thisFunc || thisFunc->isStatic()) return 0;
   if (thisCls == methCls) return 1;
   if (thisCls->derivesFrom(ar, methClsName, true, false)) return 1;
-  if (thisCls->derivesFromRedeclaring() &&
+  if (thisCls->derivesFromRedeclaring() == Derivation::Redeclaring &&
       thisCls->derivesFrom(ar, methClsName, true, true)) {
     return -1;
   }
@@ -1424,13 +1418,12 @@ SimpleFunctionCallPtr SimpleFunctionCall::GetFunctionCallForCallUserFunc(
       if (v.isString()) {
         Variant t = StringUtil::Explode(v.toString(), "::", 3);
         if (!t.isArray() || t.toArray().size() != 2) {
-          std::string name = Util::toLower(v.toString().data());
+          std::string name = toLower(v.toString().data());
           FunctionScopePtr func = ar->findFunction(name);
           if (!func || func->isDynamicInvoke()) {
             error = !func;
             return SimpleFunctionCallPtr();
           }
-          if (func->isUserFunction()) func->setVolatile();
           if (testOnly < 0) return SimpleFunctionCallPtr();
           ExpressionListPtr p2;
           if (testOnly) {
@@ -1467,7 +1460,7 @@ SimpleFunctionCallPtr SimpleFunctionCall::GetFunctionCallForCallUserFunc(
           return SimpleFunctionCallPtr();
         }
         std::string sclass = classname.toString().data();
-        std::string smethod = Util::toLower(methodname.toString().data());
+        std::string smethod = toLower(methodname.toString().data());
 
         ClassScopePtr cls;
         if (sclass == "self") {
@@ -1487,9 +1480,6 @@ SimpleFunctionCallPtr SimpleFunctionCall::GetFunctionCallForCallUserFunc(
           }
           if (cls->isRedeclaring()) {
             cls = call->getScope()->findExactClass(cls);
-          } else if (!cls->isVolatile() && cls->isUserClass() &&
-                     !ar->checkClassPresent(call, sclass)) {
-            cls->setVolatile();
           }
           if (!cls) {
             return SimpleFunctionCallPtr();
@@ -1503,7 +1493,7 @@ SimpleFunctionCallPtr SimpleFunctionCall::GetFunctionCallForCallUserFunc(
           string name = smethod.substr(0, c);
           if (cls->getName() != name) {
             if (!cls->derivesFrom(ar, name, true, false)) {
-              error = cls->derivesFromRedeclaring() == ClassScope::FromNormal;
+              error = cls->derivesFromRedeclaring() == Derivation::Normal;
               return SimpleFunctionCallPtr();
             }
           }
@@ -1616,18 +1606,21 @@ ExpressionPtr hphp_opt_is_callable(CodeGenerator *cg,
                                    AnalysisResultConstPtr ar,
                                    SimpleFunctionCallPtr call, int mode) {
   if (!cg && mode <= 1 && Option::WholeProgram) {
-    bool error = false;
-    SimpleFunctionCallPtr rep(
-      SimpleFunctionCall::GetFunctionCallForCallUserFunc(
-        ar, call, mode ? 1 : -1, 1, error));
-    if (error && !mode) {
-      if (!Option::WholeProgram) {
-        rep.reset();
-      } else {
-        return call->makeConstant(ar, "false");
+    ExpressionListPtr params = call->getParams();
+    if (params && params->getCount() == 1) {
+      bool error = false;
+      SimpleFunctionCallPtr rep(
+        SimpleFunctionCall::GetFunctionCallForCallUserFunc(
+          ar, call, mode ? 1 : -1, 1, error));
+      if (error && !mode) {
+        if (!Option::WholeProgram) {
+          rep.reset();
+        } else {
+          return call->makeConstant(ar, "false");
+        }
       }
+      return rep;
     }
-    return rep;
   }
 
   return ExpressionPtr();

@@ -145,6 +145,7 @@
             "name": "libxml_use_internal_errors",
             "desc": "libxml_use_internal_errors() allows you to disable standard libxml errors and enable user error handling.",
             "flags": [
+                "ZendParamModeNull"
             ],
             "return": {
                 "type": "Boolean",
@@ -153,8 +154,8 @@
             "args": [
                 {
                     "name": "use_errors",
-                    "type": "Variant",
-                    "value": "null_variant",
+                    "type": "Boolean",
+                    "value": "false",
                     "desc": "Whether to enable user error handling."
                 }
             ]
@@ -361,6 +362,21 @@
                     ]
                 },
                 {
+                    "name": "saveXML",
+                    "flags": [
+                    ],
+                    "return": {
+                        "type": "Variant"
+                    },
+                    "args": [
+                        {
+                            "name": "filename",
+                            "type": "String",
+                            "value": "\"\""
+                        }
+                    ]
+                },
+                {
                     "name": "getNamespaces",
                     "flags": [
                     ],
@@ -387,6 +403,11 @@
                             "name": "recursive",
                             "type": "Boolean",
                             "value": "false"
+                        },
+                        {
+                            "name": "from_root",
+                            "type": "Boolean",
+                            "value": "true"
                         }
                     ]
                 },

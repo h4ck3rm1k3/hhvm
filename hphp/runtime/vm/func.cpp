@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -20,7 +20,6 @@
 
 #include "hphp/runtime/base/base-includes.h"
 #include "hphp/util/atomic-vector.h"
-#include "hphp/util/util.h"
 #include "hphp/util/trace.h"
 #include "hphp/util/debug.h"
 #include "hphp/runtime/base/strings.h"
@@ -28,9 +27,8 @@
 #include "hphp/runtime/base/rds.h"
 #include "hphp/runtime/vm/runtime.h"
 #include "hphp/runtime/vm/repo.h"
-#include "hphp/runtime/base/rds.h"
 #include "hphp/runtime/base/file-repository.h"
-#include "hphp/runtime/vm/jit/translator-x64.h"
+#include "hphp/runtime/vm/jit/mc-generator.h"
 #include "hphp/runtime/vm/blob-helper.h"
 #include "hphp/runtime/vm/func-inline.h"
 #include "hphp/system/systemlib.h"
@@ -41,7 +39,8 @@
 namespace HPHP {
 
 TRACE_SET_MOD(hhbc);
-using JIT::tx64;
+using JIT::tx;
+using JIT::mcg;
 
 const StringData* Func::s___call = makeStaticString("__call");
 const StringData* Func::s___callStatic =
@@ -141,7 +140,7 @@ void Func::setFullName() {
 }
 
 void Func::resetPrologue(int numParams) {
-  auto const& stubs = tx64->uniqueStubs;
+  auto const& stubs = tx->uniqueStubs;
   m_prologueTable[numParams] = stubs.fcallHelperThunk;
 }
 
@@ -151,7 +150,7 @@ void Func::initPrologues(int numParams) {
     maxNumPrologues > kNumFixedPrologues ? maxNumPrologues
                                          : kNumFixedPrologues;
 
-  if (tx64 == nullptr) {
+  if (tx == nullptr) {
     m_funcBody = nullptr;
     for (int i = 0; i < numPrologues; i++) {
       m_prologueTable[i] = nullptr;
@@ -159,7 +158,7 @@ void Func::initPrologues(int numParams) {
     return;
   }
 
-  auto const& stubs = tx64->uniqueStubs;
+  auto const& stubs = tx->uniqueStubs;
 
   m_funcBody = stubs.funcBodyHelperThunk;
 
@@ -215,7 +214,7 @@ void* Func::allocFuncMem(
     numExtraPrologues * sizeof(unsigned char*) +
     numExtraFuncPtrs * sizeof(Func*);
 
-  void* mem = lowMem ? Util::low_malloc(funcSize) : malloc(funcSize);
+  void* mem = lowMem ? low_malloc(funcSize) : malloc(funcSize);
 
   /**
    * The Func object can have optional generatorOrigFunc and nextClonedClosure
@@ -238,20 +237,11 @@ void* Func::allocFuncMem(
 Func::Func(Unit& unit, Id id, PreClass* preClass, int line1, int line2,
            Offset base, Offset past, const StringData* name, Attr attrs,
            bool top, const StringData* docComment, int numParams)
-  : m_unit(&unit)
-  , m_cls(nullptr)
-  , m_baseCls(nullptr)
-  , m_name(name)
-  , m_namedEntity(nullptr)
-  , m_refBitVal(0)
-  , m_cachedFunc(RDS::kInvalidHandle)
-  , m_maxStackCells(0)
-  , m_numParams(0)
+  : m_name(name)
+  , m_unit(&unit)
   , m_attrs(attrs)
-  , m_funcId(InvalidFuncId)
-  , m_profCounter(0)
-  , m_hasPrivateAncestor(false)
 {
+  m_hasPrivateAncestor = false;
   m_shared = new SharedData(preClass, preClass ? -1 : id,
                             base, past, line1, line2,
                             top, docComment);
@@ -270,9 +260,9 @@ Func::~Func() {
   int numPrologues =
     maxNumPrologues > kNumFixedPrologues ? maxNumPrologues
                                          : kNumFixedPrologues;
-  if (tx64 != nullptr) {
-    tx64->smashPrologueGuards((TCA *)m_prologueTable,
-                              numPrologues, this);
+  if (mcg != nullptr) {
+    mcg->smashPrologueGuards((TCA *)m_prologueTable,
+                             numPrologues, this);
   }
 #ifdef DEBUG
   validate();
@@ -306,7 +296,7 @@ void Func::destroy(Func* func) {
   }
   func->~Func();
   if (lowMem) {
-    Util::low_free(mem);
+    low_free(mem);
   } else {
     free(mem);
   }
@@ -672,7 +662,7 @@ void Func::getFuncInfo(ClassInfo::MethodInfo* mi) const {
           // that access of undefined class constants can cause the eval() to
           // fatal. Zend lets such fatals propagate, so don't bother catching
           // exceptions here.
-          CVarRef v = g_vmContext->getEvaledArg(
+          const Variant& v = g_context->getEvaledArg(
             fpi.phpCode(),
             cls() ? cls()->nameRef() : nameRef()
           );
@@ -1094,15 +1084,6 @@ void FuncEmitter::addUserAttribute(const StringData* name, TypedValue tv) {
   m_userAttributes[name] = tv;
 }
 
-int FuncEmitter::parseUserAttributes(Attr &attrs) const {
-  int ret = Native::AttrNone;
-
-  ret = ret | parseNativeAttributes(attrs);
-  ret = ret | parseHipHopAttributes(attrs);
-
-  return ret;
-}
-
 /* <<__Native>> user attribute causes systemlib declarations
  * to hook internal (C++) implementation of funcs/methods
  *
@@ -1110,13 +1091,18 @@ int FuncEmitter::parseUserAttributes(Attr &attrs) const {
  *  "ActRec": The internal function takes a fixed prototype
  *      TypedValue* funcname(ActRec *ar);
  *      Note that systemlib declaration must still be hack annotated
- *  "NoInjection": Do not include this fram in backtraces
+ *  "NoFCallBuiltin": Prevent FCallBuiltin optimization
+ *      Effectively forces functions to generate an ActRec
+ *  "NoInjection": Do not include this frame in backtraces
  *
  *  e.g.   <<__Native("ActRec")>> function foo():mixed;
  */
-static const StaticString s_native("__Native");
-static const StaticString s_actrec("ActRec");
-static const StaticString s_noinjection("NoInjection");
+static const StaticString
+  s_native("__Native"),
+  s_actrec("ActRec"),
+  s_nofcallbuiltin("NoFCallBuiltin"),
+  s_variadicbyref("VariadicByRef"),
+  s_noinjection("NoInjection");
 
 int FuncEmitter::parseNativeAttributes(Attr &attrs) const {
   int ret = Native::AttrNone;
@@ -1129,29 +1115,19 @@ int FuncEmitter::parseNativeAttributes(Attr &attrs) const {
     Variant userAttrVal = it.second();
     if (userAttrVal.isString()) {
       String userAttrStrVal = userAttrVal.toString();
-      if (userAttrStrVal->isame(s_actrec.get())) {
+      if (userAttrStrVal.get()->isame(s_actrec.get())) {
         ret = ret | Native::AttrActRec;
-      }
-      if (userAttrStrVal->isame(s_noinjection.get())) {
+        attrs = attrs | AttrMayUseVV;
+      } else if (userAttrStrVal.get()->isame(s_nofcallbuiltin.get())) {
+        attrs = attrs | AttrNoFCallBuiltin;
+      } else if (userAttrStrVal.get()->isame(s_variadicbyref.get())) {
+        attrs = attrs | AttrVariadicByRef;
+      } else if (userAttrStrVal.get()->isame(s_noinjection.get())) {
         attrs = attrs | AttrNoInjection;
       }
     }
   }
   return ret;
-}
-
-/* <<__HipHopSpecific>> user attribute marks funcs/methods as HipHop specific
- * for reflection.
- */
-static const StaticString s_hiphopspecific("__HipHopSpecific");
-
-int FuncEmitter::parseHipHopAttributes(Attr &attrs) const {
-  auto it = m_userAttributes.find(s_hiphopspecific.get());
-  if (it != m_userAttributes.end()) {
-    attrs = attrs | AttrHPHPSpecific;
-  }
-
-  return Native::AttrNone;
 }
 
 void FuncEmitter::commit(RepoTxn& txn) const {
@@ -1166,7 +1142,7 @@ void FuncEmitter::commit(RepoTxn& txn) const {
 
 Func* FuncEmitter::create(Unit& unit, PreClass* preClass /* = NULL */) const {
   bool isGenerated = isdigit(m_name->data()[0]) ||
-    ParserBase::IsClosureName(m_name->toCPPString()) || m_isGenerator;
+    ParserBase::IsClosureName(m_name->toCppString()) || m_isGenerator;
 
   Attr attrs = m_attrs;
   if (preClass && preClass->attrs() & AttrInterface) {
@@ -1243,7 +1219,7 @@ Func* FuncEmitter::create(Unit& unit, PreClass* preClass /* = NULL */) const {
                                           f->isStatic());
     if (nif) {
       Attr dummy = AttrNone;
-      if (parseNativeAttributes(dummy) && Native::AttrActRec) {
+      if (parseNativeAttributes(dummy) & Native::AttrActRec) {
         f->shared()->m_builtinFuncPtr = nif;
         f->shared()->m_nativeFuncPtr = nullptr;
       } else {
@@ -1273,6 +1249,9 @@ void FuncEmitter::setBuiltinFunc(const ClassInfo::MethodInfo* info,
   }
   if (info->attribute & ClassInfo::NoInjection) {
     attrs = attrs | AttrNoInjection;
+  }
+  if (info->attribute & ClassInfo::NoFCallBuiltin) {
+    attrs = attrs | AttrNoFCallBuiltin;
   }
   if (pce()) {
     if (info->attribute & ClassInfo::IsStatic) {

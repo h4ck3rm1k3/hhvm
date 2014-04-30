@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -124,6 +124,8 @@ using EHInfo = boost::variant< EHFault
                              >;
 
 struct FuncInfo {
+  FuncInfo(const Unit* u, const Func* f) : unit(u), func(f) {}
+
   const Unit* unit;
   const Func* func;
 
@@ -139,7 +141,7 @@ struct FuncInfo {
 };
 
 FuncInfo find_func_info(const Func* func) {
-  auto finfo = FuncInfo { func->unit(), func };
+  auto finfo = FuncInfo(func->unit(), func);
 
   auto label_num = uint32_t{0};
   auto gen_label = [&] (const char* kind) {
@@ -161,7 +163,7 @@ FuncInfo find_func_info(const Func* func) {
 
     for (; it != stop; it += instrLen(reinterpret_cast<const Op*>(it))) {
       auto const pop = reinterpret_cast<const Op*>(it);
-      auto const off = func->unit()->offsetOf(pop);
+      auto const off = func->unit()->offsetOf(it);
       if (isSwitch(*pop)) {
         foreachSwitchTarget(pop, [&] (Offset off) {
           add_target("L", pop - bcBase + off);
@@ -411,8 +413,7 @@ void print_func_body(Output& out, const FuncInfo& finfo) {
   min_priority_queue<Offset> ehEnds;
 
   while (bcIter != bcStop) {
-    auto const pop = reinterpret_cast<const Op*>(bcIter);
-    auto const off = func->unit()->offsetOf(pop);
+    auto const off = func->unit()->offsetOf(bcIter);
 
     // First, close any protected EH regions that are past-the-end at
     // this offset.
@@ -482,14 +483,35 @@ std::string func_param_list(const FuncInfo& finfo) {
   return ret;
 }
 
+std::string func_flag_list(const FuncInfo& finfo) {
+  auto const func = finfo.func;
+  std::vector<std::string> flags;
+
+  if (auto name = func->getGeneratorBodyName()) {
+    flags.push_back(
+        folly::format("hasGeneratorBody(\"{}\")", name->toCppString()).str()
+    );
+  }
+  if (func->isGenerator()) flags.push_back("isGenerator");
+  if (func->isAsync()) flags.push_back("isAsync");
+  if (func->isGeneratorFromClosure()) flags.push_back("isGeneratorFromClosure");
+  if (func->isClosureBody()) flags.push_back("isClosureBody");
+  if (func->isPairGenerator()) flags.push_back("isPairGenerator");
+
+  std::string strflags = folly::join(" ", flags);
+  if (!strflags.empty()) return " " + strflags + " ";
+  return " ";
+}
+
+
 void print_func(Output& out, const Func* func) {
   auto const finfo = find_func_info(func);
 
   if (func->isPseudoMain()) {
     out.fmtln(".main {{");
   } else {
-    out.fmtln(".function {}({}) {{", func->name()->data(),
-      func_param_list(finfo));
+    out.fmtln(".function {}({}){}{{", func->name()->data(),
+      func_param_list(finfo), func_flag_list(finfo));
   }
   indented(out, [&] {
     print_func_directives(out, func);

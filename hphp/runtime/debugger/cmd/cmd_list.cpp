@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -188,7 +188,7 @@ bool CmdList::listFunctionOrClass(DebuggerClient &client) {
     String key = CmdInfo::FindSubSymbol(funcInfo[s_methods].toArray(),
                                         subsymbol);
     if (key.isNull()) return false;
-    funcInfo = funcInfo[s_methods][key].toArray();
+    funcInfo = funcInfo[s_methods].toArray()[key].toArray();
   }
   String file = funcInfo[s_file].toString();
   int line1 = funcInfo[s_line1].toInt32();

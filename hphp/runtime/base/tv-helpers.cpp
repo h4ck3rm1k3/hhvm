@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -14,11 +14,13 @@
    +----------------------------------------------------------------------+
 */
 
+#include "hphp/runtime/base/tv-helpers.h"
+
 #include "hphp/runtime/base/complex-types.h"
 #include "hphp/runtime/base/dummy-resource.h"
+#include "hphp/runtime/base/runtime-error.h"
 #include "hphp/runtime/base/type-conversions.h"
 #include "hphp/runtime/base/zend-functions.h"
-#include "hphp/runtime/base/runtime-error.h"
 
 #include "hphp/system/systemlib.h"
 
@@ -352,22 +354,19 @@ void tvCastToObjectInPlace(TypedValue* tv) {
   case KindOfBoolean:
   case KindOfInt64:
   case KindOfDouble:
-  case KindOfStaticString: {
+  case KindOfStaticString:
     o = SystemLib::AllocStdClassObject();
     o->o_set(s_scalar, tvAsVariant(tv));
     break;
-  }
-  case KindOfString: {
+  case KindOfString:
     o = SystemLib::AllocStdClassObject();
     o->o_set(s_scalar, tvAsVariant(tv));
     tvDecRefStr(tv);
     break;
-  }
-  case KindOfArray:   {
+  case KindOfArray:
     // For arrays, we fall back on the Variant machinery
-    tvAsVariant(tv) = tv->m_data.parr->toObject();
+    tvAsVariant(tv) = ObjectData::FromArray(tv->m_data.parr);
     return;
-  }
   case KindOfObject: return;
   case KindOfResource: return;
   default: assert(false); o = SystemLib::AllocStdClassObject(); break;

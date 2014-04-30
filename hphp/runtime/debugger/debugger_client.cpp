@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -17,6 +17,7 @@
 
 #include <boost/lexical_cast.hpp>
 #include <signal.h>
+#include <fstream>
 
 #include "hphp/runtime/debugger/debugger_command.h"
 #include "hphp/runtime/debugger/cmd/all.h"
@@ -24,7 +25,6 @@
 #include "hphp/runtime/base/variable-serializer.h"
 #include "hphp/runtime/base/string-util.h"
 #include "hphp/runtime/base/preg.h"
-#include "hphp/runtime/ext/ext_json.h"
 #include "hphp/runtime/ext/ext_socket.h"
 #include "hphp/runtime/ext/ext_network.h"
 #include "hphp/runtime/ext/ext_string.h"
@@ -32,6 +32,7 @@
 #include "hphp/util/text-art.h"
 #include "hphp/util/logger.h"
 #include "hphp/util/process.h"
+#include "hphp/util/string-vsnprintf.h"
 #include <boost/format.hpp>
 #include <boost/scoped_ptr.hpp>
 
@@ -44,9 +45,14 @@
 #else
 #include <readline/readline.h>
 #include <readline/history.h>
+#include <algorithm>
+#include <map>
+#include <memory>
+#include <set>
+#include <vector>
 #endif
 
-using namespace HPHP::Util::TextArt;
+using namespace HPHP::TextArt;
 
 #define PHP_WORD_BREAK_CHARACTERS " \t\n\"\\'`@=;,|{[()]}+*%^!~&"
 
@@ -59,6 +65,11 @@ using std::string;
 
 static boost::scoped_ptr<DebuggerClient> debugger_client;
 
+const StaticString
+  s_name("name"),
+  s_cmds("cmds"),
+  s_hhvm_never_save_config("hhvm.never_save_config");
+
 static String wordwrap(const String& str, int width /* = 75 */,
                        const String& wordbreak /* = "\n" */,
                        bool cut /* = false */) {
@@ -69,6 +80,11 @@ static String wordwrap(const String& str, int width /* = 75 */,
   args.append(cut);
   return vm_call_user_func("wordwrap", args);
 }
+
+class DebuggerExtension : public Extension {
+ public:
+  DebuggerExtension() : Extension("hhvm.debugger", NO_EXTENSION_VERSION_YET) {}
+} s_debugger_extension;
 
 static DebuggerClient& getStaticDebuggerClient() {
   TRACE(2, "DebuggerClient::getStaticDebuggerClient\n");
@@ -231,7 +247,8 @@ int DebuggerClient::ScrollBlockSize = 20;
 const char *DebuggerClient::LineNoFormat = "%4d ";
 const char *DebuggerClient::LineNoFormatWithStar = "%4d*";
 const char *DebuggerClient::LocalPrompt = "hphpd";
-const char *DebuggerClient::ConfigFileName = ".hphpd.hdf";
+const char *DebuggerClient::ConfigFileName = ".hphpd.ini";
+const char *DebuggerClient::LegacyConfigFileName = ".hphpd.hdf";
 const char *DebuggerClient::HistoryFileName = ".hphpd.history";
 std::string DebuggerClient::HomePrefix = "/home";
 
@@ -271,15 +288,15 @@ void DebuggerClient::LoadColors(Hdf hdf) {
   HighlightBgColor = LoadBgColor(hdf["HighlightBackground"], "GRAY");
 
   Hdf code = hdf["Code"];
-  LoadCodeColor(CodeColorKeyword,      code["Keyword"],      "CYAN");
-  LoadCodeColor(CodeColorComment,      code["Comment"],      "RED");
-  LoadCodeColor(CodeColorString,       code["String"],       "GREEN");
-  LoadCodeColor(CodeColorVariable,     code["Variable"],     "BROWN");
-  LoadCodeColor(CodeColorHtml,         code["Html"],         "GRAY");
-  LoadCodeColor(CodeColorTag,          code["Tag"],          "MAGENTA");
-  LoadCodeColor(CodeColorDeclaration,  code["Declaration"],  "BLUE");
-  LoadCodeColor(CodeColorConstant,     code["Constant"],     "MAGENTA");
-  LoadCodeColor(CodeColorLineNo,       code["LineNo"],       "GRAY");
+  LoadCodeColor(CodeColorKeyword,     code["Keyword"],     "CYAN");
+  LoadCodeColor(CodeColorComment,     code["Comment"],     "RED");
+  LoadCodeColor(CodeColorString,      code["String"],      "GREEN");
+  LoadCodeColor(CodeColorVariable,    code["Variable"],    "BROWN");
+  LoadCodeColor(CodeColorHtml,        code["Html"],        "GRAY");
+  LoadCodeColor(CodeColorTag,         code["Tag"],         "MAGENTA");
+  LoadCodeColor(CodeColorDeclaration, code["Declaration"], "BLUE");
+  LoadCodeColor(CodeColorConstant,    code["Constant"],    "MAGENTA");
+  LoadCodeColor(CodeColorLineNo,      code["LineNo"],      "GRAY");
 }
 
 const char *DebuggerClient::LoadColor(Hdf hdf, const char *defaultName) {
@@ -350,7 +367,7 @@ bool DebuggerClient::IsValidNumber(const std::string &arg) {
   return true;
 }
 
-String DebuggerClient::FormatVariable(CVarRef v, int maxlen /* = 80 */,
+String DebuggerClient::FormatVariable(const Variant& v, int maxlen /* = 80 */,
                                       char format /* = 'd' */) {
   TRACE(2, "DebuggerClient::FormatVariable\n");
   String value;
@@ -650,8 +667,9 @@ void DebuggerClient::init(const DebuggerClientOptions &options) {
   if (!options.configFName.empty()) {
     m_configFileName = options.configFName;
   }
-  if (options.user.empty())
+  if (options.user.empty()) {
     m_options.user = Process::GetCurrentUser();
+  }
 
   usageLogEvent("init");
 
@@ -1148,7 +1166,11 @@ void DebuggerClient::console() {
     } else if (!NoPrompt && RuntimeOption::EnableDebuggerPrompt) {
       print("%s%s", getPrompt().c_str(), line);
     }
-    if (*line && !m_macroPlaying) {
+    if (*line && !m_macroPlaying &&
+        strcasecmp(line, "QUIT") != 0 &&
+        strcasecmp(line, "QUI") != 0 &&
+        strcasecmp(line, "QU") != 0 &&
+        strcasecmp(line, "Q") != 0) {
       // even if line is bad command, we still want to remember it, so
       // people can go back and fix typos
       add_history(line);
@@ -2006,7 +2028,7 @@ void DebuggerClient::setListLocation(const std::string &file, int line,
 
 void DebuggerClient::setSourceRoot(const std::string &sourceRoot) {
   TRACE(2, "DebuggerClient::setSourceRoot\n");
-  m_config["SourceRoot"] = m_sourceRoot = sourceRoot;
+  m_sourceRoot = sourceRoot;
   saveConfig();
 
   // apply change right away
@@ -2039,7 +2061,7 @@ void DebuggerClient::addWatch(const char *fmt, const std::string &php) {
   m_watches.push_back(watch);
 }
 
-void DebuggerClient::setStackTrace(CArrRef stacktrace, bool isAsync) {
+void DebuggerClient::setStackTrace(const Array& stacktrace, bool isAsync) {
   TRACE(2, "DebuggerClient::setStackTrace\n");
   m_stacktrace = stacktrace;
   //when we set a new stack we need to reset the frame position
@@ -2063,7 +2085,7 @@ void DebuggerClient::moveToFrame(int index, bool display /* = true */) {
   if (m_frame < 0) {
     m_frame = 0;
   }
-  CArrRef frame = m_stacktrace[m_frame].toArray();
+  const Array& frame = m_stacktrace[m_frame].toArray();
   if (!frame.isNull()) {
     String file = frame[s_file].toString();
     int line = frame[s_line].toInt32();
@@ -2090,7 +2112,7 @@ const StaticString
   s_id("id"),
   s_ancestors("ancestors");
 
-void DebuggerClient::printFrame(int index, CArrRef frame) {
+void DebuggerClient::printFrame(int index, const Array& frame) {
   TRACE(2, "DebuggerClient::printFrame\n");
   StringBuffer args;
   for (ArrayIter iter(frame[s_args].toArray()); iter; ++iter) {
@@ -2261,8 +2283,10 @@ void DebuggerClient::usageLogEvent(const std::string &eventName,
 
 void DebuggerClient::loadConfig() {
   TRACE(2, "DebuggerClient::loadConfig\n");
+  bool usedHomeDirConfig = false;
   if (m_configFileName.empty()) {
     m_configFileName = Process::GetHomeDirectory() + ConfigFileName;
+    usedHomeDirConfig = true;
   }
 
   // make sure file exists
@@ -2276,114 +2300,205 @@ void DebuggerClient::loadConfig() {
     return;
   }
 
+  Hdf config;
   try {
-    m_config.open(m_configFileName);
+    if (usedHomeDirConfig) {
+      config.open(Process::GetHomeDirectory() + LegacyConfigFileName);
+      needToWriteFile = true;
+    }
   } catch (const HdfException &e) {
-    Logger::Error("Unable to load configuration file: %s", e.what());
-    m_configFileName.clear();
+    // Good, they have migrated already
   }
 
-  auto neverSaveConfig = m_config["NeverSaveConfig"].getBool(false);
-  m_neverSaveConfig = true; // Prevent saving config while reading it
-  s_use_utf8 = m_config["UTF8"].getBool(true);
-  m_config["UTF8"] = s_use_utf8; // for starter
+#define BIND(name, ...) \
+        IniSetting::Bind(&s_debugger_extension, IniSetting::PHP_INI_SYSTEM, \
+                         "hhvm." #name, __VA_ARGS__)
+  IniSetting::s_pretendExtensionsHaveNotBeenLoaded = true;
 
-  Hdf color = m_config["Color"];
+  m_neverSaveConfigOverride = true; // Prevent saving config while reading it
+
+  s_use_utf8 = config["UTF8"].getBool(true);
+  config["UTF8"] = s_use_utf8; // for starter
+  BIND(utf8, &s_use_utf8);
+
+  Hdf color = config["Color"];
   UseColor = color.getBool(true);
   color = UseColor; // for starter
+  BIND(color, &UseColor);
   if (UseColor && RuntimeOption::EnableDebuggerColor) {
-    defineColors(); // (1) no one can overwrite, (2) for starter
     LoadColors(color);
   }
 
-  m_tutorial = m_config["Tutorial"].getInt32(0);
-  m_scriptMode = m_config["ScriptMode"].getBool();
+  m_tutorial = config["Tutorial"].getInt32(0);
+  BIND(tutorial, &m_tutorial);
 
-  setDebuggerClientSmallStep(m_config["SmallStep"].getBool());
-  setDebuggerClientMaxCodeLines(m_config["MaxCodeLines"].getInt16(-1));
-  setDebuggerClientBypassCheck(m_config["BypassAccessCheck"].getBool());
-  int printLevel = m_config["PrintLevel"].getInt16(5);
+  m_scriptMode = config["ScriptMode"].getBool();
+  BIND(script_mode, &m_scriptMode);
+
+  setDebuggerClientSmallStep(config["SmallStep"].getBool());
+  BIND(small_step, IniSetting::SetAndGet<bool>(
+       [this](const bool& v) {
+         setDebuggerClientSmallStep(v);
+         return true;
+       },
+       [this]() { return getDebuggerClientSmallStep(); }
+  ));
+
+  setDebuggerClientMaxCodeLines(config["MaxCodeLines"].getInt16(-1));
+  BIND(max_code_lines, IniSetting::SetAndGet<short>(
+       [this](const short& v) {
+         setDebuggerClientMaxCodeLines(v);
+         return true;
+       },
+       [this]() { return getDebuggerClientMaxCodeLines(); }
+  ));
+
+  setDebuggerClientBypassCheck(config["BypassAccessCheck"].getBool());
+  BIND(bypass_access_check, IniSetting::SetAndGet<bool>(
+       [this](const bool& v) { setDebuggerClientBypassCheck(v); return true; },
+       [this]() { return getDebuggerClientBypassCheck(); }
+  ));
+
+  int printLevel = config["PrintLevel"].getInt16(5);
   if (printLevel > 0 && printLevel < MinPrintLevel) {
     printLevel = MinPrintLevel;
   }
   setDebuggerClientPrintLevel(printLevel);
-  setDebuggerClientStackArgs(m_config["StackArgs"].getBool(true));
+  // For some reason gcc won't capture MinPrintLevel without this
+  auto const min = MinPrintLevel;
+  BIND(print_level, IniSetting::SetAndGet<short>(
+       [this, min](const short &printLevel) {
+         if (printLevel > 0 && printLevel < min) {
+           setDebuggerClientPrintLevel(min);
+         } else {
+           setDebuggerClientPrintLevel(printLevel);
+         }
+         return true;
+       },
+       [this]() { return getDebuggerClientPrintLevel(); }
+  ));
+
+  setDebuggerClientStackArgs(config["StackArgs"].getBool(true));
+  BIND(stack_args, IniSetting::SetAndGet<bool>(
+       [this](const bool& v) { setDebuggerClientStackArgs(v); return true; },
+       [this]() { return getDebuggerClientStackArgs(); }
+  ));
+
   setDebuggerClientShortPrintCharCount(
-    m_config["ShortPrintCharCount"].getInt16(200));
+    config["ShortPrintCharCount"].getInt16(200));
+  BIND(short_print_char_count, IniSetting::SetAndGet<short>(
+       [this](const short& v) {
+         setDebuggerClientShortPrintCharCount(v); return true;
+       },
+       [this]() { return getDebuggerClientShortPrintCharCount(); }
+  ));
 
-  m_config["Tutorial"]["Visited"].get(m_tutorialVisited);
+  config["Tutorial"]["Visited"].get(m_tutorialVisited);
+  BIND(tutorial.visited, &m_tutorialVisited);
 
-  for (Hdf node = m_config["Macros"].firstChild(); node.exists();
+  for (Hdf node = config["Macros"].firstChild(); node.exists();
        node = node.next()) {
     auto macro = std::make_shared<Macro>();
     macro->load(node);
     m_macros.push_back(macro);
   }
+  BIND(macros, IniSetting::SetAndGet<Array>(
+    [this](const Array& val) {
+      auto macro = std::make_shared<Macro>();
+      macro->m_name = val[s_name].asCStrRef().toCppString();
+      for (ArrayIter iter(val[s_cmds]); iter; ++iter) {
+        macro->m_cmds.push_back(iter.second().asCStrRef().toCppString());
+      }
+      m_macros.push_back(macro);
+      return true;
+    },
+    [this]() {
+      ArrayInit ret(m_macros.size());
+      for (auto& macro : m_macros) {
+        ArrayInit ret_macro(2);
+        ret_macro.set(s_name, macro->m_name);
+        ArrayInit ret_cmds(macro->m_cmds.size());
+        for (auto& cmd : macro->m_cmds) {
+          ret_cmds.set(cmd);
+        }
+        ret_macro.set(s_cmds, ret_cmds.toArray());
+        ret.set(ret_macro.toArray());
+      }
+      return ret.toArray();
+    }
+  ));
 
-  m_sourceRoot = m_config["SourceRoot"].getString();
-  m_zendExe = m_config["ZendExecutable"].getString("php");
+  m_sourceRoot = config["SourceRoot"].getString();
+  BIND(source_root, &m_sourceRoot);
 
-  m_neverSaveConfig = neverSaveConfig;
-  if (needToWriteFile && !neverSaveConfig) {
+  m_zendExe = config["ZendExecutable"].getString("php");
+  BIND(zend_executable, &m_zendExe);
+
+  m_neverSaveConfig = config["NeverSaveConfig"].getBool(false);
+  BIND(never_save_config, &m_neverSaveConfig);
+
+  IniSetting::s_pretendExtensionsHaveNotBeenLoaded = false;
+
+  process_ini_settings(m_configFileName);
+
+  // Do this after the ini processing so we don't accidentally save the config
+  // when we change one of the options
+  m_neverSaveConfigOverride = false;
+
+  if (needToWriteFile && !m_neverSaveConfig) {
     saveConfig(); // so to generate a starter for people
   }
+#undef BIND
 }
 
 void DebuggerClient::saveConfig() {
   TRACE(2, "DebuggerClient::saveConfig\n");
-  if (m_neverSaveConfig) return;
+  if (m_neverSaveConfig || m_neverSaveConfigOverride) return;
   if (m_configFileName.empty()) {
     // we are not touching a file that was not successfully loaded earlier
     return;
   }
 
-  m_config["Tutorial"] = m_tutorial;
-  Hdf visited = m_config["Tutorial"]["Visited"];
+  std::ofstream stream(m_configFileName);
+  stream << "hhvm.utf8 = " << s_use_utf8 << std::endl;
+  stream << "hhvm.color = " << UseColor << std::endl;
+  stream << "hhvm.source_root = " << m_sourceRoot << std::endl;
+  stream << "hhvm.never_save_config = " << m_neverSaveConfig << std::endl;
+  stream << "hhvm.tutorial = " << m_tutorial << std::endl;
   unsigned int i = 0;
   for (std::set<string>::const_iterator iter = m_tutorialVisited.begin();
        iter != m_tutorialVisited.end(); ++iter) {
-    visited[i++] = *iter;
+    stream << "hhvm.tutorial.visited[" << i++ << "] = " << *iter << std::endl;
   }
 
-  m_config.remove("Macros");
-  Hdf macros = m_config["Macros"];
   for (i = 0; i < m_macros.size(); i++) {
-    m_macros[i]->save(macros[i]);
+    m_macros[i]->save(stream, i);
   }
 
-  m_config.write(m_configFileName);
-}
-
-void DebuggerClient::defineColors() {
-  TRACE(2, "DebuggerClient::defineColors\n");
   std::vector<std::string> names;
   get_supported_colors(names);
-  Hdf support = m_config["Color"]["SupportedNames"];
   for (unsigned int i = 0; i < names.size(); i++) {
-    support[i+1] = names[i];
+    stream << "hhvm.color.supported_names[" << i+1 << "] = " << names[i]
+           << std::endl;
   }
 
-  Hdf emacs = m_config["Color"]["Palette"]["emacs"];
-  emacs["Keyword"]     = "CYAN";
-  emacs["Comment"]     = "RED";
-  emacs["String"]      = "GREEN";
-  emacs["Variable"]    = "BROWN";
-  emacs["Html"]        = "GRAY";
-  emacs["Tag"]         = "MAGENTA";
-  emacs["Declaration"] = "BLUE";
-  emacs["Constant"]    = "MAGENTA";
-  emacs["LineNo"]      = "GRAY";
+  // TODO if you are clever you can make the macro do these
+  stream << "hhvm.bypass_access_check = " << getDebuggerClientBypassCheck()
+         << std::endl;
+  stream << "hhvm.print_level = " << getDebuggerClientPrintLevel()
+         << std::endl;
+  stream << "hhvm.stack_args = " << getDebuggerClientStackArgs()
+         << std::endl;
+  stream << "hhvm.max_code_lines = " << getDebuggerClientMaxCodeLines()
+         << std::endl;
+  stream << "hhvm.small_step = " << getDebuggerClientSmallStep()
+         << std::endl;
+  stream << "hhvm.short_print_char_count = "
+         << getDebuggerClientShortPrintCharCount() << std::endl;
 
-  Hdf vim = m_config["Color"]["Palette"]["vim"];
-  vim["Keyword"]       = "MAGENTA";
-  vim["Comment"]       = "BLUE";
-  vim["String"]        = "RED";
-  vim["Variable"]      = "CYAN";
-  vim["Html"]          = "GRAY";
-  vim["Tag"]           = "MAGENTA";
-  vim["Declaration"]   = "WHITE";
-  vim["Constant"]      = "WHITE";
-  vim["LineNo"]        = "GRAY";
+  auto legacy = Process::GetHomeDirectory() + LegacyConfigFileName;
+  ::unlink(legacy.c_str());
 }
+
 ///////////////////////////////////////////////////////////////////////////////
 }}

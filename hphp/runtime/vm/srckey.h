@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -44,7 +44,7 @@ struct SrcKey : private boost::totally_ordered<SrcKey> {
     , m_offset(off)
   {}
 
-  SrcKey(const Func* f, const Opcode* i)
+  SrcKey(const Func* f, PC i)
     : m_funcId(f->getFuncId())
     , m_offset(f->unit()->offsetOf(i))
   {}

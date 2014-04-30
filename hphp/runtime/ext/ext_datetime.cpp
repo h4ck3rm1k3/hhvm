@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    | Copyright (c) 1997-2010 The PHP Group                                |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
@@ -21,33 +21,70 @@
 #include "hphp/system/systemlib.h"
 
 namespace HPHP {
+
+struct DateGlobals {
+  double default_latitude;
+  double default_longitude;
+  double sunset_zenith;
+  double sunrise_zenith;
+};
+IMPLEMENT_THREAD_LOCAL(DateGlobals, s_date_globals);
+
 static class DateExtension : public Extension {
  public:
   DateExtension() : Extension("date", k_PHP_VERSION.c_str()) { }
-  void moduleInit() {
+  void threadInit() {
     IniSetting::Bind(
-      this, "date.timezone",
+      this, IniSetting::PHP_INI_ALL,
+      "date.timezone",
       g_context->getDefaultTimeZone().c_str(),
-      dateTimezoneIniUpdate, dateTimezoneIniGet,
-      nullptr
+      IniSetting::SetAndGet<std::string>(
+        dateTimezoneIniUpdate, dateTimezoneIniGet
+      )
+    );
+    IniSetting::Bind(
+      this, IniSetting::PHP_INI_ALL,
+      "date.default_latitude", "31.7667",
+      &s_date_globals->default_latitude
+    );
+    IniSetting::Bind(
+      this, IniSetting::PHP_INI_ALL,
+      "date.default_longitude", "35.2333",
+      &s_date_globals->default_longitude
+    );
+    IniSetting::Bind(
+      this, IniSetting::PHP_INI_ALL,
+      "date.sunset_zenith", "90.583333",
+      &s_date_globals->sunset_zenith
+    );
+    IniSetting::Bind(
+      this, IniSetting::PHP_INI_ALL,
+      "date.sunrise_zenith", "90.583333",
+      &s_date_globals->sunrise_zenith
     );
   }
 
+  double get_date_default_gmt_offset() {
+    SmartResource<TimeZone> tzi = TimeZone::Current();
+    // just get the offset form utc time
+    // set the timestamp 0 is ok
+    return tzi->offset(0) / 3600;
+  }
+
  private:
-  static bool dateTimezoneIniUpdate(const HPHP::String& value, void *p) {
-    assert(p == nullptr);
+  static bool dateTimezoneIniUpdate(const std::string& value) {
     if (value.empty()) {
       return false;
     }
     return f_date_default_timezone_set(value);
   }
 
-  static String dateTimezoneIniGet(void* p) {
+  static std::string dateTimezoneIniGet() {
     auto ret = g_context->getTimeZone();
     if (ret.isNull()) {
-      return empty_string;
+      return "";
     }
-    return ret;
+    return ret.toCppString();
   }
 } s_date_extension;
 
@@ -84,13 +121,13 @@ const int64_t q_DateTimeZone$$PER_COUNTRY = 4096;
 ///////////////////////////////////////////////////////////////////////////////
 // methods
 
-Object c_DateTime::t_add(CObjRef interval) {
+Object c_DateTime::t_add(const Object& interval) {
   m_dt->add(c_DateInterval::unwrap(interval));
   return this;
 }
 
 void c_DateTime::t___construct(const String& time /*= "now"*/,
-                               CObjRef timezone /*= null_object*/) {
+                               const Object& timezone /*= null_object*/) {
   m_dt = NEWOBJ(DateTime)(TimeStamp::Current());
   if (!time.empty()) {
     m_dt->fromString(time, c_DateTimeZone::unwrap(timezone));
@@ -103,24 +140,62 @@ void c_DateTime::t___construct(const String& time /*= "now"*/,
 
 Variant c_DateTime::ti_createfromformat(const String& format,
                                         const String& time,
-                                        CObjRef timezone /*= null_object */) {
+                                        const Object& timezone /*= null_object */) {
   c_DateTime *datetime = NEWOBJ(c_DateTime);
-  datetime->m_dt = NEWOBJ(DateTime);
-  if(!datetime->m_dt->fromString(time, c_DateTimeZone::unwrap(timezone),
-                             format.data(), false)) {
+  const auto curr = (format.find("!") != String::npos) ? 0 : f_time() ;
+  datetime->m_dt = NEWOBJ(DateTime(curr, false));
+  if (!datetime->m_dt->fromString(time, c_DateTimeZone::unwrap(timezone),
+                                 format.data(), false)) {
     return false;
   }
 
   return datetime;
 }
 
-Object c_DateTime::t_diff(CObjRef datetime2, bool absolute) {
+Object c_DateTime::t_diff(const Object& datetime2, bool absolute) {
   return c_DateInterval::wrap(m_dt->diff(c_DateTime::unwrap(datetime2),
                                          absolute));
 }
 
 String c_DateTime::t_format(const String& format) {
   return m_dt->toString(format, false);
+}
+
+const StaticString s_data("data");
+const StaticString s_getTimestamp("getTimestamp");
+
+int64_t c_DateTime::GetTimestamp(const Object& obj) {
+  if (LIKELY(obj.is<c_DateTime>())) {
+    return obj.getTyped<c_DateTime>(true)->t_gettimestamp();
+  }
+  assert(obj->instanceof(SystemLib::s_DateTimeInterfaceClass));
+  Variant result = obj->o_invoke(s_getTimestamp, Array::Create());
+  return result.toInt64();
+}
+
+int64_t c_DateTime::GetTimestamp(const ObjectData* od) {
+  return GetTimestamp(Object(const_cast<ObjectData*>(od)));
+}
+
+SmartResource<DateTime> c_DateTime::unwrap(const Object& datetime) {
+  if (LIKELY(datetime.is<c_DateTime>())) {
+    SmartObject<c_DateTime> cdt = datetime.getTyped<c_DateTime>(true);
+    if (cdt.get() == nullptr)
+      return SmartResource<DateTime>();
+    return cdt->m_dt;
+  }
+  if (datetime->instanceof(SystemLib::s_DateTimeImmutableClass)) {
+    bool visible, accessible, unset;
+    TypedValue* tv = datetime->getProp(SystemLib::s_DateTimeImmutableClass,
+                                       s_data.get(),
+                                       visible,
+                                       accessible,
+                                       unset);
+    assert(tv->m_type == KindOfObject);
+    Object impl(tv->m_data.pobj);
+    return unwrap(impl);
+  }
+  return SmartResource<DateTime>();
 }
 
 const StaticString
@@ -190,12 +265,12 @@ Object c_DateTime::t_settimestamp(int64_t unixtimestamp) {
   return this;
 }
 
-Object c_DateTime::t_settimezone(CObjRef timezone) {
+Object c_DateTime::t_settimezone(const Object& timezone) {
   m_dt->setTimezone(c_DateTimeZone::unwrap(timezone));
   return this;
 }
 
-Object c_DateTime::t_sub(CObjRef interval) {
+Object c_DateTime::t_sub(const Object& interval) {
   m_dt->sub(c_DateInterval::unwrap(interval));
   return this;
 }
@@ -212,6 +287,20 @@ Array c_DateTime::t___sleep() {
 void c_DateTime::t___wakeup() {
   t___construct(o_get(s__date_time));
   unsetProp(getVMClass(), s__date_time.get());
+}
+
+const StaticString
+  s_date("date"),
+  s_timezone_type("timezone_type"),
+  s_timezone("timezone"),
+  s_ISOformat("Y-m-d H:i:s");
+
+Array c_DateTime::t___debuginfo() {
+  ArrayInit ret(3);
+  ret.set(s_date, t_format(s_ISOformat));
+  ret.set(s_timezone_type, m_dt->zoneType());
+  ret.set(s_timezone, m_dt->timezone()->name());
+  return ret.create();
 }
 
 c_DateTime* c_DateTime::Clone(ObjectData* obj) {
@@ -238,7 +327,7 @@ String c_DateTimeZone::t_getname() {
   return m_tz->name();
 }
 
-int64_t c_DateTimeZone::t_getoffset(CObjRef datetime) {
+int64_t c_DateTimeZone::t_getoffset(const Object& datetime) {
   bool error;
   int64_t ts = c_DateTime::unwrap(datetime)->toTimeStamp(error);
   return m_tz->offset(ts);
@@ -513,19 +602,19 @@ Object f_timezone_open(const String& timezone) {
   return ret;
 }
 
-Array f_timezone_location_get(CObjRef timezone) {
+Array f_timezone_location_get(const Object& timezone) {
   return timezone.getTyped<c_DateTimeZone>()->t_getlocation();
 }
 
-String f_timezone_name_get(CObjRef object) {
+String f_timezone_name_get(const Object& object) {
   return object.getTyped<c_DateTimeZone>()->t_getname();
 }
 
-int64_t f_timezone_offset_get(CObjRef object, CObjRef dt) {
+int64_t f_timezone_offset_get(const Object& object, const Object& dt) {
   return object.getTyped<c_DateTimeZone>()->t_getoffset(dt);
 }
 
-Array f_timezone_transitions_get(CObjRef object) {
+Array f_timezone_transitions_get(const Object& object) {
   return object.getTyped<c_DateTimeZone>()->t_gettransitions();
 }
 
@@ -540,14 +629,14 @@ bool f_checkdate(int month, int day, int year) {
   return DateTime::IsValid(year, month, day);
 }
 
-Object f_date_add(CObjRef datetime, CObjRef interval) {
+Object f_date_add(const Object& datetime, const Object& interval) {
   return datetime.getTyped<c_DateTime>()->
     t_add(interval.getTyped<c_DateInterval>());
 }
 
 Variant f_date_create_from_format(const String& format,
                                  const String& time,
-                                 CObjRef timezone /* = null_object */) {
+                                 const Object& timezone /* = null_object */) {
   return c_DateTime::ti_createfromformat(format, time, timezone);
 }
 
@@ -560,12 +649,12 @@ Variant f_date_parse_from_format(const String& format, const String& date) {
 }
 
 Variant f_date_create(const String& time /* = null_string */,
-                      CObjRef timezone /* = null_object */) {
+                      const Object& timezone /* = null_object */) {
   c_DateTime *cdt = NEWOBJ(c_DateTime)();
   Object ret(cdt);
   // Don't set the time here because it will throw if it is bad
   cdt->t___construct();
-  if (time.isNull()) {
+  if (time.empty()) {
     // zend does this, so so do we
     return ret;
   }
@@ -576,23 +665,23 @@ Variant f_date_create(const String& time /* = null_string */,
   return ret;
 }
 
-void f_date_date_set(CObjRef object, int year, int month, int day) {
+void f_date_date_set(const Object& object, int year, int month, int day) {
   object.getTyped<c_DateTime>()->t_setdate(year, month, day);
 }
 
-Object f_date_diff(CObjRef datetime,
-                   CObjRef datetime2,
+Object f_date_diff(const Object& datetime,
+                   const Object& datetime2,
                    bool absolute /* = false */) {
   return datetime.getTyped<c_DateTime>()->
     t_diff(datetime2.getTyped<c_DateTime>(), absolute);
 }
 
-void f_date_isodate_set(CObjRef object, int year, int week,
+void f_date_isodate_set(const Object& object, int year, int week,
                         int day /* = 1 */) {
   object.getTyped<c_DateTime>()->t_setisodate(year, week, day);
 }
 
-String f_date_format(CObjRef object, const String& format) {
+String f_date_format(const Object& object, const String& format) {
   return object.getTyped<c_DateTime>()->t_format(format);
 }
 
@@ -604,16 +693,12 @@ Object f_date_interval_create_from_date_string(const String& time) {
   return c_DateInterval::ti_createfromdatestring(time);
 }
 
-String f_date_interval_format(CObjRef interval, const String& format_spec) {
+String f_date_interval_format(const Object& interval, const String& format_spec) {
   return interval.getTyped<c_DateInterval>()->t_format(format_spec);
 }
 
-void f_date_modify(CObjRef object, const String& modify) {
+void f_date_modify(const Object& object, const String& modify) {
   object.getTyped<c_DateTime>()->t_modify(modify);
-}
-
-int64_t f_date_offset_get(CObjRef object) {
-  return object.getTyped<c_DateTime>()->t_getoffset();
 }
 
 Variant f_date_parse(const String& date) {
@@ -624,29 +709,29 @@ Variant f_date_parse(const String& date) {
   return ret;
 }
 
-void f_date_time_set(CObjRef object, int hour, int minute,
+void f_date_time_set(const Object& object, int hour, int minute,
                      int second /* = 0 */) {
   object.getTyped<c_DateTime>()->t_settime(hour, minute, second);
 }
 
-int64_t f_date_timestamp_get(CObjRef datetime) {
+int64_t f_date_timestamp_get(const Object& datetime) {
   return datetime.getTyped<c_DateTime>()->t_gettimestamp();
 }
 
-Object f_date_timestamp_set(CObjRef datetime, int64_t timestamp) {
+Object f_date_timestamp_set(const Object& datetime, int64_t timestamp) {
   return datetime.getTyped<c_DateTime>()->
     t_settimestamp(timestamp);
 }
 
-Variant f_date_timezone_get(CObjRef object) {
+Variant f_date_timezone_get(const Object& object) {
   return object.getTyped<c_DateTime>()->t_gettimezone();
 }
 
-void f_date_timezone_set(CObjRef object, CObjRef timezone) {
+void f_date_timezone_set(const Object& object, const Object& timezone) {
   object.getTyped<c_DateTime>()->t_settimezone(timezone);
 }
 
-Object f_date_sub(CObjRef datetime, CObjRef interval) {
+Object f_date_sub(const Object& datetime, const Object& interval) {
   return datetime.getTyped<c_DateTime>()->
     t_sub(interval.getTyped<c_DateInterval>());
 }
@@ -654,23 +739,47 @@ Object f_date_sub(CObjRef datetime, CObjRef interval) {
 ///////////////////////////////////////////////////////////////////////////////
 // sun
 
+double get_date_default_latitude() {
+  return s_date_globals->default_latitude;
+}
+
+double get_date_default_longitude() {
+  return s_date_globals->default_longitude;
+}
+
+double get_date_default_sunset_zenith() {
+  return s_date_globals->sunset_zenith;
+}
+
+double get_date_default_sunrise_zenith() {
+  return s_date_globals->sunrise_zenith;
+}
+
+double get_date_default_gmt_offset() {
+  return s_date_extension.get_date_default_gmt_offset();
+}
+
 Array f_date_sun_info(int64_t ts, double latitude, double longitude) {
   return DateTime(ts, false).getSunInfo(latitude, longitude);
 }
 
-Variant f_date_sunrise(int64_t timestamp, int format /* = 0 */,
-                       double latitude /* = 0.0 */, double longitude /* = 0.0 */,
-                       double zenith /* = 0.0 */,
-                       double gmt_offset /* = 99999.0 */) {
+Variant f_date_sunrise(int64_t timestamp,
+                       int format,
+                       double latitude,
+                       double longitude,
+                       double zenith,
+                       double gmt_offset) {
   return DateTime(timestamp, false).getSunInfo
     (static_cast<DateTime::SunInfoFormat>(format), latitude, longitude,
      zenith, gmt_offset, false);
 }
 
-Variant f_date_sunset(int64_t timestamp, int format /* = 0 */,
-                      double latitude /* = 0.0 */, double longitude /* = 0.0 */,
-                      double zenith /* = 0.0 */,
-                      double gmt_offset /* = 99999.0 */) {
+Variant f_date_sunset(int64_t timestamp,
+                      int format,
+                      double latitude,
+                      double longitude,
+                      double zenith,
+                      double gmt_offset) {
   return DateTime(timestamp, false).getSunInfo
     (static_cast<DateTime::SunInfoFormat>(format), latitude, longitude,
      zenith, gmt_offset, true);

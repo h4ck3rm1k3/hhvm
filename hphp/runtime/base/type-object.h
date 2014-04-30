@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -17,15 +17,12 @@
 #ifndef incl_HPHP_OBJECT_H_
 #define incl_HPHP_OBJECT_H_
 
-#ifndef incl_HPHP_INSIDE_HPHP_COMPLEX_TYPES_H_
-#error Directly including 'type_object.h' is prohibited. \
-       Include 'complex_types.h' instead.
-#endif
-
-#include "hphp/runtime/base/smart-ptr.h"
 #include "hphp/runtime/base/object-data.h"
-#include "hphp/runtime/base/type-string.h"
+#include "hphp/runtime/base/smart-ptr.h"
 #include "hphp/runtime/base/typed-value.h"
+#include "hphp/runtime/base/types.h"
+
+#include <algorithm>
 
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
@@ -58,21 +55,18 @@ public:
    * Constructors
    */
   /* implicit */ Object(ObjectData *data) : ObjectBase(data) { }
-  /* implicit */ Object(CObjRef src) : ObjectBase(src.m_px) { }
+  /* implicit */ Object(const Object& src) : ObjectBase(src.m_px) { }
 
   // Move ctor
-  Object(Object&& src) : ObjectBase(std::move(src)) {
-    static_assert(sizeof(Object) == sizeof(ObjectBase), "Fix this.");
-  }
+  Object(Object&& src) : ObjectBase(std::move(src)) { }
+
   // Regular assign
   Object& operator=(const Object& src) {
-    static_assert(sizeof(Object) == sizeof(ObjectBase), "Fix this.");
     ObjectBase::operator=(src);
     return *this;
   }
   // Move assign
   Object& operator=(Object&& src) {
-    static_assert(sizeof(Object) == sizeof(ObjectBase), "Fix this.");
     ObjectBase::operator=(std::move(src));
     return *this;
   }
@@ -118,7 +112,7 @@ public:
     }
     if (!cur->instanceof(T::classof())) {
       if (!badTypeOkay) {
-        throw InvalidObjectTypeException(m_px->o_getClassName().c_str());
+        throw InvalidObjectTypeException(classname_cstr());
       }
       return nullptr;
     }
@@ -136,22 +130,17 @@ public:
     return getTyped<T>();
   }
 
-  ObjectData *objectForCall() const {
-    if (m_px) return m_px;
-    throw_call_non_object();
-  }
-
   /**
    * Type conversions
    */
-  bool   toBoolean() const { return m_px ? m_px->o_toBoolean() : false;}
-  char   toByte   () const { return m_px ? m_px->o_toInt64() : 0;}
-  short  toInt16  () const { return m_px ? m_px->o_toInt64() : 0;}
-  int    toInt32  () const { return m_px ? m_px->o_toInt64() : 0;}
-  int64_t  toInt64  () const { return m_px ? m_px->o_toInt64() : 0;}
-  double toDouble () const { return m_px ? m_px->o_toDouble() : 0;}
-  String toString () const { return m_px ? m_px->invokeToString() : String();}
-  Array  toArray  () const;
+  bool    toBoolean() const { return m_px ? m_px->o_toBoolean() : false;}
+  char    toByte   () const { return m_px ? m_px->o_toInt64() : 0;}
+  short   toInt16  () const { return m_px ? m_px->o_toInt64() : 0;}
+  int     toInt32  () const { return m_px ? m_px->o_toInt64() : 0;}
+  int64_t toInt64  () const { return m_px ? m_px->o_toInt64() : 0;}
+  double  toDouble () const { return m_px ? m_px->o_toDouble() : 0;}
+  String  toString () const;
+  Array   toArray  () const;
 
   int64_t toInt64ForCompare() const;
   double toDoubleForCompare() const;
@@ -159,19 +148,19 @@ public:
   /**
    * Comparisons
    */
-  bool same (CObjRef v2) const { return m_px == v2.get();}
-  bool equal(CObjRef v2) const;
-  bool less (CObjRef v2) const;
-  bool more (CObjRef v2) const;
+  bool same (const Object& v2) const { return m_px == v2.get();}
+  bool equal(const Object& v2) const;
+  bool less (const Object& v2) const;
+  bool more (const Object& v2) const;
 
   Variant o_get(const String& propName, bool error = true,
                 const String& context = null_string) const;
   Variant o_set(
-    const String& s, CVarRef v, const String& context = null_string);
+    const String& s, const Variant& v, const String& context = null_string);
   Variant o_set(
     const String& s, RefResult v, const String& context = null_string);
   Variant o_setRef(
-    const String& s, CVarRef v, const String& context = null_string);
+    const String& s, const Variant& v, const String& context = null_string);
 
   /**
    * Input/Output
@@ -195,6 +184,10 @@ public:
     return o;
   }
 
+private:
+  static void compileTimeAssertions();
+
+  const char* classname_cstr() const;
 };
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -202,7 +195,7 @@ public:
 
 class ObjNR {
 public:
-  explicit ObjNR(ObjectData *data) {
+  explicit ObjNR(ObjectData* data) {
     m_px = data;
   }
 
@@ -217,9 +210,7 @@ public:
 private:
   ObjectData* m_px;
 
-  static void compileTimeAssertions() {
-    static_assert(offsetof(ObjNR, m_px) == kExpectedMPxOffset, "");
-  }
+  static void compileTimeAssertions();
 };
 
 ///////////////////////////////////////////////////////////////////////////////

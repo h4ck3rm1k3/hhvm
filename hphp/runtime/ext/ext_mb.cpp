@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    | Copyright (c) 1997-2010 The PHP Group                                |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
@@ -25,11 +25,13 @@
 #include "hphp/runtime/base/zend-url.h"
 #include "hphp/runtime/base/zend-string.h"
 #include "hphp/runtime/base/ini-setting.h"
+#include "hphp/runtime/base/request-event-handler.h"
 
 extern "C" {
 #include <mbfl/mbfl_convert.h>
 #include <mbfl/mbfilter.h>
 #include <oniguruma.h>
+#include <map>
 }
 
 #define php_mb_re_pattern_buffer   re_pattern_buffer
@@ -49,15 +51,23 @@ extern void mbfl_memory_device_unput(mbfl_memory_device *device);
 namespace HPHP {
 
 static class mbstringExtension : public Extension {
- public:
+  public:
   mbstringExtension() : Extension("mbstring", NO_EXTENSION_VERSION_YET) {}
 
   virtual void moduleInit() {
-    IniSetting::SetGlobalDefault("mbstring.http_input", "pass");
-    IniSetting::SetGlobalDefault("mbstring.http_output", "pass");
+    // TODO make these PHP_INI_ALL and thread local once we use them
+    IniSetting::Bind(this, IniSetting::PHP_INI_SYSTEM, "mbstring.http_input",
+                     &http_input);
+    IniSetting::Bind(this, IniSetting::PHP_INI_SYSTEM, "mbstring.http_output",
+                     &http_output);
   }
 
+  static std::string http_input;
+  static std::string http_output;
 } s_mbstring_extension;
+
+std::string mbstringExtension::http_input = "pass";
+std::string mbstringExtension::http_output = "pass";
 
 ///////////////////////////////////////////////////////////////////////////////
 // statics
@@ -155,8 +165,7 @@ static php_mb_nls_ident_list php_mb_default_identify_list[] = {
 // globals
 typedef std::map<std::string, php_mb_regex_t *> RegexCache;
 
-class MBGlobals : public RequestEventHandler {
-public:
+struct MBGlobals final : RequestEventHandler {
   mbfl_no_language language;
   mbfl_no_language current_language;
   mbfl_no_encoding internal_encoding;
@@ -235,7 +244,7 @@ public:
     regex_default_syntax(ONIG_SYNTAX_RUBY) {
   }
 
-  virtual void requestInit() {
+  void requestInit() override {
     current_language = language;
     current_internal_encoding = internal_encoding;
     current_http_output_encoding = http_output_encoding;
@@ -264,7 +273,7 @@ public:
     }
   }
 
-  virtual void requestShutdown() {
+  void requestShutdown() override {
     if (current_detect_order_list != NULL) {
       free(current_detect_order_list);
       current_detect_order_list = NULL;
@@ -815,7 +824,7 @@ static char *php_unicode_convert_case(int case_mode, const char *srcstr,
  *  Even if any illegal encoding is detected the result may contain a list
  *  of parsed encodings.
  */
-static int php_mb_parse_encoding_array(CArrRef array,
+static int php_mb_parse_encoding_array(const Array& array,
                                        mbfl_no_encoding **return_list,
                                        int *return_size, int persistent) {
   int n, l, size, bauto,ret = 1;
@@ -883,7 +892,7 @@ static int php_mb_parse_encoding_array(CArrRef array,
   return ret;
 }
 
-static bool php_mb_parse_encoding(CVarRef encoding,
+static bool php_mb_parse_encoding(const Variant& encoding,
                                   mbfl_no_encoding **return_list,
                                   int *return_size, bool persistent) {
   bool ret;
@@ -1192,7 +1201,7 @@ Variant f_mb_convert_case(const String& str, int mode,
 }
 
 Variant f_mb_convert_encoding(const String& str, const String& to_encoding,
-                              CVarRef from_encoding /* = null_variant */) {
+                              const Variant& from_encoding /* = null_variant */) {
   String encoding = from_encoding.toString();
   if (from_encoding.is(KindOfArray)) {
     StringBuffer _from_encodings;
@@ -1274,7 +1283,7 @@ Variant f_mb_convert_kana(const String& str,
   return false;
 }
 
-static bool php_mbfl_encoding_detect(CVarRef var,
+static bool php_mbfl_encoding_detect(const Variant& var,
                                      mbfl_encoding_detector *identd,
                                      mbfl_string *string) {
   if (var.is(KindOfArray) || var.is(KindOfObject)) {
@@ -1295,7 +1304,7 @@ static bool php_mbfl_encoding_detect(CVarRef var,
   return false;
 }
 
-static Variant php_mbfl_convert(CVarRef var,
+static Variant php_mbfl_convert(const Variant& var,
                                 mbfl_buffer_converter *convd,
                                 mbfl_string *string,
                                 mbfl_string *result) {
@@ -1333,8 +1342,8 @@ static Variant php_mbfl_convert(CVarRef var,
 }
 
 Variant f_mb_convert_variables(int _argc, const String& to_encoding,
-                               CVarRef from_encoding, VRefParam vars,
-                               CArrRef _argv /* = null_array */) {
+                               const Variant& from_encoding, VRefParam vars,
+                               const Array& _argv /* = null_array */) {
   mbfl_string string, result;
   mbfl_no_encoding _from_encoding, _to_encoding;
   mbfl_encoding_detector *identd;
@@ -1440,7 +1449,7 @@ Variant f_mb_decode_mimeheader(const String& str) {
   return false;
 }
 
-static Variant php_mb_numericentity_exec(const String& str, CVarRef convmap,
+static Variant php_mb_numericentity_exec(const String& str, const Variant& convmap,
                                          const String& encoding, int type) {
   int mapsize=0;
   mbfl_string string, result, *ret;
@@ -1489,14 +1498,14 @@ static Variant php_mb_numericentity_exec(const String& str, CVarRef convmap,
   return false;
 }
 
-Variant f_mb_decode_numericentity(const String& str, CVarRef convmap,
+Variant f_mb_decode_numericentity(const String& str, const Variant& convmap,
                                  const String& encoding /* = null_string */) {
   return php_mb_numericentity_exec(str, convmap, encoding, 1);
 }
 
 Variant f_mb_detect_encoding(const String& str,
-                             CVarRef encoding_list /* = null_variant */,
-                             CVarRef strict /* = null_variant */) {
+                             const Variant& encoding_list /* = null_variant */,
+                             const Variant& strict /* = null_variant */) {
   mbfl_string string;
   const char *ret;
   mbfl_no_encoding *elist;
@@ -1535,7 +1544,7 @@ Variant f_mb_detect_encoding(const String& str,
   return false;
 }
 
-Variant f_mb_detect_order(CVarRef encoding_list /* = null_variant */) {
+Variant f_mb_detect_order(const Variant& encoding_list /* = null_variant */) {
   int n, size;
   mbfl_no_encoding *list, *entry;
 
@@ -1617,7 +1626,7 @@ Variant f_mb_encode_mimeheader(const String& str,
   return false;
 }
 
-Variant f_mb_encode_numericentity(const String& str, CVarRef convmap,
+Variant f_mb_encode_numericentity(const String& str, const Variant& convmap,
                                  const String& encoding /* = null_string */) {
   return php_mb_numericentity_exec(str, convmap, encoding, 0);
 }
@@ -1988,7 +1997,7 @@ typedef struct _php_mb_encoding_handler_info_t {
 } php_mb_encoding_handler_info_t;
 
 static mbfl_no_encoding _php_mb_encoding_handler_ex
-(const php_mb_encoding_handler_info_t *info, Variant &arg, char *res) {
+(const php_mb_encoding_handler_info_t *info, Array& arg, char *res) {
   char *var, *val;
   const char *s1, *s2;
   char *strtok_buf = NULL, **val_list = NULL;
@@ -2126,7 +2135,7 @@ static mbfl_no_encoding _php_mb_encoding_handler_ex
 
     arg.set(String(var, CopyString), String(val, val_len, CopyString));
 
-    if (convd != NULL){
+    if (convd != NULL) {
       mbfl_string_clear(&resvar);
       mbfl_string_clear(&resval);
     }
@@ -2161,9 +2170,11 @@ bool f_mb_parse_str(const String& encoded_string,
   info.from_language          = MBSTRG(current_language);
 
   char *encstr = strndup(encoded_string.data(), encoded_string.size());
+  Array resultArr = Array::Create();
   mbfl_no_encoding detected =
-    _php_mb_encoding_handler_ex(&info, result, encstr);
+    _php_mb_encoding_handler_ex(&info, resultArr, encstr);
   free(encstr);
+  result = resultArr;
 
   MBSTRG(http_input_identify) = detected;
   return detected != mbfl_no_encoding_invalid;
@@ -2186,7 +2197,8 @@ Variant f_mb_preferred_mime_name(const String& encoding) {
   return String(preferred_name, CopyString);
 }
 
-static Variant php_mb_substr(const String& str, int from, int len,
+static Variant php_mb_substr(const String& str, int from,
+                             const Variant& vlen,
                              const String& encoding, bool substr) {
   mbfl_string string;
   mbfl_string_init(&string);
@@ -2209,7 +2221,8 @@ static Variant php_mb_substr(const String& str, int from, int len,
   } else {
     size = str.size();
   }
-  if (len == 0x7FFFFFFF) {
+  int len = vlen.toInt64();
+  if (vlen.isNull() || len == 0x7FFFFFFF) {
     len = size;
   }
 
@@ -2253,12 +2266,14 @@ static Variant php_mb_substr(const String& str, int from, int len,
   return false;
 }
 
-Variant f_mb_substr(const String& str, int start, int length /* = 0x7FFFFFFF */,
+Variant f_mb_substr(const String& str, int start,
+                    const Variant& length /*= uninit_null() */,
                     const String& encoding /* = null_string */) {
   return php_mb_substr(str, start, length, encoding, true);
 }
 
-Variant f_mb_strcut(const String& str, int start, int length /* = 0x7FFFFFFF */,
+Variant f_mb_strcut(const String& str, int start,
+                    const Variant& length /*= uninit_null() */,
                     const String& encoding /* = null_string */) {
   return php_mb_substr(str, start, length, encoding, false);
 }
@@ -2495,7 +2510,7 @@ Variant f_mb_strpos(const String& haystack, const String& needle,
 }
 
 Variant f_mb_strrpos(const String& haystack, const String& needle,
-                     CVarRef offset /* = 0LL */,
+                     const Variant& offset /* = 0LL */,
                      const String& encoding /* = null_string */) {
   mbfl_string mbs_haystack;
   mbfl_string_init(&mbs_haystack);
@@ -2783,7 +2798,7 @@ Variant f_mb_strwidth(const String& str,
   return false;
 }
 
-Variant f_mb_substitute_character(CVarRef substrchar /* = null_variant */) {
+Variant f_mb_substitute_character(const Variant& substrchar /* = null_variant */) {
   if (substrchar.isNull()) {
     switch (MBSTRG(current_filter_illegal_mode)) {
     case MBFL_OUTPUTFILTER_ILLEGAL_MODE_NONE:
@@ -3228,7 +3243,7 @@ bool f_mb_ereg_match(const String& pattern, const String& str,
   return err >= 0;
 }
 
-static Variant _php_mb_regex_ereg_replace_exec(CVarRef pattern,
+static Variant _php_mb_regex_ereg_replace_exec(const Variant& pattern,
                                                const String& replacement,
                                                const String& str,
                                                const String& option,
@@ -3361,14 +3376,14 @@ static Variant _php_mb_regex_ereg_replace_exec(CVarRef pattern,
   return out_buf.detach();
 }
 
-Variant f_mb_ereg_replace(CVarRef pattern, const String& replacement,
+Variant f_mb_ereg_replace(const Variant& pattern, const String& replacement,
                           const String& str,
                          const String& option /* = null_string */) {
   return _php_mb_regex_ereg_replace_exec(pattern, replacement,
                                          str, option, 0);
 }
 
-Variant f_mb_eregi_replace(CVarRef pattern, const String& replacement,
+Variant f_mb_eregi_replace(const Variant& pattern, const String& replacement,
                            const String& str,
                            const String& option /* = null_string */) {
   return _php_mb_regex_ereg_replace_exec(pattern, replacement,
@@ -3502,19 +3517,20 @@ static Variant _php_mb_regex_ereg_search_exec(const String& pattern,
       {
         beg = MBSTRG(search_regs)->beg[0];
         end = MBSTRG(search_regs)->end[0];
-        ret.append(beg);
-        ret.append(end - beg);
+        ret = make_packed_array(beg, end - beg);
       }
       break;
     case 2:
       n = MBSTRG(search_regs)->num_regs;
+      ret = Variant(Array::Create());
       for (i = 0; i < n; i++) {
         beg = MBSTRG(search_regs)->beg[i];
         end = MBSTRG(search_regs)->end[i];
         if (beg >= 0 && beg <= end && end <= len) {
-          ret.append(String((const char *)(str + beg), end - beg, CopyString));
+          ret.toArrRef().append(
+            String((const char *)(str + beg), end - beg, CopyString));
         } else {
-          ret.append(false);
+          ret.toArrRef().append(false);
         }
       }
       break;
@@ -3552,7 +3568,7 @@ Variant f_mb_ereg_search_regs(const String& pattern /* = null_string */,
   return _php_mb_regex_ereg_search_exec(pattern, option, 2);
 }
 
-static Variant _php_mb_regex_ereg_exec(CVarRef pattern, const String& str,
+static Variant _php_mb_regex_ereg_exec(const Variant& pattern, const String& str,
                                        Variant &regs, int icase) {
   php_mb_regex_t *re;
   OnigRegion *regions = NULL;
@@ -3597,16 +3613,18 @@ static Variant _php_mb_regex_ereg_exec(CVarRef pattern, const String& str,
   const char *s = str.data();
   int string_len = str.size();
   match_len = regions->end[0] - regions->beg[0];
-  regs = Array::Create();
+
+  PackedArrayInit regsPai(regions->num_regs);
   for (i = 0; i < regions->num_regs; i++) {
     beg = regions->beg[i];
     end = regions->end[i];
     if (beg >= 0 && beg < end && end <= string_len) {
-      regs.append(String(s + beg, end - beg, CopyString));
+      regsPai.append(String(s + beg, end - beg, CopyString));
     } else {
-      regs.append(false);
+      regsPai.append(false);
     }
   }
+  regs = regsPai.toArray();
 
   if (match_len == 0) {
     match_len = 1;
@@ -3617,12 +3635,12 @@ static Variant _php_mb_regex_ereg_exec(CVarRef pattern, const String& str,
   return match_len;
 }
 
-Variant f_mb_ereg(CVarRef pattern, const String& str,
+Variant f_mb_ereg(const Variant& pattern, const String& str,
                   VRefParam regs /* = null */) {
   return _php_mb_regex_ereg_exec(pattern, str, regs, 0);
 }
 
-Variant f_mb_eregi(CVarRef pattern, const String& str,
+Variant f_mb_eregi(const Variant& pattern, const String& str,
                    VRefParam regs /* = null */) {
   return _php_mb_regex_ereg_exec(pattern, str, regs, 1);
 }

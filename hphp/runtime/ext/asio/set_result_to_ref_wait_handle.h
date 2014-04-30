@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    | Copyright (c) 1997-2010 The PHP Group                                |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
@@ -44,8 +44,8 @@ class c_SetResultToRefWaitHandle : public c_BlockableWaitHandle {
     if (m_ref) decRefRef(m_ref);
   }
   void t___construct();
-  static void ti_setoncreatecallback(CVarRef callback);
-  static Object ti_create(CObjRef wait_handle, VRefParam ref);
+  static void ti_setoncreatecallback(const Variant& callback);
+  static Object ti_create(const Object& wait_handle, VRefParam ref);
 
 
  public:
@@ -59,7 +59,7 @@ class c_SetResultToRefWaitHandle : public c_BlockableWaitHandle {
  private:
   void initialize(c_WaitableWaitHandle* wait_handle, RefData* ref);
   void markAsSucceeded(const Cell& result);
-  void markAsFailed(CObjRef exception);
+  void markAsFailed(const Object& exception);
 
   p_WaitableWaitHandle m_child;
   RefData* m_ref;

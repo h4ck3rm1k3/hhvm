@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -46,7 +46,6 @@ void profileRequestStart();
 void profileRequestEnd();
 void recordType(TypeProfileKey sk, DataType dt);
 std::pair<DataType, double> predictType(TypeProfileKey key);
-bool isProfileOpcode(const PC& pc);
 int64_t requestCount();
 
 extern __thread bool profileOn;

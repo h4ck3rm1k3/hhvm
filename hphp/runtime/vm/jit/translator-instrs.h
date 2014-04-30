@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -39,7 +39,6 @@
   CASE(String) \
   CASE(Array) \
   CASE(NewArray) \
-  CASE(NewArrayReserve) \
   CASE(NewPackedArray) \
   CASE(NewStructArray) \
   CASE(NewCol) \
@@ -57,6 +56,7 @@
   CASE(Concat) \
   CASE(Abs) \
   CASE(Add) \
+  CASE(AddO) \
   CASE(Xor) \
   CASE(Not) \
   CASE(Mod) \
@@ -122,9 +122,12 @@
   CASE(CheckThis) \
   CASE(InitThisLoc) \
   CASE(FCall) \
+  CASE(FCallD) \
   CASE(FCallArray) \
   CASE(FCallBuiltin) \
   CASE(VerifyParamType) \
+  CASE(VerifyRetTypeC) \
+  CASE(VerifyRetTypeV) \
   CASE(InstanceOfD) \
   CASE(InstanceOf) \
   CASE(StaticLocInit) \
@@ -191,6 +194,8 @@
   CASE(Div) \
   CASE(Floor) \
   CASE(Ceil) \
+  CASE(CheckProp) \
+  CASE(InitProp) \
   CASE(AssertTL) \
   CASE(AssertTStk) \
   CASE(AssertObjL) \
@@ -222,6 +227,8 @@
   case Op::BitXor:                                \
   case Op::Sub:                                   \
   case Op::Mul:                                   \
+  case Op::SubO:                                  \
+  case Op::MulO:                                  \
     func(BinaryArithOp, i)                        \
   case Op::Same:                                  \
   case Op::NSame:                                 \

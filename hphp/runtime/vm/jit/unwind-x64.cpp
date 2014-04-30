@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -25,7 +25,7 @@
 #include "hphp/runtime/vm/jit/abi-x64.h"
 #include "hphp/runtime/vm/jit/runtime-type.h"
 #include "hphp/runtime/base/rds.h"
-#include "hphp/runtime/vm/jit/translator-x64.h"
+#include "hphp/runtime/vm/jit/mc-generator.h"
 #include "hphp/runtime/base/stats.h"
 #include "hphp/runtime/vm/runtime.h"
 #include "hphp/runtime/vm/member-operations.h"
@@ -74,14 +74,14 @@ void sync_regstate(_Unwind_Context* context) {
   fakeAr.m_savedRip = frameRip;
 
   Stats::inc(Stats::TC_SyncUnwind);
-  tx64->fixupMap().fixupWork(g_vmContext, &fakeAr);
+  mcg->fixupMap().fixupWork(g_context.getNoCheck(), &fakeAr);
   tl_regState = VMRegState::CLEAN;
 }
 
 bool install_catch_trace(_Unwind_Context* ctx, _Unwind_Exception* exn,
                          InvalidSetMException* ism) {
   auto const rip = (TCA)_Unwind_GetIP(ctx);
-  auto catchTraceOpt = tx64->getCatchTrace(rip);
+  auto catchTraceOpt = mcg->getCatchTrace(rip);
   if (!catchTraceOpt) return false;
 
   auto catchTrace = *catchTraceOpt;

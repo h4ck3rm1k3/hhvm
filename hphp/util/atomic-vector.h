@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -83,7 +83,7 @@ AtomicVector<Value>::AtomicVector(size_t size, const Value& def)
   assert(size > 0 && "size must be nonzero");
 
   for (size_t i = 0; i < size; ++i) {
-    m_vals[i] = def;
+    new (&m_vals[i]) std::atomic<Value>(def);
   }
 }
 

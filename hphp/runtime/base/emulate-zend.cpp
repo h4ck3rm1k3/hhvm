@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -41,7 +41,7 @@ bool check_option(const char *option) {
   return false;
 }
 
-int emulate_zend(int argc, char** argv){
+int emulate_zend(int argc, char** argv) {
   std::vector<std::string> newargv;
 
   newargv.push_back(argv[0]);
@@ -61,6 +61,12 @@ int emulate_zend(int argc, char** argv){
   while (cnt < argc) {
     if (check_option(argv[cnt])) {
       newargv.push_back(argv[cnt++]);
+      continue;
+    }
+    if (strcmp(argv[cnt], "-a") == 0) {
+      need_file = false;
+      newargv.push_back("-a");
+      cnt++;
       continue;
     }
     if (strcmp(argv[cnt], "-l") == 0 || strcmp(argv[cnt], "--lint") == 0) {
@@ -162,9 +168,8 @@ int emulate_zend(int argc, char** argv){
   }
 
   if (ini_fd != -1) {
-    char arg[37];
-    sprintf(arg, "-vServer.IniFile=%s", ini_path);
-    newargv.push_back(arg);
+    newargv.push_back("-c");
+    newargv.push_back(ini_path);
   }
 
   if (cnt < argc && strcmp(argv[cnt], "--") == 0) cnt++;

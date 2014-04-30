@@ -26,6 +26,11 @@ function cleanupSqliteTestTable($tmp_sqllite) {
 
 ///////////////////////////////////////////////////////////////////////////////
 
+class MyStatement extends PDOStatement {
+}
+
+///////////////////////////////////////////////////////////////////////////////
+
 VERIFY(count(pdo_drivers()) > 0);
 
 createSqliteTestTable($tmp_sqllite);
@@ -69,8 +74,52 @@ try {
     var_dump($v);
   }
 
-  unset($dbh);
+  $vstmt = $dbh->query("select * from foo", 0);
+  foreach ($vstmt as $k => $v) {
+    var_dump($k);
+    var_dump($v);
+  }
+
+  //Test column fetching
+  $vstmt = $dbh->query("select * from foo", PDO::FETCH_COLUMN, 0);
+  var_dump($vstmt->fetchAll());
+
+  class MyShadyObject {
+  }
+
+  //Test object fetching
+  foreach ($dbh->query("select * from foo", PDO::FETCH_CLASS,
+                       'MyShadyObject', NULL) as $row) {
+    var_dump($row);
+  }
+
+  //Test fetching into an object
+  $object = (object)array();
+  foreach ($dbh->query("select * from foo", PDO::FETCH_INTO, $object) as $row) {
+
+  }
+
+  //Test bad function calls
+  foreach ($dbh->query("select * from foo", PDO::FETCH_INTO) as $row) {
+
+  }
+
   unset($vstmt);
+
+  //Test setAttribute with ATTR_STATEMENT_CLASS. Set it to our own class
+  var_dump($dbh->setAttribute(PDO::ATTR_STATEMENT_CLASS, array('MyStatement')));
+  $vstmt = $dbh->query("select * from foo", PDO::FETCH_COLUMN, 0);
+  var_dump(get_class($vstmt));
+  unset($vstmt);
+
+  //Then reset to PDOStatement. Zend allows the class name to be explicitly set
+  //to PDOStatement.
+  var_dump($dbh->setAttribute(PDO::ATTR_STATEMENT_CLASS,
+                              array('PDOStatement')));
+  $vstmt = $dbh->query("select * from foo", PDO::FETCH_COLUMN, 0);
+  var_dump(get_class($vstmt));
+
+  unset($dbh);
 
 } catch (Exception $e) {
   VS($e, null);

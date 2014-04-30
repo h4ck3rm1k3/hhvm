@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -41,15 +41,15 @@ void CmdNext::onSetup(DebuggerProxy& proxy, CmdInterrupt& interrupt) {
   TRACE(2, "CmdNext::onSetup\n");
   assert(!m_complete); // Complete cmds should not be asked to do work.
   m_stackDepth = proxy.getStackDepth();
-  m_vmDepth = g_vmContext->m_nesting;
+  m_vmDepth = g_context->m_nesting;
   m_loc = interrupt.getFileLine();
-  ActRec *fp = g_vmContext->getFP();
+  ActRec *fp = g_context->getFP();
   if (!fp) {
     // If we have no frame just wait for the next instruction to be interpreted.
     m_needsVMInterrupt = true;
     return;
   }
-  PC pc = g_vmContext->getPC();
+  PC pc = g_context->getPC();
   stepCurrentLine(interrupt, fp, pc);
 }
 
@@ -57,19 +57,22 @@ void CmdNext::onBeginInterrupt(DebuggerProxy& proxy, CmdInterrupt& interrupt) {
   TRACE(2, "CmdNext::onBeginInterrupt\n");
   assert(!m_complete); // Complete cmds should not be asked to do work.
 
-  ActRec *fp = g_vmContext->getFP();
+  ActRec *fp = g_context->getFP();
   if (!fp) {
     // If we have no frame just wait for the next instruction to be interpreted.
     m_needsVMInterrupt = true;
     return;
   }
-  PC pc = g_vmContext->getPC();
+  PC pc = g_context->getPC();
   Unit* unit = fp->m_func->unit();
   Offset offset = unit->offsetOf(pc);
   TRACE(2, "CmdNext: pc %p, opcode %s at '%s' offset %d\n",
-        pc, opcodeToName(toOp(*pc)), fp->m_func->fullName()->data(), offset);
+        pc,
+        opcodeToName(*reinterpret_cast<const Op*>(pc)),
+        fp->m_func->fullName()->data(),
+        offset);
 
-  int currentVMDepth = g_vmContext->m_nesting;
+  int currentVMDepth = g_context->m_nesting;
   int currentStackDepth = proxy.getStackDepth();
 
   TRACE(2, "CmdNext: original depth %d:%d, current depth %d:%d\n",
@@ -198,15 +201,15 @@ void CmdNext::stepCurrentLine(CmdInterrupt& interrupt, ActRec* fp, PC pc) {
   // returns from generators, we follow the execution stack for now,
   // and end up at the caller of ASIO or send(). For async functions
   // stepping over an await, we land on the next statement.
-  auto op = toOp(*pc);
-  if (fp->m_func->isGenerator() &&
+  auto op = *reinterpret_cast<const Op*>(pc);
+  if (fp->inGenerator() &&
       (op == OpContSuspend || op == OpContSuspendK || op == OpContRetC)) {
     TRACE(2, "CmdNext: encountered yield, await or return from generator\n");
     // Patch the projected return point(s) in both cases for
     // generators, to catch if we exit the the asio iterator or if we
     // are being iterated directly by PHP.
     if ((op == OpContRetC) || !fp->m_func->isAsync()) setupStepOuts();
-    op = toOp(*pc);
+    op = *reinterpret_cast<const Op*>(pc);
     if (op == OpContSuspend || op == OpContSuspendK) {
       // Patch the next normal execution point so we can pickup the stepping
       // from there if the caller is C++.
@@ -259,7 +262,7 @@ void CmdNext::setupStepCont(ActRec* fp, PC pc) {
 // Continuation is available, and it can predict where execution will
 // resume.
 void CmdNext::stepAfterAsyncESuspend() {
-  auto topObj = g_vmContext->getStack().topTV()->m_data.pobj;
+  auto topObj = g_context->getStack().topTV()->m_data.pobj;
   assert(topObj->instanceof(c_AsyncFunctionWaitHandle::classof()));
   auto wh = static_cast<c_AsyncFunctionWaitHandle*>(topObj);
   auto func = wh->getActRec()->m_func;
@@ -287,7 +290,7 @@ void CmdNext::cleanupStepCont() {
 void* CmdNext::getContinuationTag(ActRec* fp) {
   c_Continuation* cont = frame_continuation(fp);
   TRACE(2, "CmdNext: continuation tag %p for %s\n", cont,
-        cont->t_getorigfuncname()->data());
+        cont->t_getorigfuncname().data());
   assert(cont->actRec() == fp);
   return cont->actRec();
 }

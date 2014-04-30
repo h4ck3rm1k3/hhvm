@@ -44,7 +44,6 @@
 #include "vpx/vp8dx.h"
 #include "vpx/vpx_encoder.h"
 #include "vpx/vp8cx.h"
-#include "gd.h"
 
 /*---------------------------------------------------------------------*
  *                              color conversions                      *
@@ -379,7 +378,7 @@ void gd_YUV420toRGBA(uint8* Y,
                     U + (y >> 1) * uv_stride,
                     V + (y >> 1) * uv_stride,
                     width,
-                    im->tpixels[y]);
+                    (uint32*) im->tpixels[y]);
   }
 }
 
@@ -560,8 +559,8 @@ void gd_RGBAToYUV420(gdImagePtr im2,
   	im = im2;
   }
   for (y = 0; y < (y_height >> 1); ++y) {
-	RGBALinepairToYUV420(im->tpixels[2 * y],
-						 im->tpixels[2 * y + 1],
+	RGBALinepairToYUV420((uint32*) im->tpixels[2 * y],
+						 (uint32*) im->tpixels[2 * y + 1],
 						 y_width,
 						 Y + 2 * y * y_stride,
 						 Y + (2 * y + 1) * y_stride,
@@ -569,8 +568,8 @@ void gd_RGBAToYUV420(gdImagePtr im2,
 						 V + y * uv_stride);
   }
   if (y_height & 1) {
-	RGBALinepairToYUV420(im->tpixels[y_height - 1],
-						 im->tpixels[y_height - 1],
+	RGBALinepairToYUV420((uint32*) im->tpixels[y_height - 1],
+						 (uint32*) im->tpixels[y_height - 1],
 						 y_width,
 						 Y + (y_height - 1) * y_stride,
 						 Y + (y_height - 1) * y_stride,

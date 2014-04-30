@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    | Copyright (c) 1997-2010 The PHP Group                                |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
@@ -17,8 +17,10 @@
 #include "hphp/runtime/ext/ext_function.h"
 
 #include <boost/lexical_cast.hpp>
+#include <algorithm>
+#include <vector>
 
-#include "hphp/runtime/ext/ext_json.h"
+#include "hphp/runtime/ext/json/ext_json.h"
 #include "hphp/runtime/ext/ext_class.h"
 #include "hphp/runtime/ext/ext_closure.h"
 #include "hphp/runtime/base/class-info.h"
@@ -28,10 +30,18 @@
 #include "hphp/runtime/vm/jit/translator.h"
 #include "hphp/runtime/vm/jit/translator-inline.h"
 #include "hphp/util/exception.h"
-#include "hphp/util/util.h"
 
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
+
+static class FunctionExtension : public Extension {
+ public:
+  FunctionExtension() : Extension("function", NO_EXTENSION_VERSION_YET) {}
+  virtual void moduleInit() {
+    HHVM_NAMED_FE(__SystemLib\\func_slice_args, HHVM_FN(func_slice_args));
+    loadSystemlib();
+  }
+} s_function_extension;
 
 using HPHP::JIT::CallerFrame;
 using HPHP::JIT::EagerCallerFrame;
@@ -60,7 +70,7 @@ const StaticString
   s_Closure__invoke("Closure::__invoke"),
   s_colon2("::");
 
-bool f_is_callable(CVarRef v, bool syntax /* = false */,
+bool f_is_callable(const Variant& v, bool syntax /* = false */,
                    VRefParam name /* = null */) {
   bool ret = true;
   if (LIKELY(!syntax)) {
@@ -86,13 +96,13 @@ bool f_is_callable(CVarRef v, bool syntax /* = false */,
   }
 
   if (tv_func->m_type == KindOfArray) {
-    CArrRef arr = tv_func->m_data.parr;
-    CVarRef clsname = arr.rvalAtRef(int64_t(0));
-    CVarRef mthname = arr.rvalAtRef(int64_t(1));
+    const Array& arr = tv_func->m_data.parr;
+    const Variant& clsname = arr.rvalAtRef(int64_t(0));
+    const Variant& mthname = arr.rvalAtRef(int64_t(1));
     if (arr.size() != 2 ||
         &clsname == &null_variant ||
         &mthname == &null_variant) {
-      name = v.toString();
+      name = String("Array");
       return false;
     }
 
@@ -133,117 +143,33 @@ bool f_is_callable(CVarRef v, bool syntax /* = false */,
   return false;
 }
 
-Variant f_call_user_func(int _argc, CVarRef function,
-                         CArrRef _argv /* = null_array */) {
+Variant f_call_user_func(int _argc, const Variant& function,
+                         const Array& _argv /* = null_array */) {
   return vm_call_user_func(function, _argv);
 }
 
-Variant f_call_user_func_array(CVarRef function, CVarRef params) {
+Variant f_call_user_func_array(const Variant& function, const Variant& params) {
   return vm_call_user_func(function, params);
 }
 
-Variant f_check_user_func_async(CVarRef handles, int timeout /* = -1 */) {
+Variant f_check_user_func_async(const Variant& handles, int timeout /* = -1 */) {
   raise_error("%s is no longer supported", __func__);
   return uninit_null();
 }
 
-Variant f_end_user_func_async(CObjRef handle,
+Variant f_end_user_func_async(const Object& handle,
                               int default_strategy /*= k_GLOBAL_STATE_IGNORE*/,
-                              CVarRef additional_strategies /* = null */) {
+                              const Variant& additional_strategies /* = null */) {
   raise_error("%s is no longer supported", __func__);
   return uninit_null();
 }
 
-const StaticString
-  s_func("func"),
-  s_args("args"),
-  s_exception("exception"),
-  s_ret("ret");
-
-String f_call_user_func_serialized(const String& input) {
-  Variant out;
-  try {
-    Variant in = unserialize_from_string(input);
-    out.set(s_ret, vm_call_user_func(in[s_func], in[s_args].toArray()));
-  } catch (Object &e) {
-    out.set(s_exception, e);
-  }
-  return f_serialize(out);
-}
-
-Variant f_call_user_func_array_rpc(const String& host, int port,
-                                   const String& auth,
-                                   int timeout, CVarRef function,
-                                   CArrRef params) {
-  return f_call_user_func_rpc(0, host, port, auth, timeout, function, params);
-}
-
-Variant f_call_user_func_rpc(int _argc, const String& host, int port,
-                             const String& auth,
-                             int timeout, CVarRef function,
-                             CArrRef _argv /* = null_array */) {
-  std::string shost = host.data();
-  if (!RuntimeOption::DebuggerRpcHostDomain.empty()) {
-    unsigned int pos = shost.find(RuntimeOption::DebuggerRpcHostDomain);
-    if (pos != shost.length() - RuntimeOption::DebuggerRpcHostDomain.size()) {
-      shost += RuntimeOption::DebuggerRpcHostDomain;
-    }
-  }
-
-  std::string url = "http://";
-  url += shost;
-  url += ":";
-  url += boost::lexical_cast<std::string>(port);
-  url += "/call_user_func_serialized?auth=";
-  url += auth.data();
-
-  Array blob = make_map_array(s_func, function, s_args, _argv);
-  String message = f_serialize(blob);
-
-  std::vector<string> headers;
-  LibEventHttpClientPtr http = LibEventHttpClient::Get(shost, port);
-  if (!http->send(url, headers, timeout < 0 ? 0 : timeout, false,
-                  message.data(), message.size())) {
-    raise_error("Unable to send RPC request");
-    return false;
-  }
-
-  int code = http->getCode();
-  if (code <= 0) {
-    raise_error("Server timed out or unable to find specified URL: %s",
-                url.c_str());
-    return false;
-  }
-
-  int len = 0;
-  char *response = http->recv(len);
-  String sresponse(response, len, AttachString);
-  if (code != 200) {
-    raise_error("Internal server error: %d %s", code,
-                HttpProtocol::GetReasonString(code));
-    return false;
-  }
-
-  // This double decoding can be avoided by modifying RPC server to directly
-  // take PHP serialization format.
-  Variant res = unserialize_from_string(f_json_decode(sresponse));
-  if (!res.isArray()) {
-    raise_error("Internal protocol error");
-    return false;
-  }
-
-  if (res.toArray().exists(s_exception)) {
-    throw res[s_exception];
-  }
-  return res[s_ret];
-}
-
-Variant f_forward_static_call_array(CVarRef function, CArrRef params) {
+Variant f_forward_static_call_array(const Variant& function, const Array& params) {
   return f_forward_static_call(0, function, params);
 }
 
-Variant f_forward_static_call(int _argc, CVarRef function,
-                              CArrRef _argv /* = null_array */) {
+Variant f_forward_static_call(int _argc, const Variant& function,
+                              const Array& _argv /* = null_array */) {
   // Setting the bound parameter to true tells vm_call_user_func()
   // propogate the current late bound class
   return vm_call_user_func(function, _argv, true);
@@ -260,7 +186,7 @@ Variant f_get_called_class() {
 }
 
 String f_create_function(const String& args, const String& code) {
-  return g_vmContext->createFunction(args, code);
+  return g_context->createFunction(args, code);
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -313,25 +239,6 @@ Variant f_func_get_arg(int arg_num) {
   return false;
 }
 
-Variant func_get_arg(int num_args, CArrRef params, CArrRef args, int pos) {
-  if (num_args <= params.size()) {
-    if (pos >= 0 && pos < num_args) {
-      return params.rvalAt(pos);
-    }
-  } else {
-    if (pos >= 0) {
-      int index = pos - params.size();
-      if (index < 0) {
-        return params.rvalAt(pos);
-      }
-      if (index < args.size()) {
-        return args.rvalAt(index);
-      }
-    }
-  }
-  return false;
-}
-
 Array hhvm_get_frame_args(const ActRec* ar, int offset) {
   if (ar == NULL) {
     return Array();
@@ -375,27 +282,7 @@ Variant f_func_get_args() {
   FUNC_GET_ARGS_IMPL(0);
 }
 
-Array func_get_args(int num_args, CArrRef params, CArrRef args) {
-  if (params.empty() && args.empty()) return Array::Create();
-  if (args.empty()) {
-    if (num_args < params.size()) {
-      return params.slice(0, num_args, false);
-    }
-    return params;
-  }
-
-  Array derefArgs;
-  for (ArrayIter iter(args); iter; ++iter) {
-    derefArgs.append(iter.second());
-  }
-
-  if (params.empty()) return derefArgs;
-  assert(num_args > params.size());
-  Array ret = Array(params).merge(derefArgs);
-  return ret;
-}
-
-Variant f_hphp_func_slice_args(int offset) {
+Variant HHVM_FUNCTION(func_slice_args, int offset) {
   if (offset < 0) {
     offset = 0;
   }
@@ -419,17 +306,17 @@ int64_t f_func_num_args() {
 
 ///////////////////////////////////////////////////////////////////////////////
 
-void f_register_postsend_function(int _argc, CVarRef function, CArrRef _argv /* = null_array */) {
+void f_register_postsend_function(int _argc, const Variant& function, const Array& _argv /* = null_array */) {
   g_context->registerShutdownFunction(function, _argv,
                                       ExecutionContext::PostSend);
 }
 
-void f_register_shutdown_function(int _argc, CVarRef function, CArrRef _argv /* = null_array */) {
+void f_register_shutdown_function(int _argc, const Variant& function, const Array& _argv /* = null_array */) {
   g_context->registerShutdownFunction(function, _argv,
                                       ExecutionContext::ShutDown);
 }
 
-void f_register_cleanup_function(int _argc, CVarRef function, CArrRef _argv /* = null_array */) {
+void f_register_cleanup_function(int _argc, const Variant& function, const Array& _argv /* = null_array */) {
   g_context->registerShutdownFunction(function, _argv,
                                       ExecutionContext::CleanUp);
 }

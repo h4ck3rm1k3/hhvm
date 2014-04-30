@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -19,7 +19,7 @@
 #include "hphp/runtime/vm/bytecode.h"
 #include "hphp/runtime/vm/jit/abi-arm.h"
 #include "hphp/runtime/vm/jit/jump-smash.h"
-#include "hphp/runtime/vm/jit/translator-x64.h"
+#include "hphp/runtime/vm/jit/mc-generator.h"
 
 namespace HPHP { namespace JIT { namespace ARM {
 
@@ -55,10 +55,8 @@ TCA emitCall(vixl::MacroAssembler& a, CppCall call) {
   }
 
   using namespace vixl;
-  a.   Push    (x30, x29);
   auto fixupAddr = a.frontier();
-  a.   HostCall(5);
-  a.   Pop     (x29, x30);
+  a.   HostCall(6);
 
   // Note that the fixup address for a HostCall is directly *before* the
   // HostCall, not after as in the native case. This is because, in simulation
@@ -69,14 +67,11 @@ TCA emitCall(vixl::MacroAssembler& a, CppCall call) {
   return fixupAddr;
 }
 
-TCA emitCall(vixl::MacroAssembler& a, TCA call) {
+TCA emitCallWithinTC(vixl::MacroAssembler& a, TCA call) {
   a. Mov  (rHostCallReg, reinterpret_cast<intptr_t>(call));
 
-  using namespace vixl;
-  a.   Push    (x30, x29);
   a.   Blr     (rHostCallReg);
   auto fixupAddr = a.frontier();
-  a.   Pop     (x29, x30);
 
   return fixupAddr;
 }
@@ -110,7 +105,8 @@ void emitCheckSurpriseFlagsEnter(CodeBlock& mainCode, CodeBlock& stubsCode,
 
   astubs.  Mov  (argReg(0), rVmFp);
 
-  auto fixupAddr = emitCall(astubs, tx64->uniqueStubs.functionEnterHelper);
+  auto fixupAddr =
+    emitCallWithinTC(astubs, tx->uniqueStubs.functionEnterHelper);
   if (inTracelet) {
     fixupMap.recordSyncPoint(fixupAddr,
                              fixup.m_pcOffset, fixup.m_spOffset);
@@ -125,13 +121,32 @@ void emitCheckSurpriseFlagsEnter(CodeBlock& mainCode, CodeBlock& stubsCode,
 
 //////////////////////////////////////////////////////////////////////
 
+void emitEagerVMRegSave(vixl::MacroAssembler& a, RegSaveFlags flags) {
+  a.    Str  (rVmSp, rGContextReg[offsetof(ExecutionContext, m_stack) +
+                                  Stack::topOfStackOffset()]);
+  if ((bool)(flags & RegSaveFlags::SaveFP)) {
+    a.  Str  (rVmFp, rGContextReg[offsetof(ExecutionContext, m_fp)]);
+  }
+
+  if ((bool)(flags & RegSaveFlags::SavePC)) {
+    // m_fp->m_func->m_unit->m_bc
+    a.  Ldr  (rAsm, rVmFp[AROFF(m_func)]);
+    a.  Ldr  (rAsm, rAsm[Func::unitOff()]);
+    a.  Ldr  (rAsm, rAsm[Unit::bcOff()]);
+    a.  Add  (rAsm, rAsm, vixl::Operand(argReg(0), vixl::UXTW));
+    a.  Str  (rAsm, rGContextReg[offsetof(ExecutionContext, m_pc)]);
+  }
+}
+
+//////////////////////////////////////////////////////////////////////
+
 void emitTransCounterInc(vixl::MacroAssembler& a) {
-  if (!tx64->isTransDBEnabled()) return;
+  if (!tx->isTransDBEnabled()) return;
 
   // TODO(#3057328): this is not thread-safe. This should be a "load-exclusive,
   // increment, store-exclusive, loop" sequence, but vixl doesn't yet support
   // the exclusive-access instructions.
-  a.   Mov   (rAsm, tx64->getTransCounterAddr());
+  a.   Mov   (rAsm, tx->getTransCounterAddr());
   a.   Ldr   (rAsm2, rAsm[0]);
   a.   Add   (rAsm2, rAsm2, 1);
   a.   Str   (rAsm2, rAsm[0]);

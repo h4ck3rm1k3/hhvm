@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -16,11 +16,12 @@
 
 #include "hphp/compiler/expression/static_class_name.h"
 #include "hphp/compiler/expression/scalar_expression.h"
+#include "hphp/compiler/expression/simple_variable.h"
 #include "hphp/compiler/statement/statement_list.h"
 #include "hphp/compiler/analysis/class_scope.h"
 #include "hphp/compiler/analysis/file_scope.h"
 #include "hphp/compiler/analysis/variable_table.h"
-#include "hphp/util/util.h"
+#include "hphp/util/text-util.h"
 
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
@@ -54,7 +55,7 @@ void StaticClassName::updateClassName() {
       !m_static) {
     ScalarExpressionPtr s(dynamic_pointer_cast<ScalarExpression>(m_class));
     const string &className = s->getString();
-    m_className = Util::toLower(className);
+    m_className = toLower(className);
     m_origClassName = className;
     m_class.reset();
   } else {
@@ -74,7 +75,7 @@ void StaticClassName::resolveStatic(const string &name) {
   m_present = false;
   m_class.reset();
   m_origClassName = name;
-  m_className = Util::toLower(name);
+  m_className = toLower(name);
 }
 
 ClassScopePtr StaticClassName::resolveClass() {
@@ -93,7 +94,7 @@ ClassScopePtr StaticClassName::resolveClass() {
   } else if (m_parent) {
     if (ClassScopePtr self = scope->getContainingClass()) {
       if (!self->getOriginalParent().empty()) {
-        m_className = Util::toLower(self->getOriginalParent());
+        m_className = toLower(self->getOriginalParent());
         m_origClassName = self->getOriginalParent();
         m_present = true;
       }
@@ -168,14 +169,17 @@ bool StaticClassName::checkPresent() {
 ///////////////////////////////////////////////////////////////////////////////
 
 void StaticClassName::outputCodeModel(CodeGenerator &cg) {
-  if (isSelf()) {
-    cg.printValue("self");
-  } else if (isParent()) {
-    cg.printValue("parent");
-  } else if (isStatic()) {
-    cg.printValue("static");
+  if (isStatic() || !m_origClassName.empty()) {
+    cg.printPropertyHeader("class");
   } else {
-    cg.printValue(m_origClassName);
+    cg.printPropertyHeader("classExpression");
+  }
+  if (isStatic()) {
+    cg.printTypeExpression("static");
+  } else if (!m_origClassName.empty()) {
+    cg.printTypeExpression(m_origClassName);
+  } else {
+    m_class->outputCodeModel(cg);
   }
 }
 

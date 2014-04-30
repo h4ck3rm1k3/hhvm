@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    | Copyright (c) 1997-2010 The PHP Group                                |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
@@ -22,6 +22,10 @@
 
 #include <unicode/uchar.h>
 #include <unicode/utf8.h>
+#include <algorithm>
+#include <memory>
+#include <utility>
+#include <vector>
 
 #include "folly/String.h"
 
@@ -35,9 +39,11 @@
 #include "hphp/runtime/base/stat-cache.h"
 #include "hphp/runtime/base/string-buffer.h"
 #include "hphp/runtime/base/string-util.h"
+#include "hphp/runtime/base/thread-info.h"
 #include "hphp/runtime/ext/ext_function.h"
-#include "hphp/runtime/ext/ext_mysql.h"
 #include "hphp/runtime/ext/FBSerialize.h"
+#include "hphp/runtime/ext/mysql/ext_mysql.h"
+#include "hphp/runtime/ext/mysql/mysql_common.h"
 #include "hphp/runtime/ext/VariantController.h"
 #include "hphp/runtime/vm/unwind.h"
 
@@ -110,7 +116,7 @@ enum TType {
 /* Return the smallest (supported) unsigned length that can store the value */
 #define LEN_SIZE(x) ((((unsigned)x) == ((uint8_t)x)) ? 1 : 4)
 
-Variant f_fb_serialize(CVarRef thing) {
+Variant f_fb_serialize(const Variant& thing) {
   try {
     size_t len =
       HPHP::serialize::FBSerializer<VariantController>::serializedSize(thing);
@@ -123,7 +129,7 @@ Variant f_fb_serialize(CVarRef thing) {
   }
 }
 
-Variant f_fb_unserialize(CVarRef thing, VRefParam success) {
+Variant f_fb_unserialize(const Variant& thing, VRefParam success) {
   if (thing.isString()) {
     String sthing = thing.toString();
 
@@ -320,7 +326,7 @@ static void fb_compact_serialize_string(StringBuffer& sb, const String& str) {
   }
 }
 
-static bool fb_compact_serialize_is_list(CArrRef arr, int64_t& index_limit) {
+static bool fb_compact_serialize_is_list(const Array& arr, int64_t& index_limit) {
   index_limit = arr.size();
   int64_t max_index = 0;
   for (ArrayIter it(arr); it; ++it) {
@@ -347,10 +353,10 @@ static bool fb_compact_serialize_is_list(CArrRef arr, int64_t& index_limit) {
 }
 
 static int fb_compact_serialize_variant(StringBuffer& sd,
-  CVarRef var, int depth);
+  const Variant& var, int depth);
 
 static void fb_compact_serialize_array_as_list_map(
-    StringBuffer& sb, CArrRef arr, int64_t index_limit, int depth) {
+    StringBuffer& sb, const Array& arr, int64_t index_limit, int depth) {
   fb_compact_serialize_code(sb, FB_CS_LIST_MAP);
   for (int64_t i = 0; i < index_limit; ++i) {
     if (arr.exists(i)) {
@@ -363,7 +369,7 @@ static void fb_compact_serialize_array_as_list_map(
 }
 
 static void fb_compact_serialize_array_as_map(
-    StringBuffer& sb, CArrRef arr, int depth) {
+    StringBuffer& sb, const Array& arr, int depth) {
   fb_compact_serialize_code(sb, FB_CS_MAP);
   for (ArrayIter it(arr); it; ++it) {
     Variant key = it.first();
@@ -379,7 +385,7 @@ static void fb_compact_serialize_array_as_map(
 
 
 static int fb_compact_serialize_variant(
-    StringBuffer& sb, CVarRef var, int depth) {
+    StringBuffer& sb, const Variant& var, int depth) {
   if (depth > 256) {
     return 1;
   }
@@ -434,7 +440,7 @@ static int fb_compact_serialize_variant(
   return 0;
 }
 
-Variant f_fb_compact_serialize(CVarRef thing) {
+Variant f_fb_compact_serialize(const Variant& thing) {
   /**
    * If thing is a single int value [0, 127] normally we would serialize
    * it as a single byte (7 bit unsigned int).
@@ -681,7 +687,7 @@ Variant fb_compact_unserialize(const char* str, int len,
   return ret;
 }
 
-Variant f_fb_compact_unserialize(CVarRef thing, VRefParam success,
+Variant f_fb_compact_unserialize(const Variant& thing, VRefParam success,
                                  VRefParam errcode /* = null_variant */) {
   if (!thing.isString()) {
     success = false;
@@ -744,7 +750,7 @@ const StaticString
   s_auth("auth"),
   s_timeout("timeout");
 
-Array f_fb_parallel_query(CArrRef sql_map, int max_thread /* = 50 */,
+Array f_fb_parallel_query(const Array& sql_map, int max_thread /* = 50 */,
                           bool combine_result /* = true */,
                           bool retry_query_on_fail /* = true */,
                           int connect_timeout /* = -1 */,
@@ -1027,8 +1033,8 @@ bool f_fb_could_include(const String& file) {
   return !Eval::resolveVmInclude(file.get(), "", &s).isNull();
 }
 
-bool f_fb_intercept(const String& name, CVarRef handler,
-                    CVarRef data /* = null_variant */) {
+bool f_fb_intercept(const String& name, const Variant& handler,
+                    const Variant& data /* = null_variant */) {
   return register_intercept(name, handler, data);
 }
 
@@ -1036,7 +1042,7 @@ const StaticString s_extract("extract");
 
 bool f_fb_rename_function(const String& orig_func_name, const String& new_func_name) {
   if (orig_func_name.empty() || new_func_name.empty() ||
-      orig_func_name->isame(new_func_name.get())) {
+      orig_func_name.get()->isame(new_func_name.get())) {
     throw_invalid_argument("unable to rename %s", orig_func_name.data());
     return false;
   }
@@ -1048,7 +1054,7 @@ bool f_fb_rename_function(const String& orig_func_name, const String& new_func_n
     return false;
   }
 
-  if (orig_func_name->isame(s_extract.get())) {
+  if (orig_func_name.get()->isame(s_extract.get())) {
     raise_warning(
         "fb_rename_function(%s, %s) failed: rename of extract not allowed!",
         orig_func_name.data(), new_func_name.data());
@@ -1068,51 +1074,24 @@ bool f_fb_rename_function(const String& orig_func_name, const String& new_func_n
   return true;
 }
 
-/*
-  fb_autoload_map($map, $root) specifies a mapping from classes,
-  functions, constants, and typedefs to the files that define
-  them. The map has the form:
-
-    array('class'    => array('cls' => 'cls_file.php', ...),
-          'function' => array('fun' => 'fun_file.php', ...),
-          'constant' => array('con' => 'con_file.php', ...),
-          'type'     => array('type' => 'type_file.php', ...),
-          'failure' => callable);
-
-    If the 'failure' element exists, it will be called if the
-    lookup in the map fails, or the file cant be included. It
-    takes a kind ('class', 'function' or 'constant') and the
-    name of the entity we're trying to autoload.
-
-  If $root is non empty, it is prepended to every filename
-  (so will typically need to end with '/').
-*/
-
-bool f_fb_autoload_map(CVarRef map, const String& root) {
-  if (map.isArray()) {
-    return AutoloadHandler::s_instance->setMap(map.toCArrRef(), root);
-  }
-  return false;
-}
-
 ///////////////////////////////////////////////////////////////////////////////
 // call_user_func extensions
 
-Array f_fb_call_user_func_safe(int _argc, CVarRef function,
-                               CArrRef _argv /* = null_array */) {
+Array f_fb_call_user_func_safe(int _argc, const Variant& function,
+                               const Array& _argv /* = null_array */) {
   return f_fb_call_user_func_array_safe(function, _argv);
 }
 
-Variant f_fb_call_user_func_safe_return(int _argc, CVarRef function,
-                                        CVarRef def,
-                                        CArrRef _argv /* = null_array */) {
+Variant f_fb_call_user_func_safe_return(int _argc, const Variant& function,
+                                        const Variant& def,
+                                        const Array& _argv /* = null_array */) {
   if (f_is_callable(function)) {
     return vm_call_user_func(function, _argv);
   }
   return def;
 }
 
-Array f_fb_call_user_func_array_safe(CVarRef function, CArrRef params) {
+Array f_fb_call_user_func_array_safe(const Variant& function, const Array& params) {
   if (f_is_callable(function)) {
     return make_packed_array(true, vm_call_user_func(function, params));
   }
@@ -1137,7 +1116,7 @@ void f_fb_enable_code_coverage() {
   ThreadInfo *ti = ThreadInfo::s_threadInfo.getNoCheck();
   ti->m_coverage->Reset();
   ti->m_reqInjectionData.setCoverage(true);;
-  if (g_vmContext->isNested()) {
+  if (g_context->isNested()) {
     raise_notice("Calling fb_enable_code_coverage from a nested "
                  "VM instance may cause unpredicable results");
   }
@@ -1168,7 +1147,7 @@ bool f_fb_output_compression(bool new_value) {
   return false;
 }
 
-void f_fb_set_exit_callback(CVarRef function) {
+void f_fb_set_exit_callback(const Variant& function) {
   g_context->setExitCallback(function);
 }
 
@@ -1206,40 +1185,14 @@ String f_fb_lazy_realpath(const String& filename) {
 }
 
 ///////////////////////////////////////////////////////////////////////////////
-// const index functions
 
-static Array const_data;
-
-Variant f_fb_const_fetch(CVarRef key) {
-  String k = key.toString();
-  if (ArrayData* ad = const_data.get()) {
-    auto& v = ad->get(k, /*error*/false);
-    if (&v != &null_variant) {
-      return v;
-    }
-  }
-  return Variant(false);
-}
-
-void const_load_set(const String& key, CVarRef value) {
-  const_data.set(key, value, true);
+void const_load_set(const String& key, const Variant& value) {
+  // legacy entry point, no longer used.
 }
 
 EXTERNALLY_VISIBLE
 void const_load() {
-  // after all loading
-  const_load_set("zend_array_size", const_data.size());
-  const_data.setEvalScalar();
-}
-
-bool const_dump(const char *filename) {
-  std::ofstream out(filename);
-  if (out.fail()) {
-    return false;
-  }
-  const_data->dump(out);
-  out.close();
-  return true;
+  // legacy entry point, no longer used.
 }
 
 ///////////////////////////////////////////////////////////////////////////////

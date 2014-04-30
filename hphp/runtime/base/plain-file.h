@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -19,6 +19,7 @@
 
 #include "hphp/runtime/base/file.h"
 #include "hphp/runtime/base/execution-context.h"
+#include "hphp/runtime/base/request-event-handler.h"
 
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
@@ -30,8 +31,14 @@ class PlainFile : public File {
 public:
   DECLARE_RESOURCE_ALLOCATION(PlainFile);
 
-  explicit PlainFile(FILE *stream = nullptr, bool nonblocking = false);
-  explicit PlainFile(int fd, bool nonblocking = false);
+  explicit PlainFile(FILE *stream = nullptr,
+                     bool nonblocking = false,
+                     const String& wrapper_type = null_string,
+                     const String& stream_type = null_string);
+  explicit PlainFile(int fd,
+                     bool nonblocking = false,
+                     const String& wrapper = null_string,
+                     const String& stream_type = null_string);
   virtual ~PlainFile();
 
   // overriding ResourceData
@@ -52,13 +59,12 @@ public:
   virtual bool rewind();
   virtual bool flush();
   virtual bool truncate(int64_t size);
+  virtual bool stat(struct stat *sb);
 
   FILE *getStream() { return m_stream;}
-  virtual const char *getStreamType() const { return "STDIO";}
 
 protected:
   FILE *m_stream;
-  bool m_eof;
   char *m_buffer;       // For setbuffer.  Needed to reduce mmap
                         // contention due to how glibc allocates memory
                         // for buffered io.
@@ -82,14 +88,13 @@ public:
  * A request-local wrapper for the three standard files:
  * STDIN, STDOUT, and STDERR.
  */
-class BuiltinFiles : public RequestEventHandler {
-public:
-  virtual void requestInit();
-  virtual void requestShutdown();
+struct BuiltinFiles final : RequestEventHandler {
+  void requestInit() override;
+  void requestShutdown() override;
 
-  static CVarRef GetSTDIN();
-  static CVarRef GetSTDOUT();
-  static CVarRef GetSTDERR();
+  static const Variant& GetSTDIN();
+  static const Variant& GetSTDOUT();
+  static const Variant& GetSTDERR();
 
 private:
   Variant m_stdin;

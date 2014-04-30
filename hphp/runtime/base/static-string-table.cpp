@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -15,11 +15,11 @@
 */
 #include "hphp/runtime/base/static-string-table.h"
 
-#include "folly/AtomicHashMap.h"
-
 #include "hphp/runtime/base/class-info.h"
-#include "hphp/runtime/base/runtime-option.h"
 #include "hphp/runtime/base/rds.h"
+#include "hphp/runtime/base/runtime-option.h"
+
+#include "folly/AtomicHashMap.h"
 
 namespace HPHP {
 
@@ -243,12 +243,13 @@ RDS::Handle makeCnsHandle(const StringData* cnsName, bool persistent) {
 
 const StaticString s_user("user");
 const StaticString s_Core("Core");
+
 Array lookupDefinedConstants(bool categorize /*= false */) {
   assert(s_stringDataMap);
   Array usr(RDS::s_constants());
   Array sys;
 
-  for (StringDataMap::const_iterator it = s_stringDataMap->begin();
+  for (auto it = s_stringDataMap->begin();
        it != s_stringDataMap->end(); ++it) {
     if (it->second.bound()) {
       Array *tbl = (categorize &&
@@ -277,6 +278,23 @@ Array lookupDefinedConstants(bool categorize /*= false */) {
     return ret;
   } else {
     return usr;
+  }
+}
+
+void refineStaticStringTableSize() {
+  if (RuntimeOption::EvalInitialStaticStringTableSize ==
+      kDefaultInitialStaticStringTableSize) {
+    return;
+  }
+  auto oldStringTable = s_stringDataMap;
+  if (!oldStringTable) return;
+
+  s_stringDataMap = nullptr;
+  create_string_data_map();
+  SCOPE_EXIT { delete oldStringTable; };
+
+  for (auto& kv : *oldStringTable) {
+    s_stringDataMap->insert(kv.first, kv.second);
   }
 }
 

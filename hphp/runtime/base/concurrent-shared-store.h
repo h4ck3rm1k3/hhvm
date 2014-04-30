@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -28,6 +28,9 @@
 #include "hphp/runtime/server/server-stats.h"
 #include <tbb/concurrent_hash_map.h>
 #include <tbb/concurrent_priority_queue.h>
+#include <atomic>
+#include <utility>
+#include <vector>
 
 namespace HPHP {
 
@@ -94,7 +97,7 @@ struct ConcurrentTableSharedStore {
 
   int size() const { return m_vars.size(); }
   bool get(const String& key, Variant &value);
-  bool store(const String& key, CVarRef val, int64_t ttl,
+  bool store(const String& key, const Variant& val, int64_t ttl,
                      bool overwrite = true, bool limit_ttl = true);
   int64_t inc(const String& key, int64_t step, bool &found);
   bool cas(const String& key, int64_t old, int64_t val);
@@ -104,7 +107,7 @@ struct ConcurrentTableSharedStore {
 
   void prime(const std::vector<KeyValuePair> &vars);
   bool constructPrime(const String& v, KeyValuePair& item, bool serialized);
-  bool constructPrime(CVarRef v, KeyValuePair& item);
+  bool constructPrime(const Variant& v, KeyValuePair& item);
   void primeDone();
 
   // debug support
@@ -161,11 +164,11 @@ private:
   };
 
 private:
-  APCHandle* construct(CVarRef v) {
+  APCHandle* construct(const Variant& v) {
     return APCHandle::Create(v, false);
   }
 
-  bool eraseImpl(const String& key, bool expired);
+  bool eraseImpl(const String& key, bool expired, int64_t oldestTime = 0);
 
   void eraseAcc(Map::accessor &acc) {
     const char *pkey = acc->first;
@@ -179,7 +182,7 @@ private:
   void addToExpirationQueue(const char* key, int64_t etime);
 
   bool handleUpdate(const String& key, APCHandle* svar);
-  bool handlePromoteObj(const String& key, APCHandle* svar, CVarRef valye);
+  bool handlePromoteObj(const String& key, APCHandle* svar, const Variant& valye);
   APCHandle* unserialize(const String& key, const StoreValue* sval);
 
 private:

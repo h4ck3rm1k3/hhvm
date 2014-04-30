@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -70,20 +70,19 @@ BinaryOpExpression::BinaryOpExpression
     Collection::Type cType = Collection::InvalidType;
     if (strcasecmp(s.c_str(), "vector") == 0) {
       cType = Collection::VectorType;
-    } else if (strcasecmp(s.c_str(), "map") == 0) {
+    } else if (strcasecmp(s.c_str(), "map") == 0 ||
+               strcasecmp(s.c_str(), "stablemmap") == 0) {
       cType = Collection::MapType;
-    } else if (strcasecmp(s.c_str(), "stablemap") == 0) {
-      cType = Collection::StableMapType;
     } else if (strcasecmp(s.c_str(), "set") == 0) {
       cType = Collection::SetType;
     } else if (strcasecmp(s.c_str(), "pair") == 0) {
       cType = Collection::PairType;
-    } else if (strcasecmp(s.c_str(), "frozenvector") == 0) {
-      cType = Collection::FrozenVectorType;
-    } else if (strcasecmp(s.c_str(), "frozenmap") == 0) {
-      cType = Collection::FrozenMapType;
-    } else if (strcasecmp(s.c_str(), "frozenset") == 0) {
-      cType = Collection::FrozenSetType;
+    } else if (strcasecmp(s.c_str(), "immvector") == 0) {
+      cType = Collection::ImmVectorType;
+    } else if (strcasecmp(s.c_str(), "immmap") == 0) {
+      cType = Collection::ImmMapType;
+    } else if (strcasecmp(s.c_str(), "immset") == 0) {
+      cType = Collection::ImmSetType;
     }
     ExpressionListPtr el = static_pointer_cast<ExpressionList>(m_exp2);
     el->setCollectionType(cType);
@@ -533,6 +532,10 @@ ExpressionPtr BinaryOpExpression::foldConst(AnalysisResultConstPtr ar) {
         }
       }
       Variant result;
+      auto add = RuntimeOption::IntsOverflowToInts ? cellAdd : cellAddO;
+      auto sub = RuntimeOption::IntsOverflowToInts ? cellSub : cellSubO;
+      auto mul = RuntimeOption::IntsOverflowToInts ? cellMul : cellMulO;
+
       switch (m_op) {
         case T_LOGICAL_XOR:
           result = static_cast<bool>(v1.toBoolean() ^ v2.toBoolean());
@@ -577,13 +580,13 @@ ExpressionPtr BinaryOpExpression::foldConst(AnalysisResultConstPtr ar) {
           result = cellGreaterOrEqual(*v1.asCell(), *v2.asCell());
           break;
         case '+':
-          *result.asCell() = cellAdd(*v1.asCell(), *v2.asCell());
+          *result.asCell() = add(*v1.asCell(), *v2.asCell());
           break;
         case '-':
-          *result.asCell() = cellSub(*v1.asCell(), *v2.asCell());
+          *result.asCell() = sub(*v1.asCell(), *v2.asCell());
           break;
         case '*':
-          *result.asCell() = cellMul(*v1.asCell(), *v2.asCell());
+          *result.asCell() = mul(*v1.asCell(), *v2.asCell());
           break;
         case '/':
           if ((v2.isIntVal() && v2.toInt64() == 0) || v2.toDouble() == 0.0) {
@@ -930,8 +933,8 @@ TypePtr BinaryOpExpression::inferTypes(AnalysisResultPtr ar, TypePtr type,
 void BinaryOpExpression::outputCodeModel(CodeGenerator &cg) {
   if (m_op == T_COLLECTION) {
     cg.printObjectHeader("CollectionInitializerExpression", 3);
-    cg.printPropertyHeader("collection");
-    m_exp1->outputCodeModel(cg);
+    cg.printPropertyHeader("class");
+    cg.printTypeExpression(m_exp1);
     cg.printPropertyHeader("arguments");
     cg.printExpressionVector(static_pointer_cast<ExpressionList>(m_exp2));
     cg.printPropertyHeader("sourceLocation");
@@ -944,7 +947,11 @@ void BinaryOpExpression::outputCodeModel(CodeGenerator &cg) {
   cg.printPropertyHeader("expression1");
   m_exp1->outputCodeModel(cg);
   cg.printPropertyHeader("expression2");
-  m_exp2->outputCodeModel(cg);
+  if (m_op == T_INSTANCEOF) {
+    cg.printTypeExpression(m_exp2);
+  } else {
+    m_exp2->outputCodeModel(cg);
+  }
   cg.printPropertyHeader("operation");
 
   int op = 0;

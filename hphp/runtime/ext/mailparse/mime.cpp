@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    | Copyright (c) 1997-2010 The PHP Group                                |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
@@ -16,7 +16,7 @@
 */
 
 #include "hphp/runtime/ext/mailparse/mime.h"
-#include "hphp/runtime/ext/ext_stream.h"
+#include "hphp/runtime/ext/stream/ext_stream.h"
 #include "hphp/runtime/base/mem-file.h"
 #include "hphp/runtime/base/runtime-error.h"
 
@@ -588,7 +588,7 @@ Variant MimePart::getPartData() {
     php_rfc822_tokenize_free(toks);
   }
 
-  auto copyHeader = [&](CVarRef key) {
+  auto copyHeader = [&](const Variant& key) {
     if (m_headers.exists(key)) ret.set(key, m_headers[key]);
   };
   copyHeader(s_content_description);
@@ -683,7 +683,7 @@ bool MimePart::processHeader() {
       if (m_headers.exists(header_key)) {
         Variant &zheaderval = m_headers.lvalAt(header_key);
         if (zheaderval.isArray()) {
-          zheaderval.append(String(header_val, CopyString));
+          zheaderval.toArrRef().append(String(header_val, CopyString));
         } else {
           // Create a nested array if there is more than one of the same header
           Array zarr = Array::Create();
@@ -903,7 +903,7 @@ void MimePart::UpdatePositions(MimePart *part, int newendpos,
   }
 }
 
-Variant MimePart::extract(CVarRef filename, CVarRef callbackfunc, int decode,
+Variant MimePart::extract(const Variant& filename, const Variant& callbackfunc, int decode,
                           bool isfile) {
   /* filename can be a filename or a stream */
   Resource file;

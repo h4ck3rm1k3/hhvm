@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -20,6 +20,8 @@
 #include <memory>
 #include <string>
 #include <set>
+
+#include "hphp/util/functional.h"
 
 namespace HPHP { struct UnitEmitter; }
 namespace HPHP { namespace HHBBC {
@@ -41,16 +43,58 @@ struct Options {
    * Functions that aren't named in this list may be optimized with
    * the assumption they aren't intercepted, in whole_program mode.
    */
-  std::set<std::string> InterceptableFunctions;
+  std::set<std::string, stdltistr> InterceptableFunctions;
 
   //////////////////////////////////////////////////////////////////////
+
+  /*
+   * Flags for various limits on when to perform widening operations.
+   * See analyze.cpp for details.
+   */
+  uint32_t analyzeFuncWideningLimit = 20;
+  uint32_t analyzeClassWideningLimit = 20;
+
+  /*
+   * When to stop refining return types.
+   *
+   * This needs to be limited because types can walk downwards in our
+   * type lattice indefinitely.  The index never contains incorrect
+   * return types, since the return types only shrink, which means we
+   * can just stop refining a return type whenever we want to without
+   * causing problems.
+   *
+   * For an example of where this can occur, imagine the analysis of the
+   * following function:
+   *
+   *    function foo() { return array('x' => foo()); }
+   *
+   * Each time we visit `foo', we'll discover a slightly smaller return
+   * type, in a downward-moving sequence that would never terminate:
+   *
+   *   InitCell, CArrN(x:InitCell), CArrN(x:CArrN(x:InitCell)), ...
+   */
+  uint32_t returnTypeRefineLimit = 15;
+
+  /*
+   * Whether to produce extended stats information.  (Takes extra
+   * time.)
+   */
+  bool extendedStats = false;
+
+  //////////////////////////////////////////////////////////////////////
+
+  /*
+   * If true, all optimizations are disabled, and analysis isn't even
+   * performed.
+   */
+  bool NoOptimizations = false;
 
   /*
    * If true, completely remove jumps to blocks that are inferred to
    * be dead.  When false, dead blocks are replaced with Fatal
    * bytecodes.
    */
-  bool RemoveDeadBlocks = false;
+  bool RemoveDeadBlocks = true;
 
   /*
    * Whether to propagate constant values by replacing instructions
@@ -58,6 +102,17 @@ struct Options {
    * that produce that constant.
    */
   bool ConstantProp = true;
+
+  /*
+   * Whether to perform local or global dead code elimination.  This
+   * removes unnecessary instructions within a single block, or across
+   * blocks, respectively.
+   *
+   * Note: this is off for now because it is a bit of a work in
+   * progress (needs more testing).
+   */
+  bool LocalDCE = false;
+  bool GlobalDCE = false;
 
   /*
    * If true, insert opcodes that assert inferred types, so we can
@@ -79,7 +134,15 @@ struct Options {
    * Whether to replace bytecode with less expensive bytecodes when we
    * can.  E.g. InstanceOf -> InstanceOfD or FPushFunc -> FPushFuncD.
    */
-  bool StrengthReduceBC = true;
+  bool StrengthReduce = true;
+
+  /*
+   * Whether to enable 'FuncFamily' method resolution.
+   *
+   * This allows possible overrides of a method to be resolved as a
+   * set of candidates when we aren't sure which one it would be.
+   */
+  bool FuncFamilies = true;
 
   //////////////////////////////////////////////////////////////////////
   // Flags below this line perform optimizations that intentionally
@@ -113,13 +176,11 @@ struct Options {
    * This is in the can-potentially-change-program-behavior section
    * because if you unserialize specially-constructed strings you
    * could create instances with private properties that don't follow
-   * the inferred types.
-   *
-   * Currently hhvm handles this by ignoring the problem and
-   * potentially segfaulting at runtime.  We want to change this to
-   * fatal at unserialize time.  TODO(#2516227).
+   * the inferred types.  HHVM tracks the types that were inferred,
+   * and if an unserialize happens that would violate what we've
+   * inferred, we'll raise a notice and unserialize() returns false.
    */
-  bool HardPrivatePropInference = false;
+  bool HardPrivatePropInference = true;
 };
 extern Options options;
 
@@ -141,6 +202,13 @@ whole_program(std::vector<std::unique_ptr<UnitEmitter>>);
  * Perform single-unit optimizations.
  */
 std::unique_ptr<UnitEmitter> single_unit(std::unique_ptr<UnitEmitter>);
+
+//////////////////////////////////////////////////////////////////////
+
+/*
+ * Main entry point when the program should behave like hhbbc.
+ */
+int main(int argc, char** argv);
 
 //////////////////////////////////////////////////////////////////////
 

@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -178,14 +178,14 @@ const char *DwarfInfo::lookupFile(const Unit *unit) {
 
 void DwarfInfo::addLineEntries(TCRange range,
                                const Unit *unit,
-                               const Opcode *instr,
+                               const Op* instr,
                                FunctionInfo* f) {
   if (unit == nullptr || instr == nullptr) {
     // For stubs, just add line 0
     f->m_lineTable.push_back(LineEntry(range, 0));
     return;
   }
-  Offset offset = unit->offsetOf(instr);
+  Offset offset = unit->offsetOf(reinterpret_cast<PC>(instr));
 
   int lineNum = unit->getLineNumber(offset);
   if (lineNum >= 0) {
@@ -230,7 +230,7 @@ void DwarfInfo::compactChunks() {
 static Mutex s_lock(RankLeaf);
 
 DwarfChunk* DwarfInfo::addTracelet(TCRange range, const char* name,
-  const Func *func, const Opcode *instr, bool exit, bool inPrologue) {
+  const Func *func, const Op* instr, bool exit, bool inPrologue) {
   DwarfChunk* chunk = nullptr;
   FunctionInfo* f = new FunctionInfo(range, exit);
   const Unit* unit = func ? func->unit(): nullptr;
@@ -241,7 +241,7 @@ DwarfChunk* DwarfInfo::addTracelet(TCRange range, const char* name,
     f->name = lookupFunction(func, exit, inPrologue, true);
     const StringData* const *names = func->localNames();
     for (int i = 0; i < func->numNamedLocals(); i++) {
-      f->m_namedLocals.push_back(names[i]->toCPPString());
+      f->m_namedLocals.push_back(names[i]->toCppString());
     }
   }
   f->file = lookupFile(unit);

@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -15,6 +15,7 @@
 */
 
 #include "hphp/runtime/debugger/cmd/cmd_flow_control.h"
+#include <algorithm>
 #include "hphp/runtime/vm/debugger-hook.h"
 
 namespace HPHP { namespace Eval {
@@ -82,10 +83,10 @@ bool CmdFlowControl::onServer(DebuggerProxy &proxy) {
 void CmdFlowControl::installLocationFilterForLine(InterruptSite *site) {
   // We may be stopped at a place with no source info.
   if (!site || !site->valid()) return;
-  if (g_vmContext->m_lastLocFilter) {
-    g_vmContext->m_lastLocFilter->clear();
+  if (g_context->m_lastLocFilter) {
+    g_context->m_lastLocFilter->clear();
   } else {
-    g_vmContext->m_lastLocFilter = new PCFilter();
+    g_context->m_lastLocFilter = new PCFilter();
   }
   TRACE(3, "Prepare location filter for %s:%d, unit %p:\n",
         site->getFile(), site->getLine0(), site->getUnit());
@@ -111,14 +112,14 @@ void CmdFlowControl::installLocationFilterForLine(InterruptSite *site) {
            (op != OpAsyncESuspend) &&
            (op != OpContRetC);
   };
-  g_vmContext->m_lastLocFilter->addRanges(unit, ranges,
+  g_context->m_lastLocFilter->addRanges(unit, ranges,
                                           excludeContinuationReturns);
 }
 
 void CmdFlowControl::removeLocationFilter() {
-  if (g_vmContext->m_lastLocFilter) {
-    delete g_vmContext->m_lastLocFilter;
-    g_vmContext->m_lastLocFilter = nullptr;
+  if (g_context->m_lastLocFilter) {
+    delete g_context->m_lastLocFilter;
+    g_context->m_lastLocFilter = nullptr;
   }
 }
 
@@ -140,12 +141,12 @@ bool CmdFlowControl::atStepOutOffset(Unit* unit, Offset o) {
 void CmdFlowControl::setupStepOuts() {
   // Existing step outs should be cleaned up before making new ones.
   assert(!hasStepOuts());
-  ActRec* fp = g_vmContext->getFP();
+  auto fp = g_context->getFP();
   if (!fp) return; // No place to step out to!
   Offset returnOffset;
   bool fromVMEntry;
   while (!hasStepOuts()) {
-    fp = g_vmContext->getPrevVMState(fp, &returnOffset, nullptr, &fromVMEntry);
+    fp = g_context->getPrevVMState(fp, &returnOffset, nullptr, &fromVMEntry);
     // If we've run off the top of the stack, just return having setup no
     // step outs. This will cause cmds like Next and Out to just let the program
     // run, which is appropriate.
@@ -154,16 +155,17 @@ void CmdFlowControl::setupStepOuts() {
     PC returnPC = returnUnit->at(returnOffset);
     TRACE(2, "CmdFlowControl::setupStepOuts: at '%s' offset %d opcode %s\n",
           fp->m_func->fullName()->data(), returnOffset,
-          opcodeToName(toOp(*returnPC)));
+          opcodeToName(*reinterpret_cast<const Op*>(returnPC)));
     // Don't step out to generated functions, keep looking.
     if (fp->m_func->line1() == 0) continue;
     if (fromVMEntry) {
       TRACE(2, "CmdFlowControl::setupStepOuts: VM entry\n");
       // We only execute this for opcodes which invoke more PHP, and that does
       // not include switches. Thus, we'll have at most two destinations.
-      assert(!isSwitch(*returnPC) && (numSuccs((Op*)returnPC) <= 2));
+      assert(!isSwitch(*reinterpret_cast<const Op*>(returnPC)) &&
+        (numSuccs(reinterpret_cast<const Op*>(returnPC)) <= 2));
       // Set an internal breakpoint after the instruction if it can fall thru.
-      if (instrAllowsFallThru(toOp(*returnPC))) {
+      if (instrAllowsFallThru(*reinterpret_cast<const Op*>(returnPC))) {
         Offset nextOffset = returnOffset + instrLen((Op*)returnPC);
         TRACE(2, "CmdFlowControl: step out to '%s' offset %d (fall-thru)\n",
               fp->m_func->fullName()->data(), nextOffset);
@@ -171,8 +173,9 @@ void CmdFlowControl::setupStepOuts() {
       }
       // Set an internal breakpoint at the target of a control flow instruction.
       // A good example of a control flow op that invokes PHP is IterNext.
-      if (instrIsControlFlow(toOp(*returnPC))) {
-        Offset target = instrJumpTarget((Op*)returnPC, 0);
+      if (instrIsControlFlow(*reinterpret_cast<const Op*>(returnPC))) {
+        Offset target =
+          instrJumpTarget(reinterpret_cast<const Op*>(returnPC), 0);
         if (target != InvalidAbsoluteOffset) {
           Offset targetOffset = returnOffset + target;
           TRACE(2, "CmdFlowControl: step out to '%s' offset %d (jump target)\n",

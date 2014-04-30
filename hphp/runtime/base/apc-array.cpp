@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -22,6 +22,7 @@
 #include "hphp/runtime/base/apc-local-array.h"
 #include "hphp/runtime/base/array-iterator.h"
 #include "hphp/runtime/ext/ext_apc.h"
+#include "folly/Bits.h"
 
 namespace HPHP {
 
@@ -62,7 +63,7 @@ APCHandle* APCArray::MakeShared() {
 APCHandle* APCArray::MakeShared(ArrayData* arr,
                                 bool unserializeObj) {
   auto num = arr->size();
-  auto cap = num > 2 ? Util::roundUpToPowerOfTwo(num) : 2;
+  auto cap = num > 2 ? folly::nextPowTwo(num) : 2;
 
   void* p = malloc(sizeof(APCArray) +
                    sizeof(int) * cap +

@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -17,6 +17,7 @@
 #include "hphp/runtime/vm/jit/prof-data.h"
 
 #include <vector>
+#include <algorithm>
 
 #include "folly/MapUtil.h"
 
@@ -309,26 +310,25 @@ RegionDescPtr ProfData::transRegion(TransID id) const {
   return pTransRec.region();
 }
 
-TransID ProfData::addTransProfile(const Tracelet&       tracelet,
-                                  Offset                initSpOffset,
+TransID ProfData::addTransProfile(const RegionDescPtr&  region,
                                   const PostConditions& pconds) {
   TransID transId   = m_numTrans++;
-  Offset  lastBcOff = tracelet.m_instrStream.last->source.offset();
-  auto       region = selectTraceletLegacy(initSpOffset, tracelet);
+  Offset  lastBcOff = region->blocks.back()->last().offset();
 
   assert(region);
   DEBUG_ONLY size_t nBlocks = region->blocks.size();
   assert(nBlocks == 1 || (nBlocks > 1 && region->blocks[0]->inlinedCallee()));
 
   region->blocks.back()->setPostConditions(pconds);
+  auto const startSk = region->blocks.front()->start();
   m_transRecs.emplace_back(new ProfTransRec(transId, TransProfile, lastBcOff,
-                                            tracelet.m_sk, region));
+                                            startSk, region));
 
   // If the translation corresponds to a DV Funclet, then add an entry
   // into dvFuncletDB.
-  const Func* func = tracelet.m_sk.func();
+  const Func* func = startSk.func();
   FuncId    funcId = func->getFuncId();
-  Offset  bcOffset = tracelet.m_sk.offset();
+  Offset  bcOffset = startSk.offset();
   if (func->isDVEntry(bcOffset)) {
     int nParams = func->getDVEntryNumParams(bcOffset);
     // Normal DV funclets don't have type guards, and thus have a

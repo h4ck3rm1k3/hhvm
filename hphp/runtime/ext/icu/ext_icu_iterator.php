@@ -14,17 +14,13 @@
  * backed by the same state (e.g. the position of the iterator and its current
  * value).   Subclasses may provide richer functionality.
  */
+<<__NativeData("IntlIterator")>>
 class IntlIterator implements Iterator {
-
-  /**
-   * Internal iterator state
-   */
-  private mixed $__resdata = null;
 
   /**
    * Only for internal use
    */
-  private final function __constructor(): void {}
+  private final function __constructor() {}
 
   /**
    * Get the current element

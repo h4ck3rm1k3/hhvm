@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -23,6 +23,7 @@
 #include "hphp/runtime/base/runtime-error.h"
 #include "hphp/runtime/base/array-init.h"
 #include "hphp/util/logger.h"
+#include "hphp/util/text-util.h"
 
 namespace HPHP {
 
@@ -55,11 +56,11 @@ public:
   "methods and you are still getting this warning, you most likely " \
   "misspelled the timezone identifier. "
 
-    Util::string_printf(m_warning, DATE_TZ_ERRMSG
-                        "We selected '%s' for '%s/%.1f/%s' instead",
-                        tzid, ta ? ta->tm_zone : "Unknown",
-                        ta ? (float) (ta->tm_gmtoff / 3600) : 0,
-                        ta ? (ta->tm_isdst ? "DST" : "no DST") : "Unknown");
+    string_printf(m_warning, DATE_TZ_ERRMSG
+                  "We selected '%s' for '%s/%.1f/%s' instead",
+                  tzid, ta ? ta->tm_zone : "Unknown",
+                  ta ? (float) (ta->tm_gmtoff / 3600) : 0,
+                  ta ? (ta->tm_isdst ? "DST" : "no DST") : "Unknown");
   }
 };
 static GuessedTimeZone s_guessed_timezone;
@@ -182,7 +183,8 @@ Array TimeZone::GetAbbreviations() {
     } else {
       element.set(s_timezone_id, uninit_null());
     }
-    ret.lvalAt(String(entry->name)).append(element.create());
+    auto& val = ret.lvalAt(String(entry->name));
+    forceToArray(val).append(element.create());
   }
   return ret;
 }

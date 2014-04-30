@@ -1,0 +1,194 @@
+*** Testing date_sunrise() : usage variation ***
+
+--int 0--
+string(5) "05:48"
+float(5.800%d)
+int(1218174483)
+
+--int 1--
+string(5) "06:48"
+float(6.800%d)
+int(1218174483)
+
+--int 12345--
+string(5) "14:48"
+float(14.800%d)
+int(1218174483)
+
+--int -12345--
+string(5) "12:48"
+float(12.800%d)
+int(1218174483)
+
+--empty array--
+
+Warning: %s
+bool(false)
+
+Warning: %s
+bool(false)
+
+Warning: %s
+bool(false)
+
+--int indexed array--
+
+Warning: %s
+bool(false)
+
+Warning: %s
+bool(false)
+
+Warning: %s
+bool(false)
+
+--associative array--
+
+Warning: %s
+bool(false)
+
+Warning: %s
+bool(false)
+
+Warning: %s
+bool(false)
+
+--nested arrays--
+
+Warning: %s
+bool(false)
+
+Warning: %s
+bool(false)
+
+Warning: %s
+bool(false)
+
+--uppercase NULL--
+string(5) "05:48"
+float(5.800%d)
+int(1218174483)
+
+--lowercase null--
+string(5) "05:48"
+float(5.800%d)
+int(1218174483)
+
+--lowercase true--
+string(5) "06:48"
+float(6.800%d)
+int(1218174483)
+
+--lowercase false--
+string(5) "05:48"
+float(5.800%d)
+int(1218174483)
+
+--uppercase TRUE--
+string(5) "06:48"
+float(6.800%d)
+int(1218174483)
+
+--uppercase FALSE--
+string(5) "05:48"
+float(5.800%d)
+int(1218174483)
+
+--empty string DQ--
+
+Warning: %s
+bool(false)
+
+Warning: %s
+bool(false)
+
+Warning: %s
+bool(false)
+
+--empty string SQ--
+
+Warning: %s
+bool(false)
+
+Warning: %s
+bool(false)
+
+Warning: %s
+bool(false)
+
+--string DQ--
+
+Warning: %s
+bool(false)
+
+Warning: %s
+bool(false)
+
+Warning: %s
+bool(false)
+
+--string SQ--
+
+Warning: %s
+bool(false)
+
+Warning: %s
+bool(false)
+
+Warning: %s
+bool(false)
+
+--mixed case string--
+
+Warning: %s
+bool(false)
+
+Warning: %s
+bool(false)
+
+Warning: %s
+bool(false)
+
+--heredoc--
+
+Warning: %s
+bool(false)
+
+Warning: %s
+bool(false)
+
+Warning: %s
+bool(false)
+
+--instance of classWithToString--
+
+Warning: %s
+bool(false)
+
+Warning: %s
+bool(false)
+
+Warning: %s
+bool(false)
+
+--instance of classWithoutToString--
+
+Warning: %s
+bool(false)
+
+Warning: %s
+bool(false)
+
+Warning: %s
+bool(false)
+
+--undefined var--
+string(5) "05:48"
+float(5.800%d)
+int(1218174483)
+
+--unset var--
+string(5) "05:48"
+float(5.800%d)
+int(1218174483)
+===DONE===

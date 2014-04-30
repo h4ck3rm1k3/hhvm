@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -28,7 +28,7 @@
 #include "hphp/compiler/statement/class_variable.h"
 #include "hphp/compiler/analysis/variable_table.h"
 #include "hphp/compiler/analysis/constant_table.h"
-#include "hphp/util/util.h"
+#include "hphp/util/text-util.h"
 #include "hphp/compiler/statement/interface_statement.h"
 #include "hphp/compiler/statement/use_trait_statement.h"
 #include "hphp/compiler/statement/trait_require_statement.h"
@@ -36,6 +36,7 @@
 #include "hphp/compiler/option.h"
 #include <sstream>
 #include <algorithm>
+#include <vector>
 
 using namespace HPHP;
 
@@ -50,7 +51,7 @@ ClassStatement::ClassStatement
   : InterfaceStatement(STATEMENT_CONSTRUCTOR_PARAMETER_VALUES(ClassStatement),
                        name, base, docComment, stmt, attrList),
     m_type(type), m_ignored(false) {
-  m_parent = Util::toLower(parent);
+  m_parent = toLower(parent);
   m_originalParent = parent;
 }
 
@@ -82,7 +83,7 @@ void ClassStatement::onParse(AnalysisResultConstPtr ar, FileScopePtr fs) {
   if (m_base) m_base->getOriginalStrings(bases);
 
   for (auto &b : bases) {
-    ar->parseOnDemandByClass(Util::toLower(b));
+    ar->parseOnDemandByClass(toLower(b));
   }
 
   vector<UserAttributePtr> attrs;
@@ -216,12 +217,11 @@ void ClassStatement::inferTypes(AnalysisResultPtr ar) {
 ///////////////////////////////////////////////////////////////////////////////
 
 void ClassStatement::outputCodeModel(CodeGenerator &cg) {
-  auto numProps = 3;
+  auto numProps = 4;
   if (m_attrList != nullptr) numProps++;
   if (m_type == T_ABSTRACT || m_type == T_FINAL) numProps++;
   if (!m_parent.empty()) numProps++;
   if (m_base != nullptr) numProps++;
-  if (m_stmt != nullptr) numProps++;
   if (!m_docComment.empty()) numProps++;
 
   cg.printObjectHeader("TypeStatement", numProps);
@@ -251,12 +251,17 @@ void ClassStatement::outputCodeModel(CodeGenerator &cg) {
   }
   if (m_base != nullptr) {
     cg.printPropertyHeader("interfaces");
-    cg.printExpressionVector(m_base);
+    cg.printTypeExpressionVector(m_base);
   }
-  if (m_stmt != nullptr) {
-    cg.printPropertyHeader("block");
-    cg.printAsBlock(m_stmt);
+  cg.printPropertyHeader("block");
+  auto stmt = m_stmt;
+  if (m_promotedParameterCount  > 0) {
+    stmt = m_stmt->shallowClone();
+    for (int i = 0; i < m_promotedParameterCount; i++) {
+      stmt->removeElement(stmt->getCount()-1);
+    }
   }
+  cg.printAsEnclosedBlock(stmt);
   cg.printPropertyHeader("sourceLocation");
   cg.printLocation(this->getLocation());
   if (!m_docComment.empty()) {

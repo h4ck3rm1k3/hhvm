@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -23,6 +23,7 @@
 
 extern "C" {
 #include <timelib.h>
+#include <memory>
 }
 
 /**
@@ -44,12 +45,12 @@ extern "C" {
 # define TIMELIB_REL_DAYS_SET(rel, val)
 inline timelib_rel_time* timelib_rel_time_clone(timelib_rel_time* t) {
   timelib_rel_time *ret = (timelib_rel_time*)
-          HPHP::Util::safe_malloc(sizeof(timelib_rel_time));
+          HPHP::safe_malloc(sizeof(timelib_rel_time));
   memcpy(ret, t, sizeof(timelib_rel_time));
   return ret;
 }
 inline void timelib_rel_time_dtor(timelib_rel_time *t) {
-  HPHP::Util::safe_free(t);
+  HPHP::safe_free(t);
 }
 #endif /* TIMELIB_HAVE_INTERVAL */
 

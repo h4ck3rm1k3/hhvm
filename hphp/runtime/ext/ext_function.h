@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    | Copyright (c) 1997-2010 The PHP Group                                |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
@@ -25,21 +25,14 @@ namespace HPHP {
 
 Array f_get_defined_functions();
 bool f_function_exists(const String& function_name, bool autoload = true);
-bool f_is_callable(CVarRef v, bool syntax = false,
+bool f_is_callable(const Variant& v, bool syntax = false,
                    VRefParam name = uninit_null());
 Variant f_call_user_func(
-  int _argc, CVarRef function, CArrRef _argv = null_array);
-Variant f_call_user_func_array(CVarRef function, CVarRef params);
-String f_call_user_func_serialized(const String& input);
-Variant f_call_user_func_array_rpc(
-  const String& host, int port, const String& auth, int timeout,
-  CVarRef function, CArrRef params);
-Variant f_call_user_func_rpc(
-  int _argc, const String& host, int port, const String& auth, int timeout,
-  CVarRef function, CArrRef _argv = null_array);
-Variant f_forward_static_call_array(CVarRef function, CArrRef params);
+  int _argc, const Variant& function, const Array& _argv = null_array);
+Variant f_call_user_func_array(const Variant& function, const Variant& params);
+Variant f_forward_static_call_array(const Variant& function, const Array& params);
 Variant f_forward_static_call(
-  int _argc, CVarRef function, CArrRef _argv = null_array);
+  int _argc, const Variant& function, const Array& _argv = null_array);
 Variant f_get_called_class();
 String f_create_function(const String& args, const String& code);
 
@@ -50,7 +43,6 @@ String f_create_function(const String& args, const String& code);
  * parameters to help the implementation.
  */
 Variant f_func_get_arg(int arg_num);
-Variant func_get_arg(int num_args, CArrRef params, CArrRef args, int pos);
 
 /**
  * PHP's func_get_args() is transformed to this function with some extra
@@ -58,12 +50,11 @@ Variant func_get_arg(int num_args, CArrRef params, CArrRef args, int pos);
  */
 Variant f_func_get_args();
 Array hhvm_get_frame_args(const ActRec* ar, int offset);
-Array func_get_args(int num_args, CArrRef params, CArrRef args);
 
 /**
  * HipHop extension that allows requesting only a subset of function arguments.
  */
-Variant f_hphp_func_slice_args(int offset);
+Variant HHVM_FUNCTION(func_slice_args, int offset);
 
 /**
  * HPHP actually inlines this function, so this is degenerated.
@@ -73,11 +64,11 @@ int64_t f_func_num_args();
 ///////////////////////////////////////////////////////////////////////////////
 
 void f_register_postsend_function(
-  int _argc, CVarRef function, CArrRef _argv = null_array);
+  int _argc, const Variant& function, const Array& _argv = null_array);
 void f_register_shutdown_function(
-  int _argc, CVarRef function, CArrRef _argv = null_array);
+  int _argc, const Variant& function, const Array& _argv = null_array);
 void f_register_cleanup_function(
-  int _argc, CVarRef function, CArrRef _argv = null_array);
+  int _argc, const Variant& function, const Array& _argv = null_array);
 
 ///////////////////////////////////////////////////////////////////////////////
 }

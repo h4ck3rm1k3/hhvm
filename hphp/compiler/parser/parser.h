@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -18,6 +18,7 @@
 #define incl_HPHP_COMPILER_PARSER_H_
 
 #include <functional>
+#include <vector>
 
 #include "hphp/runtime/base/exceptions.h"
 #include "hphp/parser/parser.h"
@@ -37,7 +38,7 @@
 
 #define LOG_PARSE_ERROR(file, line, fmt, args...)     \
   HPHP::Logger::Error(                                \
-    "HipHop Fatal error: " fmt " in %s on line %d",   \
+    "\nFatal error: " fmt " in %s on line %d",   \
     ##args,                                           \
     (file),                                           \
     (line)                                            \
@@ -297,7 +298,7 @@ public:
   void onNamespaceStart(const std::string &ns, bool file_scope = false);
   void onNamespaceEnd();
   void onUse(const std::string &ns, const std::string &as);
-  void nns(int token = 0);
+  void nns(int token = 0, const std::string& text = std::string());
   std::string nsDecl(const std::string &name);
   std::string resolve(const std::string &ns, bool cls);
 
@@ -347,7 +348,7 @@ private:
     {}
 
     void checkFinalAssertions() {
-      assert((isGenerator && !isAsync && !hasReturn) || !isGenerator);
+      assert(!isGenerator || (!isAsync && !hasReturn));
     }
 
     bool hasReturn;       // function contains a return statement
@@ -434,46 +435,40 @@ private:
    */
   class AliasTable {
   public:
-
     struct AliasEntry {
       std::string alias;
       std::string name;
     };
 
     enum class AliasType {
-      AUTO,
       USE,
-      CURRENT_NS
+      DEF
     };
 
-    AliasTable(const std::vector<AliasEntry>& autoAliases,
+    AliasTable(const hphp_string_imap<std::string>& autoAliases,
                std::function<bool ()> autoOracle);
 
     std::string getName(std::string alias);
+    std::string getDefName(std::string alias);
+    std::string getUseName(std::string alias);
     bool isAliased(std::string alias);
-    bool isAutoImported(std::string alias);
+    bool isAutoType(std::string alias);
     bool isUseType(std::string alias);
-    void map(std::string alias, std::string name, AliasType type);
+    bool isDefType(std::string alias);
+    void set(std::string alias, std::string name, AliasType type);
     void clear();
 
   private:
-
     struct NameEntry {
       std::string name;
       AliasType type;
     };
 
     hphp_string_imap<NameEntry> m_aliases;
-    // These get imported every time we enter a new namespace.
-    std::vector<AliasEntry> m_autoAliases;
+    const hphp_string_imap<std::string>& m_autoAliases;
     // Returns true if stuff should be auto-imported.
     std::function<bool ()> m_autoOracle;
-    // Have we already auto-imported names for the current namespace?
-    // This is useful because auto-imports are done lazily.
-    bool m_alreadyImported;
-
     void setFalseOracle();
-    void addAutoImports();
   };
 
   NamespaceState m_nsState;
@@ -483,7 +478,8 @@ private:
 
   void registerAlias(std::string name);
   bool isAutoAliasOn();
-  std::vector<AliasTable::AliasEntry> getAutoAliasedClasses();
+  const hphp_string_imap<std::string>& getAutoAliasedClasses();
+  hphp_string_imap<std::string> getAutoAliasedClassesHelper();
 };
 
 ///////////////////////////////////////////////////////////////////////////////

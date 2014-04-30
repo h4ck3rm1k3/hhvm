@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -30,11 +30,12 @@
 #include "hphp/util/db-conn.h"
 #include "hphp/util/exception.h"
 #include "hphp/util/process.h"
-#include "hphp/util/util.h"
+#include "hphp/util/text-util.h"
 #include "hphp/util/timer.h"
 #include "hphp/util/hdf.h"
 #include "hphp/util/async-func.h"
 #include "hphp/util/current-executable.h"
+#include "hphp/util/file-util.h"
 #include "hphp/runtime/base/program-functions.h"
 #include "hphp/runtime/base/externals.h"
 #include "hphp/runtime/base/thread-init-fini.h"
@@ -52,6 +53,7 @@
 #include <boost/program_options/positional_options.hpp>
 #include <boost/program_options/variables_map.hpp>
 #include <boost/program_options/parsers.hpp>
+#include <exception>
 
 using namespace boost::program_options;
 using std::cout;
@@ -344,23 +346,9 @@ int prepareOptions(CompilerOptions &po, int argc, char **argv) {
     return 1;
   }
   if (vm.count("version")) {
-#ifdef HHVM_VERSION
-#undef HHVM_VERSION
-#endif
-
-#ifdef HPHP_COMPILER_STR
-#undef HPHP_COMPILER_STR
-#endif
-
-#ifdef DEBUG
-#define HPHP_COMPILER_STR "HipHop Compiler (Debug Build) v"
-#else
-#define HPHP_COMPILER_STR "HipHop Compiler v"
-#endif
-
-#define HHVM_VERSION(v) cout << HPHP_COMPILER_STR #v << "\n";
-#include "../version" // nolint
-
+    cout << "HipHop Repo Compiler";
+    cout << " " << k_HHVM_VERSION.c_str();
+    cout << " (" << (debug ? "dbg" : "rel") << ")\n";
     cout << "Compiler: " << kCompilerId << "\n";
     cout << "Repo schema: " << kRepoSchemaId << "\n";
     return 1;
@@ -412,35 +400,35 @@ int prepareOptions(CompilerOptions &po, int argc, char **argv) {
   if (po.inputDir.empty()) {
     po.inputDir = '.';
   }
-  po.inputDir = Util::normalizeDir(po.inputDir);
+  po.inputDir = FileUtil::normalizeDir(po.inputDir);
   if (po.configDir.empty()) {
     po.configDir = po.inputDir;
   }
-  po.configDir = Util::normalizeDir(po.configDir);
+  po.configDir = FileUtil::normalizeDir(po.configDir);
   Option::RootDirectory = po.configDir;
   Option::IncludeSearchPaths = po.includePaths;
 
   for (unsigned int i = 0; i < po.excludeDirs.size(); i++) {
     Option::PackageExcludeDirs.insert
-      (Util::normalizeDir(po.excludeDirs[i]));
+      (FileUtil::normalizeDir(po.excludeDirs[i]));
   }
   for (unsigned int i = 0; i < po.excludeFiles.size(); i++) {
     Option::PackageExcludeFiles.insert(po.excludeFiles[i]);
   }
   for (unsigned int i = 0; i < po.excludePatterns.size(); i++) {
     Option::PackageExcludePatterns.insert
-      (Util::format_pattern(po.excludePatterns[i], true));
+      (format_pattern(po.excludePatterns[i], true));
   }
   for (unsigned int i = 0; i < po.excludeStaticDirs.size(); i++) {
     Option::PackageExcludeStaticDirs.insert
-      (Util::normalizeDir(po.excludeStaticDirs[i]));
+      (FileUtil::normalizeDir(po.excludeStaticDirs[i]));
   }
   for (unsigned int i = 0; i < po.excludeStaticFiles.size(); i++) {
     Option::PackageExcludeStaticFiles.insert(po.excludeStaticFiles[i]);
   }
   for (unsigned int i = 0; i < po.excludeStaticPatterns.size(); i++) {
     Option::PackageExcludeStaticPatterns.insert
-      (Util::format_pattern(po.excludeStaticPatterns[i], true));
+      (format_pattern(po.excludeStaticPatterns[i], true));
   }
 
   if (po.target == "hhbc" || po.target == "run") {
@@ -814,6 +802,7 @@ void hhbcTargetInit(const CompilerOptions &po, AnalysisResultPtr ar) {
   RuntimeOption::EnableHipHopSyntax = Option::EnableHipHopSyntax;
   RuntimeOption::EnableZendCompat = Option::EnableZendCompat;
   RuntimeOption::EvalJitEnableRenameFunction = Option::JitEnableRenameFunction;
+  RuntimeOption::IntsOverflowToInts = Option::IntsOverflowToInts;
 
   // Turn off commits, because we don't want systemlib to get included
   RuntimeOption::RepoCommit = false;
@@ -862,7 +851,7 @@ int hhbcTarget(const CompilerOptions &po, AnalysisResultPtr ar,
     if (!po.filecache.empty()) {
       fcThread.waitForEnd();
     }
-    Util::syncdir(po.outputDir, po.syncDir);
+    FileUtil::syncdir(po.outputDir, po.syncDir);
     boost::filesystem::remove_all(po.syncDir);
   }
 
@@ -932,7 +921,7 @@ int runTarget(const CompilerOptions &po) {
     (po.inputs.size() == 1 ? po.inputs[0] : "") +
     " " + po.programArgs;
   Logger::Info("running executable: %s", cmd.c_str());
-  ret = Util::ssystem(cmd.c_str());
+  ret = FileUtil::ssystem(cmd.c_str());
   if (ret && ret != -1) ret = 1;
 
   // delete the temporary directory if not needed

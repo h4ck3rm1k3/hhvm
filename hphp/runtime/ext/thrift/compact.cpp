@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    | Copyright (c) 1997-2010 The PHP Group                                |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
@@ -20,6 +20,7 @@
 #include "hphp/runtime/ext/ext_collections.h"
 #include "hphp/runtime/ext/reflection/ext_reflection.h"
 #include "hphp/runtime/ext/ext_thrift.h"
+#include "hphp/runtime/base/request-event-handler.h"
 
 #include <stack>
 #include <utility>
@@ -146,20 +147,19 @@ enum TError {
   ERR_BAD_VERSION = 4
 };
 
-class CompactRequestData : public RequestEventHandler {
-  public:
-    CompactRequestData() : version(VERSION) { }
-    void clear() { version = VERSION; }
+struct CompactRequestData final : RequestEventHandler {
+  CompactRequestData() : version(VERSION) { }
+  void clear() { version = VERSION; }
 
-    virtual void requestInit() {
-      clear();
-    }
+  void requestInit() override {
+    clear();
+  }
 
-    virtual void requestShutdown() {
-      clear();
-    }
+  void requestShutdown() override {
+    clear();
+  }
 
-    uint8_t version;
+  uint8_t version;
 };
 IMPLEMENT_STATIC_REQUEST_LOCAL(CompactRequestData, s_compact_request_data);
 
@@ -193,7 +193,7 @@ class CompactWriter {
       state = STATE_VALUE_WRITE;
     }
 
-    void write(CObjRef obj) {
+    void write(const Object& obj) {
       writeStruct(obj);
     }
 
@@ -207,14 +207,14 @@ class CompactWriter {
     std::stack<std::pair<CState, uint16_t> > structHistory;
     std::stack<CState> containerHistory;
 
-    void writeStruct(CObjRef obj) {
+    void writeStruct(const Object& obj) {
       // Save state
       structHistory.push(std::make_pair(state, lastFieldNum));
       state = STATE_FIELD_WRITE;
       lastFieldNum = 0;
 
       // Get field specification
-      CArrRef spec = HHVM_FN(hphp_get_static_property)(obj->o_getClassName(),
+      const Array& spec = HHVM_FN(hphp_get_static_property)(obj->o_getClassName(),
                                                        "_TSPEC", false)
         .toArray();
 
@@ -281,8 +281,8 @@ class CompactWriter {
       lastFieldNum = fieldNum;
     }
 
-    void writeField(CVarRef value,
-                    CArrRef valueSpec,
+    void writeField(const Variant& value,
+                    const Array& valueSpec,
                     TType type) {
       switch (type) {
         case T_STOP:
@@ -379,7 +379,7 @@ class CompactWriter {
       }
     }
 
-    void writeMap(Array arr, CArrRef spec) {
+    void writeMap(Array arr, const Array& spec) {
       TType keyType = (TType)spec
         .rvalAt(PHPTransport::s_ktype, AccessFlags::Error_Key).toByte();
       TType valueType = (TType)spec
@@ -400,7 +400,7 @@ class CompactWriter {
       writeCollectionEnd();
     }
 
-    void writeList(Array arr, CArrRef spec, CListType listType) {
+    void writeList(Array arr, const Array& spec, CListType listType) {
       TType valueType = (TType)spec
         .rvalAt(PHPTransport::s_etype, AccessFlags::Error_Key).toByte();
       Array valueSpec = spec
@@ -492,7 +492,7 @@ class CompactWriter {
 
 class CompactReader {
   public:
-    explicit CompactReader(CObjRef _transportobj) :
+    explicit CompactReader(const Object& _transportobj) :
       transport(_transportobj),
       version(VERSION),
       state(STATE_CLEAR),
@@ -545,7 +545,7 @@ class CompactReader {
     std::stack<std::pair<CState, uint16_t> > structHistory;
     std::stack<CState> containerHistory;
 
-    void readStruct(CObjRef dest, CArrRef spec) {
+    void readStruct(const Object& dest, const Array& spec) {
       readStructBegin();
 
       while (true) {
@@ -631,7 +631,7 @@ class CompactReader {
       state = STATE_FIELD_READ;
     }
 
-    Variant readField(CArrRef spec, TType type) {
+    Variant readField(const Array& spec, TType type) {
       switch (type) {
         case T_STOP:
         case T_VOID:
@@ -819,7 +819,7 @@ class CompactReader {
       }
     }
 
-    Variant readMap(CArrRef spec) {
+    Variant readMap(const Array& spec) {
       TType keyType, valueType;
       uint32_t size;
       readMapBegin(keyType, valueType, size);
@@ -833,21 +833,25 @@ class CompactReader {
       Variant ret;
       if (format.equal(PHPTransport::s_collection)) {
         ret = NEWOBJ(c_Map)();
+        for (uint32_t i = 0; i < size; i++) {
+          Variant key = readField(keySpec, keyType);
+          Variant value = readField(valueSpec, valueType);
+          collectionSet(ret.getObjectData(), key.asCell(), value.asCell());
+        }
       } else {
         ret = Array::Create();
-      }
-
-      for (uint32_t i = 0; i < size; i++) {
-        Variant key = readField(keySpec, keyType);
-        Variant value = readField(valueSpec, valueType);
-        ret.set(key, value);
+        for (uint32_t i = 0; i < size; i++) {
+          Variant key = readField(keySpec, keyType);
+          Variant value = readField(valueSpec, valueType);
+          ret.toArrRef().set(key, value);
+        }
       }
 
       readCollectionEnd();
       return ret;
     }
 
-    Variant readList(CArrRef spec) {
+    Variant readList(const Array& spec) {
       TType valueType;
       uint32_t size;
       readListBegin(valueType, size);
@@ -858,21 +862,25 @@ class CompactReader {
         AccessFlags::None).toString();
       Variant ret;
       if (format.equal(PHPTransport::s_collection)) {
-        ret = NEWOBJ(c_Vector)();
+        auto const pvec = NEWOBJ(c_Vector)();
+        ret = pvec;
+        for (uint32_t i = 0; i < size; i++) {
+          Variant value = readField(valueSpec, valueType);
+          pvec->t_add(value);
+        }
       } else {
-        ret = Array::Create();
-      }
-
-      for (uint32_t i = 0; i < size; i++) {
-        Variant value = readField(valueSpec, valueType);
-        ret.append(value);
+        PackedArrayInit pai(size);
+        for (auto i = uint32_t{0}; i < size; ++i) {
+          pai.append(readField(valueSpec, valueType));
+        }
+        ret = pai.toArray();
       }
 
       readCollectionEnd();
       return ret;
     }
 
-    Variant readSet(CArrRef spec) {
+    Variant readSet(const Array& spec) {
       TType valueType;
       uint32_t size;
       readListBegin(valueType, size);
@@ -892,12 +900,12 @@ class CompactReader {
 
         ret = Variant(set_ret);
       } else {
-        ret = Array::Create();
-
+        ArrayInit ainit(size);
         for (uint32_t i = 0; i < size; i++) {
           Variant value = readField(valueSpec, valueType);
-          ret.set(value, true);
+          ainit.set(value, true);
         }
+        ret = ainit.toArray();
       }
 
 
@@ -1002,10 +1010,10 @@ int f_thrift_protocol_set_compact_version(int version) {
   return result;
 }
 
-void f_thrift_protocol_write_compact(CObjRef transportobj,
+void f_thrift_protocol_write_compact(const Object& transportobj,
                                      const String& method_name,
                                      int64_t msgtype,
-                                     CObjRef request_struct,
+                                     const Object& request_struct,
                                      int seqid) {
   PHPOutputTransport transport(transportobj);
 
@@ -1017,7 +1025,7 @@ void f_thrift_protocol_write_compact(CObjRef transportobj,
   transport.flush();
 }
 
-Variant f_thrift_protocol_read_compact(CObjRef transportobj,
+Variant f_thrift_protocol_read_compact(const Object& transportobj,
                                        const String& obj_typename) {
   CompactReader reader(transportobj);
   return reader.read(obj_typename);

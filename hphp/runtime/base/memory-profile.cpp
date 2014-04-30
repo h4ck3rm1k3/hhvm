@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -32,16 +32,16 @@ static ProfileStackTrace getStackTrace() {
 
   if (g_context.isNull()) return trace;
   JIT::VMRegAnchor _;
-  ActRec *fp = g_vmContext->getFP();
+  ActRec *fp = g_context->getFP();
   if (!fp) return trace;
-  PC pc = g_vmContext->getPC();
+  PC pc = g_context->getPC();
 
   const Func *f = fp->m_func;
   Unit *u = f->unit();
   Offset off = pc - u->entry();
   for (;;) {
     trace.push_back({ f, off });
-    fp = g_vmContext->getPrevVMState(fp, &off);
+    fp = g_context->getPrevVMState(fp, &off);
     if (!fp) break;
     f = fp->m_func;
   }

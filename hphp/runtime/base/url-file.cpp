@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -15,11 +15,12 @@
 */
 
 #include "hphp/runtime/base/url-file.h"
+#include <vector>
 #include "hphp/runtime/base/hphp-system.h"
 #include "hphp/runtime/base/http-client.h"
 #include "hphp/runtime/base/runtime-error.h"
-#include "hphp/runtime/ext/ext_preg.h"
-#include "hphp/runtime/ext/ext_url.h"
+#include "hphp/runtime/ext/pcre/ext_pcre.h"
+#include "hphp/runtime/ext/url/ext_url.h"
 
 namespace HPHP {
 
@@ -30,7 +31,7 @@ const StaticString s_http_response_header("http_response_header");
 ///////////////////////////////////////////////////////////////////////////////
 
 UrlFile::UrlFile(const char *method /* = "GET" */,
-                 CArrRef headers /* = null_array */,
+                 const Array& headers /* = null_array */,
                  const String& postData /* = null_string */,
                  int maxRedirect /* = 20 */,
                  int timeout /* = -1 */) {
@@ -77,7 +78,7 @@ bool UrlFile::open(const String& input_url, const String& mode) {
   if (user.isString()) {
     Variant pass = f_parse_url(url, k_PHP_URL_PASS);
     http.auth(user.toString().c_str(), pass.toString().c_str());
-    url = f_preg_replace(
+    url = HHVM_FN(preg_replace)(
       s_remove_user_pass_pattern,
       s_remove_user_pass_replace,
       url,
@@ -94,13 +95,12 @@ bool UrlFile::open(const String& input_url, const String& mode) {
                      m_response, pHeaders, &responseHeaders);
   }
 
-  GlobalVariables *g = get_global_variables();
-  Variant &r = g->getRef(s_http_response_header);
-  r = Array::Create();
+  m_responseHeaders = Array();
   for (unsigned int i = 0; i < responseHeaders.size(); i++) {
-    r.append(responseHeaders[i]);
+    m_responseHeaders.append(responseHeaders[i]);
   }
-  m_responseHeaders = r;
+  GlobalVariables *g = get_global_variables();
+  g->set(s_http_response_header, Variant(m_responseHeaders), /*copy=*/ true);
 
   if (code == 200) {
     m_name = (std::string) url;

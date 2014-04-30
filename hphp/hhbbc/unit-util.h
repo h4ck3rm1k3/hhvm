@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -13,8 +13,10 @@
    | license@php.net so we can mail you a copy immediately.               |
    +----------------------------------------------------------------------+
 */
-#ifndef incl_HPHP_UNIT_UTIL_H_
-#define incl_HPHP_UNIT_UTIL_H_
+#ifndef incl_HHBBC_UNIT_UTIL_H_
+#define incl_HHBBC_UNIT_UTIL_H_
+
+#include "hphp/hhbbc/misc.h"
 
 namespace HPHP { namespace HHBBC {
 namespace php { struct Unit; }
@@ -22,9 +24,22 @@ namespace php { struct Unit; }
 //////////////////////////////////////////////////////////////////////
 
 /*
- * Returns true if a unit repesents a portion of systemlib.
+ * Returns true if a unit repesents a portion of systemlib, or one of
+ * the native units.
  */
 bool is_systemlib_part(const php::Unit&);
+
+/*
+ * Returns true if the class or function name is normalized wrt namespaces.
+ */
+bool isNSNormalized(SString name);
+
+/*
+ * Normalizes a given class or function name removing the leading '\'.
+ * Leaves the name unchanged if more than one '\' is leading.
+ * So '\name' becomes 'name' but '\\name' stays '\\name'.
+ */
+SString normalizeNS(SString);
 
 //////////////////////////////////////////////////////////////////////
 

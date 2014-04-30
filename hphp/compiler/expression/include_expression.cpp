@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -15,6 +15,7 @@
 */
 
 #include "hphp/compiler/expression/include_expression.h"
+#include <map>
 #include "hphp/parser/hphp.tab.hpp"
 #include "hphp/compiler/analysis/code_error.h"
 #include "hphp/compiler/analysis/file_scope.h"
@@ -27,7 +28,7 @@
 #include "hphp/compiler/parser/parser.h"
 #include "hphp/compiler/analysis/variable_table.h"
 #include "hphp/compiler/expression/scalar_expression.h"
-#include "hphp/util/util.h"
+#include "hphp/util/file-util.h"
 
 using namespace HPHP;
 
@@ -174,7 +175,7 @@ string IncludeExpression::CheckInclude(ConstructPtr includeExp,
     if (included == container) {
       Compiler::Error(Compiler::BadPHPIncludeFile, includeExp);
     }
-    included = Util::canonicalize(included);
+    included = FileUtil::canonicalize(included);
     if (!var.empty()) documentRoot = true;
   }
   return included;

@@ -3,13 +3,14 @@
 # Order matters here. Put parent classes in this list before child classes
 hphp/system/php/lang/stdClass.php
 hphp/system/php/lang/pinitSentinel.php
+hphp/system/php/lang/string.php
 hphp/system/php/lang/resource.php
 
 hphp/system/php/lang/Traversable.ns.php
 hphp/system/php/lang/Iterator.ns.php
-hphp/system/php/lang/IteratorAggregate.php
-hphp/system/php/lang/KeyedIterator.php
-hphp/system/php/lang/KeyedIterable.php
+hphp/system/php/lang/IteratorAggregate.ns.php
+hphp/system/php/lang/KeyedIterator.ns.php
+hphp/system/php/lang/KeyedIterable.ns.php
 hphp/system/php/lang/Exception.php
 hphp/system/php/spl/exceptions/exceptions.php
 hphp/system/php/spl/interfaces/Countable.php
@@ -34,6 +35,7 @@ hphp/system/php/spl/datastructures/SplStack.php
 
 hphp/system/php/spl/interfaces/OuterIterator.php
 hphp/system/php/spl/iterators/IteratorIterator.php
+hphp/system/php/spl/iterators/AppendIterator.php
 hphp/system/php/spl/iterators/FilterIterator.php
 hphp/system/php/spl/iterators/RecursiveFilterIterator.php
 hphp/system/php/spl/iterators/RegexIterator.php
@@ -45,14 +47,16 @@ hphp/system/php/spl/iterators/RecursiveArrayIterator.php
 hphp/system/php/spl/iterators/CachingIterator.php
 hphp/system/php/spl/iterators/RecursiveCachingIterator.php
 
+hphp/system/php/stream/user-filters.php
+hphp/system/php/stream/default-filters.php
+
 hphp/system/php/filter/filter_has_var.php
 hphp/system/php/filter/filter_input.php
 hphp/system/php/filter/filter_var_array.php
 hphp/system/php/filter/filter_input_array.php
 
 hphp/system/php/sessions/SessionHandlerInterface.php
-hphp/system/php/sessions/SessionHandler.php
-hphp/system/php/sessions/session_set_save_handler.php
+hphp/system/php/sessions/session_set_save_handler.ns.php
 
 hphp/system/php/redis/RedisException.php
 
@@ -60,6 +64,9 @@ hphp/system/php/phar/PharException.php
 hphp/system/php/phar/Phar.php
 hphp/system/php/phar/PharFileInfo.php
 hphp/system/php/phar/PharData.php
+
+hphp/system/php/date/datetimeinterface.php
+hphp/system/php/date/datetimeimmutable.php
 
 # If you have no inheritance relationship, go here in alphabetical order
 hphp/system/php/XhprofFrame.php
@@ -69,13 +76,17 @@ hphp/system/php/asio/Awaitable.php
 hphp/system/php/asio/InvalidOperationException.php
 hphp/system/php/collections/collections.ns.php
 hphp/system/php/date/dateperiod.php
+hphp/system/php/date/datetime_funcs.php
 hphp/system/php/dom/DOMException.php
 hphp/system/php/file_system/Directory.php
 hphp/system/php/hash/furchash.php
 hphp/system/php/hash/hash.php
 hphp/system/php/hash/hphp_murmurhash.php
-hphp/system/php/json/JsonSerializable.php
 hphp/system/php/lang/ErrorException.php
+hphp/system/php/lang/fun.ns.php
+hphp/system/php/lang/invariant.ns.php
+hphp/system/php/lang/tuple.ns.php
+hphp/system/php/misc/fb_autoload_map.php
 hphp/system/php/misc/highlight.php
 hphp/system/php/misc/php_strip_whitespace.php
 hphp/system/php/password/password.php
@@ -89,7 +100,6 @@ hphp/system/php/spl/datastructures/SplObjectStorage.php
 hphp/system/php/spl/datastructures/SplPriorityQueue.php
 hphp/system/php/spl/interfaces/SplObserver.php
 hphp/system/php/spl/interfaces/SplSubject.php
-hphp/system/php/spl/iterators/AppendIterator.php
 hphp/system/php/spl/iterators/EmptyIterator.php
 hphp/system/php/spl/iterators/InfiniteIterator.php
 hphp/system/php/spl/iterators/LimitIterator.php

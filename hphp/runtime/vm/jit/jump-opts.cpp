@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -22,6 +22,7 @@
 #include "hphp/runtime/vm/jit/opt.h"
 #include "hphp/runtime/vm/jit/ir-unit.h"
 #include "hphp/runtime/vm/jit/cfg.h"
+#include "hphp/runtime/vm/jit/timer.h"
 
 namespace HPHP { namespace JIT {
 
@@ -73,10 +74,7 @@ bool isNormalExit(Block* block) {
  * Returns whether `opc' is a within-tracelet conditional jump that
  * can be folded into a ReqBindJmpFoo instruction.
  */
-bool jccCanBeDirectExit(Opcode opc) {
-  return isQueryJmpOp(opc) && opc != JmpIsType && opc != JmpIsNType;
-  // TODO(#2404341)
-}
+bool jccCanBeDirectExit(Opcode opc) { return isQueryJmpOp(opc); }
 
 /*
  * Return true if jccInst is a conditional jump with no side effects
@@ -247,6 +245,8 @@ void eliminateJmp(Block* lastBlock, IRInstruction* jmp, Block* target) {
 //////////////////////////////////////////////////////////////////////
 
 void optimizeJumps(IRUnit& unit) {
+  Timer _t(Timer::optimize_jumpOpts);
+
   postorderWalk(unit, [&](Block* b) {
     if (RuntimeOption::EvalHHIRDirectExit) {
       auto branch = &b->back();

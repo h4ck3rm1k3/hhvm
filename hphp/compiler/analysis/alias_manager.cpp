@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -15,6 +15,9 @@
 */
 
 #include "hphp/compiler/analysis/alias_manager.h"
+#include <map>
+#include <utility>
+#include <vector>
 
 #include "hphp/compiler/analysis/analysis_result.h"
 #include "hphp/compiler/analysis/function_scope.h"
@@ -28,12 +31,10 @@
 #include "hphp/compiler/expression/simple_variable.h"
 #include "hphp/compiler/expression/scalar_expression.h"
 #include "hphp/compiler/expression/simple_function_call.h"
-#include "hphp/compiler/expression/array_element_expression.h"
 #include "hphp/compiler/expression/object_property_expression.h"
 #include "hphp/compiler/expression/object_method_expression.h"
 #include "hphp/compiler/expression/parameter_expression.h"
 #include "hphp/compiler/expression/expression_list.h"
-#include "hphp/compiler/expression/expression.h"
 #include "hphp/compiler/expression/include_expression.h"
 #include "hphp/compiler/expression/closure_expression.h"
 #include "hphp/compiler/expression/yield_expression.h"
@@ -70,7 +71,7 @@
 
 #include "hphp/parser/hphp.tab.hpp"
 #include "hphp/parser/location.h"
-#include "hphp/util/util.h"
+#include "hphp/util/text-util.h"
 
 #define spc(T,p) static_pointer_cast<T>(p)
 #define dpc(T,p) dynamic_pointer_cast<T>(p)
@@ -2640,7 +2641,7 @@ private:
         // This could be a primitive type, so don't assert anything
         return ExpressionPtr();
       }
-      TypePtr o(Type::CreateObjectType(Util::toLower(s)));
+      TypePtr o(Type::CreateObjectType(toLower(s)));
 
       // don't do specific type assertions for unknown classes
       ClassScopePtr cscope(o->getClass(m_ar, sv->getScope()));
@@ -3570,25 +3571,6 @@ public:
         int id = m_gidMap["v:this"];
         if (id && m_block->getBit(DataFlow::AvailOut, id)) {
           cp->setGuarded();
-        }
-      }
-    }
-
-    if (auto rs = dynamic_pointer_cast<ReturnStatement>(cp)) {
-      std::vector<std::string> lnames;
-      VariableTableConstPtr vars = cp->getFunctionScope()->getVariables();
-      vars->getLocalVariableNames(lnames);
-      for (auto& l : lnames) {
-        int id = m_gidMap["v:" + l];
-        if (id && !m_block->getBit(DataFlow::PInitOut, id)) {
-          rs->addNonRefcounted(l);
-        } else {
-          auto sym = vars->getSymbol(l);
-          auto dt = vars->getFinalType(l)->getDataType();
-          if (!sym->isStatic() && dt != KindOfUnknown &&
-              !IS_REFCOUNTED_TYPE(dt)) {
-            rs->addNonRefcounted(l);
-          }
         }
       }
     }

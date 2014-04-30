@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -19,13 +19,14 @@
 #include "hphp/runtime/base/runtime-option.h"
 #include "hphp/runtime/vm/repo.h"
 #include "hphp/util/logger.h"
+#include "hphp/util/string-vsnprintf.h"
 
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
 
 /*
  * Careful in these functions: they can be called when tl_regState is
- * REGSTATE_DIRTY.  VMExecutionContext::handleError is dirty-reg safe,
+ * REGSTATE_DIRTY.  ExecutionContext::handleError is dirty-reg safe,
  * but evaluate other functions that you might need here.
  */
 
@@ -35,7 +36,7 @@ void raise_error(const std::string &msg) {
                          RuntimeOption::CallUserHandlerOnFatals ?
                          ExecutionContext::ErrorThrowMode::IfUnhandled :
                          ExecutionContext::ErrorThrowMode::Always,
-                         "HipHop Fatal error: ");
+                         "\nFatal error: ");
 }
 
 void raise_error(const char *fmt, ...) {
@@ -53,7 +54,7 @@ void raise_error_without_first_frame(const std::string &msg) {
                          RuntimeOption::CallUserHandlerOnFatals ?
                          ExecutionContext::ErrorThrowMode::IfUnhandled :
                          ExecutionContext::ErrorThrowMode::Always,
-                         "HipHop Fatal error: ",
+                         "\nFatal error: ",
                          true);
 }
 
@@ -94,7 +95,7 @@ void raise_strict_warning(const std::string &msg) {
   }
   g_context->handleError(msg, errnum, true,
                          ExecutionContext::ErrorThrowMode::Never,
-                         "HipHop Strict Warning: ");
+                         "\nStrict Warning: ");
 }
 
 void raise_strict_warning(const char *fmt, ...) {
@@ -114,7 +115,7 @@ void raise_strict_warning(const char *fmt, ...) {
   va_end(ap);
   g_context->handleError(msg, errnum, true,
                          ExecutionContext::ErrorThrowMode::Never,
-                         "HipHop Strict Warning: ");
+                         "\nStrict Warning: ");
 }
 
 static int64_t g_warning_counter = 0;
@@ -131,7 +132,7 @@ void raise_warning(const std::string &msg) {
   }
   g_context->handleError(msg, errnum, true,
                          ExecutionContext::ErrorThrowMode::Never,
-                         "HipHop Warning: ");
+                         "\nWarning: ");
 }
 
 void raise_warning(const char *fmt, ...) {
@@ -151,7 +152,7 @@ void raise_warning(const char *fmt, ...) {
   va_end(ap);
   g_context->handleError(msg, errnum, true,
                          ExecutionContext::ErrorThrowMode::Never,
-                         "HipHop Warning: ");
+                         "\nWarning: ");
 }
 
 /**
@@ -173,7 +174,7 @@ void raise_debugging(const std::string &msg) {
                          static_cast<int>(ErrorConstants::ErrorModes::WARNING),
                          true,
                          ExecutionContext::ErrorThrowMode::Never,
-                         "HipHop Warning: ");
+                         "\nWarning: ");
 }
 
 void raise_debugging(const char *fmt, ...) {
@@ -197,7 +198,7 @@ void raise_notice(const std::string &msg) {
   }
   g_context->handleError(msg, errnum, true,
                          ExecutionContext::ErrorThrowMode::Never,
-                         "HipHop Notice: ");
+                         "\nNotice: ");
 }
 
 void raise_notice(const char *fmt, ...) {
@@ -217,7 +218,7 @@ void raise_notice(const char *fmt, ...) {
   va_end(ap);
   g_context->handleError(msg, errnum, true,
                          ExecutionContext::ErrorThrowMode::Never,
-                         "HipHop Notice: ");
+                         "\nNotice: ");
 }
 
 void raise_param_type_warning(
@@ -247,6 +248,17 @@ void raise_message(ErrorConstants::ErrorModes mode,
                    va_list ap) {
   std::string msg;
   string_vsnprintf(msg, fmt, ap);
+  raise_message(mode, msg);
+}
+
+void raise_message(ErrorConstants::ErrorModes mode,
+                   const char *fmt,
+                   ...) {
+  std::string msg;
+  va_list ap;
+  va_start(ap, fmt);
+  string_vsnprintf(msg, fmt, ap);
+  va_end(ap);
   raise_message(mode, msg);
 }
 

@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -14,6 +14,7 @@
    +----------------------------------------------------------------------+
 */
 #include "hphp/hhbbc/hhbbc.h"
+#include <memory>
 
 #include "hphp/runtime/vm/unit.h"
 
@@ -21,11 +22,22 @@
 #include "hphp/hhbbc/parse.h"
 #include "hphp/hhbbc/index.h"
 #include "hphp/hhbbc/emit.h"
-#include "hphp/hhbbc/abstract-interp.h"
+#include "hphp/hhbbc/analyze.h"
+#include "hphp/hhbbc/optimize.h"
 
 namespace HPHP { namespace HHBBC {
 
 TRACE_SET_MOD(hhbbc);
+
+//////////////////////////////////////////////////////////////////////
+
+namespace {
+
+void analyze_and_optimize_func(const Index& index, Context ctx) {
+  optimize_func(index, analyze_func(index, ctx));
+}
+
+}
 
 //////////////////////////////////////////////////////////////////////
 
@@ -53,7 +65,7 @@ std::unique_ptr<UnitEmitter> single_unit(std::unique_ptr<UnitEmitter> input) {
   }
 
   assert(check(*u));
-  return emit_unit(*u);
+  return emit_unit(index, *u);
 }
 
 //////////////////////////////////////////////////////////////////////

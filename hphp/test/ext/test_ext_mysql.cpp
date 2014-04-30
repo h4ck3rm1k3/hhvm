@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -15,7 +15,7 @@
 */
 
 #include "hphp/test/ext/test_ext_mysql.h"
-#include "hphp/runtime/ext/ext_mysql.h"
+#include "hphp/runtime/ext/mysql/ext_mysql.h"
 #include "hphp/test/ext/test_mysql_info.h"
 #include "errmsg.h"
 
@@ -379,7 +379,7 @@ bool TestExtMysql::test_mysql_list_dbs() {
   Variant conn = f_mysql_connect(TEST_HOSTNAME, TEST_USERNAME, TEST_PASSWORD);
   Variant res = f_mysql_list_dbs();
   Variant db = f_mysql_fetch_assoc(res);
-  if (db[s_Database].toString().empty()) {
+  if (db.toArray()[s_Database].toString().empty()) {
     return CountSkip();
   }
   return Count(true);
@@ -389,7 +389,8 @@ bool TestExtMysql::test_mysql_list_tables() {
   Variant conn = f_mysql_connect(TEST_HOSTNAME, TEST_USERNAME, TEST_PASSWORD);
   Variant res = f_mysql_list_tables(TEST_DATABASE);
   Variant table = f_mysql_fetch_assoc(res);
-  VERIFY(!table[String("Tables_in_") + TEST_DATABASE].toString().empty());
+  VERIFY(!table.toArray()[String("Tables_in_") + TEST_DATABASE].
+    toString().empty());
   return Count(true);
 }
 
@@ -409,7 +410,7 @@ bool TestExtMysql::test_mysql_list_processes() {
   Variant conn = f_mysql_connect(TEST_HOSTNAME, TEST_USERNAME, TEST_PASSWORD);
   Variant res = f_mysql_list_processes();
   Variant process = f_mysql_fetch_assoc(res);
-  VERIFY(!process[s_Id].toString().empty());
+  VERIFY(!process.toArray()[s_Id].toString().empty());
   return Count(true);
 }
 

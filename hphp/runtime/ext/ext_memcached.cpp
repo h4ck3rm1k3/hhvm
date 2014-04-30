@@ -3,7 +3,7 @@
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
    | Copyright (c) 2010 Hyves (http://www.hyves.nl)                       |
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    | Copyright (c) 1997-2010 The PHP Group                                |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
@@ -19,8 +19,9 @@
 #include "hphp/runtime/ext/ext_memcached.h"
 #include "hphp/runtime/ext/libmemcached_portability.h"
 #include "hphp/runtime/base/builtin-functions.h"
-#include "hphp/runtime/ext/ext_json.h"
+#include "hphp/runtime/ext/json/ext_json.h"
 #include <zlib.h>
+#include <vector>
 
 #include "hphp/system/systemlib.h"
 
@@ -153,6 +154,10 @@ const int64_t q_Memcached$$RES_BAD_KEY_PROVIDED
           = MEMCACHED_BAD_KEY_PROVIDED;
 const int64_t q_Memcached$$RES_CONNECTION_SOCKET_CREATE_FAILURE
           = MEMCACHED_CONNECTION_SOCKET_CREATE_FAILURE;
+const int64_t q_Memcached$$RES_NOT_SUPPORTED
+          = MEMCACHED_NOT_SUPPORTED;
+const int64_t q_Memcached$$RES_INVALID_HOST_PROTOCOL
+          = MEMCACHED_INVALID_HOST_PROTOCOL;
 
 // Our result codes
 const int64_t q_Memcached$$RES_PAYLOAD_FAILURE = -1001;
@@ -201,19 +206,19 @@ void c_Memcached::t___construct(const String& persistent_id /*= null_string*/) {
   if (persistent_id.isNull()) {
     m_impl.reset(new Impl);
   } else {
-    ImplPtr &impl = (*s_persistentMap)[persistent_id->toCPPString()];
+    ImplPtr &impl = (*s_persistentMap)[persistent_id.toCppString()];
     if (!impl) impl.reset(new Impl);
     m_impl = impl;
   }
 }
 
-Variant c_Memcached::t_get(const String& key, CVarRef cache_cb /*= null_variant*/,
+Variant c_Memcached::t_get(const String& key, const Variant& cache_cb /*= null_variant*/,
                            VRefParam cas_token /*= null_variant*/) {
   return t_getbykey(null_string, key, cache_cb, cas_token);
 }
 
 Variant c_Memcached::t_getbykey(const String& server_key, const String& key,
-                                CVarRef cache_cb /*= null_variant*/,
+                                const Variant& cache_cb /*= null_variant*/,
                                 VRefParam cas_token /*= null_variant*/) {
   m_impl->rescode = q_Memcached$$RES_SUCCESS;
   if (key.empty()) {
@@ -255,13 +260,13 @@ Variant c_Memcached::t_getbykey(const String& server_key, const String& key,
   return returnValue;
 }
 
-Variant c_Memcached::t_getmulti(CArrRef keys,
+Variant c_Memcached::t_getmulti(const Array& keys,
                                 VRefParam cas_tokens /*= null_variant*/,
                                 int flags /*= 0*/) {
   return t_getmultibykey(null_string, keys, cas_tokens, flags);
 }
 
-Variant c_Memcached::t_getmultibykey(const String& server_key, CArrRef keys,
+Variant c_Memcached::t_getmultibykey(const String& server_key, const Array& keys,
                                      VRefParam cas_tokens /*= null_variant*/,
                                      int flags /*= 0*/) {
   m_impl->rescode = q_Memcached$$RES_SUCCESS;
@@ -273,7 +278,9 @@ Variant c_Memcached::t_getmultibykey(const String& server_key, CArrRef keys,
     return false;
   }
 
-  if (cas_tokens.isReferenced()) cas_tokens = Array();
+  Array cas_tokens_arr;
+  SCOPE_EXIT { if (cas_tokens.isReferenced()) cas_tokens = cas_tokens_arr; };
+
   MemcachedResultWrapper result(&m_impl->memcached);
   memcached_return status;
   while (memcached_fetch_result(&m_impl->memcached, &result.value, &status)) {
@@ -288,7 +295,7 @@ Variant c_Memcached::t_getmultibykey(const String& server_key, CArrRef keys,
     returnValue.set(sKey, value, true);
     if (cas_tokens.isReferenced()) {
       double cas = (double) memcached_result_cas(&result.value);
-      cas_tokens->set(sKey, cas, true);
+      cas_tokens_arr.set(sKey, cas, true);
     }
   }
 
@@ -296,13 +303,13 @@ Variant c_Memcached::t_getmultibykey(const String& server_key, CArrRef keys,
   return returnValue;
 }
 
-bool c_Memcached::t_getdelayed(CArrRef keys, bool with_cas /*= false*/,
-                               CVarRef value_cb /*= null_variant*/) {
+bool c_Memcached::t_getdelayed(const Array& keys, bool with_cas /*= false*/,
+                               const Variant& value_cb /*= null_variant*/) {
   return t_getdelayedbykey(null_string, keys, with_cas, value_cb);
 }
 
-bool c_Memcached::t_getdelayedbykey(const String& server_key, CArrRef keys,
-    bool with_cas /*= false*/, CVarRef value_cb /*= null_variant*/) {
+bool c_Memcached::t_getdelayedbykey(const String& server_key, const Array& keys,
+    bool with_cas /*= false*/, const Variant& value_cb /*= null_variant*/) {
   m_impl->rescode = q_Memcached$$RES_SUCCESS;
 
   if (!getMultiImpl(server_key, keys, with_cas, NULL)) return false;
@@ -340,7 +347,7 @@ Variant c_Memcached::t_fetchall() {
   return returnValue;
 }
 
-bool c_Memcached::getMultiImpl(const String& server_key, CArrRef keys,
+bool c_Memcached::getMultiImpl(const String& server_key, const Array& keys,
                                bool enableCas, Array *returnValue) {
   std::vector<const char*> keysCopy;
   keysCopy.reserve(keys.size());
@@ -396,21 +403,21 @@ bool c_Memcached::fetchImpl(memcached_result_st &result, Array &item) {
   return true;
 }
 
-bool c_Memcached::t_set(const String& key, CVarRef value, int expiration /*= 0*/) {
+bool c_Memcached::t_set(const String& key, const Variant& value, int expiration /*= 0*/) {
   return t_setbykey(null_string, key, value, expiration);
 }
 
-bool c_Memcached::t_setbykey(const String& server_key, const String& key, CVarRef value,
+bool c_Memcached::t_setbykey(const String& server_key, const String& key, const Variant& value,
                              int expiration /*= 0*/) {
   return setOperationImpl(memcached_set_by_key, server_key, key, value,
                           expiration);
 }
 
-bool c_Memcached::t_setmulti(CArrRef items, int expiration /*= 0*/) {
+bool c_Memcached::t_setmulti(const Array& items, int expiration /*= 0*/) {
   return t_setmultibykey(null_string, items, expiration);
 }
 
-bool c_Memcached::t_setmultibykey(const String& server_key, CArrRef items,
+bool c_Memcached::t_setmultibykey(const String& server_key, const Array& items,
                                   int expiration /*= 0*/) {
   m_impl->rescode = q_Memcached$$RES_SUCCESS;
 
@@ -424,11 +431,11 @@ bool c_Memcached::t_setmultibykey(const String& server_key, CArrRef items,
   return true;
 }
 
-bool c_Memcached::t_add(const String& key, CVarRef value, int expiration /*= 0*/) {
+bool c_Memcached::t_add(const String& key, const Variant& value, int expiration /*= 0*/) {
   return t_addbykey(null_string, key, value, expiration);
 }
 
-bool c_Memcached::t_addbykey(const String& server_key, const String& key, CVarRef value,
+bool c_Memcached::t_addbykey(const String& server_key, const String& key, const Variant& value,
                              int expiration /*= 0*/) {
   return setOperationImpl(memcached_add_by_key, server_key, key, value,
                           expiration);
@@ -460,19 +467,19 @@ bool c_Memcached::t_prependbykey(const String& server_key, const String& key,
   return setOperationImpl(memcached_prepend_by_key, server_key, key, value, 0);
 }
 
-bool c_Memcached::t_replace(const String& key, CVarRef value,
+bool c_Memcached::t_replace(const String& key, const Variant& value,
                             int expiration /*= 0*/) {
   return t_replacebykey(null_string, key, value, expiration);
 }
 
 bool c_Memcached::t_replacebykey(const String& server_key, const String& key,
-                                 CVarRef value, int expiration /*= 0*/) {
+                                 const Variant& value, int expiration /*= 0*/) {
   return setOperationImpl(memcached_replace_by_key, server_key, key, value,
                           expiration);
 }
 
 bool c_Memcached::setOperationImpl(SetOperation op, const String& server_key,
-                                   const String& key, CVarRef value,
+                                   const String& key, const Variant& value,
                                    int expiration) {
   m_impl->rescode = q_Memcached$$RES_SUCCESS;
   if (key.empty()) {
@@ -489,13 +496,13 @@ bool c_Memcached::setOperationImpl(SetOperation op, const String& server_key,
                         payload.data(), payload.size(), expiration, flags));
 }
 
-bool c_Memcached::t_cas(double cas_token, const String& key, CVarRef value,
+bool c_Memcached::t_cas(double cas_token, const String& key, const Variant& value,
                         int expiration /*= 0*/) {
   return t_casbykey(cas_token, null_string, key, value, expiration);
 }
 
 bool c_Memcached::t_casbykey(double cas_token, const String& server_key, const String& key,
-                             CVarRef value, int expiration /*= 0*/) {
+                             const Variant& value, int expiration /*= 0*/) {
   m_impl->rescode = q_Memcached$$RES_SUCCESS;
   if (key.empty()) {
     m_impl->rescode = q_Memcached$$RES_BAD_KEY_PROVIDED;
@@ -563,7 +570,7 @@ bool c_Memcached::t_addserver(const String& host, int port, int weight /*= 0*/) 
       host.c_str(), port, weight));
 }
 
-bool c_Memcached::t_addservers(CArrRef servers) {
+bool c_Memcached::t_addservers(const Array& servers) {
   int i = 1;
   for (ArrayIter iter(servers); iter; ++iter, ++i) {
     Variant entry = iter.second();
@@ -625,7 +632,7 @@ memcached_return_t doServerListCallback(const memcached_st *ptr,
 }
 
 Array c_Memcached::t_getserverlist() {
-  Array returnValue;
+  Array returnValue = Array::Create();
   memcached_server_function callbacks[] = { doServerListCallback };
   memcached_server_cursor(&m_impl->memcached, callbacks, &returnValue, 1);
   return returnValue;
@@ -816,7 +823,7 @@ Variant c_Memcached::t_getoption(int option) {
   }
 }
 
-bool c_Memcached::t_setoption(int option, CVarRef value) {
+bool c_Memcached::t_setoption(int option, const Variant& value) {
   switch (option) {
   case q_Memcached$$OPT_COMPRESSION:
     m_impl->compression = value.toBoolean();
@@ -874,6 +881,11 @@ bool c_Memcached::t_setoption(int option, CVarRef value) {
 
   default:
     {
+      if ((option < 0) || (option >= MEMCACHED_BEHAVIOR_MAX)) {
+        raise_warning("error setting memcached option");
+        return false;
+      }
+
       // Assume that it's a libmemcached behavior option
       uint64_t lValue = value.toInt64();
       if (memcached_behavior_set(&m_impl->memcached,
@@ -917,7 +929,7 @@ bool c_Memcached::handleError(memcached_return status) {
   }
 }
 
-void c_Memcached::toPayload(CVarRef value, std::vector<char> &payload,
+void c_Memcached::toPayload(const Variant& value, std::vector<char> &payload,
                             uint32_t &flags) {
   String encoded;
   if (value.isString() || value.isNumeric()) {
@@ -930,7 +942,7 @@ void c_Memcached::toPayload(CVarRef value, std::vector<char> &payload,
   } else {
     switch (m_impl->serializer) {
     case q_Memcached$$SERIALIZER_JSON:
-      encoded = f_json_encode(value);
+      encoded = HHVM_FN(json_encode)(value);
       flags = MEMC_VAL_IS_JSON;
       break;
     default:
@@ -998,7 +1010,7 @@ bool c_Memcached::toObject(Variant& value, const memcached_result_st &result) {
     value = decompPayload.toBoolean();
     break;
   case MEMC_VAL_IS_JSON:
-    value = f_json_decode(decompPayload);
+    value = HHVM_FN(json_decode)(decompPayload);
     break;
   case MEMC_VAL_IS_SERIALIZED:
     value = unserialize_from_string(decompPayload);
@@ -1013,7 +1025,7 @@ bool c_Memcached::toObject(Variant& value, const memcached_result_st &result) {
   return true;
 }
 
-memcached_return c_Memcached::doCacheCallback(CVarRef callback, const String& key,
+memcached_return c_Memcached::doCacheCallback(const Variant& callback, const String& key,
                                               Variant& value) {
   Array params(ArrayInit(3).set(Variant(this))
                            .set(key)

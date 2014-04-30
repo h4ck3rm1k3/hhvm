@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -21,6 +21,7 @@
 #include "hphp/runtime/base/directory.h"
 #include "hphp/runtime/server/static-content-cache.h"
 #include "hphp/system/constants.h"
+#include "hphp/util/file-util.h"
 #include <memory>
 
 namespace HPHP {
@@ -43,7 +44,7 @@ MemFile* FileStreamWrapper::openFromCache(const String& filename,
 }
 
 File* FileStreamWrapper::open(const String& filename, const String& mode,
-                              int options, CVarRef context) {
+                              int options, const Variant& context) {
   String fname =
     !strncmp(filename.data(), "file://", sizeof("file://") - 1)
     ? filename.substr(sizeof("file://") - 1) : filename;
@@ -83,11 +84,11 @@ Directory* FileStreamWrapper::opendir(const String& path) {
 int FileStreamWrapper::rename(const String& oldname, const String& newname) {
   int ret =
     RuntimeOption::UseDirectCopy ?
-      Util::directRename(File::TranslatePath(oldname).data(),
-                         File::TranslatePath(newname).data())
+      FileUtil::directRename(File::TranslatePath(oldname).data(),
+                             File::TranslatePath(newname).data())
                                  :
-      Util::rename(File::TranslatePath(oldname).data(),
-                   File::TranslatePath(newname).data());
+      FileUtil::rename(File::TranslatePath(oldname).data(),
+                       File::TranslatePath(newname).data());
   return ret;
 }
 

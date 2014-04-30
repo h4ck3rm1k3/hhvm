@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -28,7 +28,6 @@ class TestExtServer : public TestCppExt {
   virtual bool RunTests(const std::string &which);
 
   bool test_dangling_server_proxy_old_request();
-  bool test_dangling_server_proxy_new_request();
   bool test_pagelet_server_task_start();
   bool test_pagelet_server_task_status();
   bool test_pagelet_server_task_result();

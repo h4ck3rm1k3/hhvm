@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    | Copyright (c) 1997-2010 The PHP Group                                |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
@@ -49,9 +49,11 @@ Variant f_icu_match(const String& pattern, const String& subject,
                     VRefParam matches /* = null */, int64_t flags /* = 0 */) {
   UErrorCode status = U_ZERO_ERROR;
 
+  Array matchesArr;
   if (matches.isReferenced()) {
-    matches = Array();
+    matchesArr = Array::Create();
   }
+  SCOPE_EXIT { if (matches.isReferenced()) matches = matchesArr; };
 
   // Create hash map key by concatenating pattern and flags.
   StringBuffer bpattern;
@@ -119,9 +121,9 @@ Variant f_icu_match(const String& pattern, const String& subject,
           }
 
           start = usubject.countChar32(0, start);
-          matches->append(make_packed_array(match, start));
+          matchesArr.append(make_packed_array(match, start));
         } else {
-          matches->append(match);
+          matchesArr.append(match);
         }
       }
     }
@@ -317,7 +319,7 @@ Array f_icu_tokenize(const String& text) {
     normalizeToken(*iter);
     const UnicodeString& word = iter->value;
     // Ignore spaces and empty strings.
-    if(!s_spaceMatcher->matches(word) && word.length() > 0) {
+    if (!s_spaceMatcher->matches(word) && word.length() > 0) {
       ret.set(i++, String(icuStringToUTF8(word)));
     }
   }

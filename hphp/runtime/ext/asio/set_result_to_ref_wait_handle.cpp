@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    | Copyright (c) 1997-2010 The PHP Group                                |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
@@ -35,8 +35,10 @@ void c_SetResultToRefWaitHandle::t___construct() {
   throw e;
 }
 
-void c_SetResultToRefWaitHandle::ti_setoncreatecallback(CVarRef callback) {
-  if (!callback.isNull() && !callback.instanceof(c_Closure::classof())) {
+void c_SetResultToRefWaitHandle::ti_setoncreatecallback(const Variant& callback) {
+  if (!callback.isNull() &&
+      (!callback.isObject() ||
+       !callback.getObjectData()->instanceof(c_Closure::classof()))) {
     Object e(SystemLib::AllocInvalidArgumentExceptionObject(
       "Unable to set SetResultToRefWaitHandle::onCreate: on_create_cb not a closure"));
     throw e;
@@ -44,7 +46,7 @@ void c_SetResultToRefWaitHandle::ti_setoncreatecallback(CVarRef callback) {
   AsioSession::Get()->setOnSetResultToRefCreateCallback(callback.getObjectDataOrNull());
 }
 
-Object c_SetResultToRefWaitHandle::ti_create(CObjRef wait_handle, VRefParam ref) {
+Object c_SetResultToRefWaitHandle::ti_create(const Object& wait_handle, VRefParam ref) {
   TypedValue* var_or_cell = ref->asTypedValue();
   if (wait_handle.isNull()) {
     tvSetNull(*var_or_cell);
@@ -127,7 +129,7 @@ void c_SetResultToRefWaitHandle::markAsSucceeded(const Cell& result) {
   m_child = nullptr;
 }
 
-void c_SetResultToRefWaitHandle::markAsFailed(CObjRef exception) {
+void c_SetResultToRefWaitHandle::markAsFailed(const Object& exception) {
   RefData* ref = m_ref;
 
   m_ref = nullptr;

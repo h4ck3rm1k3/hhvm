@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -15,6 +15,7 @@
 */
 
 #include "hphp/runtime/vm/jit/trans-cfg.h"
+#include <limits>
 #include "hphp/runtime/vm/jit/translator-inline.h"
 
 namespace HPHP {
@@ -122,7 +123,7 @@ RegionDescPtr selectHotTrace(TransID triggerId,
                              TransCFG& cfg,
                              TransIDSet& selectedSet,
                              TransIDVec* selectedVec) {
-  JIT::RegionDescPtr region = std::make_shared<JIT::RegionDesc>();
+  auto region = std::make_shared<RegionDesc>();
   TransID tid    = triggerId;
   TransID prevId = InvalidID;
   selectedSet.clear();

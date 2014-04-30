@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    | Copyright (c) 1997-2010 The PHP Group                                |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
@@ -17,7 +17,7 @@
 
 #include "hphp/runtime/ext/pdo_sqlite.h"
 #include "hphp/runtime/ext/ext_function.h"
-#include "hphp/runtime/ext/ext_stream.h"
+#include "hphp/runtime/ext/stream/ext_stream.h"
 #include "hphp/runtime/ext/ext_sqlite3.h"
 #include "hphp/runtime/vm/jit/translator-inline.h"
 #include <sqlite3.h>
@@ -91,7 +91,7 @@ PDOSqliteConnection::~PDOSqliteConnection() {
   }
 }
 
-bool PDOSqliteConnection::create(CArrRef options) {
+bool PDOSqliteConnection::create(const Array& options) {
   String filename = data_source.substr(0,1) == ":" ? String(data_source) :
                     File::TranslatePath(data_source);
   if (filename.empty()) {
@@ -176,9 +176,9 @@ bool PDOSqliteConnection::closer() {
 }
 
 bool PDOSqliteConnection::preparer(const String& sql, sp_PDOStatement *stmt,
-                                   CVarRef options) {
+                                   const Variant& options) {
   if (options.toArray().exists(PDO_ATTR_CURSOR) &&
-      options[PDO_ATTR_CURSOR].toInt64() != PDO_CURSOR_FWDONLY) {
+      options.toArray()[PDO_ATTR_CURSOR].toInt64() != PDO_CURSOR_FWDONLY) {
     m_einfo.errcode = SQLITE_ERROR;
     handleError(__FILE__, __LINE__);
     return false;
@@ -248,7 +248,7 @@ bool PDOSqliteConnection::rollback() {
   return true;
 }
 
-bool PDOSqliteConnection::setAttribute(int64_t attr, CVarRef value) {
+bool PDOSqliteConnection::setAttribute(int64_t attr, const Variant& value) {
   switch (attr) {
   case PDO_ATTR_TIMEOUT:
     sqlite3_busy_timeout(m_db, value.toInt64() * 1000);
@@ -290,7 +290,7 @@ void php_sqlite3_callback_func(sqlite3_context* context, int argc,
                                sqlite3_value** argv);
 
 bool PDOSqliteConnection::createFunction(const String& name,
-                                         CVarRef callback,
+                                         const Variant& callback,
                                          int argcount) {
   if (!f_is_callable(callback)) {
     raise_warning("function '%s' is not callable", callback.toString().data());

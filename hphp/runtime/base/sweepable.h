@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -57,7 +57,7 @@ public:
    * Note: "Persistent" here means that the object will stay alive
    * across requests, but *as a thread local*.  It can be reused once
    * the same server thread gets around to handling a new request.  If
-   * you need this you probably should be using it via PersistentObjectStore.
+   * you need this you probably should be using it via PersistentResourceStore.
    */
   void incPersistent() { ++m_persistentCount; }
   void decPersistent() { --m_persistentCount; }

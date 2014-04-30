@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    | Copyright (c) 1997-2010 The PHP Group                                |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
@@ -15,6 +15,8 @@
    +----------------------------------------------------------------------+
 */
 #include "hphp/runtime/ext/icu/LifeEventTokenizer.h"
+#include <atomic>
+#include <vector>
 
 using namespace U_ICU_NAMESPACE;
 
@@ -165,7 +167,7 @@ void tokenizeString(
   const BreakIterator* ptrBreakIterator,
   const icu::UnicodeString& ustr) {
 
-  if(strRules == NULL) return;
+  if (strRules == NULL) return;
   // icu::RuleBasedBreakIterator is stateful -- it cannot be used by
   // multiple threads simultaneously without causing data corruption and
   // crashes.

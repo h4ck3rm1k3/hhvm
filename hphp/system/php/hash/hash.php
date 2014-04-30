@@ -15,7 +15,7 @@
  *                  returned.
  *                  On error, FALSE is returned.
  */
-<<__Native>>
+<<__Native,__IsFoldable>>
 function hash(string $algo, string $data,
               bool $raw_output = false): mixed;
 
@@ -25,7 +25,7 @@ function hash(string $algo, string $data,
  * @return array - A numerically indexed array containing the list of
  *                  supported hashing algorithms.
  */
-<<__Native>>
+<<__Native,__IsFoldable>>
 function hash_algos(): array<string>;
 
 /**
@@ -67,7 +67,7 @@ function hash_final(resource $context, bool $raw_output = false): string;
  *
  * @param string $algo     - Name of selected hashing algorithm
  *                           (i.e. "md5", "sha256", "haval160,4", etc..)
- * @param string $data     - Message to be hashed.
+ * @param mixed $data      - Message to be hashed. Will be cast to a string
  * @param string $key      - Shared secret key used for generating the
  *                           HMAC variant of the message digest.
  * @param bool $raw_output - When set to TRUE, outputs raw binary data.
@@ -79,15 +79,20 @@ function hash_final(resource $context, bool $raw_output = false): string;
  *                  returned.
  *                  On error, FALSE is returned.
  */
-function hash_hmac(?string $algo, ?string $data, ?string $key,
-                   ?bool $raw_output = false): mixed {
+<<__IsFoldable>>
+function hash_hmac(?string $algo = null,
+                   ?mixed $data = null,
+                   ?string $key = null,
+                   ?bool $raw_output = false) {
   // Behave like a builtin function so that we pass Zend's tests
   $args = func_num_args();
   if ($args < 3) {
+    trigger_error("hash_hmac() expects 3 parameters, $args given",
+      E_USER_WARNING);
     return null;
   } else if ($args > 4) {
-    error_log("HipHop Warning: hash_hmac() expects at most 4 parameters, ".
-              "$args given");
+    trigger_error("hash_hmac() expects at most 4 parameters, $args given",
+      E_USER_WARNING);
     return null;
   }
 
@@ -95,7 +100,7 @@ function hash_hmac(?string $algo, ?string $data, ?string $key,
   if (!$ctx) {
     return false;
   }
-  hash_update($ctx, $data);
+  hash_update($ctx, (string) $data);
   return hash_final($ctx, $raw_output);
 }
 
@@ -116,9 +121,14 @@ function hash_hmac(?string $algo, ?string $data, ?string $key,
  *                  returned.
  *                  On error, FALSE is returned.
  */
-function hash_hmac_file(?string $algo, ?string $filename, ?string $key,
-                        ?bool $raw_output = false): mixed {
-  if (func_num_args() < 3) {
+function hash_hmac_file(?string $algo = null,
+                        ?string $filename = null,
+                        ?string $key = null,
+                        ?bool $raw_output = false) {
+  $args = func_num_args();
+  if ($args < 3) {
+    trigger_error("hash_hmac_file() expects 3 parameters, $args given",
+      E_USER_WARNING);
     return null;
   }
 
@@ -173,7 +183,7 @@ function hash_update(resource $context, string $data): bool;
  * @return bool - Returns TRUE on success, FALSE on failure
  */
 function hash_update_file(mixed $context, string $filename,
-                          mixed $stream_context = null): bool {
+                          mixed $stream_context = null) {
   $fp = fopen($filename, 'r', false, $stream_context);
   if (!$fp) {
     return false;
@@ -200,7 +210,7 @@ function hash_update_file(mixed $context, string $filename,
  *               from handle.
  */
 function hash_update_stream(mixed $context, mixed $handle,
-                            int $maxlen = -1): int {
+                            int $maxlen = -1) {
   $didread = 0;
   while ($maxlen) {
     $chunk = fread($handle, ($maxlen > 0) ? $maxlen : 1024);
@@ -219,7 +229,7 @@ function hash_update_stream(mixed $context, mixed $handle,
 }
 
 /**
- * hash_copy - hash_copy — Copy hashing context
+ * hash_copy - Copy hashing context
  *
  * @param resource $context - Hashing context returned by hash_init().
  *
@@ -227,3 +237,80 @@ function hash_update_stream(mixed $context, mixed $handle,
  */
 <<__Native>>
 function hash_copy(resource $context): resource;
+
+/**
+ * hash_pbkdf2 - http://php.net/function.hash-pbkdf2.php
+ * RFC 2898 - http://www.ietf.org/rfc/rfc2898.txt
+ *
+ * @param string $algo     - Name of selected hashing algorithm
+ *                           (i.e. "md5", "sha256", "haval160,4", etc..)
+ * @param string $password - The password to use for the derivation.
+ * @param string $salt     - The salt to use for the derivation. This value
+ *                           should be generated randomly.
+ * @param int $iterations  - The number of internal iterations to perform
+ *                           for the derivation.
+ * @param int $length      - The length of the output string. If raw_output is
+ *                           TRUE this corresponds to the byte-length of the
+ *                           derived key, if raw_output is FALSE this
+ *                           corresponds to twice the byte-length of the
+ *                           derived key (as every byte of the key is returned
+ *                           as two hexits).
+ *                           If 0 is passed, the entire output of the supplied
+ *                           algorithm is used.
+ * @param bool $raw_output - When set to TRUE, outputs raw binary data.
+ *                           FALSE outputs lowercase hexits.
+ *
+ * @return string - A string containing the derived key as lowercase hexits
+ *                  unless raw_output is set to TRUE in which case the raw
+ *                  binary representation of the derived key is returned.
+ */
+function hash_pbkdf2(string $algo, string $password, string $salt,
+                     int $iterations, int $length = 0,
+                     bool $raw_output = false) {
+  $algo = strtolower($algo);
+  if (!in_array($algo, hash_algos())) {
+    error_log("\nWarning: hash_pbkdf2(): Unknown hashing algorithm: ".
+              $algo);
+    return false;
+  }
+
+  if ($iterations <= 0) {
+    error_log("\nWarning: hash_pbkdf2(): Iterations must be a positive".
+              " integer: ".$iterations);
+    return false;
+  }
+
+  if ($length < 0) {
+    error_log("\nWarning: hash_pbkdf2(): Length must be greater than or ".
+              "equal to 0: ".$length);
+    return false;
+  }
+
+  $result = "";
+  $hash_length = strlen(hash($algo, "", true));
+  if (!$length) {
+    $length = $hash_length;
+    if (!$raw_output) {
+      // It's a bit weird
+      $length *= 2;
+    }
+  }
+  $key_blocks = ceil($length / $hash_length);
+  for ($i = 1; $i <= $key_blocks; $i++) {
+    // Note: $i encoded with most siginificant octet first.
+    $xor = hash_hmac($algo, $salt.pack("N", $i), $password, true);
+    $prev = $xor;
+    for ($j = 1; $j < $iterations; $j++) {
+      $prev = hash_hmac($algo, $prev, $password, true);
+      $xor ^= $prev;
+    }
+    $result .= $xor;
+  }
+
+  if ($raw_output) {
+    return substr($result, 0, $length);
+  } else {
+    return substr(bin2hex($result), 0, $length);
+  }
+  return $result;
+}

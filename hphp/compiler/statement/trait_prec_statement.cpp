@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -15,11 +15,13 @@
 */
 
 #include "hphp/compiler/statement/trait_prec_statement.h"
+#include <set>
 #include "hphp/compiler/statement/statement_list.h"
 #include "hphp/compiler/statement/class_statement.h"
 #include "hphp/compiler/statement/method_statement.h"
 #include "hphp/compiler/expression/expression_list.h"
 #include "hphp/compiler/analysis/class_scope.h"
+#include "hphp/util/text-util.h"
 
 using namespace HPHP;
 
@@ -47,7 +49,7 @@ void TraitPrecStatement::getOtherTraitNames(std::set<string> &namesSet) const {
   vector<string> namesVec;
   m_otherTraitNames->getStrings(namesVec);
   for (unsigned int i = 0; i < namesVec.size(); i++) {
-    namesVec[i] = Util::toLower(namesVec[i]);
+    namesVec[i] = toLower(namesVec[i]);
   }
   namesSet.clear();
   namesSet.insert(namesVec.begin(), namesVec.end());

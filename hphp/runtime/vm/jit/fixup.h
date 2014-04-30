@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -17,11 +17,10 @@
 #ifndef incl_HPHP_FIXUP_H_
 #define incl_HPHP_FIXUP_H_
 
-#include "hphp/util/util.h"
+#include <vector>
 #include "hphp/runtime/vm/jit/types.h"
 #include "hphp/runtime/base/execution-context.h"
 #include "hphp/runtime/vm/tread-hash-map.h"
-#include "hphp/runtime/vm/jit/types.h"
 #include "hphp/util/atomic.h"
 #include "hphp/util/data-block.h"
 
@@ -141,7 +140,7 @@ class FixupMap {
 
 public:
   struct VMRegs {
-    const HPHP::Opcode* m_pc;
+    const Op* m_pc;
     TypedValue* m_sp;
     const ActRec* m_fp;
   };
@@ -159,9 +158,9 @@ public:
 
   void recordSyncPoint(CodeAddress frontier, Offset pcOff, Offset spOff);
   void recordIndirectFixup(CodeAddress frontier, int dwordsPushed);
-  void fixup(VMExecutionContext* ec) const;
-  void fixupWork(VMExecutionContext* ec, ActRec* rbp) const;
-  void fixupWorkSimulated(VMExecutionContext* ec) const;
+  void fixup(ExecutionContext* ec) const;
+  void fixupWork(ExecutionContext* ec, ActRec* rbp) const;
+  void fixupWorkSimulated(ExecutionContext* ec) const;
   void processPendingFixups();
   void clearPendingFixups() { m_pendingFixups.clear(); }
   bool pendingFixupsEmpty() const { return m_pendingFixups.empty(); }
@@ -186,8 +185,7 @@ private:
     m_fixups.insert(tca, FixupEntry(indirect));
   }
 
-  const HPHP::Opcode* pc(const ActRec* ar, const Func* f,
-                         const Fixup& fixup) const {
+  PC pc(const ActRec* ar, const Func* f, const Fixup& fixup) const {
     assert(f);
     return f->getEntry() + fixup.m_pcOffset;
   }
@@ -199,10 +197,10 @@ private:
     TRACE(3, "regsFromActRec:: tca %p -> (pcOff %d, spOff %d)\n",
           (void*)tca, fixup.m_pcOffset, fixup.m_spOffset);
     assert(fixup.m_spOffset >= 0);
-    outRegs->m_pc = pc(ar, f, fixup);
+    outRegs->m_pc = reinterpret_cast<const Op*>(pc(ar, f, fixup));
     outRegs->m_fp = ar;
 
-    if (UNLIKELY(f->isGenerator())) {
+    if (UNLIKELY(ar->inGenerator())) {
       TypedValue* genStackBase = Stack::generatorStackBase(ar);
       outRegs->m_sp = genStackBase - fixup.m_spOffset;
     } else {

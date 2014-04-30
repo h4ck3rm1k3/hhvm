@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -45,7 +45,7 @@ public:
   };
 
   static int GetSSLExDataIndex();
-  static SSLSocket *Create(const Util::HostURL &hosturl, double timeout);
+  static SSLSocket *Create(const HostURL &hosturl, double timeout);
 
 public:
   SSLSocket();
@@ -126,8 +126,8 @@ public:
    *    to that cert
    *  . it will be interpreted as the cert data
    */
-  static Resource Get(CVarRef var);
-  static BIO *ReadData(CVarRef var, bool *file = nullptr);
+  static Resource Get(const Variant& var);
+  static BIO *ReadData(const Variant& var, bool *file = nullptr);
 };
 
 ///////////////////////////////////////////////////////////////////////////////

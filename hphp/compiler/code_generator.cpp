@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -24,10 +24,12 @@
 #include "hphp/compiler/analysis/analysis_result.h"
 #include "hphp/compiler/analysis/variable_table.h"
 #include "hphp/runtime/base/zend-printf.h"
-#include "hphp/util/util.h"
+#include "hphp/util/text-util.h"
 #include "hphp/util/hash.h"
 #include <boost/format.hpp>
 #include <boost/scoped_array.hpp>
+#include <algorithm>
+#include <vector>
 
 using namespace HPHP;
 
@@ -235,28 +237,9 @@ void CodeGenerator::printDocComment(const std::string comment) {
   printf("\n");
 }
 
-std::string CodeGenerator::FormatLabel(const std::string &name) {
-  string ret;
-  ret.reserve(name.size());
-  for (size_t i = 0; i < name.size(); i++) {
-    unsigned char ch = name[i];
-    if ((ch >= 'a' && ch <= 'z') ||
-        (ch >= 'A' && ch <= 'Z') ||
-        (ch >= '0' && ch <= '9') || ch == '_') {
-      ret += ch;
-    } else {
-      char buf[10];
-      snprintf(buf, sizeof(buf), "%s%02X", Option::LabelEscape.c_str(),
-               (int)ch);
-      ret += buf;
-    }
-  }
-  return ret;
-}
-
 std::string CodeGenerator::EscapeLabel(const std::string &name,
                                        bool *binary /* = NULL */) {
-  return Util::escapeStringForCPP(name, binary);
+  return escapeStringForCPP(name, binary);
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -506,6 +489,15 @@ void CodeGenerator::printTypeExpression(std::string value) {
   printObjectFooter();
 }
 
+void CodeGenerator::printTypeExpression(ExpressionPtr expression) {
+  printObjectHeader("TypeExpression", 2);
+  printPropertyHeader("name");
+  expression->outputCodeModel(*this);
+  printPropertyHeader("sourceLocation");
+  printLocation(expression->getLocation());
+  printObjectFooter();
+}
+
 void CodeGenerator::printExpression(ExpressionPtr expression, bool isRef) {
   if (isRef) {
     printObjectHeader("UnaryOpExpression", 3);
@@ -541,17 +533,32 @@ void CodeGenerator::printExpressionVector(ExpressionPtr e) {
   }
 }
 
-void CodeGenerator::printAsBlock(StatementPtr s) {
+void CodeGenerator::printTypeExpressionVector(ExpressionListPtr el) {
+  auto count = el == nullptr ? 0 : el->getCount();
+  printf("V:9:\"HH\\Vector\":%d:{", count);
+  for (int i = 0; i < count; i++) {
+    auto te = (*el)[i];
+    printTypeExpression(te);
+  }
+  printf("}");
+}
+
+void CodeGenerator::printAsBlock(StatementPtr s, bool isEnclosed) {
   if (s != nullptr && s->is(Statement::KindOfBlockStatement)) {
     s->outputCodeModel(*this);
   } else {
-    auto numProps = s == nullptr ? 1 : 2;
+    auto numProps = s == nullptr ? 0 : 2;
+    if (isEnclosed) numProps++;
     printObjectHeader("BlockStatement", numProps);
-    printPropertyHeader("statements");
-    printStatementVector(s);
     if (s != nullptr) {
+      printPropertyHeader("statements");
+      printStatementVector(s);
       printPropertyHeader("sourceLocation");
       printLocation(s->getLocation());
+    }
+    if (isEnclosed) {
+      printPropertyHeader("isEnclosed");
+      printBool(true);
     }
     printObjectFooter();
   }
@@ -591,5 +598,3 @@ void CodeGenerator::printLocation(LocationPtr location) {
   printValue(location->char1);
   printObjectFooter();
 }
-
-

@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -37,7 +37,7 @@ void CmdConfig::help(DebuggerClient &client) {
   client.helpBody(
     "Use this command to change default settings. "
     "The new values are persisted into "
-    "the configuration file that normally can be found at ~/.hphpd.hdf. "
+    "the configuration file that normally can be found at ~/.hphpd.ini. "
     "Level, count and limit can be <= 0, in which case they are unlimited."
   );
 }

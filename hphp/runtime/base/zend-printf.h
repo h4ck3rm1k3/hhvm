@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    | Copyright (c) 1998-2010 Zend Technologies Ltd. (http://www.zend.com) |
    +----------------------------------------------------------------------+
    | This source file is subject to version 2.00 of the Zend license,     |
@@ -26,7 +26,7 @@ namespace HPHP {
 /**
  * How PHP formats a string. Called by ext/ext_string.cpp.
  */
-char *string_printf(const char *format, int len, CArrRef args, int *outlen);
+char *string_printf(const char *format, int len, const Array& args, int *outlen);
 
 // XXX: vspprintf and spprintf have slightly different semantics and flags than
 // C99 printf (because PHP) so we can't annotate them with ATTRIBUTE_PRINTF

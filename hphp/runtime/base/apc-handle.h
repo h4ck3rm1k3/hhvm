@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -18,6 +18,7 @@
 #define incl_HPHP_APC_HANDLE_H_
 
 #include "hphp/runtime/base/types.h"
+#include <atomic>
 #include "hphp/util/lock.h"
 #include "hphp/util/hash.h"
 #include "hphp/util/atomic.h"
@@ -103,7 +104,7 @@ struct APCHandle {
    * Create an instance of an APC object according to the type of source and
    * the various flags. This is the only entry point to create APC entities.
    */
-  static APCHandle* Create(CVarRef source,
+  static APCHandle* Create(const Variant& source,
                            bool serialized,
                            bool inner = false,
                            bool unserializeObj = false);
@@ -191,11 +192,11 @@ private:
 
   void deleteShared();
 
-  static APCHandle* CreateSharedType(CVarRef source,
+  static APCHandle* CreateSharedType(const Variant& source,
                                      bool serialized,
                                      bool inner,
                                      bool unserializeObj);
-  static APCHandle* CreateUncounted(CVarRef source);
+  static APCHandle* CreateUncounted(const Variant& source);
 
   bool shouldCache() const { return m_shouldCache; }
   void mustCache() { m_shouldCache = true; }

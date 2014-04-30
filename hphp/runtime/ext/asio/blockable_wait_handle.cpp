@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    | Copyright (c) 1997-2010 The PHP Group                                |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
@@ -77,7 +77,7 @@ c_BlockableWaitHandle::createCycleException(c_WaitableWaitHandle* child) const {
   exception_msg_items.push_back("Existing stack:\n");
 
   exception_msg_items.push_back(folly::stringPrintf(
-    "  %s (%" PRId64 ")\n", child->getName()->data(), child->t_getid()));
+    "  %s (%" PRId64 ")\n", child->getName().data(), child->t_getid()));
 
   assert(dynamic_cast<c_BlockableWaitHandle*>(child));
   auto current = static_cast<c_BlockableWaitHandle*>(child);
@@ -88,12 +88,12 @@ c_BlockableWaitHandle::createCycleException(c_WaitableWaitHandle* child) const {
     current = static_cast<c_BlockableWaitHandle*>(current->getChild());
 
     exception_msg_items.push_back(folly::stringPrintf(
-      "  %s (%" PRId64 ")\n", current->getName()->data(), current->t_getid()));
+      "  %s (%" PRId64 ")\n", current->getName().data(), current->t_getid()));
   }
 
   exception_msg_items.push_back("Trying to introduce dependency on:\n");
   exception_msg_items.push_back(folly::stringPrintf(
-    "  %s (%" PRId64 ") (dupe)\n", child->getName()->data(), child->t_getid()));
+    "  %s (%" PRId64 ") (dupe)\n", child->getName().data(), child->t_getid()));
   return SystemLib::AllocInvalidOperationExceptionObject(
       folly::join("", exception_msg_items));
 }

@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -15,10 +15,11 @@
 */
 
 #include "hphp/compiler/expression/expression.h"
+#include <vector>
 #include "hphp/compiler/analysis/code_error.h"
 #include "hphp/compiler/parser/parser.h"
 #include "hphp/parser/hphp.tab.hpp"
-#include "hphp/util/util.h"
+#include "hphp/util/text-util.h"
 #include "hphp/compiler/analysis/class_scope.h"
 #include "hphp/compiler/analysis/function_scope.h"
 #include "hphp/compiler/expression/scalar_expression.h"
@@ -376,7 +377,7 @@ void Expression::setTypes(AnalysisResultConstPtr ar, TypePtr actualType,
 
 void Expression::setDynamicByIdentifier(AnalysisResultPtr ar,
                                         const std::string &value) {
-  string id = Util::toLower(value);
+  string id = toLower(value);
   size_t c = id.find("::");
   FunctionScopePtr fi;
   ClassScopePtr ci;
@@ -691,7 +692,7 @@ bool Expression::isUnquotedScalar() const {
 ExpressionPtr Expression::MakeScalarExpression(AnalysisResultConstPtr ar,
                                                BlockScopePtr scope,
                                                LocationPtr loc,
-                                               CVarRef value) {
+                                               const Variant& value) {
   if (value.isArray()) {
     ExpressionListPtr el(new ExpressionList(scope, loc,
                                             ExpressionList::ListKindParam));

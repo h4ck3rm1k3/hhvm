@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    | Copyright (c) 1998-2010 Zend Technologies Ltd. (http://www.zend.com) |
    +----------------------------------------------------------------------+
    | This source file is subject to version 2.00 of the Zend license,     |
@@ -29,6 +29,7 @@
 #include "hphp/runtime/base/string-buffer.h"
 #include "hphp/runtime/base/runtime-error.h"
 #include "hphp/runtime/base/type-conversions.h"
+#include "hphp/runtime/base/string-util.h"
 #include "hphp/runtime/base/builtin-functions.h"
 
 #ifdef __APPLE__
@@ -578,7 +579,11 @@ String string_replace(const char *input, int len,
     return String(); // not found
   }
 
-  String retString(len + (len_replace - len_search) * count, ReserveString);
+  int reserve = len + (len_replace - len_search) * count;
+  if ((reserve - len) / count != (len_replace - len_search)) {
+    raise_error("String too large");
+  }
+  String retString(reserve, ReserveString);
   char *ret = retString.bufferSlice().ptr;
   char *p = ret;
   int pos = 0; // last position in input that hasn't been copied over yet
@@ -1391,47 +1396,61 @@ static char string_hex2int(int c) {
 }
 
 char *string_quoted_printable_encode(const char *input, int &len) {
-  const char *hex = "0123456789ABCDEF";
+  // This logic is from PHP's ext/standard/quot_print.c, with all the
+  // string writes replaced with std::string-based alternatives.
+  size_t length = len;
+  const char *str = input;
 
-  unsigned char *ret =
-    (unsigned char *)malloc(3 * len + 3 * (((3 * len)/PHP_QPRINT_MAXL) + 1));
-  unsigned char *d = ret;
-
-  int length = len;
-  unsigned char c;
   unsigned long lp = 0;
+  unsigned char c;
+  char *hex = "0123456789ABCDEF";
+
+  std::string ret;
+  ret.reserve(length);
+
   while (length--) {
-    if (((c = *input++) == '\015') && (*input == '\012') && length > 0) {
-      *d++ = '\015';
-      *d++ = *input++;
+    if (((c = *str++) == '\015') && (*str == '\012') && length > 0) {
+      ret.push_back('\015');
+      ret.push_back(*str++);
       length--;
       lp = 0;
     } else {
-      if (iscntrl (c) || (c == 0x7f) || (c & 0x80) || (c == '=') ||
-          ((c == ' ') && (*input == '\015'))) {
-        if ((lp += 3) > PHP_QPRINT_MAXL) {
-          *d++ = '=';
-          *d++ = '\015';
-          *d++ = '\012';
+      if (iscntrl (c) || (c == 0x7f) || (c & 0x80) ||
+         (c == '=') || ((c == ' ') && (*str == '\015'))) {
+        if ((((lp+= 3) > PHP_QPRINT_MAXL) && (c <= 0x7f))
+            || ((c > 0x7f) && (c <= 0xdf) && ((lp + 3) > PHP_QPRINT_MAXL))
+            || ((c > 0xdf) && (c <= 0xef) && ((lp + 6) > PHP_QPRINT_MAXL))
+            || ((c > 0xef) && (c <= 0xf4) && ((lp + 9) > PHP_QPRINT_MAXL))) {
+          ret.push_back('=');
+          ret.push_back('\015');
+          ret.push_back('\012');
           lp = 3;
         }
-        *d++ = '=';
-        *d++ = hex[c >> 4];
-        *d++ = hex[c & 0xf];
+        ret.push_back('=');
+        ret.push_back(hex[c >> 4]);
+        ret.push_back(hex[c & 0xf]);
       } else {
         if ((++lp) > PHP_QPRINT_MAXL) {
-          *d++ = '=';
-          *d++ = '\015';
-          *d++ = '\012';
+          ret.push_back('=');
+          ret.push_back('\015');
+          ret.push_back('\012');
           lp = 1;
         }
-        *d++ = c;
+        ret.push_back(c);
       }
     }
   }
-  *d = '\0';
-  len = d - ret;
-  return (char*)ret;
+  size_t result_length = ret.length();
+  if (result_length > StringData::MaxSize) {
+    throw FatalErrorException(
+      0,
+      "String length exceeded 2^31-2: %zu",
+      result_length);
+  }
+  len = result_length;
+
+  char *ret_c = string_duplicate(ret.c_str(), result_length);
+  return ret_c;
 }
 
 char *string_quoted_printable_decode(const char *input, int &len, bool is_q) {
@@ -1595,7 +1614,7 @@ char *string_long_to_base(unsigned long value, int base) {
   return string_duplicate(ptr, end - ptr);
 }
 
-char *string_numeric_to_base(CVarRef value, int base) {
+char *string_numeric_to_base(const Variant& value, int base) {
   static char digits[] = "0123456789abcdefghijklmnopqrstuvwxyz";
 
   assert(string_validate_base(base));
@@ -1911,7 +1930,7 @@ static unsigned char *php_base64_decode(const unsigned char *str,
       result[k] = 0;
     }
   }
-  if(ret_length) {
+  if (ret_length) {
     *ret_length = j;
   }
   result[j] = '\0';
@@ -1935,7 +1954,7 @@ char *string_escape_shell_arg(const char *str) {
   y = 0;
   l = strlen(str);
 
-  cmd = (char *)malloc((l << 2) + 3); /* worst case */
+  cmd = (char *)malloc(safe_address(l, 4, 3)); /* worst case */
 
   cmd[y++] = '\'';
 
@@ -1961,7 +1980,7 @@ char *string_escape_shell_cmd(const char *str) {
   char *p = nullptr;
 
   l = strlen(str);
-  cmd = (char *)malloc((l << 1) + 1);
+  cmd = (char *)malloc(safe_address(l, 2, 1));
 
   for (x = 0, y = 0; x < l; x++) {
     switch (str[x]) {
@@ -2103,10 +2122,10 @@ int string_levenshtein(const char *s1, int l1, const char *s2, int l2,
   int *p1, *p2, *tmp;
   int i1, i2, c0, c1, c2;
 
-  if(l1==0) return l2*cost_ins;
-  if(l2==0) return l1*cost_del;
+  if (l1==0) return l2*cost_ins;
+  if (l2==0) return l1*cost_del;
 
-  if((l1>LEVENSHTEIN_MAX_LENTH)||(l2>LEVENSHTEIN_MAX_LENTH)) {
+  if ((l1>LEVENSHTEIN_MAX_LENTH)||(l2>LEVENSHTEIN_MAX_LENTH)) {
     raise_warning("levenshtein(): Argument string(s) too long");
     return -1;
   }
@@ -2122,8 +2141,8 @@ int string_levenshtein(const char *s1, int l1, const char *s2, int l2,
     p2[0]=p1[0]+cost_del;
     for(i2=0;i2<l2;i2++) {
       c0=p1[i2]+((s1[i1]==s2[i2])?0:cost_rep);
-      c1=p1[i2+1]+cost_del; if(c1<c0) c0=c1;
-      c2=p2[i2]+cost_ins; if(c2<c0) c0=c2;
+      c1=p1[i2+1]+cost_del; if (c1<c0) c0=c1;
+      c2=p2[i2]+cost_ins; if (c2<c0) c0=c2;
       p2[i2+1]=c0;
     }
     tmp=p1; p1=p2; p2=tmp;
@@ -2154,7 +2173,8 @@ char *string_money_format(const char *format, double value) {
   }
 
   int format_len = strlen(format);
-  int str_len = format_len + 1024;
+  int str_len;
+  str_len = safe_address(format_len, 1, 1024);
   char *str = (char *)malloc(str_len);
   if ((str_len = strfmon(str, str_len, format, value)) < 0) {
     free(str);

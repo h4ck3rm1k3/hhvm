@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -42,10 +42,11 @@
 #include "hphp/util/repo-schema.h"
 #include "hphp/util/current-executable.h"
 #include "hphp/util/service-data.h"
+#include "hphp/util/file-util.h"
 #include "hphp/runtime/base/stat-cache.h"
 #include "hphp/runtime/ext/extension.h"
 #include "hphp/runtime/ext/ext_fb.h"
-#include "hphp/runtime/ext/ext_json.h"
+#include "hphp/runtime/ext/json/ext_json.h"
 #include "hphp/runtime/ext/ext_variable.h"
 #include "hphp/runtime/ext/ext_apc.h"
 #include "hphp/runtime/ext/ext_function.h"
@@ -66,6 +67,11 @@
 #include <oniguruma.h>
 #include <signal.h>
 #include <libxml/parser.h>
+#include <exception>
+#include <iterator>
+#include <map>
+#include <memory>
+#include <vector>
 
 #include "hphp/runtime/base/file-repository.h"
 
@@ -100,7 +106,8 @@ void (*g_vmProcessInit)();
 
 struct ProgramOptions {
   string     mode;
-  string     config;
+  std::vector<std::string>
+             config;
   std::vector<std::string>
              confStrings;
   int        port;
@@ -170,11 +177,9 @@ static void process_cmd_arguments(int argc, char **argv) {
   g->set(s_argv, argvArray, false);
 }
 
-void process_env_variables(Variant &variables) {
-  for (std::map<string, string>::const_iterator iter =
-         RuntimeOption::EnvVariables.begin();
-       iter != RuntimeOption::EnvVariables.end(); ++iter) {
-    variables.set(String(iter->first), String(iter->second));
+void process_env_variables(Array& variables) {
+  for (auto& kv : RuntimeOption::EnvVariables) {
+    variables.set(String(kv.first), String(kv.second));
   }
   for (char **env = environ; env && *env; env++) {
     char *p = strchr(*env, '=');
@@ -186,17 +191,24 @@ void process_env_variables(Variant &variables) {
   }
 }
 
-void process_ini_settings() {
-  if (RuntimeOption::IniFile.empty()) {
+void process_ini_settings(const std::string& name) {
+  if (name.empty()) {
     return;
   }
-  auto settings = f_parse_ini_file(String(RuntimeOption::IniFile));
-  for (ArrayIter iter(settings); iter; ++iter) {
-    IniSetting::Set(iter.first(), iter.second());
+  std::ifstream ifs(name);
+  const std::string str((std::istreambuf_iterator<char>(ifs)),
+                        std::istreambuf_iterator<char>());
+  auto settings = IniSetting::FromStringAsMap(str, name);
+
+  for (auto& item : settings.items()) {
+    IniSetting::Set(item.first.data(), item.second,
+                    IniSetting::FollyDynamic());
   }
 }
 
-void register_variable(Variant &variables, char *name, CVarRef value,
+// Handle adding a variable to an array, supporting keys that look
+// like array expressions (like 'FOO[][key1][k2]').
+void register_variable(Array& variables, char *name, const Variant& value,
                        bool overwrite /* = true */) {
   // ignore leading spaces in the variable name
   char *var = name;
@@ -225,10 +237,18 @@ void register_variable(Variant &variables, char *name, CVarRef value,
     return;
   }
 
-  vector<Variant> gpc_elements;
-  gpc_elements.reserve(MAX_INPUT_NESTING_LEVEL); // important, so no resize
-  Variant *symtable = &variables;
-  char *index = var;
+  // GPC elements holds Variants that are acting as smart pointers to
+  // RefDatas that we've created in the process of a multi-dim key.
+  std::vector<Variant> gpc_elements;
+  if (is_array) gpc_elements.reserve(MAX_INPUT_NESTING_LEVEL);
+
+  // The array pointer we're currently adding to.  If we're doing a
+  // multi-dimensional set, this will point at the m_data.parr inside
+  // of a RefData sometimes (via toArrRef on the variants in
+  // gpc_elements).
+  Array* symtable = &variables;
+
+  char* index = var;
   int index_len = var_len;
 
   if (is_array) {
@@ -267,8 +287,7 @@ void register_variable(Variant &variables, char *name, CVarRef value,
       if (!index) {
         symtable->append(Array::Create());
         gpc_elements.push_back(uninit_null());
-        gpc_elements.back().assignRef(
-          symtable->lvalAt((int)symtable->toArray().size() - 1));
+        gpc_elements.back().assignRef(symtable->lvalAt(symtable->size() - 1));
       } else {
         String key(index, index_len, CopyString);
         Variant v = symtable->rvalAt(key);
@@ -278,7 +297,7 @@ void register_variable(Variant &variables, char *name, CVarRef value,
         gpc_elements.push_back(uninit_null());
         gpc_elements.back().assignRef(symtable->lvalAt(key));
       }
-      symtable = &gpc_elements.back();
+      symtable = &gpc_elements.back().toArrRef();
       /* ip pointed to the '[' character, now obtain the key */
       index = index_s;
       index_len = new_idx_len;
@@ -297,7 +316,7 @@ void register_variable(Variant &variables, char *name, CVarRef value,
       symtable->append(value);
     } else {
       String key(index, index_len, CopyString);
-      if (overwrite || !symtable->toArray().exists(key)) {
+      if (overwrite || !symtable->exists(key)) {
         symtable->set(key, value);
       }
     }
@@ -330,6 +349,13 @@ static void bump_counter_and_rethrow() {
     static auto requestMemoryExceededCounter = ServiceData::createTimeseries(
       "requests_memory_exceeded", {ServiceData::StatsType::COUNT});
     requestMemoryExceededCounter->addValue(1);
+
+#ifdef USE_JEMALLOC
+    // Capture a pprof (C++) dump when we OOM a request
+    // TODO: (t3753133) Should dump a PHP-instrumented pprof dump here as well
+    jemalloc_pprof_dump("", false);
+#endif
+
     throw;
   }
 }
@@ -503,7 +529,8 @@ void handle_destructor_exception(const char* situation) {
   }
 }
 
-void execute_command_line_begin(int argc, char **argv, int xhprof) {
+void execute_command_line_begin(int argc, char **argv, int xhprof,
+                                const std::vector<std::string>& config) {
   StackTraceNoHeap::AddExtraLogging("ThreadType", "CLI");
   string args;
   for (int i = 0; i < argc; i++) {
@@ -518,59 +545,64 @@ void execute_command_line_begin(int argc, char **argv, int xhprof) {
 
   GlobalVariables *g = get_global_variables();
 
-  Variant& env = g->getRef(s__ENV);
-  process_env_variables(env);
-  env.set(s_HPHP, 1);
-  env.set(s_HHVM, 1);
-  if (RuntimeOption::EvalJit) {
-    env.set(s_HHVM_JIT, 1);
-  }
-  switch (JIT::arch()) {
-  case JIT::Arch::X64:
-    env.set(s_HHVM_ARCH, "x64");
-    break;
-  case JIT::Arch::ARM:
-    env.set(s_HHVM_ARCH, "arm");
-    break;
+  {
+    Array envArr(Array::Create());
+    process_env_variables(envArr);
+    envArr.set(s_HPHP, 1);
+    envArr.set(s_HHVM, 1);
+    if (RuntimeOption::EvalJit) {
+      envArr.set(s_HHVM_JIT, 1);
+    }
+    switch (JIT::arch()) {
+    case JIT::Arch::X64:
+      envArr.set(s_HHVM_ARCH, "x64");
+      break;
+    case JIT::Arch::ARM:
+      envArr.set(s_HHVM_ARCH, "arm");
+      break;
+    }
+    g->set(s__ENV.get(), envArr, false);
   }
 
   process_cmd_arguments(argc, argv);
 
-  Variant& server = g->getRef(s__SERVER);
-  process_env_variables(server);
-  time_t now;
-  struct timeval tp = {0};
-  double now_double;
-  if (!gettimeofday(&tp, nullptr)) {
-    now_double = (double)(tp.tv_sec + tp.tv_usec / 1000000.00);
-    now = tp.tv_sec;
-  } else {
-    now = time(nullptr);
-    now_double = (double)now;
-  }
-  String file = empty_string;
-  if (argc > 0) {
-    file = StringData::Make(argv[0], CopyString);
-  }
-  server.set(s_REQUEST_START_TIME, now);
-  server.set(s_REQUEST_TIME, now);
-  server.set(s_REQUEST_TIME_FLOAT, now_double);
-  server.set(s_DOCUMENT_ROOT, empty_string);
-  server.set(s_SCRIPT_FILENAME, file);
-  server.set(s_SCRIPT_NAME, file);
-  server.set(s_PHP_SELF, file);
-  server.set(s_argv, g->get(s_argv));
-  server.set(s_argc, g->get(s_argc));
-  server.set(s_PWD, g_context->getCwd());
-  char hostname[1024];
-  if (!gethostname(hostname, 1024)) {
-    server.set(s_HOSTNAME, String(hostname, CopyString));
-  }
+  {
+    Array serverArr(Array::Create());
+    process_env_variables(serverArr);
+    time_t now;
+    struct timeval tp = {0};
+    double now_double;
+    if (!gettimeofday(&tp, nullptr)) {
+      now_double = (double)(tp.tv_sec + tp.tv_usec / 1000000.00);
+      now = tp.tv_sec;
+    } else {
+      now = time(nullptr);
+      now_double = (double)now;
+    }
+    String file = empty_string;
+    if (argc > 0) {
+      file = StringData::Make(argv[0], CopyString);
+    }
+    serverArr.set(s_REQUEST_START_TIME, now);
+    serverArr.set(s_REQUEST_TIME, now);
+    serverArr.set(s_REQUEST_TIME_FLOAT, now_double);
+    serverArr.set(s_DOCUMENT_ROOT, empty_string);
+    serverArr.set(s_SCRIPT_FILENAME, file);
+    serverArr.set(s_SCRIPT_NAME, file);
+    serverArr.set(s_PHP_SELF, file);
+    serverArr.set(s_argv, g->get(s_argv));
+    serverArr.set(s_argc, g->get(s_argc));
+    serverArr.set(s_PWD, g_context->getCwd());
+    char hostname[1024];
+    if (!gethostname(hostname, 1024)) {
+      serverArr.set(s_HOSTNAME, String(hostname, CopyString));
+    }
 
-  for(std::map<string,string>::iterator it =
-        RuntimeOption::ServerVariables.begin(),
-        end = RuntimeOption::ServerVariables.end(); it != end; ++it) {
-    server.set(String(it->first.c_str()), String(it->second.c_str()));
+    for (auto& kv : RuntimeOption::ServerVariables) {
+      serverArr.set(String(kv.first.c_str()), String(kv.second.c_str()));
+    }
+
+    g->set(s__SERVER.get(), serverArr, false);
   }
 
   if (xhprof) {
@@ -583,6 +615,9 @@ void execute_command_line_begin(int argc, char **argv, int xhprof) {
   }
 
   Extension::RequestInitModules();
+  for (auto& c : config) {
+    process_ini_settings(c);
+  }
 }
 
 void execute_command_line_end(int xhprof, bool coverage, const char *program) {
@@ -593,7 +628,7 @@ void execute_command_line_end(int xhprof, bool coverage, const char *program) {
   }
 
   if (xhprof) {
-    f_var_dump(f_json_encode(f_xhprof_disable()));
+    f_var_dump(HHVM_FN(json_encode)(f_xhprof_disable()));
   }
   hphp_context_exit(g_context.getNoCheck(), true, true, program);
   hphp_session_exit();
@@ -761,11 +796,6 @@ static int start_server(const std::string &username) {
   // initialize the process
   HttpServer::Server = std::make_shared<HttpServer>();
 
-  if (RuntimeOption::HHProfServerEnabled) {
-    Logger::Info("Starting up profiling server");
-    HeapProfileServer::Server = std::make_shared<HeapProfileServer>();
-  }
-
   // If we have any warmup requests, replay them before listening for
   // real connections
   for (auto& file : RuntimeOption::ServerWarmupRequests) {
@@ -798,11 +828,12 @@ static int start_server(const std::string &username) {
 #ifdef USE_JEMALLOC
     mallctl("arenas.purge", nullptr, nullptr, nullptr, 0);
 #endif
-    Util::enable_numa(RuntimeOption::EvalEnableNumaLocal);
+    enable_numa(RuntimeOption::EvalEnableNumaLocal);
 
   }
 
   HttpServer::Server->runOrExitProcess();
+  HttpServer::Server.reset();
   return 0;
 }
 
@@ -994,7 +1025,8 @@ static int execute_program_impl(int argc, char** argv) {
     ("repo-schema", "display the repository schema id")
     ("mode,m", value<string>(&po.mode)->default_value("run"),
      "run | debug (d) | server (s) | daemon | replay | translate (t)")
-    ("config,c", value<string>(&po.config),
+    ("interactive,a", "Shortcut for --mode debug") // -a is from PHP5
+    ("config,c", value<vector<string> >(&po.config)->composing(),
      "load specified config file")
     ("config-value,v", value<std::vector<std::string>>(&po.confStrings)->composing(),
      "individual configuration string in a format of name=value, where "
@@ -1030,8 +1062,6 @@ static int execute_program_impl(int argc, char** argv) {
      "lint specified file")
     ("show,w", value<string>(&po.show),
      "output specified file and do nothing else")
-    ("parse", value<string>(&po.parse),
-     "parse specified file and dump the AST")
     ("temp-file",
      "file specified is temporary and removed after execution")
     ("count", value<int>(&po.count)->default_value(1),
@@ -1097,6 +1127,9 @@ static int execute_program_impl(int argc, char** argv) {
     // Process the options
     store(opts, vm);
     notify(vm);
+    if (vm.count("interactive") /* or -a */) {
+      po.mode = "debug";
+    }
     if (po.mode == "d") po.mode = "debug";
     if (po.mode == "s") po.mode = "server";
     if (po.mode == "t") po.mode = "translate";
@@ -1110,10 +1143,15 @@ static int execute_program_impl(int argc, char** argv) {
       return -1;
     }
     if (po.config.empty()) {
-      auto default_config_file = "/etc/hhvm/config.hdf";
+      auto default_config_file = "/etc/hhvm/php.ini";
       if (access(default_config_file, R_OK) != -1) {
         Logger::Verbose("Using default config file: %s", default_config_file);
-        po.config = default_config_file;
+        po.config.push_back(default_config_file);
+      }
+      default_config_file = "/etc/hhvm/config.hdf";
+      if (access(default_config_file, R_OK) != -1) {
+        Logger::Verbose("Using default config file: %s", default_config_file);
+        po.config.push_back(default_config_file);
       }
     }
   } catch (error &e) {
@@ -1130,14 +1168,9 @@ static int execute_program_impl(int argc, char** argv) {
     return 0;
   }
   if (vm.count("version")) {
-#ifdef HHVM_VERSION
-#undefine HHVM_VERSION
-#endif
-#define HHVM_VERSION(v) const char *version = #v;
-#include "../../version" // nolint
-
     cout << "HipHop VM";
-    cout << " " << version << " (" << (debug ? "dbg" : "rel") << ")\n";
+    cout << " " << k_HHVM_VERSION.c_str();
+    cout << " (" << (debug ? "dbg" : "rel") << ")\n";
     cout << "Compiler: " << kCompilerId << "\n";
     cout << "Repo schema: " << kRepoSchemaId << "\n";
     return 0;
@@ -1173,15 +1206,22 @@ static int execute_program_impl(int argc, char** argv) {
   pcre_init();
 
   Hdf config;
-  if (!po.config.empty()) {
-    config.open(po.config);
+  for (auto& c : po.config) {
+    config.append(c);
   }
   RuntimeOption::Load(config, &po.confStrings);
+  for (auto& c : po.config) {
+    process_ini_settings(c);
+  }
+
   vector<string> badnodes;
   config.lint(badnodes);
   for (unsigned int i = 0; i < badnodes.size(); i++) {
     Logger::Error("Possible bad config node: %s", badnodes[i].c_str());
   }
+  // Reload the thread local ini settings now that RuntimeOption is right
+  ThreadInfo::s_threadInfo.getNoCheck()->
+    m_reqInjectionData.threadInit();
   if (RuntimeOption::EvalRuntimeTypeProfile) {
     HPHP::initTypeProfileStructure();
   }
@@ -1258,7 +1298,7 @@ static int execute_program_impl(int argc, char** argv) {
 
     hphp_process_init();
     try {
-      HPHP::Eval::PhpFile* phpFile = g_vmContext->lookupPhpFile(
+      HPHP::Eval::PhpFile* phpFile = g_context->lookupPhpFile(
         makeStaticString(po.lint.c_str()), "", nullptr);
       if (phpFile == nullptr) {
         throw FileOpenException(po.lint.c_str());
@@ -1270,7 +1310,7 @@ static int execute_program_impl(int argc, char** argv) {
         VMParserFrame parserFrame;
         parserFrame.filename = po.lint.c_str();
         parserFrame.lineNumber = line;
-        Array bt = g_vmContext->debugBacktrace(false, true,
+        Array bt = g_context->debugBacktrace(false, true,
                                                false, &parserFrame);
         throw FatalErrorException(msg->data(), bt);
       }
@@ -1285,11 +1325,6 @@ static int execute_program_impl(int argc, char** argv) {
     }
     Logger::Info("No syntax errors detected in %s", po.lint.c_str());
     return 0;
-  }
-
-  if (!po.parse.empty()) {
-    Logger::Error("The 'parse' command line option is not supported\n\n");
-    return 1;
   }
 
   if (argc <= 1 || po.mode == "run" || po.mode == "debug") {
@@ -1334,7 +1369,8 @@ static int execute_program_impl(int argc, char** argv) {
       ret = 0;
       while (true) {
         try {
-          execute_command_line_begin(new_argc, new_argv, po.xhprofFlags);
+          execute_command_line_begin(new_argc, new_argv,
+                                     po.xhprofFlags, po.config);
           // Set the proxy for this thread to be the localProxy we just
           // created. If we're script debugging, this will be the proxy that
           // does all of our work. If we're remote debugging, this proxy will
@@ -1366,7 +1402,8 @@ static int execute_program_impl(int argc, char** argv) {
     } else {
       ret = 0;
       for (int i = 0; i < po.count; i++) {
-        execute_command_line_begin(new_argc, new_argv, po.xhprofFlags);
+        execute_command_line_begin(new_argc, new_argv,
+                                   po.xhprofFlags, po.config);
         ret = 255;
         if (hphp_invoke_simple(file)) {
           ret = ExitException::ExitCode;
@@ -1412,7 +1449,7 @@ static int execute_program_impl(int argc, char** argv) {
 }
 
 String canonicalize_path(const String& p, const char* root, int rootLen) {
-  String path(Util::canonicalize(p.c_str(), p.size()), AttachString);
+  String path(FileUtil::canonicalize(p.c_str(), p.size()), AttachString);
   if (path.charAt(0) == '/') {
     const string &sourceRoot = RuntimeOption::SourceRoot;
     int len = sourceRoot.size();
@@ -1454,8 +1491,8 @@ string get_systemlib(string* hhas, const string &section /*= "systemlib" */,
     }
   }
 
-  Util::embedded_data desc;
-  if (!Util::get_embedded_data(section.c_str(), &desc, filename)) return "";
+  embedded_data desc;
+  if (!get_embedded_data(section.c_str(), &desc, filename)) return "";
 
   std::ifstream ifs(desc.m_filename);
   if (!ifs.good()) return "";
@@ -1487,7 +1524,7 @@ void hphp_process_init() {
 #else
   pthread_attr_init(&attr);
 #endif
-  Util::init_stack_limits(&attr);
+  init_stack_limits(&attr);
   pthread_attr_destroy(&attr);
 
   struct sigaction action = {};
@@ -1594,7 +1631,7 @@ static bool hphp_warmup(ExecutionContext *context,
 void hphp_session_init() {
   init_thread_locals();
   ThreadInfo::s_threadInfo->onSessionInit();
-  MM().resetStats();
+  MM().resetExternalStats();
 
 #ifdef ENABLE_SIMPLE_COUNTER
   SimpleCounter::Enabled = true;
@@ -1602,12 +1639,10 @@ void hphp_session_init() {
 #endif
 
   // Ordering is sensitive; StatCache::requestInit produces work that
-  // must be done in VMExecutionContext::requestInit.
+  // must be done in ExecutionContext::requestInit.
   StatCache::requestInit();
 
-  g_vmContext->requestInit();
-
-  process_ini_settings();
+  g_context->requestInit();
 }
 
 ExecutionContext *hphp_context_init() {
@@ -1626,7 +1661,7 @@ bool hphp_invoke_simple(const std::string &filename,
 }
 
 bool hphp_invoke(ExecutionContext *context, const std::string &cmd,
-                 bool func, CArrRef funcParams, VRefParam funcRet,
+                 bool func, const Array& funcParams, VRefParam funcRet,
                  const string &reqInitFunc, const string &reqInitDoc,
                  bool &error, string &errorMsg,
                  bool once /* = true */, bool warmupOnly /* = false */,
@@ -1683,7 +1718,7 @@ void hphp_context_exit(ExecutionContext *context, bool psp,
   }
 
   // Run shutdown handlers. This may cause user code to run.
-  static_cast<VMExecutionContext*>(context)->destructObjects();
+  static_cast<ExecutionContext*>(context)->destructObjects();
   if (shutdown) {
     context->onRequestShutdown();
   }
@@ -1710,7 +1745,6 @@ void hphp_session_exit() {
   ThreadInfo::s_threadInfo->clearPendingException();
 
   auto& mm = MM();
-  mm.resetStats();
 
   {
     ServerStatsHelper ssh("rollback");

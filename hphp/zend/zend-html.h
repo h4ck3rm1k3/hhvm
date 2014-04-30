@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    | Copyright (c) 1998-2010 Zend Technologies Ltd. (http://www.zend.com) |
    +----------------------------------------------------------------------+
    | This source file is subject to version 2.00 of the Zend license,     |
@@ -105,7 +105,8 @@ const html_entity_map* html_get_entity_map();
 entity_charset determine_charset(const char*);
 
 char *string_html_encode(const char *input, int &len,
-                         const int64_t qsBitmask, bool utf8, bool nbsp);
+                         const int64_t qsBitmask, bool utf8,
+                         bool dEncode, bool htmlEnt);
 char *string_html_encode_extra(const char *input, int &len,
                                StringHtmlEncoding flags,
                                const AsciiMap *asciiMap);

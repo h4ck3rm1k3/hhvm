@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -16,7 +16,7 @@
 
 #include "hphp/compiler/expression/scalar_expression.h"
 #include "hphp/parser/hphp.tab.hpp"
-#include "hphp/util/util.h"
+#include "hphp/util/text-util.h"
 #include "hphp/compiler/analysis/code_error.h"
 #include "hphp/compiler/analysis/block_scope.h"
 #include "hphp/compiler/analysis/variable_table.h"
@@ -29,6 +29,7 @@
 #include "hphp/runtime/base/string-data.h"
 #include "hphp/runtime/base/type-conversions.h"
 #include "hphp/runtime/base/builtin-functions.h"
+#include "hphp/runtime/base/zend-strtod.h"
 #include "hphp/runtime/ext/ext_variable.h"
 #include "hphp/compiler/analysis/file_scope.h"
 
@@ -59,7 +60,7 @@ ScalarExpression::ScalarExpression
 
 ScalarExpression::ScalarExpression
 (EXPRESSION_CONSTRUCTOR_PARAMETERS,
- CVarRef value, bool quoted /* = true */)
+ const Variant& value, bool quoted /* = true */)
     : Expression(EXPRESSION_CONSTRUCTOR_PARAMETER_VALUES(ScalarExpression)),
       m_quoted(quoted) {
   if (!value.isNull()) {
@@ -84,7 +85,7 @@ ScalarExpression::ScalarExpression
     assert(false);
   }
   const String& s = value.toString();
-  m_value = string(s->data(), s->size());
+  m_value = s.toCppString();
   if (m_type == T_DNUMBER && m_value.find_first_of(".eE", 0) == string::npos) {
     m_value += ".";
   }
@@ -103,7 +104,7 @@ void ScalarExpression::appendEncapString(const std::string &value) {
 
 void ScalarExpression::toLower(bool funcCall /* = false */) {
   assert(funcCall || !m_quoted);
-  m_value = Util::toLower(m_value);
+  m_value = HPHP::toLower(m_value);
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -124,7 +125,7 @@ bool ScalarExpression::needsTranslation() const {
 
 void ScalarExpression::analyzeProgram(AnalysisResultPtr ar) {
   if (ar->getPhase() == AnalysisResult::AnalyzeAll) {
-    string id = Util::toLower(getIdentifier());
+    string id = HPHP::toLower(getIdentifier());
 
     switch (m_type) {
       case T_LINE:
@@ -247,6 +248,10 @@ TypePtr ScalarExpression::inferenceImpl(AnalysisResultConstPtr ar,
   case T_DNUMBER:
     actualType = Type::Double;
     break;
+  case T_ONUMBER:
+    actualType =
+      RuntimeOption::IntsOverflowToInts ? Type::Int64 : Type::Double;
+    break;
 
   case T_LINE:
   case T_COMPILER_HALT_OFFSET:
@@ -302,6 +307,8 @@ bool ScalarExpression::isLiteralInteger() const {
     break;
   case T_LNUMBER:
     return true;
+  case T_ONUMBER:
+    return RuntimeOption::IntsOverflowToInts;
   default:
     break;
   }
@@ -388,37 +395,72 @@ std::string ScalarExpression::getIdentifier() const {
 
 void ScalarExpression::outputCodeModel(CodeGenerator &cg) {
   switch (m_type) {
+    case T_COMPILER_HALT_OFFSET:
     case T_NS_C:
     case T_LINE:
     case T_TRAIT_C:
     case T_CLASS_C:
     case T_METHOD_C:
-    case T_FUNC_C: {
-      cg.printObjectHeader("SimpleVariableExpression", 2);
-      std::string varName;
-      switch (m_type) {
-        case T_NS_C: varName = "__NAMESPACE__"; break;
-        case T_LINE: varName = "__LINE__"; break;
-        case T_TRAIT_C: varName = "__TRAIT__"; break;
-        case T_CLASS_C: varName = "__CLASS__"; break;
-        case T_METHOD_C: varName = "__METHOD__"; break;
-        case T_FUNC_C: varName = "__FUNCTION__"; break;
-        default: break;
+    case T_FUNC_C:
+      {
+        cg.printObjectHeader("SimpleConstantExpression", 2);
+        std::string constName;
+        switch (m_type) {
+          case T_COMPILER_HALT_OFFSET:
+            constName = "__COMPILER_HALT_OFFSET__"; break;
+          case T_NS_C: constName = "__NAMESPACE__"; break;
+          case T_LINE: constName = "__LINE__"; break;
+          case T_TRAIT_C: constName = "__TRAIT__"; break;
+          case T_CLASS_C: constName = "__CLASS__"; break;
+          case T_METHOD_C: constName = "__METHOD__"; break;
+          case T_FUNC_C: constName = "__FUNCTION__"; break;
+          default: break;
+        }
+        cg.printPropertyHeader("constantName");
+        cg.printValue(constName);
+        cg.printPropertyHeader("sourceLocation");
+        cg.printLocation(this->getLocation());
+        cg.printObjectFooter();
       }
-      cg.printPropertyHeader("variableName");
-      cg.printValue(varName);
-      cg.printPropertyHeader("sourceLocation");
-      cg.printLocation(this->getLocation());
-      cg.printObjectFooter();
       return;
-    }
+    case T_STRING:
+      if (!m_quoted) {
+        // This is in fact an identifier, not a scalar value
+        cg.printValue(m_originalValue);
+        return;
+      }
+      break;
     default:
       break;
   }
 
   cg.printObjectHeader("ScalarExpression", 2);
   cg.printPropertyHeader("value");
-  cg.printValue(m_originalValue);
+
+  auto printInt = [&]() {
+    auto i = static_cast<int64_t>(std::stoll(m_value, nullptr, 0));
+    cg.printValue(i);
+  };
+  auto printDouble = [&]() {
+    auto d = String(m_value).toDouble();
+    cg.printValue(d);
+  };
+
+  switch (m_type) {
+    case T_NUM_STRING:
+    case T_LNUMBER:
+      printInt();
+      break;
+    case T_DNUMBER:
+      printDouble();
+      break;
+    case T_ONUMBER:
+      RuntimeOption::IntsOverflowToInts ? printInt() : printDouble();
+      break;
+    default:
+      cg.printValue(m_originalValue);
+      break;
+  }
   cg.printPropertyHeader("sourceLocation");
   cg.printLocation(this->getLocation());
   cg.printObjectFooter();
@@ -433,7 +475,7 @@ void ScalarExpression::outputPHP(CodeGenerator &cg, AnalysisResultPtr ar) {
     assert(m_quoted); // fall through
   case T_STRING:
     if (m_quoted) {
-      string output = Util::escapeStringForPHP(m_originalValue);
+      string output = escapeStringForPHP(m_originalValue);
       cg_printf("%s", output.c_str());
     } else {
       cg_printf("%s", m_originalValue.c_str());
@@ -442,6 +484,7 @@ void ScalarExpression::outputPHP(CodeGenerator &cg, AnalysisResultPtr ar) {
   case T_NUM_STRING:
   case T_LNUMBER:
   case T_DNUMBER:
+  case T_ONUMBER:
   case T_COMPILER_HALT_OFFSET:
     cg_printf("%s", m_originalValue.c_str());
     break;
@@ -510,10 +553,17 @@ Variant ScalarExpression::getVariant() const {
     case T_METHOD_C:
     case T_FUNC_C:
       return String(m_translated);
+    case T_ONUMBER:
+      if (RuntimeOption::IntsOverflowToInts) return getIntValue();
+      if (m_value.size() >= 2 &&
+          m_value[0] == '0' && std::tolower(m_value[1]) == 'x') {
+        return zend_hex_strtod(m_value.c_str(), nullptr);
+      }
+      // fallthrough
     case T_DNUMBER:
       return String(m_value).toDouble();
     default:
-      assert(false);
+      not_reached();
   }
   return uninit_null();
 }
@@ -538,8 +588,10 @@ bool ScalarExpression::getString(const std::string *&s) const {
   }
 }
 
-bool ScalarExpression::getInt(int64_t &i) const {
-  if (m_type == T_LNUMBER || m_type == T_COMPILER_HALT_OFFSET) {
+bool ScalarExpression::getInt(int64_t& i) const {
+  bool over_int =
+    (m_type == T_ONUMBER) && RuntimeOption::IntsOverflowToInts;
+  if (m_type == T_LNUMBER || m_type == T_COMPILER_HALT_OFFSET || over_int) {
     i = getIntValue();
     return true;
   } else if (m_type == T_LINE) {
@@ -549,8 +601,10 @@ bool ScalarExpression::getInt(int64_t &i) const {
   return false;
 }
 
-bool ScalarExpression::getDouble(double &d) const {
-  if (m_type == T_DNUMBER) {
+bool ScalarExpression::getDouble(double& d) const {
+  bool over_float =
+    m_type == T_ONUMBER && !RuntimeOption::IntsOverflowToInts;
+  if (m_type == T_DNUMBER || over_float) {
     Variant v = getVariant();
     assert(v.isDouble());
     d = v.toDouble();
@@ -572,6 +626,5 @@ int64_t ScalarExpression::getIntValue() const {
   if (m_value.compare(0, 2, "0b") == 0) {
     return strtoll(m_value.c_str() + 2, nullptr, 2);
   }
-
   return strtoll(m_value.c_str(), nullptr, 0);
 }

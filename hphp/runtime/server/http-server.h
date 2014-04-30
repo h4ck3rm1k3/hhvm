@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -53,8 +53,10 @@ public:
 
   void takeoverShutdown() override;
 
-  ServerPtr getPageServer() { return m_pageServer;}
+  HPHP::Server *getPageServer() { return m_pageServer.get(); }
   void getSatelliteStats(std::vector<std::pair<std::string, int>> *stats);
+
+  void stopOnSignal();
 
 private:
   static void startupFailure();
@@ -65,8 +67,8 @@ private:
 
   ServerPtr m_pageServer;
   ServerPtr m_adminServer;
-  std::vector<std::shared_ptr<SatelliteServer>> m_satellites;
-  std::vector<std::shared_ptr<SatelliteServer>> m_danglings;
+  std::vector<std::unique_ptr<SatelliteServer>> m_satellites;
+  std::vector<std::unique_ptr<SatelliteServer>> m_danglings;
   AsyncFunc<HttpServer> m_watchDog;
   std::vector<std::shared_ptr<ServiceThread>> m_serviceThreads;
 

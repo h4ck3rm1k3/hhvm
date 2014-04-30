@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    | Copyright (c) 1998-2010 Zend Technologies Ltd. (http://www.zend.com) |
    +----------------------------------------------------------------------+
    | This source file is subject to version 2.00 of the Zend license,     |
@@ -31,9 +31,9 @@ namespace HPHP {
 #define COLLATOR_SORT_NUMERIC   2
 
 bool collator_sort(Variant &array, int sort_flags, bool ascending,
-                   UCollator *coll, intl_error *errcode);
+                   UCollator *coll, Intl::IntlError *errcode);
 bool collator_asort(Variant &array, int sort_flags, bool ascending,
-                    UCollator *coll, intl_error *errcode);
+                    UCollator *coll, Intl::IntlError *errcode);
 
 ///////////////////////////////////////////////////////////////////////////////
 }

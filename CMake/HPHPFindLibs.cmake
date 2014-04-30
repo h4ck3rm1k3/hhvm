@@ -17,6 +17,8 @@
 
 include(CheckFunctionExists)
 
+add_definitions("-DHAVE_QUICKLZ")
+
 # libdl
 find_package(LibDL)
 if (LIBDL_INCLUDE_DIRS)
@@ -28,13 +30,10 @@ if (LIBDL_INCLUDE_DIRS)
 endif()
 
 # boost checks
-find_package(Boost 1.48.0 COMPONENTS system program_options filesystem regex REQUIRED)
+find_package(Boost 1.49.0 COMPONENTS system program_options filesystem regex REQUIRED)
 include_directories(${Boost_INCLUDE_DIRS})
 link_directories(${Boost_LIBRARY_DIRS})
-# Boost 1.49 supports a better flat_multimap, but 1.48 is good enough
-if (Boost_VERSION GREATER 104899)
-	add_definitions("-DHAVE_BOOST1_49")
-endif()
+add_definitions("-DHAVE_BOOST1_49")
 
 
 # features.h
@@ -42,6 +41,10 @@ FIND_PATH(FEATURES_HEADER features.h)
 if (FEATURES_HEADER)
 	add_definitions("-DHAVE_FEATURES_H=1")
 endif()
+
+# magickwand
+find_package(LibMagickWand REQUIRED)
+include_directories(${LIBMAGICKWAND_INCLUDE_DIRS})
 
 # google-glog
 find_package(Glog REQUIRED)
@@ -104,11 +107,6 @@ endif ()
 
 # GD checks
 add_definitions(-DPNG_SKIP_SETJMP_CHECK)
-find_package(LibVpx)
-if (LIBVPX_INCLUDE_DIRS)
-	include_directories(${LIBVPX_INCLUDE_DIRS})
-	add_definitions("-DHAVE_GD_WEBP")
-endif()
 find_package(LibJpeg)
 if (LIBJPEG_INCLUDE_DIRS)
 	include_directories(${LIBJPEG_INCLUDE_DIRS})
@@ -151,6 +149,10 @@ set(CMAKE_REQUIRED_LIBRARIES)
 find_package(LibXml2 REQUIRED)
 include_directories(${LIBXML2_INCLUDE_DIR})
 add_definitions(${LIBXML2_DEFINITIONS})
+
+find_package(LibXslt REQUIRED)
+include_directories(${LIBXSLT_INCLUDE_DIR})
+add_definitions(${LIBXSLT_DEFINITIONS})
 
 find_package(EXPAT REQUIRED)
 include_directories(${EXPAT_INCLUDE_DIRS})
@@ -380,14 +382,14 @@ if (LINUX OR APPLE)
 endif()
 
 FIND_LIBRARY (BFD_LIB bfd)
-FIND_LIBRARY (BINUTIL_LIB iberty)
+FIND_LIBRARY (LIBIBERTY_LIB iberty)
 
 if (NOT BFD_LIB)
 	message(FATAL_ERROR "You need to install binutils")
 endif()
 
-if (NOT BINUTIL_LIB)
-	message(FATAL_ERROR "You need to install binutils")
+if (NOT LIBIBERTY_LIB)
+	message(FATAL_ERROR "You need to install libiberty (usually bundled with binutils)")
 endif()
 
 if (FREEBSD)
@@ -441,6 +443,8 @@ macro(hphp_link target)
 	target_link_libraries(${target} ${LIBEVENT_LIB})
 	target_link_libraries(${target} ${CURL_LIBRARIES})
 	target_link_libraries(${target} ${LIBGLOG_LIBRARY})
+	target_link_libraries(${target} ${LIBMAGICKWAND_LIBRARIES})
+	target_link_libraries(${target} ${LIBMAGICKCORE_LIBRARIES})
 
 if (LibXed_LIBRARY)
 	target_link_libraries(${target} ${LibXed_LIBRARY})
@@ -474,7 +478,7 @@ if (APPLE)
 endif()
 
 	target_link_libraries(${target} ${BFD_LIB})
-	target_link_libraries(${target} ${BINUTIL_LIB})
+	target_link_libraries(${target} ${LIBIBERTY_LIB})
 if (${LIBPTHREAD_LIBRARIES})
 	target_link_libraries(${target} ${LIBPTHREAD_LIBRARIES})
 endif()
@@ -484,6 +488,8 @@ endif()
 	target_link_libraries(${target} ${BZIP2_LIBRARIES})
 
 	target_link_libraries(${target} ${LIBXML2_LIBRARIES})
+	target_link_libraries(${target} ${LIBXSLT_LIBRARIES})
+	target_link_libraries(${target} ${LIBXSLT_EXSLT_LIBRARIES})
 	target_link_libraries(${target} ${EXPAT_LIBRARY})
 	target_link_libraries(${target} ${ONIGURUMA_LIBRARIES})
 	target_link_libraries(${target} ${Mcrypt_LIB})
@@ -496,9 +502,6 @@ if (LIBJPEG_LIBRARIES)
 endif()
 if (LIBPNG_LIBRARIES)
 	target_link_libraries(${target} ${LIBPNG_LIBRARIES})
-endif()
-if (LIBVPX_LIBRARIES)
-	target_link_libraries(${target} ${LIBVPX_LIBRARIES})
 endif()
 if (LIBUODBC_LIBRARIES)
 	target_link_libraries(${target} ${LIBUODBC_LIBRARIES})
@@ -539,4 +542,7 @@ endif()
         target_link_libraries(${target} ${LIBDWARF_LIBRARIES})
         target_link_libraries(${target} ${LIBELF_LIBRARIES})
 
+	if (ZEND_COMPAT_LINK_LIBRARIES)
+		target_link_libraries(${target} ${ZEND_COMPAT_LINK_LIBRARIES})
+	endif()
 endmacro()

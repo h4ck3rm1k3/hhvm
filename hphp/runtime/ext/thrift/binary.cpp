@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    | Copyright (c) 1997-2010 The PHP Group                                |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
@@ -60,14 +60,14 @@ const int8_t T_EXCEPTION = 3;
 const int INVALID_DATA = 1;
 const int BAD_VERSION = 4;
 
-void binary_deserialize_spec(CObjRef zthis, PHPInputTransport& transport, CArrRef spec);
-void binary_serialize_spec(CObjRef zthis, PHPOutputTransport& transport, CArrRef spec);
-void binary_serialize(int8_t thrift_typeID, PHPOutputTransport& transport, CVarRef value, CArrRef fieldspec);
+void binary_deserialize_spec(const Object& zthis, PHPInputTransport& transport, const Array& spec);
+void binary_serialize_spec(const Object& zthis, PHPOutputTransport& transport, const Array& spec);
+void binary_serialize(int8_t thrift_typeID, PHPOutputTransport& transport, const Variant& value, const Array& fieldspec);
 void skip_element(long thrift_typeID, PHPInputTransport& transport);
 
 // Create a PHP object given a typename and call the ctor, optionally passing up to 2 arguments
 Object createObject(const String& obj_typename, int nargs = 0,
-                    CVarRef arg1 = null_variant, CVarRef arg2 = null_variant) {
+                    const Variant& arg1 = null_variant, const Variant& arg2 = null_variant) {
   if (!f_class_exists(obj_typename)) {
     raise_warning("runtime/ext_thrift: Class %s does not exist",
                   obj_typename.data());
@@ -90,7 +90,7 @@ void throw_tprotocolexception(const String& what, long errorcode) {
 const StaticString s_TSPEC("_TSPEC");
 
 Variant binary_deserialize(int8_t thrift_typeID, PHPInputTransport& transport,
-                           CArrRef fieldspec) {
+                           const Array& fieldspec) {
   Variant ret;
   switch (thrift_typeID) {
     case T_STOP:
@@ -194,14 +194,18 @@ Variant binary_deserialize(int8_t thrift_typeID, PHPInputTransport& transport,
                                        AccessFlags::None).toString();
       if (format.equal(PHPTransport::s_collection)) {
         ret = NEWOBJ(c_Map)();
+        for (uint32_t s = 0; s < size; ++s) {
+          Variant key = binary_deserialize(types[0], transport, keyspec);
+          Variant value = binary_deserialize(types[1], transport, valspec);
+          collectionSet(ret.getObjectData(), key.asCell(), value.asCell());
+        }
       } else {
         ret = Array::Create();
-      }
-
-      for (uint32_t s = 0; s < size; ++s) {
-        Variant key = binary_deserialize(types[0], transport, keyspec);
-        Variant value = binary_deserialize(types[1], transport, valspec);
-        ret.set(key, value);
+        for (uint32_t s = 0; s < size; ++s) {
+          Variant key = binary_deserialize(types[0], transport, keyspec);
+          Variant value = binary_deserialize(types[1], transport, valspec);
+          ret.toArrRef().set(key, value);
+        }
       }
       return ret; // return_value already populated
     }
@@ -213,16 +217,22 @@ Variant binary_deserialize(int8_t thrift_typeID, PHPInputTransport& transport,
       Array elemspec = elemvar.toArray();
       String format = fieldspec.rvalAt(PHPTransport::s_format,
                                        AccessFlags::None).toString();
+
       if (format.equal(PHPTransport::s_collection)) {
-        ret = NEWOBJ(c_Vector)();
+        auto const pvec = NEWOBJ(c_Vector)();
+        ret = pvec;
+        for (uint32_t s = 0; s < size; ++s) {
+          Variant value = binary_deserialize(type, transport, elemspec);
+          pvec->t_add(value);
+        }
       } else {
-        ret = Array::Create();
+        PackedArrayInit pai(size);
+        for (auto s = uint32_t{0}; s < size; ++s) {
+          pai.append(binary_deserialize(type, transport, elemspec));
+        }
+        ret = pai.toArray();
       }
 
-      for (uint32_t s = 0; s < size; ++s) {
-        Variant value = binary_deserialize(type, transport, elemspec);
-        ret.append(value);
-      }
       return ret;
     }
     case T_SET: { // array of key -> TRUE
@@ -251,17 +261,16 @@ Variant binary_deserialize(int8_t thrift_typeID, PHPInputTransport& transport,
 
         ret = Variant(set_ret);
       } else {
-        ret = Array::Create();
-
+        ArrayInit init(size);
         for (uint32_t s = 0; s < size; ++s) {
           Variant key = binary_deserialize(type, transport, elemspec);
-
           if (key.isInteger()) {
-            ret.set(key, true);
+            init.set(key, true);
           } else {
-            ret.set(key.toString(), true);
+            init.set(key.toString(), true);
           }
         }
+        ret = init.toArray();
       }
       return ret;
     }
@@ -356,8 +365,8 @@ inline bool ttypes_are_compatible(int8_t t1, int8_t t2) {
   return ((t1 == t2) || (ttype_is_int(t1) && ttype_is_int(t2)));
 }
 
-void binary_deserialize_spec(CObjRef zthis, PHPInputTransport& transport,
-                             CArrRef spec) {
+void binary_deserialize_spec(const Object& zthis, PHPInputTransport& transport,
+                             const Array& spec) {
   // SET and LIST have 'elem' => array('type', [optional] 'class')
   // MAP has 'val' => array('type', [optiona] 'class')
   while (true) {
@@ -388,7 +397,7 @@ void binary_deserialize_spec(CObjRef zthis, PHPInputTransport& transport,
 }
 
 void binary_serialize(int8_t thrift_typeID, PHPOutputTransport& transport,
-                      CVarRef value, CArrRef fieldspec) {
+                      const Variant& value, const Array& fieldspec) {
   // At this point the typeID (and field num, if applicable) should've already
   // been written to the output so all we need to do is write the payload.
   switch (thrift_typeID) {
@@ -496,8 +505,8 @@ void binary_serialize(int8_t thrift_typeID, PHPOutputTransport& transport,
 }
 
 
-void binary_serialize_spec(CObjRef zthis, PHPOutputTransport& transport,
-                           CArrRef spec) {
+void binary_serialize_spec(const Object& zthis, PHPOutputTransport& transport,
+                           const Array& spec) {
   for (ArrayIter key_ptr = spec.begin(); !key_ptr.end(); ++key_ptr) {
     Variant key = key_ptr.first();
     if (!key.isInteger()) {
@@ -525,8 +534,8 @@ void binary_serialize_spec(CObjRef zthis, PHPOutputTransport& transport,
   transport.writeI8(T_STOP); // struct end
 }
 
-void f_thrift_protocol_write_binary(CObjRef transportobj, const String& method_name,
-                                    int64_t msgtype, CObjRef request_struct,
+void f_thrift_protocol_write_binary(const Object& transportobj, const String& method_name,
+                                    int64_t msgtype, const Object& request_struct,
                                     int seqid, bool strict_write) {
 
   PHPOutputTransport transport(transportobj);
@@ -551,7 +560,7 @@ void f_thrift_protocol_write_binary(CObjRef transportobj, const String& method_n
   transport.flush();
 }
 
-Variant f_thrift_protocol_read_binary(CObjRef transportobj,
+Variant f_thrift_protocol_read_binary(const Object& transportobj,
                                       const String& obj_typename,
                                       bool strict_read) {
   PHPInputTransport transport(transportobj);
@@ -562,7 +571,9 @@ Variant f_thrift_protocol_read_binary(CObjRef transportobj,
     // Check for correct version number
     int32_t version = sz & VERSION_MASK;
     if (version != VERSION_1) {
-      throw_tprotocolexception("Bad version identifier", BAD_VERSION);
+      char errbuf[128];
+      sprintf(errbuf, "Bad version identifier, sz=%d", sz);
+      throw_tprotocolexception(String(errbuf, CopyString), BAD_VERSION);
     }
     messageType = (sz & 0x000000ff);
     int32_t namelen = transport.readI32();
@@ -570,7 +581,9 @@ Variant f_thrift_protocol_read_binary(CObjRef transportobj,
     transport.skip(namelen + 4);
   } else {
     if (strict_read) {
-      throw_tprotocolexception("No version identifier... old protocol client in strict mode?", BAD_VERSION);
+      char errbuf[128];
+      sprintf(errbuf, "No version identifier... old protocol client in strict mode? sz=%d", sz);
+      throw_tprotocolexception(String(errbuf, CopyString), BAD_VERSION);
     } else {
       // Handle pre-versioned input
       transport.skip(sz); // skip string body

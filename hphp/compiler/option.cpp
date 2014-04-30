@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -22,10 +22,13 @@
 #include "hphp/parser/scanner.h"
 #include "hphp/util/logger.h"
 #include "hphp/util/db-query.h"
-#include "hphp/util/util.h"
+#include "hphp/util/text-util.h"
 #include "hphp/util/process.h"
 #include "hphp/hhbbc/hhbbc.h"
 #include <boost/algorithm/string/trim.hpp>
+#include <map>
+#include <set>
+#include <vector>
 #include "hphp/runtime/base/preg.h"
 
 namespace HPHP {
@@ -69,7 +72,7 @@ vector<string> Option::DynamicMethodPrefixes;
 vector<string> Option::DynamicMethodPostfixes;
 vector<string> Option::DynamicClassPrefixes;
 vector<string> Option::DynamicClassPostfixes;
-set<string> Option::DynamicInvokeFunctions;
+set<string, stdltistr> Option::DynamicInvokeFunctions;
 set<string> Option::VolatileClasses;
 map<string,string> Option::AutoloadClassMap;
 map<string,string> Option::AutoloadFuncMap;
@@ -84,13 +87,11 @@ string Option::RepoCentralPath;
 bool Option::RepoDebugInfo = false;
 
 string Option::IdPrefix = "$$";
-string Option::LabelEscape = "$";
 
 string Option::LambdaPrefix = "df_";
 string Option::Tab = "  ";
 
 const char *Option::UserFilePrefix = "php/";
-const char *Option::ClassHeaderPrefix = "cls/";
 
 bool Option::PreOptimization = false;
 bool Option::PostOptimization = false;
@@ -98,6 +99,7 @@ bool Option::SeparateCompilation = false;
 bool Option::SeparateCompLib = false;
 bool Option::AnalyzePerfectVirtuals = true;
 bool Option::HardTypeHints = true;
+bool Option::HardConstProp = true;
 
 bool Option::KeepStatementsWithNoEffect = false;
 
@@ -118,6 +120,7 @@ bool Option::EnableHipHopExperimentalSyntax = false;
 bool Option::EnableShortTags = true;
 bool Option::EnableAspTags = false;
 bool Option::EnableXHP = false;
+bool Option::IntsOverflowToInts = false;
 int Option::ParserThreadCount = 0;
 
 int Option::GetScannerType() {
@@ -141,7 +144,7 @@ bool Option::VariableCoalescing = false;
 bool Option::ArrayAccessIdempotent = false;
 bool Option::DumpAst = false;
 bool Option::WholeProgram = true;
-bool Option::UseHHBBC = getenv("HHVM_HHBBC");
+bool Option::UseHHBBC = !getenv("HHVM_DISABLE_HHBBC");
 bool Option::RecordErrors = true;
 std::string Option::DocJson;
 
@@ -152,7 +155,6 @@ StringBag Option::OptionStrings;
 
 bool Option::GenerateDocComments = true;
 
-void (*Option::m_hookHandler)(Hdf &config);
 bool (*Option::PersistenceHook)(BlockScopeRawPtr scope, FileScopeRawPtr file);
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -202,7 +204,6 @@ void Option::Load(Hdf &config) {
     }
 
     READ_CG_OPTION(IdPrefix);
-    READ_CG_OPTION(LabelEscape);
     READ_CG_OPTION(LambdaPrefix);
   }
 
@@ -239,6 +240,7 @@ void Option::Load(Hdf &config) {
   }
 
   HardTypeHints = config["HardTypeHints"].getBool(true);
+  HardConstProp = config["HardConstProp"].getBool(true);
 
   EnableHipHopSyntax = config["EnableHipHopSyntax"].getBool();
   EnableZendCompat = config["EnableZendCompat"].getBool();
@@ -246,6 +248,9 @@ void Option::Load(Hdf &config) {
   EnableHipHopExperimentalSyntax =
     config["EnableHipHopExperimentalSyntax"].getBool();
   EnableShortTags = config["EnableShortTags"].getBool(true);
+
+  IntsOverflowToInts =
+    config["Hack"]["Lang"]["IntsOverflowToInts"].getBool(EnableHipHopSyntax);
 
   EnableAspTags = config["EnableAspTags"].getBool();
 
@@ -281,8 +286,6 @@ void Option::Load(Hdf &config) {
 
   // Temporary, during file-cache migration.
   FileCache::UseNewCache   = config["UseNewCache"].getBool(false);
-
-  if (m_hookHandler) m_hookHandler(config);
 
   OnLoad();
 }
@@ -347,9 +350,9 @@ std::string Option::MangleFilename(const std::string &name, bool id) {
   ret += name;
 
   if (id) {
-    Util::replaceAll(ret, "/", "$");
-    Util::replaceAll(ret, "-", "_");
-    Util::replaceAll(ret, ".", "_");
+    replaceAll(ret, "/", "$");
+    replaceAll(ret, "-", "_");
+    replaceAll(ret, ".", "_");
   }
   return ret;
 }
@@ -384,6 +387,7 @@ void Option::FilterFiles(std::vector<std::string> &files,
 void initialize_hhbbc_options() {
   if (!Option::UseHHBBC) return;
   HHBBC::options.InterceptableFunctions = Option::DynamicInvokeFunctions;
+  HHBBC::options.HardConstProp          = Option::HardConstProp;
   HHBBC::options.HardTypeHints          = Option::HardTypeHints;
 }
 

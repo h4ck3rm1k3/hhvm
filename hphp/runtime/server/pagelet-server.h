@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -43,10 +43,10 @@ public:
    * if there are no worker threads.
    */
   static Resource TaskStart(
-    const String& url, CArrRef headers,
+    const String& url, const Array& headers,
     const String& remote_host,
     const String& post_data = null_string,
-    CArrRef files = null_array,
+    const Array& files = null_array,
     int timeoutSeconds = -1,
     PageletServerTaskEvent *event = nullptr
   );
@@ -55,13 +55,13 @@ public:
    * Query if a task is finished. This is non-blocking and can be called as
    * many times as desired.
    */
-  static int64_t TaskStatus(CResRef task);
+  static int64_t TaskStatus(const Resource& task);
 
   /**
    * Get results of a task. This is blocking until task is finished or times
    * out. The status code is set to -1 in the event of a timeout.
    */
-  static String TaskResult(CResRef task,
+  static String TaskResult(const Resource& task,
                            Array &headers,
                            int &code,
                            int64_t timeout_ms);
@@ -81,10 +81,10 @@ public:
 class PageletTransport : public Transport, public Synchronizable {
 public:
   PageletTransport(
-    const String& url, CArrRef headers, const String& postData,
+    const String& url, const Array& headers, const String& postData,
     const String& remoteHost,
     const std::set<std::string> &rfc1867UploadedFiles,
-    CArrRef files, int timeoutSeconds);
+    const Array& files, int timeoutSeconds);
 
   /**
    * Implementing Transport...
@@ -102,8 +102,6 @@ public:
                         bool chunked);
   virtual void onSendEndImpl();
   virtual bool isUploadedFile(const String& filename);
-  virtual bool moveUploadedFile(const String& filename,
-    const String& destination);
   virtual bool getFiles(std::string &files);
 
   // task interface
@@ -173,7 +171,7 @@ public:
 
 protected:
 
-  void unserialize(Cell& result) const {
+  void unserialize(Cell& result) {
     // Main string responses from pagelet thread.
     Array responses = Array::Create();
 

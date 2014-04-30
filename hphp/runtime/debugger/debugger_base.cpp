@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -15,10 +15,12 @@
 */
 
 #include "hphp/runtime/debugger/debugger_base.h"
+#include <utility>
+#include <vector>
 #include "hphp/runtime/debugger/debugger_client.h"
 #include "hphp/runtime/debugger/break_point.h"
 #include "hphp/parser/scanner.h"
-#include "hphp/util/util.h"
+#include "hphp/util/text-util.h"
 
 namespace HPHP { namespace Eval {
 ///////////////////////////////////////////////////////////////////////////////
@@ -59,7 +61,7 @@ void DSandboxInfo::set(const std::string &id) {
   m_path.clear();
   if (!id.empty()) {
     std::vector<std::string> tokens;
-    Util::split('\t', id.c_str(), tokens);
+    split('\t', id.c_str(), tokens);
     if (tokens.size() == 2) {
       m_user = tokens[0];
       m_name = tokens[1];
@@ -206,11 +208,12 @@ void Macro::load(Hdf node) {
   node["cmds"].get(m_cmds);
 }
 
-void Macro::save(Hdf node) {
+void Macro::save(std::ostream &stream, int key) {
   TRACE(2, "Macro::save\n");
-  node["name"] = m_name;
+  stream << "hhvm.macro.visited." << key << ".name = " << m_name;
   for (unsigned int i = 0; i < m_cmds.size(); i++) {
-    node["cmds"][i] = m_cmds[i];
+    stream << "hhvm.macro.visited." << key << ".cmds[" << i << "] = "
+           << m_cmds[i];
   }
 }
 
@@ -337,6 +340,7 @@ static void get_color(int tokid, int prev, int next,
     COLOR_ENTRY(T_INC,                      None        );
     COLOR_ENTRY(T_LNUMBER,                  None        );
     COLOR_ENTRY(T_DNUMBER,                  None        );
+    COLOR_ENTRY(T_ONUMBER,                  None        );
     COLOR_ENTRY(T_STRING,                   None        );
     COLOR_ENTRY(T_STRING_VARNAME,           Variable    );
     COLOR_ENTRY(T_VARIABLE,                 Variable    );

@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -16,6 +16,8 @@
 #include "hphp/hhbbc/cfg.h"
 
 #include <boost/dynamic_bitset.hpp>
+#include <algorithm>
+#include <vector>
 
 namespace HPHP { namespace HHBBC {
 
@@ -65,6 +67,42 @@ std::vector<borrowed_ptr<php::Block>> rpoSortAddDVs(const php::Func& func) {
   }
   std::reverse(begin(ret), end(ret));
   return ret;
+}
+
+BlockToBlocks
+computeNormalPreds(const std::vector<borrowed_ptr<php::Block>>& rpoBlocks) {
+  auto preds = BlockToBlocks{};
+  preds.reserve(rpoBlocks.size());
+  for (auto& b : rpoBlocks) {
+    if (preds.size() < b->id + 1) {
+      preds.resize(b->id + 1);
+    }
+    forEachNormalSuccessor(*b, [&] (php::Block& blk) {
+      if (preds.size() < blk.id + 1) {
+        preds.resize(blk.id + 1);
+      }
+      preds[blk.id].insert(b);
+    });
+  }
+  return preds;
+}
+
+BlockToBlocks
+computeFactoredPreds(const std::vector<borrowed_ptr<php::Block>>& rpoBlocks) {
+  auto preds = BlockToBlocks{};
+  preds.reserve(rpoBlocks.size());
+  for (auto& b : rpoBlocks) {
+    if (preds.size() < b->id + 1) {
+      preds.resize(b->id + 1);
+    }
+    for (auto& ex : b->factoredExits) {
+      if (preds.size() < ex->id + 1) {
+        preds.resize(ex->id + 1);
+      }
+      preds[ex->id].insert(b);
+    }
+  }
+  return preds;
 }
 
 //////////////////////////////////////////////////////////////////////

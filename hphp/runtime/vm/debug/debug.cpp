@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -16,7 +16,7 @@
 
 #include "hphp/runtime/vm/debug/debug.h"
 #include "hphp/runtime/vm/debug/gdb-jit.h"
-#include "hphp/runtime/vm/jit/translator-x64.h"
+#include "hphp/runtime/vm/jit/mc-generator.h"
 
 #include "hphp/runtime/base/execution-context.h"
 
@@ -39,7 +39,7 @@ void* DebugInfo::pidMapOverlayStart;
 void* DebugInfo::pidMapOverlayEnd;
 
 DebugInfo* DebugInfo::Get() {
-  return tx64->getDebugInfo();
+  return mcg->getDebugInfo();
 }
 
 DebugInfo::DebugInfo() {
@@ -194,7 +194,7 @@ void DebugInfo::recordBCInstr(TCRange range, uint32_t op) {
 }
 
 void DebugInfo::recordTracelet(TCRange range, const Func* func,
-    const Opcode *instr, bool exit, bool inPrologue) {
+    const Op* instr, bool exit, bool inPrologue) {
   if (range.isAstubs()) {
     m_astubsDwarfInfo.addTracelet(range, nullptr, func, instr, exit, inPrologue);
   } else {

@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    | Copyright (c) 1997-2010 The PHP Group                                |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
@@ -42,8 +42,8 @@ class c_GenArrayWaitHandle : public c_BlockableWaitHandle {
   ~c_GenArrayWaitHandle() {}
 
   void t___construct();
-  static void ti_setoncreatecallback(CVarRef callback);
-  static Object ti_create(CArrRef dependencies);
+  static void ti_setoncreatecallback(const Variant& callback);
+  static Object ti_create(const Array& dependencies);
 
  public:
   String getName();
@@ -54,7 +54,7 @@ class c_GenArrayWaitHandle : public c_BlockableWaitHandle {
   void enterContextImpl(context_idx_t ctx_idx);
 
  private:
-  void initialize(CObjRef exception, CArrRef deps,
+  void initialize(const Object& exception, const Array& deps,
                   ssize_t iter_pos, c_WaitableWaitHandle* child);
 
  private:

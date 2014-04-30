@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -82,43 +82,6 @@ public:
     return String();
   }
 };
-
-#define HPHPD_SETTINGS \
-  HPHPD_SETTING(BypassCheck,         bool,  false)         \
-  HPHPD_SETTING(PrintLevel,          int,   -1)            \
-  HPHPD_SETTING(StackArgs,           bool,  true)          \
-
-class DebuggerSettings {
-public:
-#define HPHPD_SETTING(name, type, defval) type m_s##name;
-  HPHPD_SETTINGS
-#undef HPHPD_SETTING
-  bool dummy;
-
-  DebuggerSettings() :
-#define HPHPD_SETTING(name, type, defval) m_s##name(defval),
-  HPHPD_SETTINGS
-#undef HPHPD_SETTING
-  dummy(false) {}
-};
-
-#define DECLARE_DBG_SETTING                        \
-  DebuggerSettings m_dbgSettings;                  \
-
-#define HPHPD_SETTING(name, type, defval)          \
-type getDebugger##name () const {                  \
-  return m_dbgSettings.m_s##name;                  \
-}                                                  \
-void setDebugger##name (type in##name) {           \
-  m_dbgSettings.m_s##name = in##name;              \
-}                                                  \
-
-
-#define DECLARE_DBG_SETTING_ACCESSORS              \
-HPHPD_SETTINGS
-
-// leaving HPHPD_SETTING defined so that DECLARE_DBG_SETTING_ACCESSORS is
-// effective
 
 ///////////////////////////////////////////////////////////////////////////////
 }

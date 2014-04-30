@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    | Copyright (c) 1997-2010 The PHP Group                                |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
@@ -93,6 +93,7 @@ class c_XMLReader : public ExtObjectDataFlags<ObjectData::UseGet>, public Sweepa
   public: bool t_setparserproperty(int64_t property, bool value);
   public: bool t_setrelaxngschema(const String& filename);
   public: bool t_setrelaxngschemasource(const String& source);
+  public: Variant t_expand(const Object& basenode);
   public: Variant t___destruct();
 
   private: String read_string_func(xmlreader_read_char_t internal_function);

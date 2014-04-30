@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    | Copyright (c) 1997-2010 The PHP Group                                |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
@@ -19,11 +19,15 @@
 #define PHP_SOAP_H
 
 #include "hphp/runtime/base/base-includes.h"
+#include <map>
+#include <memory>
+#include <vector>
 #include "hphp/runtime/ext/soap/sdl.h"
 #include "hphp/runtime/base/request-local.h"
 #include "hphp/runtime/base/exceptions.h"
 #include "hphp/runtime/base/http-client.h"
 #include "hphp/util/lock.h"
+#include "hphp/runtime/base/request-event-handler.h"
 
 ///////////////////////////////////////////////////////////////////////////////
 // defines
@@ -74,8 +78,7 @@
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
 
-class SoapData : public RequestEventHandler {
-private:
+class SoapData final : public RequestEventHandler {
   // SDL cache
   struct sdlCacheBucket {
     sdlPtr sdl;

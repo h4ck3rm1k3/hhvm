@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -20,11 +20,14 @@
 
 namespace HPHP {
 
-IMPLEMENT_OBJECT_ALLOCATION(TempFile)
 ///////////////////////////////////////////////////////////////////////////////
 // constructor and destructor
 
-TempFile::TempFile(bool autoDelete /* = true */) : m_autoDelete(autoDelete) {
+TempFile::TempFile(bool autoDelete /* = true */,
+                   const String& wrapper_type,
+                   const String& stream_type)
+  : PlainFile(nullptr, false, wrapper_type, stream_type),
+    m_autoDelete(autoDelete) {
   char path[PATH_MAX];
 
   // open a temporary file
@@ -35,6 +38,7 @@ TempFile::TempFile(bool autoDelete /* = true */) : m_autoDelete(autoDelete) {
     return;
   }
   m_fd = fd;
+  m_stream = fdopen(fd, "r+");
   m_name = std::string(path);
   m_rawName = std::string(path);
 }
@@ -43,12 +47,20 @@ TempFile::~TempFile() {
   closeImpl();
 }
 
+void TempFile::sweep() {
+  closeImpl();
+  using std::string;
+  m_rawName.~string();
+  PlainFile::sweep();
+}
+
 bool TempFile::open(const String& filename, const String& mode) {
   throw FatalErrorException((std::string("cannot open a temp file ") +
                              m_name).c_str());
 }
 
 bool TempFile::close() {
+  invokeFiltersOnClose();
   return closeImpl();
 }
 

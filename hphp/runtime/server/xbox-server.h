@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -41,7 +41,9 @@ public:
   /**
    * Send/PostMessage paradigm for local and remote RPC.
    */
-  static bool SendMessage(const String& message, Variant &ret, int timeout_ms,
+  static bool SendMessage(const String& message,
+                          Array& ret,
+                          int timeout_ms,
                           const String& host = "localhost");
   static bool PostMessage(const String& message, const String& host = "localhost");
 
@@ -50,8 +52,8 @@ public:
    */
   static Resource TaskStart(const String& msg, const String& reqInitDoc = "",
       ServerTaskEvent<XboxServer, XboxTransport> *event = nullptr);
-  static bool TaskStatus(CResRef task);
-  static int TaskResult(CResRef task, int timeout_ms, Variant &ret);
+  static bool TaskStatus(const Resource& task);
+  static int TaskResult(const Resource& task, int timeout_ms, Variant &ret);
   static int TaskResult(XboxTransport* const job, int timeout_ms, Variant &ret);
 
   /**

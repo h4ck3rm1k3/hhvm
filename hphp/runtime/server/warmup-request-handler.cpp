@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -51,13 +51,9 @@ void WarmupRequestHandlerFactory::bumpReqCount() {
   if (!num) {
     return;
   }
-  auto const server = m_server.lock();
-  if (!server) {
-    return;
-  }
 
   Logger::Info("Finished warmup; adding %d new worker threads", num);
-  server->addWorkers(num);
+  m_server->addWorkers(num);
 
   // Set to zero so we can't do it if the req counter wraps.
   m_additionalThreads.store(0);

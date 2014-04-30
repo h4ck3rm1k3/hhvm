@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -21,6 +21,8 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
+#include <memory>
+#include <set>
 
 #include "folly/ScopeGuard.h"
 
@@ -29,6 +31,7 @@
 #include "hphp/runtime/base/zend-string.h"
 #include "hphp/util/process.h"
 #include "hphp/util/trace.h"
+#include "hphp/util/file-util.h"
 #include "hphp/runtime/base/stat-cache.h"
 #include "hphp/runtime/base/stream-wrapper-registry.h"
 #include "hphp/runtime/base/file-stream-wrapper.h"
@@ -100,17 +103,8 @@ int PhpFile::decRef(int n) {
 }
 
 void PhpFile::decRefAndDelete() {
-  class FileInvalidationTrigger : public Treadmill::WorkItem {
-    Eval::PhpFile* m_f;
-   public:
-    FileInvalidationTrigger(Eval::PhpFile* f) : m_f(f) { }
-    virtual void operator()() {
-      FileRepository::onDelete(m_f);
-    }
-  };
-
   if (decRef() == 0) {
-    Treadmill::WorkItem::enqueue(new FileInvalidationTrigger(this));
+    Treadmill::enqueue([this] { FileRepository::onDelete(this); });
   }
 }
 
@@ -333,10 +327,12 @@ std::string FileRepository::unitMd5(const std::string& fileMd5) {
   // Incorporate relevant options into the unit md5 (there will be more)
   std::ostringstream opts;
   std::string t = fileMd5 + '\0'
-    + (RuntimeOption::EnableHipHopSyntax ? '1' : '0')
     + (RuntimeOption::EnableEmitSwitch ? '1' : '0')
-    + (RuntimeOption::EvalJitEnableRenameFunction ? '1' : '0')
-    + (RuntimeOption::EvalAllowHhas ? '1' : '0');
+    + (RuntimeOption::EnableHipHopExperimentalSyntax ? '1' : '0')
+    + (RuntimeOption::EnableHipHopSyntax ? '1' : '0')
+    + (RuntimeOption::EnableXHP ? '1' : '0')
+    + (RuntimeOption::EvalAllowHhas ? '1' : '0')
+    + (RuntimeOption::EvalJitEnableRenameFunction ? '1' : '0');
   return string_md5(t.c_str(), t.size());
 }
 
@@ -470,15 +466,17 @@ PhpFile *FileRepository::readHhbc(const std::string &name,
   return nullptr;
 }
 
-PhpFile *FileRepository::parseFile(const std::string &name,
-                                   const FileInfo &fileInfo) {
+PhpFile* FileRepository::parseFile(const std::string& name,
+                                   const FileInfo& fileInfo) {
   MD5 md5 = MD5(fileInfo.m_unitMd5.c_str());
-  Unit* unit = compile_file(fileInfo.m_inputString->data(),
-                                fileInfo.m_inputString->size(),
-                                md5, name.c_str());
-  PhpFile *p = new PhpFile(name, fileInfo.m_srcRoot, fileInfo.m_relPath,
-                           fileInfo.m_md5, unit);
-  return p;
+  Unit* unit = compile_file(fileInfo.m_inputString.data(),
+                            fileInfo.m_inputString.size(),
+                            md5, name.c_str());
+  always_assert(unit != nullptr &&
+                "failed to produce a unit; possibly due to corrupt hhbc repo");
+
+  return new PhpFile(name, fileInfo.m_srcRoot, fileInfo.m_relPath,
+                     fileInfo.m_md5, unit);
 }
 
 bool FileRepository::fileStat(const std::string &name, struct stat *s) {
@@ -503,9 +501,21 @@ void FileRepository::deleteOrphanedUnits() {
 struct ResolveIncludeContext {
   String path; // translated path of the file
   struct stat* s; // stat for the file
+  bool allow_dir; // return true for dirs?
 };
 
 const StaticString s_file_url("file://");
+
+static bool findFile(const StringData *path, struct stat *s, bool allow_dir) {
+  s->st_mode = 0;
+  auto ret = HPHP::Eval::FileRepository::findFile(path, s);
+  if (S_ISDIR(s->st_mode) && allow_dir) {
+    // The call explicitly populates the struct for dirs, but returns false for
+    // them because it is geared toward file includes.
+    return true;
+  }
+  return ret;
+}
 
 static bool findFileWrapper(const String& file, void* ctx) {
   ResolveIncludeContext* context = (ResolveIncludeContext*)ctx;
@@ -528,30 +538,27 @@ static bool findFileWrapper(const String& file, void* ctx) {
   // whether the file is in an allowed directory.
   String translatedPath = File::TranslatePathKeepRelative(file);
   if (file[0] != '/') {
-    if (HPHP::Eval::FileRepository::findFile(translatedPath.get(),
-                                             context->s)) {
+    if (findFile(translatedPath.get(), context->s, context->allow_dir)) {
       context->path = translatedPath;
       return true;
     }
     return false;
   }
   if (RuntimeOption::SandboxMode || !RuntimeOption::AlwaysUseRelativePath) {
-    if (HPHP::Eval::FileRepository::findFile(translatedPath.get(),
-                                             context->s)) {
+    if (findFile(translatedPath.get(), context->s, context->allow_dir)) {
       context->path = translatedPath;
       return true;
     }
   }
   std::string server_root(SourceRootInfo::GetCurrentSourceRoot());
   if (server_root.empty()) {
-    server_root = std::string(g_vmContext->getCwd()->data());
+    server_root = std::string(g_context->getCwd().data());
     if (server_root.empty() || server_root[server_root.size() - 1] != '/') {
       server_root += "/";
     }
   }
-  String rel_path(Util::relativePath(server_root, translatedPath.data()));
-  if (HPHP::Eval::FileRepository::findFile(rel_path.get(),
-                                           context->s)) {
+  String rel_path(FileUtil::relativePath(server_root, translatedPath.data()));
+  if (findFile(rel_path.get(), context->s, context->allow_dir)) {
     context->path = rel_path;
     return true;
   }
@@ -559,11 +566,11 @@ static bool findFileWrapper(const String& file, void* ctx) {
 }
 
 String resolveVmInclude(StringData* path, const char* currentDir,
-                        struct stat *s) {
+                        struct stat *s, bool allow_dir /* = false */) {
   ResolveIncludeContext ctx;
   ctx.s = s;
-  resolve_include(path, currentDir, findFileWrapper,
-                  (void*)&ctx);
+  ctx.allow_dir = allow_dir;
+  resolve_include(path, currentDir, findFileWrapper, (void*)&ctx);
   // If resolve_include() could not find the file, return NULL
   return ctx.path;
 }

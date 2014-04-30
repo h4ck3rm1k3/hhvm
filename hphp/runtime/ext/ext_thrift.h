@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    | Copyright (c) 1997-2010 The PHP Group                                |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
@@ -25,26 +25,26 @@
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
 
-void f_thrift_protocol_write_binary(CObjRef transportobj,
+void f_thrift_protocol_write_binary(const Object& transportobj,
   const String& method_name,
   int64_t msgtype,
-  CObjRef request_struct,
+  const Object& request_struct,
   int seqid,
   bool strict_write);
 
-Variant f_thrift_protocol_read_binary(CObjRef transportobj,
+Variant f_thrift_protocol_read_binary(const Object& transportobj,
   const String& obj_typename,
   bool strict_read);
 
 int f_thrift_protocol_set_compact_version(int version);
 
-void f_thrift_protocol_write_compact(CObjRef transportobj,
+void f_thrift_protocol_write_compact(const Object& transportobj,
   const String& method_name,
   int64_t msgtype,
-  CObjRef request_struct,
+  const Object& request_struct,
   int seqid);
 
-Variant f_thrift_protocol_read_compact(CObjRef transportobj,
+Variant f_thrift_protocol_read_compact(const Object& transportobj,
   const String& obj_typename);
 
 ///////////////////////////////////////////////////////////////////////////////

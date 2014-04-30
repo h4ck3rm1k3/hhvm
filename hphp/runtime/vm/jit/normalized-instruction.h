@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -19,6 +19,7 @@
 #include <vector>
 
 #include <boost/dynamic_bitset.hpp>
+#include <memory>
 
 #include "hphp/runtime/base/smart-containers.h"
 #include "hphp/runtime/vm/bytecode.h"
@@ -45,9 +46,6 @@ class NormalizedInstruction {
                      // *not* the function whose body the NI belongs to.
                      // Note that for an FPush* may be set to the (statically
                      // known Func* that /this/ instruction is pushing)
-  const StringData* funcName;
-    // For FCall's, an opaque identifier that is either null, or uniquely
-    // identifies the (functionName, -arity) pair of this call site.
   const Unit* m_unit;
 
   std::vector<DynLocation*> inputs;
@@ -93,6 +91,7 @@ class NormalizedInstruction {
   Offset nextOffset; // for intra-trace* non-call control-flow instructions,
                      // this is the offset of the next instruction in the trace*
   bool breaksTracelet:1;
+  bool includeBothPaths:1;
   bool changesPC:1;
   bool fuseBranch:1;
   bool preppedByRef:1;
@@ -131,11 +130,6 @@ class NormalizedInstruction {
    * rather than calling the shared stub.
    */
   bool inlineReturn:1;
-
-  // For returns, this tracks local ids that are statically known not
-  // to be reference counted at this point (i.e. won't require guards
-  // or decrefs).
-  boost::dynamic_bitset<> nonRefCountedLocals;
 
   Op op() const;
   Op mInstrOp() const;

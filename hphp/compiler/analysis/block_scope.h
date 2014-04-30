@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -24,6 +24,11 @@
 #include "hphp/runtime/base/macros.h"
 
 #include <tbb/concurrent_hash_map.h>
+#include <list>
+#include <memory>
+#include <set>
+#include <utility>
+#include <vector>
 
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
@@ -171,7 +176,7 @@ public:
   bool is(KindOf kind) const { return kind == m_kind;}
   const std::string &getName() const { return m_name;}
   void setName(const std::string name) { m_name = name;}
-  virtual std::string getId() const;
+  virtual bool isBuiltin() const { return false; }
   StatementPtr getStmt() const { return m_stmt;}
   VariableTableConstPtr getVariables() const { return m_variables;}
   ConstantTableConstPtr getConstants() const { return m_constants;}

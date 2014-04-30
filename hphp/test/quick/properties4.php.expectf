@@ -1,0 +1,8 @@
+array(1) {
+  ["w"]=>
+  int(3)
+}
+Done
+looking up NonExistantClass
+
+Fatal error: Class undefined: NonExistantClass in %s on line 32

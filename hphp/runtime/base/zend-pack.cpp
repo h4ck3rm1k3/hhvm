@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    | Copyright (c) 1998-2010 Zend Technologies Ltd. (http://www.zend.com) |
    +----------------------------------------------------------------------+
    | This source file is subject to version 2.00 of the Zend license,     |
@@ -16,6 +16,7 @@
 */
 
 #include "hphp/runtime/base/zend-pack.h"
+#include <vector>
 #include "hphp/runtime/base/complex-types.h"
 #include "hphp/runtime/base/type-conversions.h"
 #include "hphp/runtime/base/builtin-functions.h"
@@ -97,7 +98,7 @@ ZendPack::ZendPack() {
   }
 }
 
-void ZendPack::pack(CVarRef val, int size, int *map, char *output) {
+void ZendPack::pack(const Variant& val, int size, int *map, char *output) {
   int32_t n = val.toInt32();
   char *v = (char*)&n;
   for (int i = 0; i < size; i++) {
@@ -105,7 +106,7 @@ void ZendPack::pack(CVarRef val, int size, int *map, char *output) {
   }
 }
 
-Variant ZendPack::pack(const String& fmt, CArrRef argv) {
+Variant ZendPack::pack(const String& fmt, const Array& argv) {
   /* Preprocess format into formatcodes and formatargs */
   std::vector<char> formatcodes;
   std::vector<int> formatargs;
@@ -304,7 +305,7 @@ Variant ZendPack::pack(const String& fmt, CArrRef argv) {
       v = val.data();
       slen = val.size();
       outputpos--;
-      if(arg > slen) {
+      if (arg > slen) {
         throw_invalid_argument
           ("Type %c: not enough characters in string", code);
         arg = slen;

@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -26,7 +26,6 @@ NormalizedInstruction::NormalizedInstruction()
     , prev(nullptr)
     , source()
     , funcd(nullptr)
-    , funcName(nullptr)
     , m_unit(nullptr)
     , outStack(nullptr)
     , outLocal(nullptr)
@@ -41,6 +40,7 @@ NormalizedInstruction::NormalizedInstruction()
     , sequenceNum(0)
     , nextOffset(0)
     , breaksTracelet(false)
+    , includeBothPaths(false)
     , changesPC(false)
     , fuseBranch(false)
     , preppedByRef(false)
@@ -61,16 +61,16 @@ NormalizedInstruction::~NormalizedInstruction() { }
  *   Helpers for recovering context of this instruction.
  */
 Op NormalizedInstruction::op() const {
-  return toOp(*pc());
+  return *reinterpret_cast<const Op*>(pc());
 }
 
 Op NormalizedInstruction::mInstrOp() const {
-  Op opcode = op();
+  auto const opcode = op();
 #define MII(instr, a, b, i, v, d) case Op##instr##M: return opcode;
   switch (opcode) {
     MINSTRS
-  case OpFPassM:
-    return preppedByRef ? OpVGetM : OpCGetM;
+  case Op::FPassM:
+    return preppedByRef ? Op::VGetM : Op::CGetM;
   default:
     not_reached();
   }

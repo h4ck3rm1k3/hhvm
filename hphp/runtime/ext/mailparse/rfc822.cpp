@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    | Copyright (c) 1997-2010 The PHP Group                                |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
@@ -379,7 +379,7 @@ char *php_rfc822_recombine_tokens(php_rfc822_tokenized_t *toks,
 
   ret = (char*)malloc(len);
 
-  for (i = first_token, len = 0; i < upper; i++, last_was_atom = this_is_atom){
+  for (i = first_token, len = 0; i < upper; i++, last_was_atom = this_is_atom) {
     const char *tokvalue;
     int toklen;
 

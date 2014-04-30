@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -19,7 +19,7 @@
 #include "hphp/runtime/vm/jit/abi-arm.h"
 #include "hphp/runtime/vm/jit/code-gen-helpers-arm.h"
 #include "hphp/runtime/vm/jit/unique-stubs.h"
-#include "hphp/runtime/vm/jit/translator-x64.h"
+#include "hphp/runtime/vm/jit/mc-generator.h"
 #include "hphp/vixl/a64/macro-assembler-a64.h"
 
 namespace HPHP { namespace JIT { namespace ARM {
@@ -29,17 +29,21 @@ namespace {
 using namespace vixl;
 
 void emitCallToExit(UniqueStubs& us) {
-  MacroAssembler a { tx64->code.main() };
+  MacroAssembler a { mcg->code.main() };
 
   a.   Nop   ();
   us.callToExit = a.frontier();
-  a.   Brk   (0);
+  emitServiceReq(
+    mcg->code.main(),
+    SRFlags::Align | SRFlags::JmpInsteadOfRet,
+    REQ_EXIT
+  );
 
   us.add("callToExit", us.callToExit);
 }
 
 void emitReturnHelpers(UniqueStubs& us) {
-  MacroAssembler a { tx64->code.main() };
+  MacroAssembler a { mcg->code.main() };
 
   us.retHelper = a.frontier();
   a.   Brk   (0);
@@ -56,37 +60,44 @@ void emitReturnHelpers(UniqueStubs& us) {
 }
 
 void emitResumeHelpers(UniqueStubs& us) {
-  MacroAssembler a { tx64->code.main() };
+  MacroAssembler a { mcg->code.main() };
 
-  auto const fpOff = offsetof(VMExecutionContext, m_fp);
-  auto const spOff = offsetof(VMExecutionContext, m_stack) +
+  auto const fpOff = offsetof(ExecutionContext, m_fp);
+  auto const spOff = offsetof(ExecutionContext, m_stack) +
                        Stack::topOfStackOffset();
 
   us.resumeHelperRet = a.frontier();
-  a.   Ldr   (rAsm, MemOperand(vixl::sp, 8, PostIndex));
-  a.   Str   (rAsm, rStashedAR[AROFF(m_savedRip)]);
+  a.   Str   (vixl::x30, rStashedAR[AROFF(m_savedRip)]);
   us.resumeHelper = a.frontier();
   a.   Ldr   (rVmFp, rGContextReg[fpOff]);
   a.   Ldr   (rVmSp, rGContextReg[spOff]);
 
-  emitServiceReq(tx64->code.main(), REQ_RESUME);
+  emitServiceReq(mcg->code.main(), REQ_RESUME);
 
   us.add("resumeHelper", us.resumeHelper);
   us.add("resumeHelperRet", us.resumeHelperRet);
 }
 
 void emitStackOverflowHelper(UniqueStubs& us) {
-  MacroAssembler a { tx64->code.stubs() };
+  MacroAssembler a { mcg->code.stubs() };
 
   us.stackOverflowHelper = a.frontier();
-  a.   Brk   (0);
+  a.  Ldr  (rAsm, rVmFp[AROFF(m_func)]);
+  a.  Ldr  (rAsm2.W(), rStashedAR[AROFF(m_soff)]);
+  a.  Ldr  (rAsm, rAsm[Func::sharedOffset()]);
+  a.  Ldr  (rAsm.W(), rAsm[Func::sharedBaseOffset()]);
+  // The VM-reg-save helper will read the current BC offset out of argReg(0).
+  a.  Add  (argReg(0).W(), rAsm.W(), rAsm2.W());
+
+  emitEagerVMRegSave(a, RegSaveFlags::SaveFP | RegSaveFlags::SavePC);
+  emitServiceReq(mcg->code.stubs(), REQ_STACK_OVERFLOW);
 
   us.add("stackOverflowHelper", us.stackOverflowHelper);
 }
 
 
 void emitDefClsHelper(UniqueStubs& us) {
-  MacroAssembler a { tx64->code.main() };
+  MacroAssembler a { mcg->code.main() };
 
   us.defClsHelper = a.frontier();
   a.   Brk   (0);
@@ -95,7 +106,7 @@ void emitDefClsHelper(UniqueStubs& us) {
 }
 
 void emitFreeLocalsHelpers(UniqueStubs& us) {
-  MacroAssembler a { tx64->code.main() };
+  MacroAssembler a { mcg->code.main() };
 
   us.freeManyLocalsHelper = a.frontier();
   a.   Brk   (0);
@@ -104,16 +115,51 @@ void emitFreeLocalsHelpers(UniqueStubs& us) {
 }
 
 void emitFuncPrologueRedispatch(UniqueStubs& us) {
-  MacroAssembler a { tx64->code.main() };
+  MacroAssembler a { mcg->code.main() };
+  vixl::Label actualDispatch;
+  vixl::Label numParamsCheck;
 
   us.funcPrologueRedispatch = a.frontier();
-  a.   Brk   (0);
+
+  // Using x0, x1 and x2 as scratch registers here. This is happening between
+  // compilation units -- trying to get into a func prologue, to be precise --
+  // so there are no live registers.
+
+  a.  Ldr  (x0, rStashedAR[AROFF(m_func)]);
+  a.  Ldr  (w1, rStashedAR[AROFF(m_numArgsAndGenCtorFlags)]);
+  a.  And  (w1, w1, 0x7fffffff);
+  a.  Ldr  (w2, x0[Func::numParamsOff()]);
+
+  // If we passed more args than declared, jump to the numParamsCheck.
+  a.  Cmp  (w2, w1);
+  a.  B    (&numParamsCheck, lt);
+
+  a.  bind (&actualDispatch);
+  // Need to load x0[w1 * 8 + Func::prologueTableOff()]. On x64 there's an
+  // addressing mode for this. Here, there's only base+imm and base+reg. So we
+  // add the immediate to the base first, then use base+reg with scaling.
+  a.  Add  (x0, x0, Func::prologueTableOff());
+  // What this is saying: base is x0, index is w1 (with Unsigned eXTension to 64
+  // bits), scaled by 2^3.
+  a.  Ldr  (x0, MemOperand(x0, w1, UXTW, 3));
+  a.  Br   (x0);
+  a.  Brk  (0);
+
+  a.  bind (&numParamsCheck);
+  a.  Cmp  (w1, kNumFixedPrologues);
+  a.  B    (&actualDispatch, lt);
+
+  // Too many parameters.
+  a.  Add  (x0, x0, Func::prologueTableOff() + sizeof(TCA));
+  a.  Ldr  (x0, MemOperand(x0, w2, UXTW, 3));
+  a.  Br   (x0);
+  a.  Brk  (0);
 
   us.add("funcPrologueRedispatch", us.funcPrologueRedispatch);
 }
 
 void emitFCallArrayHelper(UniqueStubs& us) {
-  MacroAssembler a { tx64->code.main() };
+  MacroAssembler a { mcg->code.main() };
 
   us.fcallArrayHelper = a.frontier();
   a.   Brk   (0);
@@ -123,7 +169,7 @@ void emitFCallArrayHelper(UniqueStubs& us) {
 
 void emitFCallHelperThunk(UniqueStubs& us) {
   TCA (*helper)(ActRec*, void*) = &fcallHelper;
-  MacroAssembler a { tx64->code.main() };
+  MacroAssembler a { mcg->code.main() };
 
   us.fcallHelperThunk = a.frontier();
   vixl::Label popAndXchg, jmpRet;
@@ -146,8 +192,8 @@ void emitFCallHelperThunk(UniqueStubs& us) {
   a.   Cmp   (rReturnReg, 0);
   a.   B     (&jmpRet, vixl::gt);
   a.   Neg   (rReturnReg, rReturnReg);
-  a.   Ldr   (rVmFp, rGContextReg[offsetof(VMExecutionContext, m_fp)]);
-  a.   Ldr   (rVmSp, rGContextReg[offsetof(VMExecutionContext, m_stack) +
+  a.   Ldr   (rVmFp, rGContextReg[offsetof(ExecutionContext, m_fp)]);
+  a.   Ldr   (rVmSp, rGContextReg[offsetof(ExecutionContext, m_stack) +
                                   Stack::topOfStackOffset()]);
 
   a.   bind  (&jmpRet);
@@ -159,7 +205,7 @@ void emitFCallHelperThunk(UniqueStubs& us) {
 
 void emitFuncBodyHelperThunk(UniqueStubs& us) {
   TCA (*helper)(ActRec*, void*) = &funcBodyHelper;
-  MacroAssembler a { tx64->code.main() };
+  MacroAssembler a { mcg->code.main() };
 
   us.funcBodyHelperThunk = a.frontier();
   a.   Mov   (argReg(0), rVmFp);
@@ -175,7 +221,7 @@ void emitFuncBodyHelperThunk(UniqueStubs& us) {
 
 void emitFunctionEnterHelper(UniqueStubs& us) {
   bool (*helper)(const ActRec*, int) = &EventHook::onFunctionEnter;
-  MacroAssembler a { tx64->code.main() };
+  MacroAssembler a { mcg->code.main() };
 
   us.functionEnterHelper = a.frontier();
 
@@ -185,6 +231,7 @@ void emitFunctionEnterHelper(UniqueStubs& us) {
 
   a.   Push    (rLinkReg, rVmFp);
   a.   Mov     (rVmFp, vixl::sp);
+  // rAsm2 gets the savedRbp, rAsm gets the savedRip.
   a.   Ldp     (rAsm2, rAsm, ar[AROFF(m_savedRbp)]);
   static_assert(AROFF(m_savedRbp) + 8 == AROFF(m_savedRip),
                 "m_savedRbp must precede m_savedRip");
@@ -199,10 +246,17 @@ void emitFunctionEnterHelper(UniqueStubs& us) {
 
   a.   bind    (&skip);
 
-  a.   Pop     (rVmFp, rLinkReg, rAsm, rAsm2);
-  a.   Ldr     (rVmSp, rGContextReg[offsetof(VMExecutionContext, m_stack) +
+  // Tricky. The last two things we pushed were the saved fp and return TCA from
+  // the function we were supposed to enter. Since we're now "returning" from
+  // that function, restore that fp and jump to that return TCA. Below that on
+  // the stack are that function's *caller's* saved fp and return TCA. We can
+  // ignore the saved fp, but we have to restore the return TCA into x30.
+  auto rIgnored = rAsm2;
+  a.   Pop     (rVmFp, rAsm);
+  a.   Pop     (rIgnored, rLinkReg);
+  a.   Ldr     (rVmSp, rGContextReg[offsetof(ExecutionContext, m_stack) +
                                     Stack::topOfStackOffset()]);
-  a.   Br      (rLinkReg);
+  a.   Br      (rAsm);
 
   us.add("functionEnterHelper", us.functionEnterHelper);
 }

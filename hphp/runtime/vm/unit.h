@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -16,6 +16,8 @@
 
 #ifndef incl_HPHP_VM_UNIT_H_
 #define incl_HPHP_VM_UNIT_H_
+
+#include <memory>
 
 #include "hphp/runtime/base/runtime-option.h"
 #include "hphp/runtime/vm/hhbc.h"
@@ -315,7 +317,6 @@ struct Unit {
    public:
     enum class Kind {
       None,
-      String,
       Class,
 
       /*
@@ -345,13 +346,6 @@ struct Unit {
        * an object of the supplied class type (or a null).
        */
       MVecPropClass,
-
-      /*
-       * At a Ret{C,V} site, indicates which locals are known not to
-       * be reference counted.  m_data is the id of the local variable
-       * that cannot be reference counted at this point.
-       */
-      NonRefCounted,
     };
 
     /*
@@ -424,20 +418,18 @@ struct Unit {
   PC entry() const { return m_bc; }
   Offset bclen() const { return m_bclen; }
 
-  PC at(const Offset off) const {
+  PC at(Offset off) const {
     assert(off >= 0 && off <= Offset(m_bclen));
     return m_bc + off;
   }
 
-  Offset offsetOf(const Opcode* op) const {
-    assert(op >= m_bc && op <= (m_bc + m_bclen));
-    return op - m_bc;
+  Offset offsetOf(PC pc) const {
+    assert(contains(pc));
+    return pc - m_bc;
   }
-  Offset offsetOf(const Op* op) const {
-    return offsetOf(reinterpret_cast<const Opcode*>(op));
-  }
-  bool contains(const Opcode* op) const {
-    return op >= m_bc && op <= m_bc + m_bclen;
+
+  bool contains(PC pc) const {
+    return pc >= m_bc && pc <= m_bc + m_bclen;
   }
 
   const StringData* filepath() const {
@@ -667,7 +659,7 @@ public:
 
   Op getOpcode(size_t instrOffset) const {
     assert(instrOffset < m_bclen);
-    return toOp(m_bc[instrOffset]);
+    return static_cast<Op>(m_bc[instrOffset]);
   }
 
   /*
@@ -745,37 +737,46 @@ private:
   // of the sub-statements.
   LineToOffsetRangeVecMap getLineToOffsetRangeVecMap() const;
 
-  // pseudoMain's return value, or KindOfUninit if its not known.
-  TypedValue m_mainReturn;
-  int64_t m_sn;
-  unsigned char const* m_bc;
-  size_t m_bclen;
-  unsigned char const* m_bc_meta;
-  size_t m_bc_meta_len;
-  const StringData* m_filepath;
-  const StringData* m_dirpath;
-  MD5 m_md5;
-  std::vector<NamedEntityPair> m_namedInfo;
-  std::vector<const ArrayData*> m_arrays;
-  PreClassPtrVec m_preClasses;
-  FixedVector<TypeAlias> m_typeAliases;
-  UnitMergeInfo* m_mergeInfo;
-  unsigned m_cacheOffset;
-  int8_t m_repoId;
-  uint8_t m_mergeState;
-  uint8_t m_cacheMask;
-  bool m_mergeOnly;
-  bool m_interpretOnly;
+  /*
+    Frequently used fields.
+    Do not reorder without good reason
+  */
+  unsigned char const* m_bc{nullptr};
+  size_t m_bclen{0};
+  const StringData* m_filepath{nullptr};
   // List of (line, offset) where offset is the offset of the first byte code
   // of the next line if there is one, m_bclen otherwise.
   // Sorted by offset. line values are not assumed to be unique.
   LineTable m_lineTable;
+  UnitMergeInfo* m_mergeInfo{nullptr};
+  unsigned m_cacheOffset{0};
+  int8_t m_repoId{-1};
+  uint8_t m_mergeState{UnitMergeStateUnmerged};
+  uint8_t m_cacheMask{0};
+  bool m_mergeOnly{false};
+  bool m_interpretOnly;
+  // pseudoMain's return value, or KindOfUninit if its not known.
+  TypedValue m_mainReturn;
+  PreClassPtrVec m_preClasses;
+  FixedVector<TypeAlias> m_typeAliases;
+  /*
+    End of freqently used fields
+  */
+
+  int64_t m_sn{-1};
+  unsigned char const* m_bc_meta{nullptr};
+  size_t m_bc_meta_len{0};
+  const StringData* m_dirpath{nullptr};
+  MD5 m_md5;
+  std::vector<NamedEntityPair> m_namedInfo;
+  std::vector<const ArrayData*> m_arrays;
   SourceLocTable m_sourceLocTable;
   LineToOffsetRangeVecMap m_lineToOffsetRangeVecMap;
   FuncTable m_funcTable;
-  mutable PseudoMainCacheMap *m_pseudoMainCache;
+  mutable PseudoMainCacheMap *m_pseudoMainCache{nullptr};
 };
 
+int getLineNumber(const LineTable& table, Offset pc);
 bool getSourceLoc(const SourceLocTable& table, Offset pc, SourceLoc& sLoc);
 
 class UnitEmitter {
@@ -787,8 +788,9 @@ class UnitEmitter {
 
   bool isASystemLib() const {
     static const char systemlib_prefix[] = "/:systemlib";
-    return !strncmp(getFilepath()->data(),
-      systemlib_prefix, sizeof systemlib_prefix - 1);
+    return !*getFilepath()->data() ||
+      !strncmp(getFilepath()->data(),
+        systemlib_prefix, sizeof systemlib_prefix - 1);
   }
 
   void addTrivialPseudoMain();
@@ -835,9 +837,23 @@ class UnitEmitter {
   void recordSourceLocation(const Location *sLoc, Offset start);
 
   /*
-   * Return the SrcLocTable for this unit.
+   * Return the SrcLocTable for this unit emitter, if it has one.
+   * Otherwise an empty table is returned.
    */
   SourceLocTable createSourceLocTable() const;
+
+  /*
+   * Returns whether this unit emitter contains full SourceLoc
+   * information.
+   */
+  bool hasSourceLocInfo() const { return !m_sourceLocTab.empty(); }
+
+  /*
+   * Returns access to this UnitEmitter's LineTable.  Generally
+   * UnitEmitters loaded from a production repo will have a line table
+   * instead of a full SourceLocTable.
+   */
+  const LineTable& lineTable() const { return m_lineTable; }
 
   /*
    * Adds a new FuncEmitter to the unit.  You can only do this once
@@ -1006,6 +1022,8 @@ class UnitRepoProxy : public RepoProxy {
   ~UnitRepoProxy();
   void createSchema(int repoId, RepoTxn& txn);
   Unit* load(const std::string& name, const MD5& md5);
+  std::unique_ptr<UnitEmitter> loadEmitter(const std::string& name,
+                                           const MD5& md5);
 
 #define URP_IOP(o) URP_OP(Insert##o, insert##o)
 #define URP_GOP(o) URP_OP(Get##o, get##o)
@@ -1111,6 +1129,10 @@ class UnitRepoProxy : public RepoProxy {
     GetBaseOffsetAfterPCLocStmt(Repo& repo, int repoId) : Stmt(repo, repoId) {}
     bool get(int64_t unitSn, Offset pc, Offset& offset);
   };
+
+private:
+  bool loadHelper(UnitEmitter& ue, const std::string&, const MD5&);
+
 #define URP_OP(c, o) \
  public: \
   c##Stmt& o(int repoId) { return *m_##o[repoId]; } \

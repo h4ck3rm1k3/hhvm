@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    | Copyright (c) 1997-2010 The PHP Group                                |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
@@ -25,8 +25,8 @@ namespace HPHP {
 
 Variant f_filter_list();
 Variant f_filter_id(const String& filtername);
-Variant f_filter_var(CVarRef variable, int64_t filter = 516,
-                     CVarRef options = empty_array);
+Variant f_filter_var(const Variant& variable, int64_t filter = 516,
+                     const Variant& options = empty_array);
 Array HHVM_FUNCTION(__SystemLib_filter_input_get_var, int64_t variable_name);
 void HHVM_FUNCTION(_filter_snapshot_globals);
 

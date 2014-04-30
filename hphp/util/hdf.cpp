@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -15,6 +15,9 @@
 */
 
 #include "hphp/util/hdf.h"
+
+#include <boost/algorithm/string/predicate.hpp>
+
 #include "hphp/util/lock.h"
 
 namespace HPHP {
@@ -128,6 +131,10 @@ void Hdf::open(const char *filename) {
 
 void Hdf::append(const char *filename) {
   assert(filename && *filename);
+  if (!(boost::contains(filename, ".hdf")
+    || boost::ends_with(filename, ".hphp"))) {
+    return;
+  }
   CheckNeoError(hdf_read_file(getRaw(), (char*)filename));
 }
 

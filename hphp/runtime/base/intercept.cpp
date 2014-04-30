@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -16,8 +16,10 @@
 #include "hphp/runtime/base/intercept.h"
 
 #include <vector>
+#include <utility>
 
 #include "hphp/runtime/base/request-local.h"
+#include "hphp/runtime/base/request-event-handler.h"
 #include "hphp/runtime/base/array-init.h"
 #include "hphp/runtime/base/array-iterator.h"
 #include "hphp/runtime/base/type-conversions.h"
@@ -40,8 +42,7 @@ namespace HPHP {
 
 TRACE_SET_MOD(intercept);
 
-class InterceptRequestData : public RequestEventHandler {
-public:
+struct InterceptRequestData final : RequestEventHandler {
   InterceptRequestData()
       : m_use_allowed_functions(false) {
   }
@@ -50,17 +51,12 @@ public:
     m_use_allowed_functions = false;
     m_allowed_functions.clear();
     m_renamed_functions.clear();
-    m_global_handler.reset();
+    m_global_handler.releaseForSweep();
     m_intercept_handlers.clear();
   }
 
-  virtual void requestInit() {
-    clear();
-  }
-
-  virtual void requestShutdown() {
-    clear();
-  }
+  void requestInit() override { clear(); }
+  void requestShutdown() override { clear(); }
 
 public:
   bool m_use_allowed_functions;
@@ -92,11 +88,11 @@ static void flag_maybe_intercepted(std::vector<char*> &flags) {
   }
 }
 
-bool register_intercept(const String& name, CVarRef callback, CVarRef data) {
+bool register_intercept(const String& name, const Variant& callback, const Variant& data) {
   StringIMap<Variant> &handlers = s_intercept_data->m_intercept_handlers;
   if (!callback.toBoolean()) {
     if (name.empty()) {
-      s_intercept_data->m_global_handler.reset();
+      s_intercept_data->m_global_handler = Variant();
       handlers.clear();
     } else {
       handlers.erase(name);

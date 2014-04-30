@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -222,19 +222,22 @@ void UnaryOpExpression::analyzeProgram(AnalysisResultPtr ar) {
   }
 }
 
-bool UnaryOpExpression::preCompute(CVarRef value, Variant &result) {
+bool UnaryOpExpression::preCompute(const Variant& value, Variant &result) {
   bool ret = true;
   try {
     g_context->setThrowAllErrors(true);
+    auto add = RuntimeOption::IntsOverflowToInts ? cellAdd : cellAddO;
+    auto sub = RuntimeOption::IntsOverflowToInts ? cellSub : cellSubO;
+
     switch(m_op) {
       case '!':
         result = (!toBoolean(value)); break;
       case '+':
-        cellSet(cellAdd(make_tv<KindOfInt64>(0), *value.asCell()),
+        cellSet(add(make_tv<KindOfInt64>(0), *value.asCell()),
                 *result.asCell());
         break;
       case '-':
-        cellSet(cellSub(make_tv<KindOfInt64>(0), *value.asCell()),
+        cellSet(sub(make_tv<KindOfInt64>(0), *value.asCell()),
                 *result.asCell());
         break;
       case '~':
@@ -610,7 +613,7 @@ void UnaryOpExpression::outputCodeModel(CodeGenerator &cg) {
     case T_DIR:
     case T_CLASS:
     case T_FUNCTION: {
-      cg.printObjectHeader("SimpleVariableExpression", 2);
+      cg.printObjectHeader("SimpleConstantExpression", 2);
       std::string varName;
       switch (m_op) {
         case T_FILE: varName = "__FILE__"; break;
@@ -621,7 +624,7 @@ void UnaryOpExpression::outputCodeModel(CodeGenerator &cg) {
           assert(false); //fishing expedition. Are these cases dead?
           break;
       }
-      cg.printPropertyHeader("variableName");
+      cg.printPropertyHeader("constantName");
       cg.printValue(varName);
       cg.printPropertyHeader("sourceLocation");
       cg.printLocation(this->getLocation());

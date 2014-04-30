@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -15,6 +15,8 @@
 */
 
 #include "hphp/runtime/debugger/cmd/cmd_heaptrace.h"
+#include <map>
+#include <vector>
 
 #include "hphp/runtime/base/memory-profile.h"
 
@@ -170,7 +172,7 @@ void CmdHeaptrace::printHeap(DebuggerClient &client) {
 void CmdHeaptrace::printGraphToFile(DebuggerClient &client,
                                     String filename,
                                     const GraphFormat &gf) {
-  const char *name = filename->data();
+  const char *name = filename.data();
   FILE *graphFile = fopen(name, "w");
   if (!graphFile) {
     client.print("Could not open file!");
@@ -213,7 +215,7 @@ void CmdHeaptrace::onClient(DebuggerClient &client) {
   if (file.empty()) {
     cmd->printHeap(client);
   } else {
-    std::string formatStr = format->data();
+    std::string formatStr = format.data();
     const auto it = s_formatMap.find(formatStr);
 
     if (it == s_formatMap.end()) {
@@ -229,7 +231,7 @@ bool CmdHeaptrace::onServer(DebuggerProxy &proxy) {
 
   // globals
   std::vector<TypedValue *> roots;
-  CArrRef arr = g_vmContext->m_globalVarEnv->getDefinedVariables();
+  const Array& arr = g_context->m_globalVarEnv->getDefinedVariables();
   arr->getChildren(roots);
 
   // static properties
@@ -242,9 +244,9 @@ bool CmdHeaptrace::onServer(DebuggerProxy &proxy) {
   int numFrames = proxy.getRealStackDepth();
   std::vector<Array> locs;
   for (int i = 0; i < numFrames; ++i) {
-    locs.push_back(g_vmContext->getLocalDefinedVariables(i));
+    locs.push_back(g_context->getLocalDefinedVariables(i));
   }
-  for (CArrRef locArr : locs) {
+  for (const Array& locArr : locs) {
     locArr->getChildren(roots);
   }
 

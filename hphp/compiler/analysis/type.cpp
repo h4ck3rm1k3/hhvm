@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -23,6 +23,7 @@
 #include "hphp/runtime/base/builtin-functions.h"
 #include "hphp/runtime/vm/runtime.h"
 #include <boost/format.hpp>
+#include <map>
 
 using namespace HPHP;
 
@@ -59,21 +60,16 @@ void Type::InitTypeHintMap() {
   assert(s_HHTypeHintTypes.empty());
 
   s_TypeHintTypes["array"] = Type::Array;
-  s_TypeHintTypes["resource"] = Type::Resource;
   s_TypeHintTypes["callable"] = Type::Variant;
 
   s_HHTypeHintTypes["array"] = Type::Array;
-  s_HHTypeHintTypes["bool"]    = Type::Boolean;
-  s_HHTypeHintTypes["boolean"] = Type::Boolean;
-  s_HHTypeHintTypes["int"]     = Type::Int64;
-  s_HHTypeHintTypes["integer"] = Type::Int64;
-  s_HHTypeHintTypes["real"]    = Type::Double;
-  s_HHTypeHintTypes["double"]  = Type::Double;
-  s_HHTypeHintTypes["float"]   = Type::Double;
-  s_HHTypeHintTypes["string"]  = Type::String;
+  s_HHTypeHintTypes["HH\\bool"]    = Type::Boolean;
+  s_HHTypeHintTypes["HH\\int"]     = Type::Int64;
+  s_HHTypeHintTypes["HH\\float"]   = Type::Double;
+  s_HHTypeHintTypes["HH\\string"]  = Type::String;
   // Type::Numeric doesn't include numeric strings; this is intentional
-  s_HHTypeHintTypes["num"]      = Type::Numeric;
-  s_HHTypeHintTypes["resource"] = Type::Resource;
+  s_HHTypeHintTypes["HH\\num"]      = Type::Numeric;
+  s_HHTypeHintTypes["HH\\resource"] = Type::Resource;
   s_HHTypeHintTypes["callable"] = Type::Variant;
 }
 
@@ -780,7 +776,7 @@ TypePtr Type::InferredObject(AnalysisResultConstPtr ar,
     } else if (c2ok && cls2->derivesFrom(ar, type1->m_name, true, false)) {
       resultType = type2;
     } else if (c1ok && c2ok && cls1->derivedByDynamic() &&
-               cls2->derivesFromRedeclaring()) {
+               cls2->derivesFromRedeclaring() == Derivation::Redeclaring) {
       resultType = type2;
     } else {
       resultType = type1;

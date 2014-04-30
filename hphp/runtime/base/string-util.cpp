@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -15,12 +15,15 @@
 */
 
 #include "hphp/runtime/base/string-util.h"
+#include <algorithm>
+#include <vector>
 #include "hphp/zend/zend-html.h"
 #include "hphp/runtime/base/zend-string.h"
 #include "hphp/runtime/base/zend-url.h"
 #include "hphp/runtime/base/runtime-error.h"
 #include "hphp/runtime/base/array-iterator.h"
 #include "hphp/runtime/base/builtin-functions.h"
+#include "hphp/runtime/base/container-functions.h"
 
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
@@ -113,7 +116,7 @@ Variant StringUtil::Explode(const String& input, const String& delimiter,
   return ret;
 }
 
-String StringUtil::Implode(CVarRef items, const String& delim) {
+String StringUtil::Implode(const Variant& items, const String& delim) {
   if (!isContainer(items)) {
     throw_param_is_not_container();
   }
@@ -198,13 +201,13 @@ Variant StringUtil::ChunkSplit(const String& body, int chunklen /* = 76 */,
 // encoding/decoding
 
 String StringUtil::HtmlEncode(const String& input, QuoteStyle quoteStyle,
-                              const char *charset, bool nbsp) {
+                              const char *charset, bool dEncode, bool htmlEnt) {
   return HtmlEncode(input, static_cast<int64_t>(quoteStyle),
-                    charset, nbsp);
+                    charset, dEncode, htmlEnt);
 }
 
 String StringUtil::HtmlEncode(const String& input, const int64_t qsBitmask,
-                              const char *charset, bool nbsp) {
+                              const char *charset, bool dEncode, bool htmlEnt) {
   if (input.empty()) return input;
 
   assert(charset);
@@ -217,7 +220,7 @@ String StringUtil::HtmlEncode(const String& input, const int64_t qsBitmask,
 
   int len = input.size();
   char *ret = string_html_encode(input.data(), len,
-                                 qsBitmask, utf8, nbsp);
+                                 qsBitmask, utf8, dEncode, htmlEnt);
   if (!ret) {
     return empty_string;
   }
@@ -452,6 +455,17 @@ String StringUtil::SHA1(const String& input, bool raw /* = false */) {
   int len;
   char *ret = string_sha1(input.data(), input.size(), raw, len);
   return String(ret, len, AttachString);
+}
+
+///////////////////////////////////////////////////////////////////////////////
+// integer safety for string allocations
+size_t safe_address(size_t nmemb, size_t size, size_t offset) {
+  uint64_t result =
+    (uint64_t) nmemb * (uint64_t) size + (uint64_t) offset;
+  if (UNLIKELY(result > StringData::MaxSize)) {
+    throw FatalErrorException(0, "String length exceeded 2^31-2: %zu", result);
+  }
+  return result;
 }
 
 ///////////////////////////////////////////////////////////////////////////////

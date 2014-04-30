@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    | Copyright (c) 1997-2010 The PHP Group                                |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
@@ -244,6 +244,8 @@ static Variant php_posix_passwd_to_array(int uid,
     return false;
   }
 
+  if (!retpwptr) return false;
+
   ArrayInit ret(7);
   ret.set(s_name,   String(pw.pw_name,   CopyString));
   ret.set(s_passwd, String(pw.pw_passwd, CopyString));
@@ -334,7 +336,7 @@ bool f_posix_initgroups(const String& name, int base_group_id) {
   return !initgroups(name.data(), base_group_id);
 }
 
-static int php_posix_get_fd(CVarRef fd) {
+static int php_posix_get_fd(const Variant& fd) {
   int nfd;
   if (fd.isResource()) {
     File *f = fd.toResource().getTyped<File>();
@@ -348,7 +350,7 @@ static int php_posix_get_fd(CVarRef fd) {
   return nfd;
 }
 
-bool f_posix_isatty(CVarRef fd) {
+bool f_posix_isatty(const Variant& fd) {
   return isatty(php_posix_get_fd(fd));
 }
 
@@ -431,7 +433,7 @@ Variant f_posix_times() {
   return ret.create();
 }
 
-Variant f_posix_ttyname(CVarRef fd) {
+Variant f_posix_ttyname(const Variant& fd) {
   int ttyname_maxlen = sysconf(_SC_TTY_NAME_MAX);
   if (ttyname_maxlen <= 0) {
     return false;
