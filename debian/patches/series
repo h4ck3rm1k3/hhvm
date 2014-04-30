@@ -1,3 +1,4 @@
+00_folly.patch
 01_fix_freetype_include.patch
 02_use_system_libzip.patch
 03_prefer_libedit_over_libreadline.patch

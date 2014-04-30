@@ -19,6 +19,8 @@ hhvm (3.0.1-1) UNRELEASED; urgency=low
 
   [ Faidon Liambotis ]
   * debian/patches:
+    - 00_folly: embed the upstream folly source, instead of upstream's git
+      submodule that doesn't work well with Debian workflows.
     - 03_prefer_libedit_over_libreadline: workaround build system bug
       and prefer libedit over libreadline.
     - 04_generated_files_prebuild: allow generated_files.sh to be run
