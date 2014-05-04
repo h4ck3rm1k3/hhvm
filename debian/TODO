@@ -1,3 +1,9 @@
+- Fix/workaround the json-is-evil issue
+- Fix the bison3 issue https://github.com/facebook/hhvm/issues/2573
+- Fix the clean targets as it's not possible to rebuild HHVM after a successful build.
+- Finish with 02_use_system_libzip.patch because we have to support the case when
+  libzip 0.11 or later is not present.
+- Deal with the post-3.0 third_party submodule split
 - debian/copyright: Review the following directories:
   * hphp
   * hphp/runtime
@@ -20,9 +26,7 @@
   * hphp/vixl
   * hphp/zend
   * hphp/submodules
+- Write a manpage for hhvm and hphpize.
 - Talk to the PHP team to make the binaries alternatives for /usr/bin/php.
 - Write some examples or automatic scripts to create config in Apache/nginx/etc.
-- Finish with 02_use_system_libzip.patch because we have to support the case when
-  libzip 0.11 or later is not present.
-- Write a manpage for hhvm and hphpize.
-- Fix the clean targets as it's not possible to rebuild HHVM after a successful build.
+- Finish pfff packaging & provide the optional OCaml components (type checker)
