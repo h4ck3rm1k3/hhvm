@@ -10,3 +10,4 @@ remove_boost_regex_hhvm
 remove_libpam
 use_system_libsqlite3
 use_system_lz4
+use_system_double_conversion
