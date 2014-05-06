@@ -9,3 +9,4 @@ disable_libncurses
 remove_boost_regex_hhvm
 remove_libpam
 use_system_libsqlite3
+use_system_lz4
