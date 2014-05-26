@@ -3,16 +3,16 @@ Description: Fix the FreeType2 include in libgd.
  headers files to be in a freetype/ directory.
 Author: David Martínez Moreno <ender@debian.org>
 Forwarded: no
-Last-Update: 2014-02-25
+Last-Update: 2014-05-26
 
---- hhvm-2.4.1.orig/hphp/runtime/ext/gd/libgd/gdft.cpp
-+++ hhvm-2.4.1/hphp/runtime/ext/gd/libgd/gdft.cpp
-@@ -61,7 +61,7 @@ gdImageStringFT (gdImage * im, int *brec
- #else
+--- a/hphp/runtime/ext/gd/libgd/gdft.cpp
++++ b/hphp/runtime/ext/gd/libgd/gdft.cpp
+@@ -62,7 +62,7 @@ gdImageStringFT (gdImage * im, int *brec
  
  #include "gdcache.h"
+ 
 -#include <freetype/config/ftheader.h>
 +#include <config/ftheader.h>
+ 
  #include FT_FREETYPE_H
  #include FT_GLYPH_H
- 

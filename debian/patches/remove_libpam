@@ -3,7 +3,7 @@ Description: Remove PAM dependency code.
  there's no need neither in HHVM or c-client to link against libpam.
 Author: David Martínez Moreno <ender@debian.org>
 Forwarded: https://github.com/facebook/hhvm/pull/2085
-Last-Update: 2014-03-15
+Last-Update: 2014-05-26
 
 --- a/CMake/FindLibpam.cmake
 +++ /dev/null
@@ -33,30 +33,26 @@ Last-Update: 2014-03-15
 -)
 --- a/CMake/HPHPFindLibs.cmake
 +++ b/CMake/HPHPFindLibs.cmake
-@@ -342,11 +342,6 @@ elseif (EXISTS "${CCLIENT_INCLUDE_PATH}/
-     CONTAINS_STRING("${CCLIENT_INCLUDE_PATH}/linkage.h" auth_gss CCLIENT_HAS_GSS)
+@@ -305,11 +305,6 @@ if (ELF_GETSHDRSTRNDX)
+   add_definitions("-DHAVE_ELF_GETSHDRSTRNDX")
  endif()
  
 -find_package(Libpam)
 -if (PAM_INCLUDE_PATH)
--	include_directories(${PAM_INCLUDE_PATH})
+-  include_directories(${PAM_INCLUDE_PATH})
 -endif()
 -
- if (NOT CCLIENT_HAS_GSS)
- 	add_definitions(-DSKIP_IMAP_GSS=1)
- endif()
-@@ -532,12 +527,8 @@ endif()
+ FIND_LIBRARY(CRYPT_LIB NAMES xcrypt crypt crypto)
+ if (LINUX OR FREEBSD)
+   FIND_LIBRARY (RT_LIB rt)
+@@ -472,10 +467,6 @@ macro(hphp_link target)
+     target_link_libraries(${target} ${EDITLINE_LIBRARIES})
+   endif()
  
- 	target_link_libraries(${target} ${CCLIENT_LIBRARY})
- 
--	if (PAM_LIBRARY)
--		target_link_libraries(${target} ${PAM_LIBRARY})
--	endif()
+-  if (PAM_LIBRARY)
+-    target_link_libraries(${target} ${PAM_LIBRARY})
+-  endif()
 -
--        target_link_libraries(${target} ${LIBDWARF_LIBRARIES})
--        target_link_libraries(${target} ${LIBELF_LIBRARIES})
-+    target_link_libraries(${target} ${LIBDWARF_LIBRARIES})
-+    target_link_libraries(${target} ${LIBELF_LIBRARIES})
- 
- 	if (ZEND_COMPAT_LINK_LIBRARIES)
- 		target_link_libraries(${target} ${ZEND_COMPAT_LINK_LIBRARIES})
+   target_link_libraries(${target} ${LIBDWARF_LIBRARIES})
+   target_link_libraries(${target} ${LIBELF_LIBRARIES})
+ endmacro()

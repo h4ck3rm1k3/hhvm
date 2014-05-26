@@ -6,12 +6,9 @@ Description: Use the system libzip instead of something in third-party.
  symbol as zip_discard(), so use that and conditionally supply that
  primitive if our version is not enough with copies from the libzip tree
  for only a handful of files.
- .
- TODO: For now just remove the entire libzip directory, as I haven't
- finished the pull request for the Github tree.
 Author: David Martínez Moreno <ender@debian.org>
 Forwarded: no
-Last-Update: 2014-03-04
+Last-Update: 2014-05-26
 
 --- /dev/null
 +++ b/CMake/FindLibZip.cmake
@@ -48,34 +45,45 @@ Last-Update: 2014-03-04
 +endif (NOT LIBZIP_FOUND)
 --- a/CMake/HPHPFindLibs.cmake
 +++ b/CMake/HPHPFindLibs.cmake
-@@ -167,7 +167,10 @@ include_directories("${HPHP_HOME}/hphp/t
- include_directories("${HPHP_HOME}/hphp/third_party/lz4")
- include_directories("${HPHP_HOME}/hphp/third_party/double-conversion/src")
- include_directories("${HPHP_HOME}/hphp/third_party/folly")
--include_directories("${HPHP_HOME}/hphp/third_party/libzip")
-+
+@@ -135,6 +135,10 @@ add_definitions(${LIBXSLT_DEFINITIONS})
+ find_package(EXPAT REQUIRED)
+ include_directories(${EXPAT_INCLUDE_DIRS})
+ 
 +# libzip
 +find_package(LibZip REQUIRED)
 +include_directories(${LIBZIP_INCLUDE_DIR_ZIP} ${LIBZIP_INCLUDE_DIR_ZIPCONF})
- 
++
  # ICU
  find_package(ICU REQUIRED)
-@@ -521,7 +524,7 @@ endif()
- 	target_link_libraries(${target} lz4)
- 	target_link_libraries(${target} double-conversion)
- 	target_link_libraries(${target} folly)
--	target_link_libraries(${target} zip_static)
-+	target_link_libraries(${target} zip)
+ if (ICU_FOUND)
+@@ -444,7 +448,7 @@ macro(hphp_link target)
+   target_link_libraries(${target} lz4)
+   target_link_libraries(${target} double-conversion)
+   target_link_libraries(${target} folly)
+-  target_link_libraries(${target} zip_static)
++  target_link_libraries(${target} zip)
  
- 	target_link_libraries(${target} afdt)
- 	target_link_libraries(${target} mbfl)
---- a/hphp/CMakeLists.txt
-+++ b/hphp/CMakeLists.txt
-@@ -30,7 +30,6 @@ add_subdirectory(third_party/timelib)
- add_subdirectory(third_party/lz4)
- add_subdirectory(third_party/double-conversion)
- add_subdirectory(third_party/folly)
--add_subdirectory(third_party/libzip)
+   target_link_libraries(${target} afdt)
+   target_link_libraries(${target} mbfl)
+--- a/CMake/HPHPSetup.cmake
++++ b/CMake/HPHPSetup.cmake
+@@ -164,7 +164,6 @@ include_directories("${TP_DIR}/libmbfl/f
+ include_directories("${TP_DIR}/lz4")
+ include_directories("${TP_DIR}/double-conversion/src")
+ include_directories("${TP_DIR}/folly")
+-include_directories("${TP_DIR}/libzip")
+ include_directories(${TP_DIR})
+ 
+ include_directories(${HPHP_HOME}/hphp)
+--- a/third-party/CMakeLists.txt
++++ b/third-party/CMakeLists.txt
+@@ -30,8 +30,7 @@ list(APPEND THIRD_PARTY_MODULES
+   timelib
+   lz4
+   double-conversion
+-  folly
+-  libzip)
++  folly)
  if(ENABLE_FASTCGI)
- 	add_subdirectory(third_party/ti)
- 	add_subdirectory(third_party/thrift)
+   list(APPEND THIRD_PARTY_MODULES ti)
+   list(APPEND THIRD_PARTY_MODULES thrift)

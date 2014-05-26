@@ -7,7 +7,7 @@ Last-Update: 2014-03-12
 
 --- a/hphp/doc/options.compiler
 +++ b/hphp/doc/options.compiler
-@@ -200,7 +200,7 @@ a more precise partitioning.
+@@ -207,7 +207,7 @@ a more precise partitioning.
  
  = GCCOptimization
  
@@ -56,7 +56,7 @@ Last-Update: 2014-03-12
    return STATUS_OK;
 --- a/hphp/runtime/ext/ext_domdocument.cpp
 +++ b/hphp/runtime/ext/ext_domdocument.cpp
-@@ -405,7 +405,7 @@ static Variant dom_canonicalization(xmlN
+@@ -418,7 +418,7 @@ static Variant dom_canonicalization(xmlN
        inclusive_ns_prefixes[nscount] = NULL;
      } else {
        raise_notice("Inclusive namespace prefixes only allowed in "
@@ -65,55 +65,6 @@ Last-Update: 2014-03-12
      }
    }
    if (mode == 1) {
---- a/hphp/system/idl/calendar.idl.json
-+++ b/hphp/system/idl/calendar.idl.json
-@@ -232,7 +232,7 @@
-                 {
-                     "name": "method",
-                     "type": "Variant",
--                    "desc": "Allows to calculate easter dates based on the Gregorian calendar during the years 1582 - 1752 when set to CAL_EASTER_ROMAN. See the calendar constants for more valid constants."
-+                    "desc": "Allows Easter dates to be calculated based on the Gregorian calendar during the years 1582 - 1752 when set to CAL_EASTER_ROMAN. See the calendar constants for more valid constants."
-                 }
-             ]
-         },
-@@ -245,7 +245,7 @@
-             ],
-             "return": {
-                 "type": "Variant",
--                "desc": "The julian day for the given french revolution date as an integer."
-+                "desc": "The Julian day for the given French Revolution date as an integer."
-             },
-             "args": [
-                 {
-@@ -274,7 +274,7 @@
-             ],
-             "return": {
-                 "type": "Variant",
--                "desc": "The julian day for the given gregorian date as an integer."
-+                "desc": "The Julian day for the given gregorian date as an integer."
-             },
-             "args": [
-                 {
-@@ -309,7 +309,7 @@
-                 {
-                     "name": "julianday",
-                     "type": "Variant",
--                    "desc": "A julian day number as integer"
-+                    "desc": "A Julian day number as integer"
-                 },
-                 {
-                     "name": "mode",
---- a/hphp/system/idl/image.idl.json
-+++ b/hphp/system/idl/image.idl.json
-@@ -2268,7 +2268,7 @@
-         },
-         {
-             "name": "imagepsencodefont",
--            "desc": "Loads a character encoding vector from a file and changes the fonts encoding vector to it. As a PostScript fonts default vector lacks most of the character positions above 127, you'll definitely want to change this if you use an other language than English.\n\nIf you find yourself using this function all the time, a much better way to define the encoding is to set ps.default_encoding in the configuration file to point to the right encoding file and all fonts you load will automatically have the right encoding.",
-+            "desc": "Loads a character encoding vector from a file and changes the fonts encoding vector to it. As a PostScript fonts default vector lacks most of the character positions above 127, you'll definitely want to change this if you use a language other than English.\n\nIf you find yourself using this function all the time, a much better way to define the encoding is to set ps.default_encoding in the configuration file to point to the right encoding file and all fonts you load will automatically have the right encoding.",
-             "flags": [
-             ],
-             "return": {
 --- a/hphp/system/idl/memcache.idl.json
 +++ b/hphp/system/idl/memcache.idl.json
 @@ -1051,7 +1051,7 @@
@@ -198,7 +149,7 @@ Last-Update: 2014-03-12
 +===DONE===
 --- a/hphp/system/idl/pdo.idl.json
 +++ b/hphp/system/idl/pdo.idl.json
-@@ -1054,7 +1054,7 @@
+@@ -1066,7 +1066,7 @@
                  },
                  {
                      "name": "debugDumpParams",

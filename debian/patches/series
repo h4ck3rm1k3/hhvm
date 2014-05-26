@@ -1,9 +1,8 @@
-fix_freetype_include
 use_system_libzip
-prefer_libedit_over_libreadline
-generated_files_prebuild
-typos
-remove_libpam
 use_system_libsqlite3
 use_system_lz4
 use_system_double_conversion
+remove_libpam
+fix_freetype_include
+prefer_libedit_over_libreadline
+typos
