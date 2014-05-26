@@ -1,22 +1,25 @@
-- Fix/workaround the json-is-evil issue
-- Fix the bison3 issue https://github.com/facebook/hhvm/issues/2573
+- Add init script, systemd unit and upstart job, possibly reusing code from the
+  php5-fpm package
+- Fix bison issue and reenable make-lexer/make-parser
+- Workaround the json-is-evil issue
+  - dfsg-remove /hphp/runtime/ext/json/JSON_parser.cpp
+  - rewrite ./hphp/runtime/base/utf8-decode.cpp
 - Fix the clean targets as it's not possible to rebuild HHVM after a successful build.
 - Finish with 02_use_system_libzip.patch because we have to support the case when
   libzip 0.11 or later is not present.
-- Deal with the post-3.0 third_party submodule split
 - debian/copyright: Review the following directories:
   * hphp
   * hphp/runtime
   * hphp/system
   * hphp/test
   * hphp/third_party
-  * hphp/third_party/double-conversion
+  * hphp/third_party/double-conversion [dfsg-remove]
   * hphp/third_party/folly
   * hphp/third_party/libafdt
   * hphp/third_party/libmbfl
-  * hphp/third_party/libsqlite3
-  * hphp/third_party/libzip
-  * hphp/third_party/lz4
+  * hphp/third_party/libsqlite3 [dfsg-remove]
+  * hphp/third_party/libzip [dfsg-remove]
+  * hphp/third_party/lz4 [dfsg-remove]
   * hphp/third_party/stubs
   * hphp/third_party/thrift
   * hphp/third_party/ti
