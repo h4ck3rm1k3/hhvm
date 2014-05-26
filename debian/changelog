@@ -18,7 +18,6 @@ hhvm (3.1+20140526-1) UNRELEASED; urgency=low
   * debian/patches:
     - prefer_libedit_over_libreadline: workaround build system bug
       and prefer libedit over libreadline.
-    - generated_files_prebuild: allow generated_files.sh to be run
       before HHVM is built to run it for DFSG completeness reasons.
     - use_system_lz4: Use the system's liblz4 and remove the one
       in third-party.
