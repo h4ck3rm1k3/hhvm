@@ -1,12 +1,8 @@
-folly
 fix_freetype_include
 use_system_libzip
 prefer_libedit_over_libreadline
 generated_files_prebuild
-bison3_whitespace
 typos
-disable_libncurses
-remove_boost_regex_hhvm
 remove_libpam
 use_system_libsqlite3
 use_system_lz4

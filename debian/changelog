@@ -1,4 +1,4 @@
-hhvm (3.0.1-1) UNRELEASED; urgency=low
+hhvm (3.1+20140526-1) UNRELEASED; urgency=low
 
   [ David Martínez Moreno ]
   * Initial release (closes: #727085).
@@ -10,24 +10,19 @@ hhvm (3.0.1-1) UNRELEASED; urgency=low
       third-party.
     - typos: Lots of typos, most of them detected by lintian. Added the
       false positives to a lintian override file.
-    - disable_libncurses: Disable libncurses CMake and linking code.
-    - remove_boost_regex_hhvm: Disable boost_regex in CMake code.
     - remove_libpam: Disable libpam CMake and linking code.
     - use_system_libsqlite: Use the system's libsqlite3 and remove the one
       in third-party.
 
   [ Faidon Liambotis ]
   * debian/patches:
-    - folly: embed the upstream folly source, instead of upstream's git
-      submodule that doesn't work well with Debian workflows.
     - prefer_libedit_over_libreadline: workaround build system bug
       and prefer libedit over libreadline.
     - generated_files_prebuild: allow generated_files.sh to be run
       before HHVM is built to run it for DFSG completeness reasons.
-    - bison3_whitespace: support both Bison 2 & Bison 3's whitespace.
     - use_system_lz4: Use the system's liblz4 and remove the one
       in third-party.
     - use_system_double-conversion: Use the system's double-conversion
       library and remove the one in third-party.
 
- -- Faidon Liambotis <paravoid@debian.org>  Sun, 04 May 2014 20:26:40 +0300
+ -- Faidon Liambotis <paravoid@debian.org>  Mon, 26 May 2014 20:18:02 +0300
