@@ -78,7 +78,9 @@ Description: HipHop Virtual Machine, a JIT replacement for PHP
 
 Package: hhvm-dev
 Architecture: amd64
-Depends: cmake
+Depends: ${misc:Depends}, cmake
+Section: libdevel
+Priority: extra
 Description: HipHop Virtual Machine, a JIT replacement for PHP
  HHVM is a new open-source virtual machine designed for executing programs
  written in PHP. HHVM uses a just-in-time (JIT) compilation approach to
