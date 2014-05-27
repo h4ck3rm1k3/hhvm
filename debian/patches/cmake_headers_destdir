@@ -7,7 +7,7 @@ Description: install headers under DESTDIR
  .
  Prefix the target with $ENV{DESTDIR} to remedy this.
 Author: Faidon Liambotis <paravoid@debian.org>
-Forwarded: no
+Forwarded: https://github.com/facebook/hhvm/pull/2777
 Last-Update: 2014-05-27
 
 --- a/CMake/HPHPFunctions.cmake

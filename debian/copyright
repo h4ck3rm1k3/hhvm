@@ -5,6 +5,7 @@ Comment: HHVM stands for "HipHop for PHP Virtual Machine".  That name
  respects the PHP license.
 
 Comment: ===== WARNING: NON-FREE LICENSE.  FIX BEFORE RELEASE! =====
+Comment: https://github.com/facebook/hhvm/issues/2775
 Files: hphp/runtime/base/utf8-decode.cpp hphp/runtime/ext/JSON_parser.cpp
 Copyright: 2005 JSON.org
 License: jsonevil

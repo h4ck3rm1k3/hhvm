@@ -1,6 +1,4 @@
 Description: Workaround build system bug and prefer libedit over libreadline
-Author: Faidon Liambotis <paravoid@debian.org>
-Last-Update: 2014-05-26
  The build system is a bit naive and picks linker arguments based on the
  presence of libraries and not based on whether the library choice that was
  made earlier based on the availability of headers.
@@ -13,6 +11,9 @@ Last-Update: 2014-05-26
  licensing reasons, work around this bug by ordering libedit in this first.
  This is, of course, the wrong way to fix this, but a proper fix is outside the
  scope of this patch.
+Forwarded: https://github.com/facebook/hhvm/pull/2778
+Author: Faidon Liambotis <paravoid@debian.org>
+Last-Update: 2014-05-26
 
 --- a/CMake/HPHPFindLibs.cmake
 +++ b/CMake/HPHPFindLibs.cmake
