@@ -20,21 +20,25 @@
 #include "hphp/runtime/vm/jit/code-gen.h"
 #include "hphp/runtime/vm/jit/arg-group.h"
 #include "hphp/runtime/vm/jit/code-gen-helpers.h"
+#include "hphp/runtime/vm/jit/target-profile.h"
 
 namespace HPHP { namespace JIT { namespace X64 {
 
-constexpr Reg64  rCgGP  (reg::r11);
-constexpr RegXMM rCgXMM0(reg::xmm0);
-constexpr RegXMM rCgXMM1(reg::xmm1);
+// Cache alignment is required for mutable instructions to make sure
+// mutations don't "tear" on remote cpus.
+constexpr size_t kCacheLineSize = 64;
+constexpr size_t kCacheLineMask = kCacheLineSize - 1;
 
-struct CodeGenerator {
+struct CodeGenerator : public JIT::CodeGenerator {
   typedef JIT::X64Assembler Asm;
 
   CodeGenerator(const IRUnit& unit, CodeBlock& mainCode, CodeBlock& stubsCode,
-                JIT::MCGenerator* mcg, CodegenState& state)
+                CodeBlock& unusedCode, JIT::MCGenerator* mcg,
+                CodegenState& state)
     : m_unit(unit)
     , m_mainCode(mainCode)
     , m_stubsCode(stubsCode)
+    , m_unusedCode(unusedCode)
     , m_as(mainCode)
     , m_astubs(stubsCode)
     , m_mcg(mcg)
@@ -44,7 +48,10 @@ struct CodeGenerator {
   {
   }
 
-  Address cgInst(IRInstruction* inst);
+  virtual ~CodeGenerator() {
+  }
+
+  Address cgInst(IRInstruction* inst) override;
 
 private:
   const PhysLoc srcLoc(unsigned i) const {
@@ -67,7 +74,7 @@ private:
   CallDest callDest(PhysReg reg0, PhysReg reg1 = InvalidReg) const;
   CallDest callDest(const IRInstruction*) const;
   CallDest callDestTV(const IRInstruction*) const;
-  CallDest callDest2(const IRInstruction*) const;
+  CallDest callDestDbl(const IRInstruction*) const;
 
   // Main call helper:
   CallHelperInfo cgCallHelper(Asm& a,
@@ -145,7 +152,7 @@ private:
                      void (Asm::*instrIR)(Immed, Reg64),
                      void (Asm::*instrR)(Reg64));
 
-  void cgVerifyClsWork(IRInstruction* inst);
+  void emitVerifyCls(IRInstruction* inst);
 
   void emitGetCtxFwdCallWithThis(PhysReg ctxReg,
                                  bool    staticCallee);
@@ -198,6 +205,7 @@ private:
   void emitTraceRet(Asm& as);
   void emitInitObjProps(PhysReg dstReg, const Class* cls, size_t nProps);
 
+  bool decRefDestroyIsUnlikely(OptDecRefProfile& profile, Type type);
   template <typename F>
   Address cgCheckStaticBitAndDecRef(Type type,
                                     PhysReg dataReg,
@@ -228,19 +236,34 @@ private:
   RDS::Handle cgLdClsCachedCommon(IRInstruction* inst);
   void emitFwdJcc(ConditionCode cc, Block* target);
   void emitFwdJcc(Asm& a, ConditionCode cc, Block* target);
-  const Func* curFunc() const;
-  Class*      curClass() const { return curFunc()->cls(); }
+  const Func* curFunc() const { return m_curInst->marker().func(); };
+  const Class* curClass() const { return curFunc()->cls(); }
   const Unit* curUnit() const { return curFunc()->unit(); }
+  bool resumed() const { return m_curInst->marker().resumed(); };
   void recordSyncPoint(Asm& as, SyncOptions sync = SyncOptions::kSyncPoint);
   int iterOffset(SSATmp* tmp) { return iterOffset(tmp->intVal()); }
   int iterOffset(uint32_t id);
-  void emitReqBindAddr(const Func* func, TCA& dest, Offset offset);
+  void emitReqBindAddr(TCA& dest, SrcKey sk);
 
-  void emitAdjustSp(PhysReg spReg, PhysReg dstReg, int64_t adjustment);
+  void emitAdjustSp(PhysReg spReg, PhysReg dstReg, int adjustment);
   void emitConvBoolOrIntToDbl(IRInstruction* inst);
   void cgLdClsMethodCacheCommon(IRInstruction* inst, Offset offset);
   void emitLdRaw(IRInstruction* inst, size_t extraOff);
-  void emitStRaw(IRInstruction* inst, size_t extraOff);
+  void emitStRaw(IRInstruction* inst, size_t offset, int size);
+
+  /*
+   * Execute the code emitted by 'taken' only if the given condition code is
+   * true.
+   */
+  template <class Block>
+  void ifBlock(ConditionCode cc, Block taken, bool unlikely = false) {
+    if (unlikely) return unlikelyIfBlock(cc, taken);
+
+    Label done;
+    m_as.jcc(ccNegate(cc), done);
+    taken(m_as);
+    asm_label(m_as, done);
+  }
 
   /*
    * Generate an if-block that branches around some unlikely code, handling
@@ -266,29 +289,24 @@ private:
     }
   }
 
-  template <class Then>
-  void ifBlock(ConditionCode cc, Then thenBlock) {
-    Label done;
-    m_as.jcc8(ccNegate(cc), done);
-    thenBlock(m_as);
-    asm_label(m_as, done);
-  }
-
   // Generate an if-then-else block
   template <class Then, class Else>
   void ifThenElse(Asm& a, ConditionCode cc, Then thenBlock, Else elseBlock) {
     Label elseLabel, done;
     a.jcc8(ccNegate(cc), elseLabel);
-    thenBlock();
+    thenBlock(a);
     a.jmp8(done);
     asm_label(a, elseLabel);
-    elseBlock();
+    elseBlock(a);
     asm_label(a, done);
   }
 
   // Generate an if-then-else block into m_as.
   template <class Then, class Else>
-  void ifThenElse(ConditionCode cc, Then thenBlock, Else elseBlock) {
+  void ifThenElse(ConditionCode cc, Then thenBlock, Else elseBlock,
+                  bool unlikely = false) {
+    if (unlikely) return unlikelyIfThenElse(cc, thenBlock, elseBlock);
+
     ifThenElse(m_as, cc, thenBlock, elseBlock);
   }
 
@@ -323,6 +341,7 @@ private:
   const IRUnit&       m_unit;
   CodeBlock&          m_mainCode;
   CodeBlock&          m_stubsCode;
+  CodeBlock&          m_unusedCode;
   Asm                 m_as;  // current "main" assembler
   Asm                 m_astubs; // for stubs and other cold code
   MCGenerator*        m_mcg;
@@ -332,7 +351,6 @@ private:
   const RegAllocInfo::RegMap* m_instRegs; // registers for current m_curInst.
 };
 
-void patchJumps(CodeBlock& cb, CodegenState& state, Block* block);
 void emitFwdJmp(CodeBlock& cb, Block* target, CodegenState& state);
 
 // Helpers to compute a reference to a TypedValue type and data

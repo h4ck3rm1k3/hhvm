@@ -114,7 +114,8 @@ let desugar_class_hint = function
 let check_arity pos class_name class_type class_parameters =
   let arity = List.length class_type.tc_tparams in
   if List.length class_parameters <> arity && not !is_silent_mode
-  then error pos ("The class "^class_name^" expects "^soi arity^" arguments");
+  then error pos ("The class "^(Utils.strip_ns class_name)^" expects "^
+    soi arity^" arguments");
   ()
 
 let make_substitution ?this:(this=None) pos class_name class_type class_parameters =
@@ -130,6 +131,35 @@ let constructor env subst = function
   | Some ce ->
     let env, ty = Inst.instantiate subst env ce.ce_type in
     env, Some {ce with ce_type = ty}
+
+(*****************************************************************************)
+(* Code filtering the private members (useful for inheritance) *)
+(*****************************************************************************)
+
+let filter_private x =
+  SMap.fold begin fun name class_elt acc ->
+    match class_elt.ce_visibility with
+    | Vprivate _ -> acc
+    | Vpublic | Vprotected _ -> SMap.add name class_elt acc
+  end x SMap.empty
+
+let chown_private owner =
+  SMap.map begin fun class_elt ->
+    match class_elt.ce_visibility with 
+      | Vprivate _ -> {class_elt with ce_visibility = Vprivate owner}
+      | _ -> class_elt end
+
+let apply_fn_to_class_elts fn class_type = {
+  class_type with
+  tc_consts = fn class_type.tc_consts;
+  tc_cvars = fn class_type.tc_cvars;
+  tc_scvars = fn class_type.tc_scvars;
+  tc_methods = fn class_type.tc_methods;
+  tc_smethods = fn class_type.tc_smethods;
+}
+
+let filter_privates = apply_fn_to_class_elts filter_private
+let chown_privates owner = apply_fn_to_class_elts (chown_private owner)
 
 (*****************************************************************************)
 (* Builds the inherited type when the class lives in Hack *)

@@ -20,12 +20,10 @@
 #include "hphp/runtime/vm/jit/block.h"
 #include "hphp/runtime/vm/jit/cfg.h"
 #include "hphp/runtime/vm/jit/print.h"
-#include "hphp/runtime/vm/jit/abi-x64.h"
-#include "hphp/runtime/vm/jit/abi-arm.h"
-#include "hphp/runtime/vm/jit/arch.h"
 #include "hphp/runtime/vm/jit/check.h"
 #include "hphp/runtime/vm/jit/timer.h"
 #include "hphp/runtime/vm/jit/reg-alloc.h"
+#include "hphp/runtime/vm/jit/mc-generator.h"
 
 #include <unordered_set>
 #include <algorithm>
@@ -34,9 +32,6 @@
 // TODO
 //  - #3098109 dests of branch instructions start in next block
 //  - #3098509 streamline code, vectors vs linked lists, etc
-//  - #3098661 generate spill stats so we can compare side/by/side
-//  - #3098678 EvalHHIREnablePreColoring
-//  - #3098685 EvalHHIREnableCoalescing, by using hints
 //  - #3409409 Enable use of SIMD at least for doubles, for packed_tv
 //  - #3098685 Optimize lifetime splitting
 //  - #3098712 reuse spill slots
@@ -44,28 +39,49 @@
 //  - #3099647 support loops
 
 namespace HPHP { namespace JIT {
+TRACE_SET_MOD(xls);
 namespace {
 using namespace reg;
 struct Interval;
 struct RegPositions;
 
-// machine-specific register conventions
-struct Abi {
-  RegSet gp;      // general purpose 64-bit registers
-  RegSet simd;    // floating point / simd 128-bit registers
-  RegSet saved;   // callee-saved (gp and simd)
-
-  // convenience methods
-  RegSet all() const { return gp | simd; }
-};
-
 typedef StateVector<SSATmp, Interval*> Intervals;
 typedef IdSet<SSATmp> LiveSet;
-typedef std::pair<PhysReg,PhysReg> RegPair;
 
 // A Use refers to the position where an interval is read or written.
+// The hint is used by firstHint() to try picking a good register.
 struct Use {
+  enum Kind {
+    kNone,   // ordinary use or def, but no hints
+    kReg,    // precoloring hint in regHint
+    kCopy,   // this use is a copy dest; srcId is copy src
+    kPhiSrc, // this use is a Jmp src; phiIndex is which src
+    kPhiDst  // this use is a DefLabel dst; phiIndex is which dest
+  };
+  Use(){}
+  explicit Use(unsigned pos) : pos(pos), kind(kNone) {}
+  Use(unsigned pos, RegPair regs)
+    : pos(pos)
+    , kind(regs.first != InvalidReg ? kReg : kNone)
+    , regHint(regs)
+  {}
+  Use(unsigned pos, SSATmp* s)
+    : pos(pos)
+    , kind(kCopy)
+    , srcId(s->id())
+  {}
+  Use(unsigned pos, Kind k, unsigned i)
+    : pos(pos)
+    , kind(k)
+    , phiIndex(i)
+  {}
   unsigned pos;
+  Kind kind;
+  union {
+    RegPair regHint;   // precoloring hint
+    uint32_t srcId;    // ssatmp id of related copy
+    unsigned phiIndex; // which jmp src or deflabel dest
+  };
 };
 
 // A LiveRange is an open-ended range of positions where an interval is live.
@@ -108,7 +124,7 @@ struct Interval {
   unsigned firstUse() const;
   // mutators
   void add(LiveRange r);
-  void addUse(unsigned pos) { uses.push_back(Use{pos}); }
+  void addUse(Use u) { uses.push_back(u); }
   Interval* split(unsigned pos, bool keep_uses = false);
   // register/spill assignment
   RegPair regs() const;
@@ -162,6 +178,9 @@ struct XLS {
   void insertSpill(Interval* ivl);
   void resolveFlow(Interval* ivl, Block* pred, Block* succ,
                    unsigned pos1, unsigned pos2);
+  Use coalesceSrc(unsigned pos, const IRInstruction&, unsigned i);
+  Use coalesceDst(unsigned pos, const IRInstruction&, unsigned i);
+  RegPair firstHint(Interval*, const RegPositions&);
   // debugging
   void print(const char* caption);
   void dumpIntervals();
@@ -184,9 +203,16 @@ private:
   smart::vector<Interval*> m_inactive;
   StateVector<Block,std::pair<IRInstruction*,IRInstruction*>> m_edgeCopies;
   unsigned m_frontier { 0 }; // debug_only to detect backtracking
+  unsigned m_orig { 0 };
+  unsigned m_final { 0 };
+  unsigned m_copies { 0 };
+  unsigned m_spills { 0 };
+  unsigned m_reloads { 0 };
+  unsigned m_ldconst { 0 };
 };
 
-const uint32_t kMaxPos = UINT32_MAX; // "infinity" use position
+// "infinity" use position
+constexpr uint32_t kMaxPos = std::numeric_limits<uint32_t>::max();
 
 // Keep track of a future use or conflict position for each register.
 // Initially all usable registers have kMaxPos
@@ -200,8 +226,6 @@ struct RegPositions {
 private:
   PhysReg::Map<unsigned> posns;
 };
-
-bool checkBlockOrder(IRUnit& unit, BlockList& blocks);
 
 //////////////////////////////////////////////////////////////////////////////
 
@@ -226,7 +250,7 @@ Interval::Interval(Interval* parent)
 
 // Add r to this interval, merging r with any existing overlapping ranges
 void Interval::add(LiveRange r) {
-  assert(r.start < r.end); // not empty
+  assert(blocked || scratch || r.start < r.end);
   while (!ranges.empty() && r.contains(ranges.back())) {
     ranges.pop_back();
   }
@@ -360,7 +384,7 @@ XLS::XLS(IRUnit& unit, RegAllocInfo& regs, const Abi& abi)
   , m_posns(unit, 0)
   , m_liveIn(unit, LiveSet())
   , m_edgeCopies(unit, { nullptr, nullptr }) {
-  auto all = abi.all();
+  auto all = abi.unreserved();
   for (auto r : m_blocked) {
     m_blocked[r].blocked = true;
     m_blocked[r].need = 1;
@@ -418,10 +442,10 @@ void XLS::computePositions() {
 // in CodeGenerator.
 RegSet constrainedRegs(Constraint c, const Abi& abi) {
   auto regs = RegSet();
-  if (c & Constraint::GP) regs |= abi.gp;
+  if (c & Constraint::GP) regs |= abi.gpUnreserved;
   if (c & Constraint::SIMD) {
     if (regs.empty() || RuntimeOption::EvalHHIRAllocSIMDRegs) {
-      regs |= abi.simd;
+      regs |= abi.simdUnreserved;
     }
   }
   return regs;
@@ -432,9 +456,9 @@ void srcConstraints(Interval* ivl, const Abi& abi, Constraint constraint) {
   auto allow = constrainedRegs(constraint, abi);
   ivl->allow &= allow;
   ivl->prefer &= allow;
-  if (!(ivl->allow & abi.simd).empty()) {
+  if (!(ivl->allow & abi.simdUnreserved).empty()) {
     // we allow gp and simd, so prefer just simd
-    ivl->prefer &= abi.simd;
+    ivl->prefer &= abi.simdUnreserved;
   }
 }
 
@@ -443,9 +467,9 @@ void dstConstraints(Interval* ivl, const Abi& abi, Constraint constraint) {
   auto allow = constrainedRegs(constraint, abi);
   ivl->allow &= allow;
   ivl->prefer &= allow;
-  if (!(ivl->allow & abi.simd).empty()) {
+  if (!(ivl->allow & abi.simdUnreserved).empty()) {
     // if we allow gp and simd, then prefer just simd
-    ivl->prefer &= abi.simd;
+    ivl->prefer &= abi.simdUnreserved;
   }
   if (ivl->tmp->numWords() == 2 && !(ivl->allow & ivl->prefer).empty()) {
     // we prefer simd, but allow gp and simd, so restrict allow to just
@@ -454,12 +478,34 @@ void dstConstraints(Interval* ivl, const Abi& abi, Constraint constraint) {
   }
 }
 
+// if this use is an input to a jump (phi), provide a hint to encourage
+// using the same register as the corresponding phi dest.
+Use XLS::coalesceSrc(unsigned pos, const IRInstruction& inst, unsigned i) {
+  if (inst.is(Jmp)) {
+    return Use{pos, Use::kPhiSrc, i};
+  }
+  return Use{pos};
+}
+
+// return the ssatmp to use to use for a copy hint
+Use XLS::coalesceDst(unsigned pos, const IRInstruction& inst, unsigned i) {
+  if (inst.isPassthrough()) {
+    // this use is a copy def; the hint is the the src
+    return Use{pos, inst.getPassthroughValue()};
+  }
+  if (inst.is(DefLabel)) {
+    // this use is a phi dest; the hint lets find each of the srcs
+    return Use{pos, Use::kPhiDst, i};
+  }
+  return Use{pos};
+}
+
 // build intervals in one pass by walking the block list backwards.
 // no special handling is needed for goto/label (phi) instructions because
 // they use/define tmps in the expected locations.
 void XLS::buildIntervals() {
-  assert(checkBlockOrder(m_unit, m_blocks));
   unsigned min_need = 0;
+  auto& backend = mcg->backEnd();
   for (auto blockIt = m_blocks.end(); blockIt != m_blocks.begin();) {
     auto block = *--blockIt;
     // compute initial live set from liveIn[succsessors]
@@ -495,28 +541,39 @@ void XLS::buildIntervals() {
           dest->add(LiveRange(pos, pos + 1));
           dest->tmp = d;
           dest->need = d->numWords();
-          dest->allow = dest->prefer = m_abi.all();
+          dest->allow = dest->prefer = m_abi.unreserved();
         } else {
           // adjust start pos for live intervals defined by this instruction
           dest->ranges.back().start = pos;
           live.erase(d);
         }
         dst_need += dest->need;
-        dest->addUse(pos);
+        auto hint = backend.precolorDst(inst, i);
+        if (hint.first != InvalidReg) {
+          dest->addUse({pos, hint});
+        } else if (RuntimeOption::EvalHHIREnableCoalescing) {
+          dest->addUse(coalesceDst(pos, inst, i));
+        } else {
+          dest->addUse(Use{pos});
+        }
         dstConstraints(dest, m_abi, constraint);
       }
       min_need = std::max(min_need, dst_need);
       if (inst.isNative()) {
         if (RuntimeOption::EvalHHIREnableCalleeSavedOpt) {
-          auto scratch = m_abi.gp - m_abi.saved;
+          auto scratch = m_abi.gpUnreserved - m_abi.calleeSaved;
           scratch.forEach([&](PhysReg r) {
-            m_scratch[r].add(LiveRange(pos, pos + 1));
+            // Add an empty range to caller-saved intervals that will
+            // intersect with ordinary intervals that span calls,
+            // causing them to prefer callee-saved registers.  This is
+            // the only situation where an empty range is valid.
+            m_scratch[r].add(LiveRange(pos, pos));
           });
         }
       }
       if (inst.is(Call, CallArray, ContEnter)) {
         // block all registers at php callsites.
-        m_abi.all().forEach([&](PhysReg r) {
+        m_abi.unreserved().forEach([&](PhysReg r) {
           m_blocked[r].add(LiveRange(pos, pos + 1));
         });
       }
@@ -527,6 +584,9 @@ void XLS::buildIntervals() {
         auto constraint = srcConstraint(inst, i);
         if (constraint == Constraint::IMM) continue;
         if (s->isConst() && (constraint & Constraint::IMM)) continue;
+        if (s->isConst()) {
+          TRACE(1, "xls-const-src %s %u\n", opcodeName(inst.op()), i);
+        }
         auto need = s->numWords();
         if (need == 0) continue; //XXX problematic for InitNull|UninitNull
         if (constraint.reg() != InvalidReg) {
@@ -536,11 +596,18 @@ void XLS::buildIntervals() {
         auto src = m_intervals[s];
         if (!src) m_intervals[s] = src = smart_new<Interval>();
         src->add(LiveRange(blockStart, pos));
-        src->addUse(pos);
+        auto hint = backend.precolorSrc(inst, i);
+        if (hint.first != InvalidReg) {
+          src->addUse({pos, hint});
+        } else if (RuntimeOption::EvalHHIREnableCoalescing) {
+          src->addUse(coalesceSrc(pos, inst, i));
+        } else {
+          src->addUse(Use{pos});
+        }
         if (!src->tmp) {
           src->tmp = s;
           src->need = need;
-          src->allow = src->prefer = m_abi.all();
+          src->allow = src->prefer = m_abi.unreserved();
         }
         srcConstraints(src, m_abi, constraint);
         src_need += src->need;
@@ -549,6 +616,17 @@ void XLS::buildIntervals() {
       min_need = std::max(min_need, src_need);
     }
     m_liveIn[block] = live;
+    // if this block is a loop header, add a live range that covers
+    // the whole loop, to each interval live-into this block.
+    block->forEachPred([&](Block* pred) {
+      auto predEnd = m_posns[pred->back()] + 2;
+      if (predEnd > blockStart) {
+        live.forEach([&](uint32_t id) {
+          auto ivl = m_intervals[id];
+          ivl->add(LiveRange{blockStart, predEnd});
+        });
+      }
+    });
   }
   // Implement stress mode by blocking NumFreeRegs more than minimum needed.
   min_need += RuntimeOption::EvalHHIRNumFreeRegs;
@@ -610,6 +688,7 @@ void XLS::assignSpill(Interval* ivl) {
       leader->spill.setSlot(1, m_nextSpill++);
     }
     if (m_nextSpill > NumPreAllocatedSpillLocs) {
+      TRACE(1,"xls-punt TooManySpills\n");
       PUNT(LinearScan_TooManySpills);
     }
   }
@@ -686,9 +765,11 @@ RegPositions::find(Interval* ivl, RegSet allow, RegPair& regs) const {
   return ivl->need == 1 ? find1(allow, regs) : find2(allow, regs);
 }
 
+// Return the [lowest] position of the registers in regs
 unsigned RegPositions::getPos(Interval* ivl, RegPair regs) const {
   return ivl->need == 1 ? posns[regs.first] :
-         regs.second != regs.first ? posns[regs.second] : 0;
+         regs.first == regs.second ? 0 : // only found one register
+         std::min(posns[regs.first], posns[regs.second]);
 }
 
 // Update the position associated with the registers assigned to ivl,
@@ -705,9 +786,76 @@ unsigned RegPositions::setPos(Interval* ivl, unsigned pos) {
   return minpos;
 }
 
-// return the closest valid split position on or before pos.
+// Return the closest valid split position on or before pos.
 unsigned nearestSplitBefore(unsigned pos) {
   return pos == 0 || pos % 2 == 1 ? pos : pos - 1;
+}
+
+// In order to use a hint, it needs enough registers, in the allow set,
+// which are free for the whole lifetime of current.
+bool isUsable(RegPair hint, Interval* current, const RegPositions& free_until) {
+  if (current->need == 1) {
+    if (hint.first == InvalidReg || !current->allow.contains(hint.first)) {
+      return false;
+    }
+  } else {
+    if (hint.first == InvalidReg || hint.second == InvalidReg ||
+        !current->allow.contains(hint.first) ||
+        !current->allow.contains(hint.second)) {
+      return false;
+    }
+  }
+  auto until_pos = free_until.getPos(current, hint);
+  return until_pos >= current->end();
+}
+
+// Return the first usable hint from all the uses in this interval.
+// If we can't use the first one, keep looking; a later one might
+// not be as good, but still could be better than giving up.
+RegPair XLS::firstHint(Interval* current, const RegPositions& free_until) {
+  if (!RuntimeOption::EvalHHIREnablePreColoring &&
+      !RuntimeOption::EvalHHIREnableCoalescing) return InvalidRegPair;
+  // search the copy interval for a register hint at pos
+  auto search = [&](Interval* copy, unsigned pos) {
+    for (auto ivl = copy; ivl; ivl = ivl->next) {
+      if (pos == ivl->end() && ivl->loc.hasReg(0)) {
+        return ivl->loc.pair();
+      }
+    }
+    return InvalidRegPair;
+  };
+  auto searchPreds = [&](Block* block, unsigned index) {
+    auto hint = InvalidRegPair;
+    block->forEachSrc(index, [&](IRInstruction* jmp, SSATmp* src) {
+      if (!isUsable(hint, current, free_until)) {
+        hint = search(m_intervals[src], m_posns[jmp]);
+      }
+    });
+    return hint;
+  };
+  for (auto u : current->uses) {
+    auto hint = InvalidRegPair;
+    switch (u.kind) {
+      case Use::kNone:
+        continue;
+      case Use::kReg:
+        hint = u.regHint;
+        break;
+      case Use::kCopy:
+        hint = search(m_intervals[u.srcId], u.pos);
+        break;
+      case Use::kPhiSrc:
+        hint = searchPreds(m_insts[u.pos]->taken(), u.phiIndex);
+        break;
+      case Use::kPhiDst:
+        hint = searchPreds(m_insts[u.pos]->block(), u.phiIndex);
+        break;
+    }
+    if (isUsable(hint, current, free_until)) {
+      return hint;
+    }
+  }
+  return InvalidRegPair;
 }
 
 // Allocate one register for the current interval.
@@ -748,7 +896,15 @@ void XLS::allocOne(Interval* current) {
       until2.setPos(ivl, pos);
     }
   }
-  // Try to get a preferred-non scratch register first
+
+  // Try to get a hinted register
+  auto hint = firstHint(current, until2);
+  if (hint.first != InvalidReg) {
+    assert(isUsable(hint, current, until2));
+    return assignReg(current, hint);
+  }
+
+  // Try to get a preferred-non scratch register
   RegPair r;
   auto until_pos = until2.find(current, current->prefer, r);
   if (until_pos >= current->end()) {
@@ -863,6 +1019,7 @@ void XLS::spill(Interval* ivl) {
   if (first_use <= ivl->end()) {
     auto split_pos = nearestSplitBefore(first_use);
     if (split_pos <= ivl->start()) {
+      TRACE(1,"xls-punt RegSpill\n");
       PUNT(RegSpill); // cannot split before first_use
     }
     enqueue(ivl->split(split_pos));
@@ -905,9 +1062,13 @@ void XLS::update(unsigned pos) {
   for (auto i = m_active.begin(); i != m_active.end();) {
     auto ivl = *i;
     if (ivl->end() <= pos) {
-      i = m_active.erase(i); // active is now handled.
+      // done with ivl; remove interval from active list
+      *i = m_active.back();
+      m_active.pop_back();
     } else if (!ivl->covers(pos)) {
-      i = m_active.erase(i);
+      // move ivl from active to inactive
+      *i = m_active.back();
+      m_active.pop_back();
       m_inactive.push_back(ivl);
     } else {
       i++;
@@ -917,9 +1078,13 @@ void XLS::update(unsigned pos) {
   for (auto i = m_inactive.begin(); i != m_inactive.end();) {
     auto ivl = *i;
     if (ivl->end() <= pos) {
-      i = m_inactive.erase(i); // inactive is now handled.
+      // done with ivl; remove interval from inactive list
+      *i = m_inactive.back();
+      m_inactive.pop_back();
     } else if (ivl->covers(pos)) {
-      i = m_inactive.erase(i);
+      // move ivl from inactive to active
+      *i = m_inactive.back();
+      m_inactive.pop_back();
       m_active.push_back(ivl);
     } else {
       i++;
@@ -932,6 +1097,7 @@ void XLS::walkIntervals() {
   // fill the pending queue with nonempty intervals in order of start position
   for (auto ivl : m_intervals) {
     if (!ivl) continue;
+    m_orig++;
     if (isDefConst(ivl)) {
       spill(ivl);
     } else {
@@ -1003,6 +1169,10 @@ void XLS::insertCopy(Block* b, Block::iterator pos, IRInstruction* &shuffle,
   shuffle_regs.src(i) = rs;
   auto inst_pos = m_posns[*pos];
   m_posns[shuffle] = pos->op() == Shuffle ? inst_pos : inst_pos - 1;
+  if (src->isConst()) m_ldconst++;
+  else if (rd.spilled()) m_spills++;
+  else if (rs.spilled()) m_reloads++;
+  else m_copies++;
 }
 
 // Insert a spill-store Shuffle after the instruction that defines ivl->tmp.
@@ -1050,8 +1220,10 @@ void XLS::resolveSplits() {
   if (dumpIREnabled(kRegAllocLevel)) dumpIntervals();
   for (auto i1 : m_intervals) {
     if (!i1) continue;
+    m_final++;
     if (i1->spill.spilled()) insertSpill(i1);
     for (auto i2 = i1->next; i2; i1 = i2, i2 = i2->next) {
+      m_final++;
       auto pos = i2->start();
       if (i1->end() != pos) continue; // spans lifetime hole
       if (i1->loc == i2->loc) continue; // no copy necessary
@@ -1115,8 +1287,12 @@ void XLS::resolveFlow(Interval* parent, Block* pred, Block* succ,
     if (ivl->covers(pos1)) i1 = ivl;
     if (ivl->covers(pos2)) i2 = ivl;
   }
-  if (i2->loc.spilled()) return; // we did spill store after def.
-  if (i1->loc == i2->loc) return; // nothing to do.
+  if (i2->loc.spilled() || i1->loc == i2->loc || i2->loc.numAllocated() == 0) {
+    // if i2 target is a spill loc, equal to i1, or unallocated,
+    // then we don't need any copy.  i2 can be unallocated if the tmp is
+    // a constant.
+    return; // nothing to do
+  }
   auto& shuffle = pred->next() == succ ? m_edgeCopies[pred].first :
                   m_edgeCopies[pred].second;
   if (pred->taken() && pred->next()) {
@@ -1190,6 +1366,8 @@ void XLS::allocate() {
   assignLocations();
   resolveSplits();
   resolveEdges();
+  TRACE(1, "orig %u final %u copies %u spills %u reloads %u ldconst %u\n",
+           m_orig, m_final, m_copies, m_spills, m_reloads, m_ldconst);
   assert(checkRegisters(m_unit, m_regs));
 }
 
@@ -1305,6 +1483,22 @@ std::string Interval::toString() {
   delim = "";
   for (auto u : uses) {
     out << delim << u.pos;
+    switch (u.kind) {
+      case Use::kNone: break;
+      case Use::kReg:
+        mcg->backEnd().streamPhysReg(out, u.regHint.first);
+        if (u.regHint.second != InvalidReg) {
+          mcg->backEnd().streamPhysReg(out, u.regHint.second);
+        }
+        break;
+      case Use::kCopy:
+        out << 't' << u.srcId;
+        break;
+      case Use::kPhiSrc:
+      case Use::kPhiDst:
+        out << "\u03C6" << u.phiIndex;
+        break;
+    }
     delim = ",";
   }
   out << "}";
@@ -1340,56 +1534,19 @@ bool Interval::checkInvariants() const {
   assert(!next || next->start() >= end()); // 6: next child is ok.
   return true;
 }
-
-// check that each block comes after all its predecessors (XXX won't be
-// true once we have loops).
-bool checkBlockOrder(IRUnit& unit, BlockList& blocks) {
-  StateVector<Block, bool> seen(unit, false);
-  for (auto b : blocks) {
-    b->forEachPred([&](Block* p) {
-      assert(seen[p]);
-    });
-    seen[b] = true;
-  }
-  return true;
-}
 }
 //////////////////////////////////////////////////////////////////////////////
-
-namespace {
-const Abi x64_abi {
-  X64::kAllRegs - X64::kXMMRegs, // general purpose
-  X64::kAllRegs & X64::kXMMRegs, // fp/simd
-  X64::kCalleeSaved
-};
-
-const Abi arm_abi {
-  // For now this is the same as x64, since we're pretending arm
-  // has the same register conventions as x64.
-  ARM::kCallerSaved | ARM::kCalleeSaved,
-  RegSet(), // fp/simd
-  ARM::kCalleeSaved
-};
-}
 
 // This is the public entry-point
 RegAllocInfo allocateRegs(IRUnit& unit) {
   Timer _t(Timer::regalloc);
 
   RegAllocInfo regs(unit);
-  Abi abi;
-  switch (arch()) {
-    case Arch::X64:
-      abi = x64_abi;
-      break;
-    case Arch::ARM:
-      abi = arm_abi;
-      break;
-  }
+  Abi abi = mcg->backEnd().abi();
   XLS xls(unit, regs, abi);
   xls.allocate();
   if (dumpIREnabled()) {
-    dumpTrace(kRegAllocLevel, unit, " after extended alloc ", &regs,
+    printUnit(kRegAllocLevel, unit, " after extended alloc ", &regs,
               nullptr, nullptr);
   }
   return regs;

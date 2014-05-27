@@ -71,6 +71,8 @@ void raise_warning(const std::string &msg);
 void raise_warning(const char *fmt, ...) ATTRIBUTE_PRINTF(1, 2);
 void raise_notice(const std::string &msg);
 void raise_notice(const char *fmt, ...) ATTRIBUTE_PRINTF(1, 2);
+void raise_deprecated(const std::string &msg);
+void raise_deprecated(const char *fmt, ...) ATTRIBUTE_PRINTF(1, 2);
 void raise_debugging(const std::string &msg);
 void raise_debugging(const char *fmt, ...) ATTRIBUTE_PRINTF(1, 2);
 void raise_message(ErrorConstants::ErrorModes mode,
@@ -79,7 +81,7 @@ void raise_message(ErrorConstants::ErrorModes mode,
 void raise_message(ErrorConstants::ErrorModes mode,
                    const char *fmt,
                    ...) ATTRIBUTE_PRINTF(2, 3);
-void raise_message(ErrorConstants::ErrorModes mode, std::string &msg);
+void raise_message(ErrorConstants::ErrorModes mode, const std::string &msg);
 void raise_param_type_warning(
     const char* func_name,
     int param_num,
@@ -93,8 +95,9 @@ void raise_param_type_warning(
  */
 void raise_typehint_error(const std::string& msg);
 
+void raise_disallowed_dynamic_call(const std::string& msg);
+
 ///////////////////////////////////////////////////////////////////////////////
 }
 
 #endif // incl_HPHP_RUNTIME_ERROR_H_
-

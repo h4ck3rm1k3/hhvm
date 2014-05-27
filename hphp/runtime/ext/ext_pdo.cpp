@@ -23,7 +23,7 @@
 #include "hphp/runtime/ext/pdo_mysql.h"
 #include "hphp/runtime/ext/pdo_sqlite.h"
 #include "hphp/runtime/ext/ext_array.h"
-#include "hphp/runtime/ext/ext_class.h"
+#include "hphp/runtime/ext/std/ext_std_classobj.h"
 #include "hphp/runtime/ext/ext_function.h"
 #include "hphp/runtime/ext/stream/ext_stream.h"
 #include "hphp/runtime/ext/ext_string.h"
@@ -602,7 +602,7 @@ static bool valid_statement_class(sp_PDOConnection dbh, const Variant& opt,
                                   String &clsname, Variant &ctor_args) {
   if (!opt.isArray() || !opt.toArray().exists(0) ||
       !opt.toArray()[0].isString() ||
-      !f_class_exists(opt.toArray()[0].toString())) {
+      !HHVM_FN(class_exists)(opt.toArray()[0].toString())) {
     pdo_raise_impl_error
       (dbh, nullptr, "HY000",
        "PDO::ATTR_STATEMENT_CLASS requires format array(classname, "
@@ -616,7 +616,7 @@ static bool valid_statement_class(sp_PDOConnection dbh, const Variant& opt,
     ctor_args = Variant(Array());
     return true;
   }
-  if (!f_is_subclass_of(clsname, "PDOStatement")) {
+  if (!HHVM_FN(is_a)(clsname, "PDOStatement", /* allow_string */ true)) {
     pdo_raise_impl_error
       (dbh, nullptr, "HY000",
        "user-supplied statement class must be derived from PDOStatement");
@@ -748,7 +748,7 @@ static bool do_fetch_class_prepare(sp_PDOStatement stmt) {
   if (cls) {
     const HPHP::Func* method = cls->getDeclaredCtor();
     if (method) {
-      stmt->fetch.constructor = method->nameRef();
+      stmt->fetch.constructor = method->nameStr();
       return true;
     }
   }
@@ -830,7 +830,7 @@ static bool pdo_stmt_set_fetch_mode(sp_PDOStatement stmt, int _argc, int64_t mod
         pdo_raise_impl_error(stmt->dbh, stmt, "HY000",
                              "classname must be a string");
       } else {
-        retval = f_class_exists(_argv[0].toString());
+        retval = HHVM_FN(class_exists)(_argv[0].toString());
         if (retval) {
           stmt->fetch.clsname = _argv[0].toString();
         }
@@ -953,11 +953,11 @@ void c_PDO::t___construct(const String& dsn, const String& username /* = null_st
 
   if (!strncmp(data_source.data(), "uri:", 4)) {
     /* the specified URI holds connection details */
-    Variant stream = File::Open(data_source.substr(4), "rb");
-    if (same(stream, false)) {
+    Resource resource = File::Open(data_source.substr(4), "rb");
+    if (resource.isNull()) {
       throw_pdo_exception(uninit_null(), uninit_null(), "invalid data source URI");
     }
-    data_source = stream.toResource().getTyped<File>()->readLine(1024);
+    data_source = resource.getTyped<File>()->readLine(1024);
     colon = strchr(data_source.data(), ':');
     if (!colon) {
       throw_pdo_exception(uninit_null(), uninit_null(), "invalid data source name (via URI)");
@@ -1135,6 +1135,11 @@ bool c_PDO::t_commit() {
   }
   PDO_HANDLE_DBH_ERR(m_dbh);
   return false;
+}
+
+bool c_PDO::t_intransaction() {
+  assert(m_dbh->driver);
+  return m_dbh->in_txn;
 }
 
 bool c_PDO::t_rollback() {
@@ -1437,7 +1442,7 @@ Variant c_PDO::t_query(int _argc, const String& sql, const Array& _argv) {
     // the argument count is > 1
     if (_argc == 1 ||
         pdo_stmt_set_fetch_mode(stmt, 0, _argv.rvalAt(0).toInt64Val(),
-                                f_array_splice(_argv, 1).getArrayData())) {
+                                f_array_splice(_argv, 1).toArray())) {
       /* now execute the statement */
       strcpy(stmt->error_code, PDO_ERR_NONE);
       if (stmt->executer()) {
@@ -1844,7 +1849,7 @@ static bool do_fetch(sp_PDOStatement stmt,
       Variant val;
       fetch_value(stmt, val, i++, NULL);
       if (!val.isNull()) {
-        if (!f_class_exists(val.toString())) {
+        if (!HHVM_FN(class_exists)(val.toString())) {
           stmt->fetch.clsname = "stdclass";
         } else {
           stmt->fetch.clsname = val.toString();
@@ -2389,7 +2394,7 @@ int pdo_parse_params(PDOStatement *stmt, const String& in, String &out) {
         query_type |= PDO_PLACEHOLDER_POSITIONAL;
       }
 
-      plc = (placeholder*)malloc(sizeof(*plc));
+      plc = (placeholder*)smart_malloc(sizeof(*plc));
       memset(plc, 0, sizeof(*plc));
       plc->next = NULL;
       plc->pos = s.tok;
@@ -2542,7 +2547,6 @@ rewrite:
     /* allocate output buffer */
     out = String(newbuffer_len, ReserveString);
     newbuffer = out.bufferSlice().ptr;
-    out.setSize(newbuffer_len);
 
     /* and build the query */
     plc = placeholders;
@@ -2566,7 +2570,6 @@ rewrite:
       memcpy(newbuffer, ptr, t);
       newbuffer += t;
     }
-    *newbuffer = '\0';
     out.setSize(newbuffer - out.data());
 
     ret = 1;
@@ -2629,7 +2632,7 @@ clean_up:
     plc = placeholders;
     placeholders = plc->next;
     plc->quoted.reset();
-    free(plc);
+    smart_free(plc);
   }
 
   return ret;
@@ -2752,7 +2755,7 @@ Variant c_PDOStatement::t_fetchobject(const String& class_name /* = null_string 
   if (class_name.isNull()) {
     m_stmt->fetch.clsname = "stdclass";
   }
-  if (!f_class_exists(m_stmt->fetch.clsname)) {
+  if (!HHVM_FN(class_exists)(m_stmt->fetch.clsname)) {
     pdo_raise_impl_error(m_stmt->dbh, m_stmt, "HY000",
                          "Could not find user-supplied class");
     error = true;
@@ -2809,7 +2812,7 @@ Variant c_PDOStatement::t_fetchall(int64_t how /* = 0 */,
     if (class_name.isNull()) {
       m_stmt->fetch.clsname = "stdclass";
     }
-    if (!f_class_exists(m_stmt->fetch.clsname)) {
+    if (!HHVM_FN(class_exists)(m_stmt->fetch.clsname)) {
       pdo_raise_impl_error(m_stmt->dbh, m_stmt, "HY000",
                            "Could not find user-supplied class");
       error = 1;
@@ -3107,11 +3110,11 @@ bool c_PDOStatement::t_closecursor() {
 }
 
 Variant c_PDOStatement::t_debugdumpparams() {
-  Variant fobj = File::Open("php://output", "w");
-  if (same(fobj, false)) {
+  Resource resource = File::Open("php://output", "w");
+  File *f = resource.getTyped<File>(true);
+  if (!f) {
     return false;
   }
-  File *f = fobj.toResource().getTyped<File>();
 
   Array params;
   params.append(m_stmt->query_string.size());

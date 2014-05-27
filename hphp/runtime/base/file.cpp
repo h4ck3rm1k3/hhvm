@@ -15,30 +15,35 @@
 */
 
 #include "hphp/runtime/base/file.h"
-#include "hphp/runtime/base/complex-types.h"
-#include "hphp/runtime/base/string-buffer.h"
-#include "hphp/runtime/base/type-conversions.h"
+
+#include "hphp/runtime/base/array-init.h"
+#include "hphp/runtime/base/array-iterator.h"
 #include "hphp/runtime/base/builtin-functions.h"
+#include "hphp/runtime/base/exceptions.h"
+#include "hphp/runtime/base/runtime-error.h"
+#include "hphp/runtime/base/runtime-option.h"
+#include "hphp/runtime/base/stream-wrapper-registry.h"
+#include "hphp/runtime/base/string-buffer.h"
+#include "hphp/runtime/base/thread-info.h"
+#include "hphp/runtime/base/type-conversions.h"
+#include "hphp/runtime/base/zend-printf.h"
+#include "hphp/runtime/base/zend-string.h"
+
+#include "hphp/runtime/ext/stream/ext_stream-user-filters.h"
+
 #include "hphp/runtime/server/static-content-cache.h"
 #include "hphp/runtime/server/virtual-host.h"
-#include "hphp/runtime/base/runtime-option.h"
-#include "hphp/runtime/base/runtime-error.h"
-#include "hphp/runtime/base/array-init.h"
+
+#include "hphp/system/constants.h"
+
+#include "hphp/runtime/base/file-util.h"
 #include "hphp/util/logger.h"
 #include "hphp/util/process.h"
-#include "hphp/runtime/base/zend-string.h"
-#include "hphp/runtime/base/zend-printf.h"
-#include "hphp/runtime/base/exceptions.h"
-#include "hphp/runtime/base/array-iterator.h"
-#include "hphp/runtime/base/stream-wrapper-registry.h"
-#include "hphp/runtime/base/thread-info.h"
-#include "hphp/runtime/ext/stream/ext_stream-user-filters.h"
+
 #include "folly/String.h"
-#include "hphp/util/file-util.h"
 
 #include <algorithm>
 #include <sys/file.h>
-#include <algorithm>
 
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
@@ -48,15 +53,12 @@ StaticString File::s_resource_name("stream");
 
 IMPLEMENT_REQUEST_LOCAL(FileData, s_file_data);
 
+const int File::CHUNK_SIZE = 8192;
 const int File::USE_INCLUDE_PATH = 1;
 
 String File::TranslatePathKeepRelative(const String& filename) {
-  String canonicalized(
-    FileUtil::canonicalize(
-      filename.data(),
-      strlen(filename.data()) // canonicalize asserts that we don't have nulls
-    ),
-    AttachString);
+  // canonicalize asserts that we don't have nulls
+  String canonicalized = FileUtil::canonicalize(filename);
   if (ThreadInfo::s_threadInfo->m_reqInjectionData.hasSafeFileAccess()) {
     auto const& allowedDirectories = ThreadInfo::s_threadInfo->
       m_reqInjectionData.getAllowedDirectories();
@@ -103,12 +105,8 @@ String File::TranslatePath(const String& filename) {
 }
 
 String File::TranslatePathWithFileCache(const String& filename) {
-  String canonicalized(
-    FileUtil::canonicalize(
-      filename.data(),
-      strlen(filename.data()) // canonicalize asserts that we don't have nulls
-    ),
-    AttachString);
+  // canonicalize asserts that we don't have nulls
+  String canonicalized = FileUtil::canonicalize(filename);
   String translated = TranslatePath(canonicalized);
   if (!translated.empty() && access(translated.data(), F_OK) < 0 &&
       StaticContentCache::TheFileCache) {
@@ -127,21 +125,20 @@ String File::TranslateCommand(const String& cmd) {
 }
 
 bool File::IsVirtualDirectory(const String& filename) {
-  if (StaticContentCache::TheFileCache &&
-      StaticContentCache::TheFileCache->dirExists(filename.data(), false)) {
-    return true;
-  }
-  return false;
+  return
+    StaticContentCache::TheFileCache &&
+    StaticContentCache::TheFileCache->dirExists(filename.data(), false);
 }
 
 bool File::IsPlainFilePath(const String& filename) {
   return filename.find("://") == String::npos;
 }
 
-Variant File::Open(const String& filename, const String& mode,
-                   int options /* = 0 */,
-                   const Variant& context /* = null */) {
+Resource File::Open(const String& filename, const String& mode,
+                    int options /* = 0 */,
+                    const Variant& context /* = null */) {
   Stream::Wrapper *wrapper = Stream::getWrapperFromURI(filename);
+  if (!wrapper) return Resource();
   Resource rcontext =
     context.isNull() ? g_context->getStreamContext() : context.toResource();
   File *file = wrapper->open(filename, mode, options, rcontext);
@@ -149,15 +146,16 @@ Variant File::Open(const String& filename, const String& mode,
     file->m_name = filename.data();
     file->m_mode = mode.data();
     file->m_streamContext = rcontext;
-    return Variant(file);
   }
-  return false;
+  return Resource(file);
 }
 
 ///////////////////////////////////////////////////////////////////////////////
 // constructor and destructor
 
-File::File(bool nonblocking, const String& wrapper, const String& stream_type)
+File::File(bool nonblocking /* = true */,
+           const String& wrapper /* = null_string */,
+           const String& stream_type /* = empty_string */)
   : m_isLocal(false), m_fd(-1), m_closed(false), m_nonblocking(nonblocking),
     m_writepos(0), m_readpos(0), m_position(0), m_eof(false),
     m_wrapperType(wrapper.get()), m_streamType(stream_type.get()),
@@ -268,7 +266,8 @@ String File::read(int64_t length) {
     return "";
   }
 
-  String s = String(length, ReserveString);
+  auto const allocSize = length;
+  String s = String(allocSize, ReserveString);
   char *ret = s.bufferSlice().ptr;
   int64_t copied = 0;
   int64_t avail = bufferedLen();
@@ -304,7 +303,10 @@ String File::read(int64_t length) {
   }
 
   m_position += copied;
-  return s.setSize(copied);
+
+  assert(copied <= allocSize);
+  s.shrink(copied);
+  return s;
 }
 
 int64_t File::filteredReadToBuffer() {
@@ -489,6 +491,21 @@ bool File::removeFilter(Resource& resource) {
   }
   for (auto it = m_writeFilters.begin(); it != m_writeFilters.end(); ++it) {
     if (it->get() == rd) {
+      std::list<Resource> closing_filters;
+      closing_filters.push_back(rd);
+      String result(applyFilters(empty_string,
+                                 closing_filters,
+                                 /* closing = */ true));
+      std::list<Resource> later_filters;
+      auto dupit(it);
+      for (++dupit; dupit != m_writeFilters.end(); ++dupit) {
+        later_filters.push_back(dupit->get());
+      }
+      result = applyFilters(result, later_filters, false);
+      if (!result.empty()) {
+        int64_t written = writeImpl(result.data(), result.size());
+        m_position += written;
+      }
       m_writeFilters.erase(it);
       return true;
     }
@@ -509,18 +526,18 @@ const StaticString
   s_wrapper_data("wrapper_data");
 
 Array File::getMetaData() {
-  ArrayInit ret(10);
-  ret.set(s_wrapper_type, getWrapperType());
-  ret.set(s_stream_type,  getStreamType());
-  ret.set(s_mode,         String(m_mode));
-  ret.set(s_unread_bytes, 0);
-  ret.set(s_seekable,     seekable());
-  ret.set(s_uri,          String(m_name));
-  ret.set(s_timed_out,    false);
-  ret.set(s_blocked,      true);
-  ret.set(s_eof,          eof());
-  ret.set(s_wrapper_data, getWrapperMetaData());
-  return ret.create();
+  return make_map_array(
+    s_wrapper_type, getWrapperType(),
+    s_stream_type,  getStreamType(),
+    s_mode,         String(m_mode),
+    s_unread_bytes, 0,
+    s_seekable,     seekable(),
+    s_uri,          String(m_name),
+    s_timed_out,    false,
+    s_blocked,      true,
+    s_eof,          eof(),
+    s_wrapper_data, getWrapperMetaData()
+  );
 }
 
 String File::getWrapperType() const {
@@ -677,7 +694,8 @@ String File::readRecord(const String& delimiter, int64_t maxlen /* = 0 */) {
       m_readpos += delimiter.size();
       m_position += delimiter.size();
     }
-    return s.setSize(toread);
+    s.setSize(toread);
+    return s;
   }
 
   return empty_string;
@@ -696,9 +714,8 @@ int64_t File::print() {
 }
 
 int64_t File::printf(const String& format, const Array& args) {
-  int len = 0;
-  char *output = string_printf(format.data(), format.size(), args, &len);
-  return write(String(output, len, AttachString));
+  String str = string_printf(format.data(), format.size(), args);
+  return write(str);
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -775,7 +792,7 @@ Array File::readCSV(int64_t length /* = 0 */,
                     const String* input /* = nullptr */) {
   const String& line = (input != nullptr) ? *input : readLine(length);
   if (line.empty()) {
-    return null_array;
+    return Array();
   }
 
   String new_line;
@@ -1000,21 +1017,22 @@ String File::getLastError() {
   return String(folly::errnoStr(errno).toStdString());
 }
 
+template<class ResourceList>
 String File::applyFilters(const String& buffer,
-                          smart::list<Resource>& filters,
+                          ResourceList& filters,
                           bool closing) {
   if (buffer.empty() && !closing) {
     return buffer;
   }
   Resource in(null_resource);
-  Resource out;(NEWOBJ(BucketBrigade));
+  Resource out;
   if (buffer.empty()) {
     out = Resource(NEWOBJ(BucketBrigade)());
   } else {
     out = Resource(NEWOBJ(BucketBrigade)(buffer));
   }
 
-  for (auto resource: filters) {
+  for (Resource& resource: filters) {
     in = out;
     out = Resource(NEWOBJ(BucketBrigade)());
 

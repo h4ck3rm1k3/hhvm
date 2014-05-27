@@ -21,8 +21,8 @@ $excluded = array(
   'util/cronoutils.h',
   'util/cronoutils.cpp',
   'vixl/',
+  'parser/hphp.tab.cpp',
   'runtime/base/ini-parser/zend-ini.tab.cpp',
-  'runtime/base/ini-parser/zend-ini.yy.cpp',
   'runtime/ext/gd/libgd/',
   'runtime/ext/zlib/quicklz.h',
   'runtime/ext/zlib/quicklz.inc',
@@ -31,22 +31,19 @@ $excluded = array(
   'submodules',
 
   // non-PHP licenses
-  'compiler/parser/hphp.tab.cpp',
   'runtime/base/utf8-decode.c',
   'runtime/base/utf8-to-utf16.c',
   'runtime/base/zend-strtod.cpp',
   'runtime/ext/json/JSON_parser.cpp',
   'runtime/ext/php_unicode.h',
   'runtime/base/zend-ini.tab.cpp',
-  'third_party/',
   'util/safesort.h',
+  'zend/crypt-blowfish.h',
+  'zend/crypt-blowfish.c',
 );
 
 $files_external_party = array(
-  'runtime/ext/ext_memcached.h' => 'hyves',
-  'runtime/ext/ext_memcached.cpp' => 'hyves',
-  'test/test_ext_memcached.h' => 'hyves',
-  'test/test_ext_memcached.cpp' => 'hyves',
+  'runtime/ext/memcached/ext_memcached.cpp'=> 'hyves',
 );
 
 $files_zend = array(
@@ -60,6 +57,7 @@ $files_zend = array(
   'runtime/base/zend-functions.cpp',
   'runtime/base/zend-ini.lex.yy.cpp',
   'runtime/base/zend-math.h',
+  'runtime/base/zend-math.cpp',
   'runtime/base/zend-multiply.h',
   'runtime/base/zend-pack.h',
   'runtime/base/zend-pack.cpp',

@@ -13,23 +13,30 @@
    | license@php.net so we can mail you a copy immediately.               |
    +----------------------------------------------------------------------+
 */
-
 #include "hphp/runtime/base/array-iterator.h"
+
+#include <algorithm>
+
+#include "folly/Likely.h"
+
 #include "hphp/runtime/base/array-data.h"
-#include "hphp/runtime/base/hphp-array.h"
+#include "hphp/runtime/base/mixed-array.h"
+#include "hphp/runtime/base/packed-array.h"
 #include "hphp/runtime/base/apc-local-array.h"
 #include "hphp/runtime/base/complex-types.h"
 #include "hphp/runtime/base/builtin-functions.h"
 #include "hphp/runtime/ext/ext_collections.h"
 
-// inline methods of HphpArray.
-#include "hphp/runtime/base/hphp-array-defs.h"
+#include "hphp/runtime/base/mixed-array-defs.h"
+#include "hphp/runtime/base/packed-array-defs.h"
+#include "hphp/runtime/base/array-iterator-defs.h"
+#include "hphp/runtime/base/apc-local-array-defs.h"
 
 namespace HPHP {
-///////////////////////////////////////////////////////////////////////////////
-// Static strings.
 
 TRACE_SET_MOD(runtime);
+
+//////////////////////////////////////////////////////////////////////
 
 const StaticString
   s_rewind("rewind"),
@@ -38,8 +45,9 @@ const StaticString
   s_key("key"),
   s_current("current");
 
-///////////////////////////////////////////////////////////////////////////////
-// ArrayIter
+__thread MIterTable tl_miter_table;
+
+//////////////////////////////////////////////////////////////////////
 
 ArrayIter::ArrayIter(const ArrayData* data) {
   arrInit(data);
@@ -147,6 +155,10 @@ IterNextIndex ArrayIter::getNextHelperIdx(ObjectData* obj) {
     return IterNextIndex::Set;
   } else if (cls == c_ImmVector::classof()) {
     return IterNextIndex::ImmVector;
+  } else if (cls == c_ImmMap::classof()) {
+    return IterNextIndex::ImmMap;
+  } else if (cls == c_ImmSet::classof()) {
+    return IterNextIndex::ImmSet;
   } else if (cls == c_Pair::classof()) {
     return IterNextIndex::Pair;
   } else {
@@ -255,11 +267,11 @@ bool ArrayIter::endHelper() {
     }
     case Collection::MapType:
     case Collection::ImmMapType: {
-      return m_pos == 0;
+      return !getMap()->iter_valid(m_pos);
     }
     case Collection::SetType:
     case Collection::ImmSetType: {
-      return m_pos == 0;
+      return !getSet()->iter_valid(m_pos);
     }
     case Collection::PairType: {
       return m_pos >= getPair()->size();
@@ -283,7 +295,7 @@ void ArrayIter::nextHelper() {
     }
     case Collection::MapType:
     case Collection::ImmMapType: {
-      BaseMap* mp = getMappish();
+      BaseMap* mp = getMap();
       if (UNLIKELY(m_version != mp->getVersion())) {
         throw_collection_modified();
       }
@@ -291,7 +303,7 @@ void ArrayIter::nextHelper() {
       return;
     }
     case Collection::SetType: {
-      c_Set* st = getSet();
+      BaseSet* st = getSet();
       if (UNLIKELY(m_version != st->getVersion())) {
         throw_collection_modified();
       }
@@ -307,7 +319,6 @@ void ArrayIter::nextHelper() {
       return;
     }
     case Collection::ImmSetType: {
-      assert(m_pos != 0);
       c_ImmSet* st = getImmSet();
       assert(m_version == st->getVersion());
       m_pos = st->iter_next(m_pos);
@@ -327,14 +338,14 @@ Variant ArrayIter::firstHelper() {
     }
     case Collection::MapType:
     case Collection::ImmMapType: {
-      BaseMap* mp = getMappish();
+      BaseMap* mp = getMap();
       if (UNLIKELY(m_version != mp->getVersion())) {
         throw_collection_modified();
       }
       return mp->iter_key(m_pos);
     }
     case Collection::SetType: {
-      c_Set* st = getSet();
+      BaseSet* st = getSet();
       if (UNLIKELY(m_version != st->getVersion())) {
         throw_collection_modified();
       }
@@ -369,7 +380,7 @@ Variant ArrayIter::second() {
   }
   switch (getCollectionType()) {
     case Collection::VectorType: {
-      c_Vector* vec = getVector();
+      auto* vec = getVector();
       if (UNLIKELY(m_version != vec->getVersion())) {
         throw_collection_modified();
       }
@@ -377,14 +388,14 @@ Variant ArrayIter::second() {
     }
     case Collection::MapType:
     case Collection::ImmMapType: {
-      BaseMap* mp = getMappish();
+      BaseMap* mp = getMap();
       if (UNLIKELY(m_version != mp->getVersion())) {
         throw_collection_modified();
       }
       return tvAsCVarRef(mp->iter_value(m_pos));
     }
     case Collection::SetType: {
-      c_Set* st = getSet();
+      BaseSet* st = getSet();
       if (UNLIKELY(m_version != st->getVersion())) {
         throw_collection_modified();
       }
@@ -433,7 +444,7 @@ const Variant& ArrayIter::secondRefPlus() {
   }
   switch (getCollectionType()) {
     case Collection::VectorType: {
-      c_Vector* vec = getVector();
+      auto* vec = getVector();
       if (UNLIKELY(m_version != vec->getVersion())) {
         throw_collection_modified();
       }
@@ -441,14 +452,14 @@ const Variant& ArrayIter::secondRefPlus() {
     }
     case Collection::MapType:
     case Collection::ImmMapType: {
-      BaseMap* mp = getMappish();
+      BaseMap* mp = getMap();
       if (UNLIKELY(m_version != mp->getVersion())) {
         throw_collection_modified();
       }
       return tvAsCVarRef(mp->iter_value(m_pos));
     }
     case Collection::SetType: {
-      c_Set* st = getSet();
+      BaseSet* st = getSet();
       if (UNLIKELY(m_version != st->getVersion())) {
         throw_collection_modified();
       }
@@ -485,6 +496,10 @@ ArrayIter::ArrayIter(Tuplish* coll, Fixed)
     : m_pos(0), m_itype(ArrayIter::TypeIterator) {
   assert(coll);
   setObject(coll);
+  // TODO Task #4204598: In theory, we might be able to squeeze out a win
+  // here by not checking the version for immutable collections, but we'd
+  // to make sure all iteration implementations are consistent about this.
+  m_version = coll->getVersion();
 }
 
 template<class Vectorish>
@@ -567,50 +582,240 @@ Variant ArrayIter::iterValue(VersionableSparse) {
   return tvAsCVarRef(static_cast<Mappish*>(getObject())->iter_value(m_pos));
 }
 
-RefData* ArrayIter::zSecond() {
-  auto tv = nvSecond();
-  if (tv->m_type != KindOfRef) {
-    tvBox(tv);
+//////////////////////////////////////////////////////////////////////
+
+namespace {
+
+// Handle the cases where we didn't have enough preallocated Ents in
+// tl_miter_table, and we need to allocate from `extras'.
+NEVER_INLINE
+MIterTable::Ent* find_empty_strong_iter_slower() {
+  return tl_miter_table.extras.find_unpopulated();
+}
+
+// Handle finding an empty strong iterator slot when the first slot
+// was already in use.
+NEVER_INLINE
+MIterTable::Ent* find_empty_strong_iter_slow() {
+#define X(i) \
+  if (LIKELY(!tl_miter_table.ents[i].array)) return &tl_miter_table.ents[i];
+X(1);
+X(2);
+X(3);
+X(4);
+X(5);
+X(6);
+  static_assert(tl_miter_table.ents.size() == 7, "");
+#undef X
+  return find_empty_strong_iter_slower();
+}
+
+// Find a strong iterator slot that is empty.  Almost always the first
+// one will be empty, so that path is inlined---everything else
+// delegates to slow.
+ALWAYS_INLINE
+MIterTable::Ent* find_empty_strong_iter() {
+  if (LIKELY(!tl_miter_table.ents[0].array)) {
+    return &tl_miter_table.ents[0];
   }
-  return tv->m_data.pref;
+  return find_empty_strong_iter_slow();
 }
 
-///////////////////////////////////////////////////////////////////////////////
-// FullPos
-
-bool FullPos::end() const {
-  return !const_cast<FullPos*>(this)->prepare();
+void newMArrayIter(MArrayIter* marr, ArrayData* ad) {
+  assert(!marr->getContainer());
+  auto const slot = find_empty_strong_iter();
+  assert(!slot->array);
+  slot->iter = marr;
+  slot->array = ad;
+  marr->setContainer(ad);
+  marr->m_pos = ad->getPosition();
+  assert(strong_iterators_exist());
 }
 
-bool FullPos::advance() {
+template<class Cond>
+void free_strong_iterator_impl(Cond cond) {
+  assert(strong_iterators_exist());
+
+  // We need to maintain the invariant that if there are any strong
+  // iterators bound to arrays, one of the bindings is in slot zero.
+  // This pvalid will point to something we can move into the first
+  // slot if alreadyValid is false.  If when we're done alreadyValid
+  // is false, and pvalid is also nullptr, it means this function
+  // freed the last strong iterator.
+  MIterTable::Ent* pvalid = nullptr;
+  bool alreadyValid = true;  // because strong_iterators_exist()
+
+  auto rm = [&] (MIterTable::Ent& ent) {
+    if (cond(ent)) {
+      ent.iter->setContainer(nullptr);
+      ent.array = nullptr;
+      ent.iter = nullptr;
+    } else if (!alreadyValid && ent.array) {
+      pvalid = &ent;
+    }
+  };
+
+  if (cond(tl_miter_table.ents[0])) {
+    tl_miter_table.ents[0].iter->setContainer(nullptr);
+    tl_miter_table.ents[0].array = nullptr;
+    tl_miter_table.ents[0].iter = nullptr;
+    alreadyValid = false;
+  }
+  rm(tl_miter_table.ents[1]);
+  rm(tl_miter_table.ents[2]);
+  rm(tl_miter_table.ents[3]);
+  rm(tl_miter_table.ents[4]);
+  rm(tl_miter_table.ents[5]);
+  rm(tl_miter_table.ents[6]);
+  static_assert(tl_miter_table.ents.size() == 7, "");
+
+  if (UNLIKELY(pvalid != nullptr)) {
+    std::swap(*pvalid, tl_miter_table.ents[0]);
+    alreadyValid = true;
+  }
+  if (LIKELY(tl_miter_table.extras.empty())) return;
+
+  tl_miter_table.extras.release_if([&] (const MIterTable::Ent& e) {
+    if (cond(e)) {
+      e.iter->setContainer(nullptr);
+      return true;
+    }
+    return false;
+  });
+
+  // If we didn't manage to keep something in the first non-extra
+  // slot, scan extras again to swap something over.
+  if (LIKELY(alreadyValid)) return;
+  if (!tl_miter_table.extras.empty()) {
+    tl_miter_table.extras.visit_to_remove(
+      [&] (const MIterTable::Ent& ent) {
+        tl_miter_table.ents[0] = ent;
+      }
+    );
+  }
+}
+
+void freeMArrayIter(MArrayIter* marr) {
+  assert(strong_iterators_exist());
+  free_strong_iterator_impl(
+    [marr] (const MIterTable::Ent& e) {
+      return e.iter == marr;
+    }
+  );
+}
+
+}
+
+void free_strong_iterators(ArrayData* ad) {
+  free_strong_iterator_impl([ad] (const MIterTable::Ent& e) {
+    return e.array == ad;
+  });
+}
+
+/*
+ * This function returns its first argument so that in some cases we
+ * can do tails calls (or maybe avoid spills).
+ *
+ * Note that in some cases reusing the return value can be (very
+ * slightly) worse.  The compiler won't know that the return value is
+ * going to be the same as the argument, so if it didn't already have
+ * to spill to make the call, or it can't tail call for some other
+ * reason, you can cause an extra move after the return.
+ */
+ArrayData* move_strong_iterators(ArrayData* dst, ArrayData* src) {
+  for_each_strong_iterator([&] (MIterTable::Ent& ent) {
+    if (ent.array == src) {
+      ent.array = dst;
+      ent.iter->setContainer(dst);
+    }
+  });
+  return dst;
+}
+
+//////////////////////////////////////////////////////////////////////
+
+MArrayIter::MArrayIter(RefData* ref)
+  : m_pos(0)
+  , m_container(nullptr)
+  , m_resetFlag(false)
+{
+  ref->incRefCount();
+  setRef(ref);
+  assert(hasRef());
+  escalateCheck();
+  auto const data = cowCheck();
+  if (!data) return;
+  data->reset();
+  newMArrayIter(this, data);
+  setResetFlag(true);
+  data->next();
+  assert(getContainer() == data);
+}
+
+MArrayIter::MArrayIter(ArrayData* data)
+  : m_ref(nullptr)
+  , m_pos(0)
+  , m_container(nullptr)
+  , m_resetFlag(false)
+{
+  if (!data) return;
+  assert(!data->isStatic());
+  setAd(data);
+  escalateCheck();
+  data = cowCheck();
+  data->reset();
+  newMArrayIter(this, data);
+  setResetFlag(true);
+  data->next();
+  assert(getContainer() == data);
+}
+
+MArrayIter::~MArrayIter() {
+  auto const container = getContainer();
+  if (container) {
+    freeMArrayIter(this);
+    assert(getContainer() == nullptr);
+  }
+  if (hasRef()) {
+    decRefRef(getRef());
+  } else if (hasAd()) {
+    decRefArr(getAd());
+  }
+}
+
+bool MArrayIter::end() const {
+  return !const_cast<MArrayIter*>(this)->prepare();
+}
+
+bool MArrayIter::advance() {
   ArrayData* data = getArray();
   ArrayData* container = getContainer();
   if (!data) {
     if (container) {
-      container->freeFullPos(*this);
+      freeMArrayIter(this);
     }
     setResetFlag(false);
     return false;
   }
   if (container == data) {
-    return cowCheck()->advanceFullPos(*this);
+    return cowCheck()->advanceMArrayIter(*this);
   }
   data = reregister();
   assert(data && data == getContainer());
   assert(!getResetFlag());
-  if (!data->validFullPos(*this)) return false;
+  if (!data->validMArrayIter(*this)) return false;
   // To conform to PHP behavior, we need to set the internal
   // cursor to point to the next element.
   data->next();
   return true;
 }
 
-bool FullPos::prepare() {
+bool MArrayIter::prepare() {
   ArrayData* data = getArray();
   ArrayData* container = getContainer();
   if (!data) {
     if (container) {
-      container->freeFullPos(*this);
+      freeMArrayIter(this);
     }
     setResetFlag(false);
     return false;
@@ -618,171 +823,68 @@ bool FullPos::prepare() {
   if (container != data) {
     data = reregister();
   }
-  return data->validFullPos(*this);
+  return data->validMArrayIter(*this);
 }
 
-void FullPos::escalateCheck() {
-  ArrayData* data;
-  if (hasVar()) {
-    data = getData();
+void MArrayIter::escalateCheck() {
+  if (hasRef()) {
+    auto const data = getData();
     if (!data) return;
-    ArrayData* esc = data->escalate();
+    auto const esc = data->escalate();
     if (data != esc) {
-      *const_cast<Variant*>(getVar()) = esc;
+      cellSet(make_tv<KindOfArray>(esc), *getRef()->tv());
     }
-  } else {
-    assert(hasAd());
-    data = getAd();
-    ArrayData* esc = data->escalate();
-    if (data != esc) {
-      esc->incRefCount();
-      decRefArr(data);
-      setAd(esc);
-    }
+    return;
+  }
+
+  assert(hasAd());
+  auto const data = getAd();
+  auto const esc = data->escalate();
+  if (data != esc) {
+    esc->incRefCount();
+    decRefArr(data);
+    setAd(esc);
   }
 }
 
-ArrayData* FullPos::cowCheck() {
-  ArrayData* data;
-  if (hasVar()) {
-    data = getData();
+ArrayData* MArrayIter::cowCheck() {
+  if (hasRef()) {
+    auto data = getData();
     if (!data) return nullptr;
     if (data->hasMultipleRefs() && !data->noCopyOnWrite()) {
-      *const_cast<Variant*>(getVar()) = data = data->copyWithStrongIterators();
+      data = data->copyWithStrongIterators();
+      cellSet(make_tv<KindOfArray>(data), *getRef()->tv());
     }
-  } else {
-    assert(hasAd());
-    data = getAd();
-    if (data->hasMultipleRefs() && !data->noCopyOnWrite()) {
-      ArrayData* copied = data->copyWithStrongIterators();
-      copied->incRefCount();
-      decRefArr(data);
-      setAd(data = copied);
-    }
+    return data;
+  }
+
+  assert(hasAd());
+  auto const data = getAd();
+  if (data->hasMultipleRefs() && !data->noCopyOnWrite()) {
+    ArrayData* copied = data->copyWithStrongIterators();
+    copied->incRefCount();
+    decRefArr(data);
+    setAd(copied);
+    return copied;
   }
   return data;
 }
 
-ArrayData* FullPos::reregister() {
+ArrayData* MArrayIter::reregister() {
   ArrayData* container = getContainer();
   assert(getArray() != nullptr && container != getArray());
   if (container != nullptr) {
-    container->freeFullPos(*this);
+    freeMArrayIter(this);
   }
   setResetFlag(false);
   assert(getContainer() == nullptr);
   escalateCheck();
   ArrayData* data = cowCheck();
-  data->newFullPos(*this);
+  newMArrayIter(this, data);
   return data;
 }
 
-///////////////////////////////////////////////////////////////////////////////
-// MutableArrayIter
-
-MutableArrayIter::MutableArrayIter(const Variant *var, Variant *key,
-                                   Variant &val) {
-  m_var = nullptr;
-  m_key = key;
-  m_valp = &val;
-  setVar(var);
-  assert(getVar());
-  escalateCheck();
-  ArrayData* data = cowCheck();
-  if (!data) return;
-  data->reset();
-  data->newFullPos(*this);
-  setResetFlag(true);
-  data->next();
-  assert(getContainer() == data);
-}
-
-MutableArrayIter::MutableArrayIter(ArrayData *data, Variant *key,
-                                   Variant &val) {
-  m_var = nullptr;
-  m_key = key;
-  m_valp = &val;
-  if (!data) return;
-  setAd(data);
-  escalateCheck();
-  data = cowCheck();
-  data->reset();
-  data->newFullPos(*this);
-  setResetFlag(true);
-  data->next();
-  assert(getContainer() == data);
-}
-
-MutableArrayIter::~MutableArrayIter() {
-  // free the iterator
-  ArrayData* container = getContainer();
-  if (container) {
-    container->freeFullPos(*this);
-    assert(getContainer() == nullptr);
-  }
-  // unprotect the data
-  if (hasAd()) decRefArr(getAd());
-}
-
-bool MutableArrayIter::advance() {
-  if (!this->FullPos::advance()) return false;
-  ArrayData* data = getArray();
-  assert(data);
-  assert(!getResetFlag());
-  assert(getContainer() == data);
-  assert(data->validFullPos(*this));
-  m_valp->assignRef(data->getValueRef(m_pos));
-  if (m_key) m_key->assignVal(data->getKey(m_pos));
-  return true;
-}
-
-///////////////////////////////////////////////////////////////////////////////
-// MArrayIter
-
-MArrayIter::MArrayIter(const RefData* ref) {
-  m_var = nullptr;
-  ref->incRefCount();
-  setVar(ref->var());
-  assert(hasVar());
-  escalateCheck();
-  ArrayData* data = cowCheck();
-  if (!data) return;
-  data->reset();
-  data->newFullPos(*this);
-  setResetFlag(true);
-  data->next();
-  assert(getContainer() == data);
-}
-
-MArrayIter::MArrayIter(ArrayData *data) {
-  m_var = nullptr;
-  if (!data) return;
-  assert(!data->isStatic());
-  setAd(data);
-  escalateCheck();
-  data = cowCheck();
-  data->reset();
-  data->newFullPos(*this);
-  setResetFlag(true);
-  data->next();
-  assert(getContainer() == data);
-}
-
-MArrayIter::~MArrayIter() {
-  // free the iterator
-  ArrayData* container = getContainer();
-  if (container) {
-    container->freeFullPos(*this);
-    assert(getContainer() == nullptr);
-  }
-  // unprotect the data
-  if (hasVar()) {
-    RefData* ref = RefData::refDataFromVariantIfYouDare(getVar());
-    decRefRef(ref);
-  } else if (hasAd()) {
-    decRefArr(getAd());
-  }
-}
+//////////////////////////////////////////////////////////////////////
 
 CufIter::~CufIter() {
   if (m_ctx && !(uintptr_t(m_ctx) & 1)) {
@@ -812,7 +914,7 @@ bool Iter::init(TypedValue* c1) {
         (void) new (&arr()) ArrayIter(obj.detach(), ArrayIter::noInc);
       } else {
         Class* ctx = arGetContextClass(g_context->getFP());
-        const String& ctxStr = ctx ? ctx->nameRef() : null_string;
+        auto ctxStr = ctx ? ctx->nameStr() : StrNR();
         Array iterArray(obj->o_toIterArray(ctxStr));
         ArrayData* ad = iterArray.get();
         (void) new (&arr()) ArrayIter(ad);
@@ -961,7 +1063,7 @@ static inline void iter_value_cell_local_impl(Iter* iter, TypedValue* out) {
          (!typeArray && iter->arr().getIterType() == ArrayIter::TypeIterator));
   ArrayIter& arrIter = iter->arr();
   if (typeArray) {
-    TypedValue* cur = arrIter.nvSecond();
+    auto const cur = arrIter.nvSecond();
     if (cur->m_type == KindOfRef) {
       if (!withRef || !cur->m_data.pref->isReferenced()) {
         cellDup(*(cur->m_data.pref->tv()), *out);
@@ -997,17 +1099,53 @@ static inline void iter_key_cell_local_impl(Iter* iter, TypedValue* out) {
   tvRefcountedDecRefHelper(oldType, oldDatum);
 }
 
-/**
- * new_iter_array creates an iterator for the specified array iff the array is
- * not empty. If new_iter_array creates an iterator, it does not increment the
- * refcount of the specified array. If new_iter_array does not create an
- * iterator, it decRefs the array.
+static NEVER_INLINE
+int64_t iter_next_free_packed(Iter* iter, ArrayData* arr) {
+  assert(arr->hasExactlyOneRef());
+  assert(arr->isPacked());
+  PackedArray::Release(arr);
+  if (debug) {
+    iter->arr().setIterType(ArrayIter::TypeUndefined);
+  }
+  return 0;
+}
+
+static NEVER_INLINE
+int64_t iter_next_free_mixed(Iter* iter, ArrayData* arr) {
+  assert(arr->isMixed());
+  assert(arr->hasExactlyOneRef());
+  MixedArray::Release(arr);
+  if (debug) {
+    iter->arr().setIterType(ArrayIter::TypeUndefined);
+  }
+  return 0;
+}
+
+NEVER_INLINE
+static int64_t iter_next_free_apc(Iter* iter, APCLocalArray* arr) {
+  assert(arr->hasExactlyOneRef());
+  APCLocalArray::Release(arr->asArrayData());
+  if (debug) {
+    iter->arr().setIterType(ArrayIter::TypeUndefined);
+  }
+  return 0;
+}
+
+/*
+ * new_iter_array creates an iterator for the specified array iff the
+ * array is not empty.  If new_iter_array creates an iterator, it does
+ * not increment the refcount of the specified array.  If
+ * new_iter_array does not create an iterator, it decRefs the array.
  */
 template <bool withRef>
 NEVER_INLINE
 int64_t new_iter_array_cold(Iter* dest, ArrayData* arr, TypedValue* valOut,
                             TypedValue* keyOut) {
   TRACE(2, "%s: I %p, arr %p\n", __func__, dest, arr);
+  if (!withRef) {
+    valOut = tvToCell(valOut);
+    if (keyOut) keyOut = tvToCell(keyOut);
+  }
   if (!arr->empty()) {
     // We are transferring ownership of the array to the iterator, therefore
     // we do not need to adjust the refcount.
@@ -1027,75 +1165,106 @@ int64_t new_iter_array_cold(Iter* dest, ArrayData* arr, TypedValue* valOut,
 
 int64_t new_iter_array(Iter* dest, ArrayData* ad, TypedValue* valOut) {
   TRACE(2, "%s: I %p, ad %p\n", __func__, dest, ad);
-  valOut = tvToCell(valOut);
-  if (UNLIKELY(!ad->isHphpArray())) {
-    goto cold;
-  }
-  {
-    HphpArray* arr = (HphpArray*)ad;
-    if (LIKELY(arr->getSize() != 0)) {
-      if (UNLIKELY(tvDecRefWillCallHelper(valOut))) {
-        goto cold;
-      }
-      tvDecRefOnly(valOut);
-      // We are transferring ownership of the array to the iterator, therefore
-      // we do not need to adjust the refcount.
-      (void) new (&dest->arr()) ArrayIter(arr, ArrayIter::noIncNonNull);
-      dest->arr().setIterType(ArrayIter::TypeArray);
-      arr->getArrayElm<false>(dest->arr().m_pos, valOut, nullptr);
-      return 1LL;
+  if (UNLIKELY(ad->getSize() == 0)) {
+    if (UNLIKELY(ad->hasExactlyOneRef())) {
+      if (ad->isPacked()) return iter_next_free_packed(dest, ad);
+      if (ad->isMixed()) return iter_next_free_mixed(dest, ad);
     }
-    // We did not transfer ownership of the array to an iterator, so we need
-    // to decRef the array.
-    if (UNLIKELY(arr->hasExactlyOneRef())) {
-      goto cold;
-    }
-    arr->decRefCount();
-    return 0LL;
+    ad->decRefCount();
+    return 0;
   }
-cold:
+  if (UNLIKELY(IS_REFCOUNTED_TYPE(valOut->m_type))) {
+    return new_iter_array_cold<false>(dest, ad, valOut, nullptr);
+  }
+
+  // We are transferring ownership of the array to the iterator, therefore
+  // we do not need to adjust the refcount.
+  auto& aiter = dest->arr();
+  aiter.m_data = ad;
+  auto const itypeU32 = static_cast<uint32_t>(ArrayIter::TypeArray);
+
+  if (LIKELY(ad->isPacked())) {
+    aiter.m_pos = 0;
+    aiter.m_itypeAndNextHelperIdx =
+      static_cast<uint32_t>(IterNextIndex::ArrayPacked) << 16 | itypeU32;
+    assert(aiter.m_itype == ArrayIter::TypeArray);
+    assert(aiter.m_nextHelperIdx == IterNextIndex::ArrayPacked);;
+    cellDup(*tvToCell(packedData(ad)), *valOut);
+    return 1;
+  }
+
+  if (LIKELY(ad->isMixed())) {
+    auto const mixed = MixedArray::asMixed(ad);
+    aiter.m_pos = mixed->getIterBegin();
+    aiter.m_itypeAndNextHelperIdx =
+      static_cast<uint32_t>(IterNextIndex::ArrayMixed) << 16 | itypeU32;
+    assert(aiter.m_itype == ArrayIter::TypeArray);
+    assert(aiter.m_nextHelperIdx == IterNextIndex::ArrayMixed);
+    mixed->getArrayElm(aiter.m_pos, valOut);
+    return 1;
+  }
+
   return new_iter_array_cold<false>(dest, ad, valOut, nullptr);
 }
 
-template <bool withRef>
-int64_t new_iter_array_key(Iter* dest, ArrayData* ad,
-                           TypedValue* valOut, TypedValue* keyOut) {
-  TRACE(2, "%s: I %p, ad %p\n", __func__, dest, ad);
-  if (!withRef) {
-    valOut = tvToCell(valOut);
-    keyOut = tvToCell(keyOut);
-  }
-  if (UNLIKELY(!ad->isHphpArray())) {
-    goto cold;
-  }
-  {
-    HphpArray* arr = (HphpArray*)ad;
-    if (LIKELY(arr->getSize() != 0)) {
-      if (!withRef) {
-        if (UNLIKELY(tvDecRefWillCallHelper(valOut)) ||
-            UNLIKELY(tvDecRefWillCallHelper(keyOut))) {
-          goto cold;
-        }
-        tvDecRefOnly(valOut);
-        tvDecRefOnly(keyOut);
-      }
-      // We are transferring ownership of the array to the iterator, therefore
-      // we do not need to adjust the refcount.
-      (void) new (&dest->arr()) ArrayIter(arr, ArrayIter::noIncNonNull);
-      dest->arr().setIterType(ArrayIter::TypeArray);
-      arr->getArrayElm<withRef>(dest->arr().m_pos, valOut, keyOut);
-      return 1LL;
+template<bool WithRef>
+int64_t new_iter_array_key(Iter*       dest,
+                           ArrayData*  ad,
+                           TypedValue* valOut,
+                           TypedValue* keyOut) {
+  if (UNLIKELY(ad->getSize() == 0)) {
+    if (UNLIKELY(ad->hasExactlyOneRef())) {
+      if (ad->isPacked()) return iter_next_free_packed(dest, ad);
+      if (ad->isMixed()) return iter_next_free_mixed(dest, ad);
     }
-    // We did not transfer ownership of the array to an iterator, so we need
-    // to decRef the array.
-    if (UNLIKELY(arr->hasExactlyOneRef())) {
-      goto cold;
-    }
-    arr->decRefCount();
-    return 0LL;
+    ad->decRefCount();
+    return 0;
   }
-cold:
-  return new_iter_array_cold<withRef>(dest, ad, valOut, keyOut);
+  if (UNLIKELY(IS_REFCOUNTED_TYPE(valOut->m_type))) {
+    return new_iter_array_cold<false>(dest, ad, valOut, keyOut);
+  }
+  if (UNLIKELY(IS_REFCOUNTED_TYPE(keyOut->m_type))) {
+    return new_iter_array_cold<false>(dest, ad, valOut, keyOut);
+  }
+
+  // We are transferring ownership of the array to the iterator, therefore
+  // we do not need to adjust the refcount.
+  auto& aiter = dest->arr();
+  aiter.m_data = ad;
+  auto const itypeU32 = static_cast<uint32_t>(ArrayIter::TypeArray);
+
+  if (ad->isPacked()) {
+    aiter.m_pos = 0;
+    aiter.m_itypeAndNextHelperIdx =
+      static_cast<uint32_t>(IterNextIndex::ArrayPacked) << 16 | itypeU32;
+    assert(aiter.m_itype == ArrayIter::TypeArray);
+    assert(aiter.m_nextHelperIdx == IterNextIndex::ArrayPacked);
+    if (WithRef) {
+      tvDupWithRef(*packedData(ad), *valOut);
+    } else {
+      cellDup(*tvToCell(packedData(ad)), *valOut);
+    }
+    keyOut->m_type = KindOfInt64;
+    keyOut->m_data.num = 0;
+    return 1;
+  }
+
+  if (ad->isMixed()) {
+    auto const mixed = MixedArray::asMixed(ad);
+    aiter.m_pos = mixed->getIterBegin();
+    aiter.m_itypeAndNextHelperIdx =
+      static_cast<uint32_t>(IterNextIndex::ArrayMixed) << 16 | itypeU32;
+    assert(aiter.m_itype == ArrayIter::TypeArray);
+    assert(aiter.m_nextHelperIdx == IterNextIndex::ArrayMixed);
+    if (WithRef) {
+      mixed->dupArrayElmWithRef(aiter.m_pos, valOut, keyOut);
+    } else {
+      mixed->getArrayElm(aiter.m_pos, valOut, keyOut);
+    }
+    return 1;
+  }
+
+  return new_iter_array_cold<false>(dest, ad, valOut, keyOut);
 }
 
 template int64_t new_iter_array_key<false>(Iter* dest, ArrayData* ad,
@@ -1159,7 +1328,7 @@ static int64_t new_iter_object_any(Iter* dest, ObjectData* obj, Class* ctx,
       } else {
         TRACE(2, "%s: I %p, obj %p, ctx %p, iterate as array\n",
               __func__, dest, obj, ctx);
-        const String& ctxStr = ctx ? ctx->nameRef() : null_string;
+        auto ctxStr = ctx ? ctx->nameStr() : StrNR();
         Array iterArray(itObj->o_toIterArray(ctxStr));
         ArrayData* ad = iterArray.get();
         (void) new (&dest->arr()) ArrayIter(ad);
@@ -1303,31 +1472,6 @@ int64_t iter_next_cold(Iter* iter, TypedValue* valOut, TypedValue* keyOut) {
   return 1;
 }
 
-static NEVER_INLINE
-int64_t iter_next_free_arr(Iter* iter, HphpArray* arr) {
-  assert(arr->hasExactlyOneRef());
-  if (arr->isPacked()) {
-    HphpArray::ReleasePacked(arr);
-  } else {
-    assert(arr->isHphpArray());
-    HphpArray::Release(arr);
-  }
-  if (debug) {
-    iter->arr().setIterType(ArrayIter::TypeUndefined);
-  }
-  return 0;
-}
-
-NEVER_INLINE
-static int64_t iter_next_free_apc_array(Iter* iter, APCLocalArray* arr) {
-  assert(arr->hasExactlyOneRef());
-  APCLocalArray::Release(arr);
-  if (debug) {
-    iter->arr().setIterType(ArrayIter::TypeUndefined);
-  }
-  return 0;
-}
-
 NEVER_INLINE
 static int64_t iter_next_apc_array(Iter* iter,
                                    TypedValue* valOut,
@@ -1336,11 +1480,11 @@ static int64_t iter_next_apc_array(Iter* iter,
   assert(ad->kind() == ArrayData::kSharedKind);
 
   auto const arrIter = &iter->arr();
-  auto const arr = static_cast<APCLocalArray*>(ad);
+  auto const arr = APCLocalArray::asSharedArray(ad);
   ssize_t const pos = arr->iterAdvanceImpl(arrIter->getPos());
   if (UNLIKELY(pos == ArrayData::invalid_index)) {
     if (UNLIKELY(arr->hasExactlyOneRef())) {
-      return iter_next_free_apc_array(iter, arr);
+      return iter_next_free_apc(iter, arr);
     }
     arr->decRefCount();
     if (debug) {
@@ -1350,8 +1494,10 @@ static int64_t iter_next_apc_array(Iter* iter,
   }
   arrIter->setPos(pos);
 
-  const Variant& var = APCLocalArray::GetValueRef(arr, pos);
-  cellSet(*var.asCell(), *valOut);
+  // Note that APCLocalArray can never return KindOfRefs.
+  const Variant& var = APCLocalArray::GetValueRef(arr->asArrayData(), pos);
+  assert(var.asTypedValue()->m_type != KindOfRef);
+  cellSet(*var.asTypedValue(), *valOut);
   if (LIKELY(!keyOut)) return 1;
 
   Cell key;
@@ -1364,117 +1510,87 @@ static int64_t iter_next_apc_array(Iter* iter,
   return 1;
 }
 
-int64_t iter_next(Iter* iter, TypedValue* valOut) {
-  TRACE(2, "iter_next: I %p\n", iter);
-  assert(iter->arr().getIterType() == ArrayIter::TypeArray ||
-         iter->arr().getIterType() == ArrayIter::TypeIterator);
-  auto const arrIter = &iter->arr();
-  valOut = tvToCell(valOut);
-  if (UNLIKELY(!arrIter->hasArrayData())) {
-    goto cold;
-  }
-
-  {
-    auto const ad = const_cast<ArrayData*>(arrIter->getArrayData());
-    if (UNLIKELY(!ad->isHphpArray())) {
-      if (ad->isSharedArray()) {
-        return iter_next_apc_array(iter, valOut, nullptr, ad);
-      }
-      goto cold;
-    }
-    auto const arr = static_cast<HphpArray*>(ad);
-
-    ssize_t pos = arrIter->getPos();
-    do {
-      if (size_t(++pos) >= size_t(arr->iterLimit())) {
-        if (UNLIKELY(arr->hasExactlyOneRef())) {
-          return iter_next_free_arr(iter, arr);
-        }
-        arr->decRefCount();
-        if (debug) {
-          iter->arr().setIterType(ArrayIter::TypeUndefined);
-        }
-        return 0;
-      }
-    } while (UNLIKELY(arr->isTombstone(pos)));
-
-    if (UNLIKELY(tvDecRefWillCallHelper(valOut))) {
-      goto cold;
-    }
-    tvDecRefOnly(valOut);
-    arrIter->setPos(pos);
-    arr->getArrayElm<false>(pos, valOut, nullptr);
-    return 1;
-  }
-
-cold:
-  return iter_next_cold<false>(iter, valOut, nullptr);
-}
-
-template <bool withRef>
-int64_t iter_next_key(Iter* iter, TypedValue* valOut, TypedValue* keyOut) {
+int64_t witer_next_key(Iter* iter, TypedValue* valOut, TypedValue* keyOut) {
   TRACE(2, "iter_next_key: I %p\n", iter);
   assert(iter->arr().getIterType() == ArrayIter::TypeArray ||
          iter->arr().getIterType() == ArrayIter::TypeIterator);
   auto const arrIter = &iter->arr();
-  if (!withRef) {
-    valOut = tvToCell(valOut);
-    keyOut = tvToCell(keyOut);
-  }
   if (UNLIKELY(!arrIter->hasArrayData())) {
     goto cold;
   }
 
   {
-    auto const ad = const_cast<ArrayData*>(arrIter->getArrayData());
-    if (UNLIKELY(!ad->isHphpArray())) {
+    auto const ad       = const_cast<ArrayData*>(arrIter->getArrayData());
+    auto const isPacked = ad->isPacked();
+    auto const isMixed  = ad->isMixed();
+
+    if (UNLIKELY(!isMixed && !isPacked)) {
       if (ad->isSharedArray()) {
+        // TODO(#4055855): what if a local value in an apc array has
+        // been turned into a ref?  Is this actually ok to do?
         return iter_next_apc_array(iter, valOut, keyOut, ad);
       }
       goto cold;
     }
-    auto const arr = static_cast<HphpArray*>(ad);
 
-    ssize_t pos = arrIter->getPos();
-    do {
-      ++pos;
-      if (size_t(pos) >= size_t(arr->iterLimit())) {
-        if (UNLIKELY(arr->hasExactlyOneRef())) {
-          return iter_next_free_arr(iter, arr);
+    if (LIKELY(isPacked)) {
+      ssize_t pos = arrIter->getPos() + 1;
+      if (size_t(pos) >= size_t(ad->getSize())) {
+        if (UNLIKELY(ad->hasExactlyOneRef())) {
+          return iter_next_free_packed(iter, ad);
         }
-        arr->decRefCount();
+        ad->decRefCount();
         if (debug) {
           iter->arr().setIterType(ArrayIter::TypeUndefined);
         }
         return 0;
       }
-    } while (UNLIKELY(arr->isTombstone(pos)));
 
-    if (!withRef) {
-      if (UNLIKELY(tvDecRefWillCallHelper(valOut))) {
-        goto cold;
-      }
-      if (UNLIKELY(tvDecRefWillCallHelper(keyOut))) {
+      if (UNLIKELY(tvDecRefWillCallHelper(valOut)) ||
+          UNLIKELY(tvDecRefWillCallHelper(keyOut))) {
         goto cold;
       }
       tvDecRefOnly(valOut);
       tvDecRefOnly(keyOut);
+
+      arrIter->setPos(pos);
+      tvDupWithRef(packedData(ad)[pos], *valOut);
+      keyOut->m_type = KindOfInt64;
+      keyOut->m_data.num = pos;
+      return 1;
     }
+
+    auto const mixed = MixedArray::asMixed(ad);
+    ssize_t pos = arrIter->getPos();
+    do {
+      ++pos;
+      if (size_t(pos) >= size_t(mixed->iterLimit())) {
+        if (UNLIKELY(mixed->hasExactlyOneRef())) {
+          return iter_next_free_mixed(iter, mixed->asArrayData());
+        }
+        mixed->decRefCount();
+        if (debug) {
+          iter->arr().setIterType(ArrayIter::TypeUndefined);
+        }
+        return 0;
+      }
+    } while (UNLIKELY(mixed->isTombstone(pos)));
+
+    if (UNLIKELY(tvDecRefWillCallHelper(valOut)) ||
+        UNLIKELY(tvDecRefWillCallHelper(keyOut))) {
+      goto cold;
+    }
+    tvDecRefOnly(valOut);
+    tvDecRefOnly(keyOut);
+
     arrIter->setPos(pos);
-    arr->getArrayElm<withRef>(pos, valOut, keyOut);
+    mixed->dupArrayElmWithRef(pos, valOut, keyOut);
     return 1;
   }
 
 cold:
-  return iter_next_cold<withRef>(iter, valOut, keyOut);
+  return iter_next_cold<true>(iter, valOut, keyOut);
 }
-
-template int64_t iter_next_key<false>(Iter* dest,
-                                      TypedValue* valOut,
-                                      TypedValue* keyOut);
-template int64_t iter_next_key<true>(Iter* dest,
-                                     TypedValue* valOut,
-                                     TypedValue* keyOut);
 
 ///////////////////////////////////////////////////////////////////////////////
 // MIter functions
@@ -1495,7 +1611,7 @@ int64_t new_miter_array_key(Iter* dest, RefData* v1,
 
   tvAsVariant(valOut).assignRef(dest->marr().val());
   if (keyOut) {
-    tvAsVariant(keyOut).assignVal(dest->marr().key());
+    tvAsVariant(keyOut).assign(dest->marr().key());
   }
 
   return 1LL;
@@ -1516,7 +1632,7 @@ int64_t new_miter_object(Iter* dest, RefData* ref, Class* ctx,
 
   TRACE(2, "%s: I %p, obj %p, ctx %p, iterate as array\n",
         __func__, dest, obj, ctx);
-  const String& ctxStr = ctx ? ctx->nameRef() : null_string;
+  auto ctxStr = ctx ? ctx->nameStr() : StrNR();
   Array iterArray(itObj->o_toIterArray(ctxStr, true));
   ArrayData* ad = iterArray.detach();
   (void) new (&dest->marr()) MArrayIter(ad);
@@ -1529,7 +1645,7 @@ int64_t new_miter_object(Iter* dest, RefData* ref, Class* ctx,
 
   tvAsVariant(valOut).assignRef(dest->marr().val());
   if (keyOut) {
-    tvAsVariant(keyOut).assignVal(dest->marr().key());
+    tvAsVariant(keyOut).assign(dest->marr().key());
   }
   return 1LL;
 }
@@ -1553,60 +1669,45 @@ int64_t miter_next_key(Iter* iter, TypedValue* valOut, TypedValue* keyOut) {
 
   tvAsVariant(valOut).assignRef(marr.val());
   if (keyOut) {
-    tvAsVariant(keyOut).assignVal(marr.key());
+    tvAsVariant(keyOut).assign(marr.key());
   }
 
   return 1LL;
 }
 
-ArrayIter getContainerIter(const Variant& v) {
-  auto c = v.asCell();
-  if (c->m_type == KindOfArray) {
-    ArrayData* a = c->m_data.parr;
-    return ArrayIter(a);
-  }
-  if (c->m_type == KindOfObject) {
-    ObjectData* o = c->m_data.pobj;
-    if (o->isCollection()) return ArrayIter(o);
-  }
-  throw_param_is_not_container();
-}
-
-ArrayIter getContainerIter(const Variant& v, size_t& sz) {
-  auto c = v.asCell();
-  if (c->m_type == KindOfArray) {
-    auto a = c->m_data.parr;
-    sz = a->size();
-    return ArrayIter(a);
-  }
-  if (c->m_type == KindOfObject) {
-    auto o = c->m_data.pobj;
-    if (o->isCollection()) {
-      sz = getCollectionSize(o);
-      return ArrayIter(o);
-    }
-  }
-  throw_param_is_not_container();
-}
-
 ///////////////////////////////////////////////////////////////////////////////
 // IterNext/IterNextK helpers
 
-
 namespace {
 
-template <bool isPacked, bool key>
+int64_t iter_next_cold_inc_val(Iter* it,
+                               TypedValue* valOut,
+                               TypedValue* keyOut) {
+  /*
+   * If this function is executing then valOut was already decrefed
+   * during iter_next_mixed_impl.  That decref can't have had side
+   * effects, because iter_next_cold would have been called otherwise.
+   * So it's safe to just bump the refcount back up here, and pretend
+   * like nothing ever happened.
+   */
+  tvRefcountedIncRef(valOut);
+  return iter_next_cold<false>(it, valOut, keyOut);
+}
+
+template<bool HasKey>
 ALWAYS_INLINE
-int64_t iterNextArrayGeneric(Iter* it, TypedValue* valOut, TypedValue* keyOut) {
-  ArrayIter& iter = it->arr();
+int64_t iter_next_mixed_impl(Iter* it,
+                             TypedValue* valOut,
+                             TypedValue* keyOut) {
+  ArrayIter& iter    = it->arr();
   auto const arrData = const_cast<ArrayData*>(iter.getArrayData());
-  auto const arr = static_cast<HphpArray*>(arrData);
-  ssize_t pos = iter.getPos();
+  auto const arr     = MixedArray::asMixed(arrData);
+  ssize_t pos        = iter.getPos();
 
   do {
     if (size_t(++pos) >= size_t(arr->iterLimit())) {
       if (UNLIKELY(arr->hasExactlyOneRef())) {
-        return iter_next_free_arr(it, arr);
+        return iter_next_free_mixed(it, arr->asArrayData());
       }
       arr->decRefCount();
       if (debug) {
@@ -1614,25 +1715,70 @@ int64_t iterNextArrayGeneric(Iter* it, TypedValue* valOut, TypedValue* keyOut) {
       }
       return 0;
     }
-  } while (!isPacked && UNLIKELY(arr->isTombstone(pos)));
+  } while (UNLIKELY(arr->isTombstone(pos)));
 
-  if (UNLIKELY(tvDecRefWillCallHelper(valOut))) {
-    return iter_next_cold<false>(it, valOut, keyOut);
+
+  if (IS_REFCOUNTED_TYPE(valOut->m_type)) {
+    if (UNLIKELY(!valOut->m_data.pstr->hasMultipleRefs())) {
+      return iter_next_cold<false>(it, valOut, keyOut);
+    }
+    valOut->m_data.pstr->decRefCount();
   }
-  if (key && UNLIKELY(tvDecRefWillCallHelper(keyOut))) {
-    return iter_next_cold<false>(it, valOut, keyOut);
+  if (HasKey && IS_REFCOUNTED_TYPE(keyOut->m_type)) {
+    if (UNLIKELY(!keyOut->m_data.pstr->hasMultipleRefs())) {
+      return iter_next_cold_inc_val(it, valOut, keyOut);
+    }
+    keyOut->m_data.pstr->decRefCount();
   }
-  tvDecRefOnly(valOut);
-  if (key) {
-    tvDecRefOnly(keyOut);
-  }
+
   iter.setPos(pos);
-  if (key) {
-    arr->getArrayElm<false>(pos, valOut, keyOut);
+  if (HasKey) {
+    arr->getArrayElm(pos, valOut, keyOut);
   } else {
     arr->getArrayElm(pos, valOut);
   }
   return 1;
+}
+
+template<bool HasKey>
+int64_t iter_next_packed_impl(Iter* it,
+                              TypedValue* valOut,
+                              TypedValue* keyOut) {
+  assert(it->arr().getIterType() == ArrayIter::TypeArray &&
+         it->arr().hasArrayData() &&
+         it->arr().getArrayData()->isPacked());
+  auto& iter = it->arr();
+  auto const ad = const_cast<ArrayData*>(iter.getArrayData());
+  assert(PackedArray::checkInvariants(ad));
+
+  ssize_t pos = iter.getPos() + 1;
+  if (LIKELY(pos < ad->getSize())) {
+    if (UNLIKELY(tvDecRefWillCallHelper(valOut))) {
+      return iter_next_cold<false>(it, valOut, keyOut);
+    }
+    if (HasKey && UNLIKELY(tvDecRefWillCallHelper(keyOut))) {
+      return iter_next_cold<false>(it, valOut, keyOut);
+    }
+    tvDecRefOnly(valOut);
+    iter.setPos(pos);
+    cellDup(*tvToCell(packedData(ad) + pos), *valOut);
+    if (HasKey) {
+      tvDecRefOnly(keyOut);
+      keyOut->m_data.num = pos;
+      keyOut->m_type = KindOfInt64;
+    }
+    return 1;
+  }
+
+  // Finished iterating---we need to free the array.
+  if (UNLIKELY(ad->hasExactlyOneRef())) {
+    return iter_next_free_packed(it, ad);
+  }
+  ad->decRefCount();
+  if (debug) {
+    iter.setIterType(ArrayIter::TypeUndefined);
+  }
+  return 0;
 }
 
 }
@@ -1642,8 +1788,7 @@ int64_t iterNextArrayPacked(Iter* it, TypedValue* valOut) {
   assert(it->arr().getIterType() == ArrayIter::TypeArray &&
          it->arr().hasArrayData() &&
          it->arr().getArrayData()->isPacked());
-
-  return iterNextArrayGeneric<true, false>(it, valOut, nullptr);
+  return iter_next_packed_impl<false>(it, valOut, nullptr);
 }
 
 int64_t iterNextKArrayPacked(Iter* it,
@@ -1653,18 +1798,15 @@ int64_t iterNextKArrayPacked(Iter* it,
   assert(it->arr().getIterType() == ArrayIter::TypeArray &&
          it->arr().hasArrayData() &&
          it->arr().getArrayData()->isPacked());
-
-  return iterNextArrayGeneric<true, true>(it, valOut, keyOut);
+  return iter_next_packed_impl<true>(it, valOut, keyOut);
 }
 
 int64_t iterNextArrayMixed(Iter* it, TypedValue* valOut) {
   TRACE(2, "iterNextArrayMixed: I %p\n", it);
   assert(it->arr().getIterType() == ArrayIter::TypeArray &&
          it->arr().hasArrayData() &&
-         it->arr().getArrayData()->isHphpArray() &&
-         !it->arr().getArrayData()->isPacked());
-
-  return iterNextArrayGeneric<false, false>(it, valOut, nullptr);
+         it->arr().getArrayData()->isMixed());
+  return iter_next_mixed_impl<false>(it, valOut, nullptr);
 }
 
 int64_t iterNextKArrayMixed(Iter* it,
@@ -1673,17 +1815,16 @@ int64_t iterNextKArrayMixed(Iter* it,
   TRACE(2, "iterNextKArrayMixed: I %p\n", it);
   assert(it->arr().getIterType() == ArrayIter::TypeArray &&
          it->arr().hasArrayData() &&
-         it->arr().getArrayData()->isHphpArray() &&
-         !it->arr().getArrayData()->isPacked());
-
-  return iterNextArrayGeneric<false, true>(it, valOut, keyOut);
+         it->arr().getArrayData()->isMixed());
+  return iter_next_mixed_impl<true>(it, valOut, keyOut);
 }
 
 int64_t iterNextArray(Iter* it, TypedValue* valOut) {
   TRACE(2, "iterNextArray: I %p\n", it);
   assert(it->arr().getIterType() == ArrayIter::TypeArray &&
-         it->arr().hasArrayData() &&
-         !it->arr().getArrayData()->isHphpArray());
+         it->arr().hasArrayData());
+  assert(!it->arr().getArrayData()->isPacked());
+  assert(!it->arr().getArrayData()->isMixed());
 
   ArrayIter& iter = it->arr();
   auto const ad = const_cast<ArrayData*>(iter.getArrayData());
@@ -1698,8 +1839,9 @@ int64_t iterNextKArray(Iter* it,
                        TypedValue* keyOut) {
   TRACE(2, "iterNextKArray: I %p\n", it);
   assert(it->arr().getIterType() == ArrayIter::TypeArray &&
-         it->arr().hasArrayData() &&
-         !it->arr().getArrayData()->isHphpArray());
+         it->arr().hasArrayData());
+  assert(!it->arr().getArrayData()->isMixed());
+  assert(!it->arr().getArrayData()->isPacked());
 
   ArrayIter& iter = it->arr();
   auto const ad = const_cast<ArrayData*>(iter.getArrayData());
@@ -1758,6 +1900,16 @@ int64_t iterNextMap(Iter* it, TypedValue* valOut) {
   return iterNext<c_Map, ArrayIter::VersionableSparse>(iter, valOut, nullptr);
 }
 
+int64_t iterNextImmMap(Iter* it, TypedValue* valOut) {
+  TRACE(2, "iterNextImmMap: I %p\n", it);
+  assert(it->arr().getIterType() == ArrayIter::TypeIterator &&
+         it->arr().hasCollection());
+
+  auto const iter = &it->arr();
+  return
+    iterNext<c_ImmMap, ArrayIter::VersionableSparse>(iter, valOut, nullptr);
+}
+
 int64_t iterNextKMap(Iter* it,
                      TypedValue* valOut,
                      TypedValue* keyOut) {
@@ -1769,6 +1921,17 @@ int64_t iterNextKMap(Iter* it,
   return iterNext<c_Map, ArrayIter::VersionableSparse>(iter, valOut, keyOut);
 }
 
+int64_t iterNextKImmMap(Iter* it,
+                        TypedValue* valOut,
+                        TypedValue* keyOut) {
+  TRACE(2, "iterNextKImmMap: I %p\n", it);
+  assert(it->arr().getIterType() == ArrayIter::TypeIterator &&
+         it->arr().hasCollection());
+
+  auto const iter = &it->arr();
+  return iterNext<c_ImmMap, ArrayIter::VersionableSparse>(iter, valOut, keyOut);
+}
+
 int64_t iterNextSet(Iter* it, TypedValue* valOut) {
   TRACE(2, "iterNextSet: I %p\n", it);
   assert(it->arr().getIterType() == ArrayIter::TypeIterator &&
@@ -1776,6 +1939,16 @@ int64_t iterNextSet(Iter* it, TypedValue* valOut) {
 
   auto const iter = &it->arr();
   return iterNext<c_Set, ArrayIter::VersionableSparse>(iter, valOut, nullptr);
+}
+
+int64_t iterNextImmSet(Iter* it, TypedValue* valOut) {
+  TRACE(2, "iterNextImmSet: I %p\n", it);
+  assert(it->arr().getIterType() == ArrayIter::TypeIterator &&
+         it->arr().hasCollection());
+
+  auto const iter = &it->arr();
+  return
+    iterNext<c_ImmSet, ArrayIter::VersionableSparse>(iter, valOut, nullptr);
 }
 
 int64_t iterNextKSet(Iter* it,
@@ -1787,6 +1960,17 @@ int64_t iterNextKSet(Iter* it,
 
   auto const iter = &it->arr();
   return iterNext<c_Set, ArrayIter::VersionableSparse>(iter, valOut, keyOut);
+}
+
+int64_t iterNextKImmSet(Iter* it,
+                        TypedValue* valOut,
+                        TypedValue* keyOut) {
+  TRACE(2, "iterNextKImmSet: I %p\n", it);
+  assert(it->arr().getIterType() == ArrayIter::TypeIterator &&
+         it->arr().hasCollection());
+
+  auto const iter = &it->arr();
+  return iterNext<c_ImmSet, ArrayIter::VersionableSparse>(iter, valOut, keyOut);
 }
 
 int64_t iterNextPair(Iter* it, TypedValue* valOut) {
@@ -1811,38 +1995,41 @@ int64_t iterNextKPair(Iter* it,
 
 int64_t iterNextObject(Iter* it, TypedValue* valOut) {
   TRACE(2, "iterNextObject: I %p\n", it);
+  // We can't just put the address of iter_next_cold in the table
+  // below right now because we need to get a nullptr into the third
+  // argument register for it.
   return iter_next_cold<false>(it, valOut, nullptr);
 }
 
-int64_t iterNextKObject(Iter* it,
-                        TypedValue* valOut,
-                        TypedValue* keyOut) {
-  TRACE(2, "iterNextKObject: I %p\n", it);
-  return iter_next_cold<false>(it, valOut, keyOut);
-}
+using IterNextHelper  = int64_t (*)(Iter*, TypedValue*);
+using IterNextKHelper = int64_t (*)(Iter*, TypedValue*, TypedValue*);
 
 const IterNextHelper g_iterNextHelpers[] = {
-  (IterNextHelper)&iterNextArrayPacked,
-  (IterNextHelper)&iterNextArrayMixed,
-  (IterNextHelper)&iterNextArray,
-  (IterNextHelper)&iterNextVector,
-  (IterNextHelper)&iterNextImmVector,
-  (IterNextHelper)&iterNextMap,
-  (IterNextHelper)&iterNextSet,
-  (IterNextHelper)&iterNextPair,
-  (IterNextHelper)&iterNextObject,
+  &iterNextArrayPacked,
+  &iterNextArrayMixed,
+  &iterNextArray,
+  &iterNextVector,
+  &iterNextImmVector,
+  &iterNextMap,
+  &iterNextImmMap,
+  &iterNextSet,
+  &iterNextImmSet,
+  &iterNextPair,
+  &iterNextObject,
 };
 
 const IterNextKHelper g_iterNextKHelpers[] = {
-  (IterNextKHelper)&iterNextKArrayPacked,
-  (IterNextKHelper)&iterNextKArrayMixed,
-  (IterNextKHelper)&iterNextKArray,
-  (IterNextKHelper)&iterNextKVector,
-  (IterNextKHelper)&iterNextKImmVector,
-  (IterNextKHelper)&iterNextKMap,
-  (IterNextKHelper)&iterNextKSet,
-  (IterNextKHelper)&iterNextKPair,
-  (IterNextKHelper)&iterNextKObject,
+  &iterNextKArrayPacked,
+  &iterNextKArrayMixed,
+  &iterNextKArray,
+  &iterNextKVector,
+  &iterNextKImmVector,
+  &iterNextKMap,
+  &iterNextKImmMap,
+  &iterNextKSet,
+  &iterNextKImmSet,
+  &iterNextKPair,
+  &iter_next_cold<false>, // iterNextKObject
 };
 
 int64_t iter_next_ind(Iter* iter, TypedValue* valOut) {

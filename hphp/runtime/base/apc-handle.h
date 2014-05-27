@@ -105,9 +105,13 @@ struct APCHandle {
    * the various flags. This is the only entry point to create APC entities.
    */
   static APCHandle* Create(const Variant& source,
-                           bool serialized,
                            bool inner = false,
-                           bool unserializeObj = false);
+                           bool forceAPCObj = false);
+
+  /*
+   * Create an APCHandle for a serialized object.
+   */
+  static APCHandle* CreateObjectFromSerializedString(const String& source);
 
   /*
    * Get an instance of the PHP object represented by this APCHandle. The
@@ -143,6 +147,9 @@ struct APCHandle {
 
   void unreferenceRoot();
 
+  bool isRefCountedHandle() const {
+    return !getUncounted() && IS_REFCOUNTED_TYPE(m_type);
+  }
 
   //
   // Type info API
@@ -150,16 +157,11 @@ struct APCHandle {
   bool is(DataType d) const { return m_type == d; }
   DataType getType() const { return m_type; }
 
-  // TODO: those methods should go back to private once we sort out
-  //       the object creation story a bit better.
-  //       The concurrent store tries to change the serialization format
-  //       of an object on the fly and it needs those 2 methods.
-  //       Right now that is still too intrusive but we need a bit more work
-  //       before we can remove it
-  //       TASK #3166547
   bool getIsObj() const { return m_flags & IsObj; }
   bool getObjAttempted() const { return m_flags & ObjAttempted; }
   bool getUncounted() const { return m_flags & Uncounted; }
+  bool getSerializedArray() const { return m_flags & SerializedArray; }
+  bool isPacked() const { return m_flags & IsPacked; }
 
 private:
   //
@@ -192,12 +194,6 @@ private:
 
   void deleteShared();
 
-  static APCHandle* CreateSharedType(const Variant& source,
-                                     bool serialized,
-                                     bool inner,
-                                     bool unserializeObj);
-  static APCHandle* CreateUncounted(const Variant& source);
-
   bool shouldCache() const { return m_shouldCache; }
   void mustCache() { m_shouldCache = true; }
 
@@ -219,9 +215,7 @@ private:
     ObjAttempted = (1<<3),
     Uncounted = (1<<4);
 
-  bool getSerializedArray() const { return m_flags & SerializedArray; }
   void setSerializedArray() { m_flags |= SerializedArray; }
-  bool isPacked() const { return m_flags & IsPacked; }
   void setPacked() { m_flags |= IsPacked; }
   void setIsObj() { m_flags |= IsObj; }
   void setObjAttempted() { m_flags |= ObjAttempted; }

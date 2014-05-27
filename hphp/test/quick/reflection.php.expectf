@@ -25,9 +25,9 @@ int(2)
 --- getParameters("f") ---
 array(4) {
   [0]=>
-  object(ReflectionParameter)#5 (2) {
+  object(ReflectionParameter)#2 (2) {
     ["info"]=>
-    array(7) {
+    array(8) {
       ["index"]=>
       int(0)
       ["name"]=>
@@ -43,14 +43,16 @@ array(4) {
       ["attributes"]=>
       array(0) {
       }
+      ["is_optional"]=>
+      bool(false)
     }
     ["name"]=>
     string(1) "a"
   }
   [1]=>
-  object(ReflectionParameter)#6 (2) {
+  object(ReflectionParameter)#3 (2) {
     ["info"]=>
-    array(8) {
+    array(9) {
       ["index"]=>
       int(1)
       ["name"]=>
@@ -68,14 +70,16 @@ array(4) {
       ["attributes"]=>
       array(0) {
       }
+      ["is_optional"]=>
+      bool(false)
     }
     ["name"]=>
     string(1) "b"
   }
   [2]=>
-  object(ReflectionParameter)#7 (2) {
+  object(ReflectionParameter)#4 (2) {
     ["info"]=>
-    array(9) {
+    array(10) {
       ["index"]=>
       int(2)
       ["name"]=>
@@ -95,14 +99,16 @@ array(4) {
       ["attributes"]=>
       array(0) {
       }
+      ["is_optional"]=>
+      bool(true)
     }
     ["name"]=>
     string(1) "c"
   }
   [3]=>
-  object(ReflectionParameter)#8 (2) {
+  object(ReflectionParameter)#5 (2) {
     ["info"]=>
-    array(9) {
+    array(10) {
       ["index"]=>
       int(3)
       ["name"]=>
@@ -129,6 +135,8 @@ array(4) {
       ["attributes"]=>
       array(0) {
       }
+      ["is_optional"]=>
+      bool(true)
     }
     ["name"]=>
     string(1) "d"
@@ -138,9 +146,9 @@ array(4) {
 --- getStaticVariables("f") ---
 array(2) {
   ["staticX"]=>
-  string(1) "4"
+  NULL
   ["staticY"]=>
-  string(4) "null"
+  NULL
 }
 
 --- isInternal("f") ---
@@ -160,6 +168,14 @@ In f()
 int(5)
 In f()
 int(6)
+
+--- getStaticVariables("f") ---
+array(2) {
+  ["staticX"]=>
+  int(6)
+  ["staticY"]=>
+  NULL
+}
 
 --- invoke("g") ---
 In g(a, b, some string)
@@ -194,10 +210,10 @@ string(35) "/**
  */"
 
 --- getStartLine() ---
-int(126)
+int(131)
 
 --- getEndLine() ---
-int(142)
+int(147)
 
 --- getFileName() ---
 string(%d) "%s/test/quick/reflection.php"
@@ -227,14 +243,11 @@ int(0)
 string(1) "B"
 
 --- getParentClass() ---
-object(ReflectionClass)#23 (3) {
-  ["name"]=>
-  string(1) "A"
-  ["info":"ReflectionClass":private]=>
-  NULL
+object(ReflectionClass)#20 (1) {
   ["obj":"ReflectionClass":private]=>
   NULL
 }
+string(1) "A"
 
 --- getProperties() ---
 
@@ -295,7 +308,7 @@ bool(false)
 bool(true)
 
 --- newInstance() ---
-object(B)#51 (4) {
+object(B)#33 (4) {
   ["p0":"B":private]=>
   int(1)
   ["p1":protected]=>
@@ -307,7 +320,7 @@ object(B)#51 (4) {
 }
 
 --- newInstanceArgs() ---
-object(B)#51 (4) {
+object(B)#33 (4) {
   ["p0":"B":private]=>
   int(1)
   ["p1":protected]=>

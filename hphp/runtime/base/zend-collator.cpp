@@ -86,7 +86,7 @@ static double collator_u_strtod(const UChar *nptr, UChar **endptr) {
     if (length < (int)sizeof(buf)) {
       numbuf = buf;
     } else {
-      numbuf = (char *) malloc(length + 1);
+      numbuf = (char *) smart_malloc(length + 1);
     }
 
     bufpos = numbuf;
@@ -99,7 +99,7 @@ static double collator_u_strtod(const UChar *nptr, UChar **endptr) {
     value = zend_strtod(numbuf, nullptr);
 
     if (numbuf != buf) {
-      free(numbuf);
+      smart_free(numbuf);
     }
 
     if (endptr != nullptr) {
@@ -365,7 +365,8 @@ static void collator_convert_array_from_utf16_to_utf8(Array &array,
       return;
     }
     /* Update current value with the converted value. */
-    const_cast<Variant&>(value) = str;
+    Variant key = iter.first();
+    array.set(key, str);
   }
 }
 

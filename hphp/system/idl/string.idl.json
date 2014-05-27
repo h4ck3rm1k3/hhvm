@@ -455,7 +455,7 @@
             "name": "str_split",
             "desc": "Converts a string to an array.",
             "flags": [
-                "ZendParamModeNull"
+                "ParamCoerceModeNull"
             ],
             "return": {
                 "type": "Variant",
@@ -469,7 +469,7 @@
                 },
                 {
                     "name": "split_length",
-                    "type": "Int32",
+                    "type": "Int64",
                     "value": "1",
                     "desc": "Maximum length of the chunk."
                 }
@@ -631,6 +631,7 @@
             "name": "substr",
             "desc": "Returns the portion of string specified by the start and length parameters.",
             "flags": [
+                "ParamCoerceModeNull"
             ],
             "return": {
                 "type": "Variant",
@@ -802,6 +803,7 @@
             "name": "htmlspecialchars",
             "desc": "Certain characters have special significance in HTML, and should be represented by HTML entities if they are to preserve their meanings. This function returns a string with some of these conversions made; the translations made are those most useful for everyday web programming. If you require all HTML character entities to be translated, use htmlentities() instead. This function is useful in preventing user-supplied text from containing HTML markup, such as in a message board or guest book application.\n\nThe translations performed are: '&' (ampersand) becomes '&amp;' '\"' (double quote) becomes '&quot;' when ENT_NOQUOTES is not set. ''' (single quote) becomes '&#039;' only when ENT_QUOTES is set. '<' (less than) becomes '&lt;' '>' (greater than) becomes '&gt;'",
             "flags": [
+                "ParamCoerceModeNull"
             ],
             "return": {
                 "type": "String",

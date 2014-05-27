@@ -24,15 +24,15 @@
 namespace HPHP {  namespace JIT {
 
 IRInstruction::IRInstruction(Arena& arena, const IRInstruction* inst, Id id)
-  : m_op(inst->m_op)
-  , m_typeParam(inst->m_typeParam)
+  : m_typeParam(inst->m_typeParam)
+  , m_op(inst->m_op)
   , m_numSrcs(inst->m_numSrcs)
   , m_numDsts(inst->m_numDsts)
+  , m_marker(inst->m_marker)
   , m_id(id)
   , m_srcs(m_numSrcs ? new (arena) SSATmp*[m_numSrcs] : nullptr)
   , m_dst(nullptr)
   , m_block(nullptr)
-  , m_marker(inst->m_marker)
   , m_extra(inst->m_extra ? cloneExtra(op(), inst->m_extra, arena)
                           : nullptr)
 {
@@ -94,6 +94,8 @@ bool IRInstruction::consumesReference(int srcNo) const {
     case ConcatStrStr:
     case ConcatStrInt:
     case ConcatCellCell:
+    case ConcatStr3:
+    case ConcatStr4:
       // Call a helper that decrefs the first argument
       return srcNo == 0;
 
@@ -105,6 +107,7 @@ bool IRInstruction::consumesReference(int srcNo) const {
     case StRetVal:
     case StLoc:
     case StLocNT:
+    case StAsyncArChild:
       // Consume the value being stored, not the thing it's being stored into
       return srcNo == 1;
 
@@ -124,11 +127,7 @@ bool IRInstruction::consumesReference(int srcNo) const {
 
     case SpillFrame:
       // Consumes the $this/Class field of the ActRec
-      return srcNo == 3;
-
-    case Call:
-      // Inputs 3+ are arguments to the function
-      return srcNo >= 3;
+      return srcNo == 2;
 
     case ColAddElemC:
       // value at index 2
@@ -141,11 +140,8 @@ bool IRInstruction::consumesReference(int srcNo) const {
     case CheckNullptr:
       return srcNo == 0;
 
-    case CreateAFWHFunc:
-      return srcNo == 1;
-
-    case CreateAFWHMeth:
-      return srcNo == 2;
+    case CreateAFWH:
+      return srcNo == 4;
 
     default:
       return true;
@@ -153,14 +149,6 @@ bool IRInstruction::consumesReference(int srcNo) const {
 }
 
 bool IRInstruction::mayRaiseError() const {
-  if (!opcodeHasFlags(op(), MayRaiseError)) return false;
-
-  // Some instructions only throw if they do not have a non-catch label.
-  if (is(LdClsPropAddrCached, LdClsPropAddr) &&
-      taken() && !taken()->isCatch()) {
-    return false;
-  }
-
   return opcodeHasFlags(op(), MayRaiseError);
 }
 
@@ -191,7 +179,7 @@ bool IRInstruction::isRawLoad() const {
     case LdElem:
     case LdProp:
     case LdPackedArrayElem:
-    case Unbox:
+    case LdGbl:
       return true;
 
     default:
@@ -434,20 +422,28 @@ std::string IRInstruction::toString() const {
 
 std::string BCMarker::show() const {
   assert(valid());
-  return folly::format("--- bc {}, spOff {} ({})",
-                       bcOff,
-                       spOff,
-                       func->fullName()->data()).str();
+  return folly::format(
+    "--- bc {}{}, spOff {} ({}){}",
+    m_sk.offset(),
+    m_sk.resumed() ? "r" : "",
+    m_spOff,
+    m_sk.func()->fullName()->data(),
+    m_profTransID != kInvalidTransID
+      ? folly::format(" [profTrans={}]", m_profTransID).str()
+      : std::string{}
+  ).str();
 }
 
 bool BCMarker::valid() const {
+  if (isDummy()) return true;
   return
-    func != nullptr &&
-    bcOff >= func->base() && bcOff < func->past() &&
+    m_sk.valid() &&
+    m_sk.offset() >= m_sk.func()->base() &&
+    m_sk.offset() < m_sk.func()->past() &&
+    // When inlining is on, we may modify markers to weird values in
+    // case reentry happens.
     (RuntimeOption::EvalHHIREnableGenTimeInlining ||
-     spOff <= func->numSlotsInFrame() + func->maxStackCells());
-  // When inlining is on, we may modify markers to weird values in case reentry
-  // happens.
+     m_spOff <= m_sk.func()->numSlotsInFrame() + m_sk.func()->maxStackCells());
 }
 
 }}

@@ -65,7 +65,6 @@ const char *const BuiltinSymbols::GlobalNames[] = {
   "_SESSION",
   "argc",
   "argv",
-  "http_response_header",
 };
 
 const char *BuiltinSymbols::SystemClasses[] = {
@@ -93,22 +92,6 @@ StringToTypePtrMap BuiltinSymbols::s_superGlobals;
 int BuiltinSymbols::NumGlobalNames() {
   return sizeof(BuiltinSymbols::GlobalNames) /
     sizeof(BuiltinSymbols::GlobalNames[0]);
-}
-
-static TypePtr typePtrFromDataType(DataType dt, TypePtr unknown) {
-  switch (dt) {
-    case KindOfNull:    return Type::Null;
-    case KindOfBoolean: return Type::Boolean;
-    case KindOfInt64:   return Type::Int64;
-    case KindOfDouble:  return Type::Double;
-    case KindOfString:  return Type::String;
-    case KindOfArray:   return Type::Array;
-    case KindOfObject:  return Type::Object;
-    case KindOfResource: return Type::Resource;
-    case KindOfUnknown:
-    default:
-      return unknown;
-  }
 }
 
 const StaticString
@@ -145,7 +128,7 @@ FunctionScopePtr BuiltinSymbols::ImportFunctionScopePtr(AnalysisResultPtr ar,
     if (pinfo->attribute & ClassInfo::IsReference) {
       f->setRefParam(idx);
     }
-    f->setParamType(ar, idx, typePtrFromDataType(pinfo->argType, Type::Any));
+    f->setParamType(ar, idx, Type::FromDataType(pinfo->argType, Type::Any));
     if (pinfo->valueLen) {
       f->setParamDefault(idx, pinfo->value, pinfo->valueLen,
                          std::string(pinfo->valueText, pinfo->valueTextLen));
@@ -153,8 +136,8 @@ FunctionScopePtr BuiltinSymbols::ImportFunctionScopePtr(AnalysisResultPtr ar,
   }
 
   if (method->returnType != KindOfNull) {
-    f->setReturnType(ar, typePtrFromDataType(method->returnType,
-                                             Type::Variant));
+    f->setReturnType(ar, Type::FromDataType(method->returnType,
+                                            Type::Variant));
   }
 
   f->setClassInfoAttribute(attrs);
@@ -216,11 +199,6 @@ void BuiltinSymbols::ImportExtFunctions(AnalysisResultPtr ar,
                                         ClassInfo *cls) {
   const ClassInfo::MethodVec &methods = cls->getMethodsVec();
   for (auto it = methods.begin(); it != methods.end(); ++it) {
-    if (((*it)->attribute & ClassInfo::ZendCompat) &&
-        !Option::EnableZendCompat) {
-      continue;
-    }
-
     FunctionScopePtr f = ImportFunctionScopePtr(ar, cls, *it);
     ar->addSystemFunction(f);
   }
@@ -255,34 +233,41 @@ void BuiltinSymbols::ImportExtProperties(AnalysisResultPtr ar,
     }
 
     dest->add(pinfo->name.data(),
-              typePtrFromDataType(pinfo->type, Type::Variant),
+              Type::FromDataType(pinfo->type, Type::Variant),
               false, ar, ExpressionPtr(), modifiers);
   }
 }
 
 void BuiltinSymbols::ImportNativeConstants(AnalysisResultPtr ar,
                                            ConstantTablePtr dest) {
+  LocationPtr loc(new Location);
   for (auto cnsPair : Native::getConstants()) {
+    ExpressionPtr e(Expression::MakeScalarExpression(
+                      ar, ar, loc, tvAsVariant(&cnsPair.second)));
+
     dest->add(cnsPair.first->data(),
-              typePtrFromDataType(cnsPair.second.m_type, Type::Variant),
-              ExpressionPtr(), ar, ConstructPtr());
+              Type::FromDataType(cnsPair.second.m_type, Type::Variant),
+              e, ar, e);
   }
 }
 
 void BuiltinSymbols::ImportExtConstants(AnalysisResultPtr ar,
                                         ConstantTablePtr dest,
                                         ClassInfo *cls) {
-  ClassInfo::ConstantVec src = cls->getConstantsVec();
-  for (auto it = src.begin(); it != src.end(); ++it) {
-    // We make an assumption that if the constant is a callback type
-    // (e.g. STDIN, STDOUT, STDERR) then it will return an Object.
-    // And that if it's deferred (SID, PHP_SAPI, etc.) it'll be a String.
-    ClassInfo::ConstantInfo *cinfo = *it;
-    dest->add(cinfo->name.data(),
-              cinfo->isDeferred() ?
-              (cinfo->isCallback() ? Type::Object : Type::String) :
-              typePtrFromDataType(cinfo->getValue().getType(), Type::Variant),
-              ExpressionPtr(), ar, ConstructPtr());
+  LocationPtr loc(new Location);
+  for (auto cinfo : cls->getConstantsVec()) {
+    ExpressionPtr e;
+    TypePtr t;
+    if (cinfo->isDeferred()) {
+      // We make an assumption that if the constant is a callback type
+      // (e.g. STDIN, STDOUT, STDERR) then it will return an Object.
+      // Otherwise, if it's deferred (SID, PHP_SAPI, etc.) it'll be a String.
+      t = cinfo->isCallback() ? Type::Object : Type::String;
+    } else {
+      t = Type::FromDataType(cinfo->getValue().getType(), Type::Variant);
+      e = Expression::MakeScalarExpression(ar, ar, loc, cinfo->getValue());
+    }
+    dest->add(cinfo->name.data(), t, e, ar, e);
   }
 }
 
@@ -319,13 +304,6 @@ ClassScopePtr BuiltinSymbols::ImportClassScopePtr(AnalysisResultPtr ar,
 void BuiltinSymbols::ImportExtClasses(AnalysisResultPtr ar) {
   const ClassInfo::ClassMap &classes = ClassInfo::GetClassesMap();
   for (auto it = classes.begin(); it != classes.end(); ++it) {
-
-    const ClassInfo *info = it->second;
-    if ((info->getAttribute() & ClassInfo::ZendCompat) &&
-        !Option::EnableZendCompat) {
-      continue;
-    }
-
     ClassScopePtr cl = ImportClassScopePtr(ar, it->second);
     ar->addSystemClass(cl);
   }
@@ -358,13 +336,7 @@ bool BuiltinSymbols::Load(AnalysisResultPtr ar) {
     const Variant& value = it.secondRef();
     if (!value.isInitialized() || value.isObject()) continue;
     ExpressionPtr e = Expression::MakeScalarExpression(ar, ar, loc, value);
-    TypePtr t =
-      value.isNull()    ? Type::Null    :
-      value.isBoolean() ? Type::Boolean :
-      value.isInteger() ? Type::Int64   :
-      value.isDouble()  ? Type::Double  :
-      value.isArray()   ? Type::Array   : Type::Variant;
-
+    TypePtr t = Type::FromDataType(value.getType(), Type::Variant);
     cns->add(key.toCStrRef().data(), t, e, ar, e);
   }
   for (int i = 0, n = NumGlobalNames(); i < n; ++i) {
@@ -378,6 +350,10 @@ bool BuiltinSymbols::Load(AnalysisResultPtr ar) {
   cns->setDynamic(ar, "PHP_SAPI", true);
   cns->setDynamic(ar, "SID", true);
 
+  for (auto sym : cns->getSymbols()) {
+    sym->setSystem();
+  }
+
   // Systemlib files were all parsed by hphp_process_init
 
   const StringToFileScopePtrMap &files = ar->getAllFiles();
@@ -388,6 +364,17 @@ bool BuiltinSymbols::Load(AnalysisResultPtr ar) {
     for (const auto& clsVec : classes) {
       assert(clsVec.second.size() == 1);
       auto cls = clsVec.second[0];
+      if (auto nativeConsts = Native::getClassConstants(
+            String(cls->getName()).get())) {
+        for (auto cnsMap : *nativeConsts) {
+          auto tv = cnsMap.second;
+          auto e = Expression::MakeScalarExpression(ar, ar, loc,
+                                                    tvAsVariant(&tv));
+          cls->getConstants()->add(cnsMap.first->data(),
+                                   Type::FromDataType(tv.m_type, Type::Variant),
+                                   e, ar, e);
+        }
+      }
       cls->setSystem();
       ar->addSystemClass(cls);
       for (const auto& func : cls->getFunctions()) {
@@ -416,7 +403,6 @@ void BuiltinSymbols::LoadSuperGlobals() {
     s_superGlobals["_ENV"] = Type::Variant;
     s_superGlobals["_REQUEST"] = Type::Variant;
     s_superGlobals["_SESSION"] = Type::Variant;
-    s_superGlobals["http_response_header"] = Type::Variant;
   }
 }
 

@@ -37,6 +37,8 @@
 
 #include "hphp/runtime/base/array-init.h"
 #include "hphp/runtime/vm/jit/translator-inline.h"
+#include "hphp/runtime/ext_zend_compat/hhvm/zend-class-entry.h"
+#include "hphp/runtime/ext_zend_compat/hhvm/zend-exception-store.h"
 namespace HPHP {
   void zBoxAndProxy(TypedValue* arg);
 }
@@ -46,6 +48,9 @@ ZEND_API const zend_fcall_info empty_fcall_info = { 0, NULL, NULL, NULL, NULL, 0
 ZEND_API const zend_fcall_info_cache empty_fcall_info_cache = { 0, NULL, NULL, NULL, NULL };
 
 ZEND_API int zend_lookup_class(const char *name, int name_length, zend_class_entry ***ce TSRMLS_DC) {
+  // FIXME: author apparently had no idea what this function was meant to do
+  // ce is meant to point to uninitialised memory, which this function is meant
+  // to fill, so you can't just triple-dereference it
   HPHP::StringData *class_name = HPHP::makeStaticString(name, name_length);
   (**ce)->hphp_class = HPHP::Unit::loadClass(class_name);
   return (**ce)->hphp_class == nullptr ? FAILURE : SUCCESS;
@@ -120,6 +125,37 @@ ZEND_API int call_user_function_ex(HashTable *function_table, zval **object_pp, 
   return zend_call_function(&fci, NULL TSRMLS_CC);
 }
 
+namespace {
+  static void zend_handle_cpp_exception(TSRMLS_D)
+  {
+    HPHP::ZendExceptionStore::getInstance().setPointer(std::current_exception());
+
+    try {
+      throw;
+    }
+
+    catch (HPHP::Object& e) {
+      HPHP::TypedValue tv = HPHP::make_tv<HPHP::KindOfObject>(e.get());
+      EG(exception) = HPHP::RefData::Make(tv);
+    }
+
+    catch (std::exception& e) {
+      std::string message(typeid(e).name());
+      message += ": ";
+      message += e.what();
+      EG(exception) = HPHP::RefData::Make(HPHP::make_tv<HPHP::KindOfObject>(
+          HPHP::SystemLib::AllocExceptionObject(HPHP::Variant(message))));
+    }
+
+    catch (...) {
+      std::string message("unexpected C++ exception");
+      EG(exception) = HPHP::RefData::Make(HPHP::make_tv<HPHP::KindOfObject>(
+          HPHP::SystemLib::AllocExceptionObject(HPHP::Variant(message))));
+    }
+    tvIncRef(EG(exception)->tv());
+  }
+}
+
 int zend_call_function(zend_fcall_info *fci, zend_fcall_info_cache *fci_cache TSRMLS_DC) /* {{{ */
 {
   assert(fci->object_ptr == nullptr);
@@ -135,6 +171,7 @@ int zend_call_function(zend_fcall_info *fci, zend_fcall_info_cache *fci_cache TS
   if (f == nullptr) {
     return FAILURE;
   }
+  *fci->retval_ptr_ptr = NULL;
 
   HPHP::PackedArrayInit ad_params(fci->param_count);
   for (int i = 0; i < fci->param_count; i++) {
@@ -149,15 +186,57 @@ int zend_call_function(zend_fcall_info *fci, zend_fcall_info_cache *fci_cache TS
     }
   }
   HPHP::TypedValue retval;
-  HPHP::g_context->invokeFunc(
-    &retval, f, ad_params.toArray(), obj, cls,
-    nullptr, invName, HPHP::ExecutionContext::InvokeCuf
-  );
-  if (retval.m_type == HPHP::KindOfUninit) {
-    return FAILURE;
-  }
+  try {
+    HPHP::g_context->invokeFunc(
+      &retval, f, ad_params.toArray(), obj, cls,
+      nullptr, invName, HPHP::ExecutionContext::InvokeCuf
+    );
+    if (retval.m_type == HPHP::KindOfUninit) {
+      return FAILURE;
+    }
 
-  HPHP::zBoxAndProxy(&retval);
-  *fci->retval_ptr_ptr = retval.m_data.pref;
-  return SUCCESS;
+    HPHP::zBoxAndProxy(&retval);
+    *fci->retval_ptr_ptr = retval.m_data.pref;
+    return SUCCESS;
+  } catch (...) {
+    zend_handle_cpp_exception(TSRMLS_C);
+    return SUCCESS;
+  }
 }
+
+ZEND_API zend_class_entry *zend_fetch_class_by_name(
+    const char *class_name, uint class_name_len,
+    const zend_literal *key, int fetch_type TSRMLS_DC)
+{
+  bool use_autoload = (fetch_type & ZEND_FETCH_CLASS_NO_AUTOLOAD) == 0;
+
+  assert(key == NULL); // not implemented
+  if (key != NULL) {
+    return NULL;
+  }
+  if (!class_name || !class_name_len) {
+    return NULL;
+  }
+  HPHP::StringData * sd = HPHP::makeStaticString(class_name, class_name_len);
+  zend_class_entry * zce = HPHP::zend_hphp_get_internal_class_entry(sd);
+  if (zce) {
+    return zce;
+  }
+  HPHP::Class * cls = HPHP::Unit::getClass(sd, use_autoload);
+  if (cls == nullptr) {
+    if (use_autoload) {
+      if ((fetch_type & ZEND_FETCH_CLASS_SILENT) == 0 && !EG(exception)) {
+        if ((fetch_type & ZEND_FETCH_CLASS_MASK) == ZEND_FETCH_CLASS_INTERFACE) {
+          zend_error(E_ERROR, "Interface '%s' not found", class_name);
+        } else if ((fetch_type & ZEND_FETCH_CLASS_MASK) == ZEND_FETCH_CLASS_TRAIT) {
+          zend_error(E_ERROR, "Trait '%s' not found", class_name);
+        } else {
+          zend_error(E_ERROR, "Class '%s' not found", class_name);
+        }
+      }
+    }
+    return NULL;
+  }
+  return HPHP::zend_hphp_class_to_class_entry(cls);
+}
+

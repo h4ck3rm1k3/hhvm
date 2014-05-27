@@ -109,7 +109,7 @@ void optimize(IRUnit& unit, IRBuilder& irBuilder, TransKind kind) {
   Timer _t(Timer::optimize);
 
   auto finishPass = [&](const char* msg) {
-    dumpTrace(6, unit, folly::format("after {}", msg).str().c_str());
+    printUnit(6, unit, folly::format("after {}", msg).str().c_str());
     assert(checkCfg(unit));
     assert(checkTmpsSpanningCalls(unit));
     if (debug) {
@@ -128,7 +128,7 @@ void optimize(IRUnit& unit, IRBuilder& irBuilder, TransKind kind) {
     finishPass(folly::format("{} DCE", which).str().c_str());
   };
 
-  if (RuntimeOption::EvalHHIRRelaxGuards) {
+  if (shouldHHIRRelaxGuards()) {
     /*
      * In TransProfile mode, we can only relax the guards in tracelet
      * region mode.  If the region came from analyze() and we relax the
@@ -140,11 +140,11 @@ void optimize(IRUnit& unit, IRBuilder& irBuilder, TransKind kind) {
      *        PostCond: Loc0: Uncounted // post-conds are accurate
      *    B2: TypePred: Loc0: Int       // this will always fail
      */
-    const bool relax = kind != TransProfile ||
+    const bool relax = kind != TransKind::Profile ||
                        RuntimeOption::EvalJitRegionSelector == "tracelet";
     if (relax) {
       Timer _t(Timer::optimize_relaxGuards);
-      const bool simple = kind == TransProfile &&
+      const bool simple = kind == TransKind::Profile &&
                           RuntimeOption::EvalJitRegionSelector == "tracelet";
       auto changed = relaxGuards(unit, *irBuilder.guards(), simple);
       if (changed) finishPass("guard relaxation");
@@ -152,7 +152,7 @@ void optimize(IRUnit& unit, IRBuilder& irBuilder, TransKind kind) {
   }
 
   if (RuntimeOption::EvalHHIRRefcountOpts) {
-    optimizeRefcounts(unit);
+    optimizeRefcounts(unit, FrameState{unit, unit.entry()->front().marker()});
     finishPass("refcount opts");
   }
 
@@ -169,7 +169,7 @@ void optimize(IRUnit& unit, IRBuilder& irBuilder, TransKind kind) {
     finishPass("reoptimize");
     // Cleanup any dead code left around by CSE/Simplification
     // Ideally, this would be controlled by a flag returned
-    // by optimzeTrace indicating whether DCE is necessary
+    // by optimizeTrace indicating whether DCE is necessary
     dce("reoptimize");
   }
 

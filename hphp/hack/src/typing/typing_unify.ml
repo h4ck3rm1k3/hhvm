@@ -33,9 +33,9 @@ let rec unify env ty1 ty2 =
       let r = unify_reason r1 r2 in
       let env, tyl = TUtils.normalize_inter env tyl1 tyl2 in
       env, (r, Tunresolved tyl)
-  | (_, Tunresolved tyl), (_, ty_ as ty)
-  | (_, ty_ as ty), (_, Tunresolved tyl) ->
-      let p1 = try TUtils.find_pos tyl with _ -> Pos.none in
+  | (r, Tunresolved tyl), (_, ty_ as ty)
+  | (_, ty_ as ty), (r, Tunresolved tyl) ->
+      let p1 = TUtils.find_pos (Reason.to_pos r) tyl in
       let str_ty = Typing_print.error ty_ in
       let r = Reason.Rcoerced (p1, env.Env.pos, str_ty) in
       let env = List.fold_left (fun env x -> TUtils.sub_type env ty x) env tyl in
@@ -160,14 +160,15 @@ and unify_ env r1 ty1 r2 ty2 =
       let env, class_ = Env.get_class env x in
       (* For final class C, there is no difference between this<X> and X *)
       let env, ty = (match class_ with
-        | Some {tc_final = true} -> unify env ty (r2, ty2)
+        | Some {tc_final = true; _} -> unify env ty (r2, ty2)
         | _ ->
             (try TUtils.uerror r1 ty1 r2 ty2
             with Error l ->
               match ty2 with
               | Tapply ((_, y), _) when y = x ->
-                let message1 = "Since "^(snd id)^" is not final" in
-                let message2 = "this might not be a "^(snd id) in
+                let n = Utils.strip_ns (snd id) in
+                let message1 = "Since "^n^" is not final" in
+                let message2 = "this might not be a "^n in
                 Utils.error_l
                   (l @ [(fst id, message1);  (Reason.to_pos r1, message2)])
               | _ -> Utils.error_l l
@@ -248,6 +249,7 @@ and unify_params env l1 l2 =
   | [], l | l, [] -> env, l
   | (name1, x1) :: rl1, (name2, x2) :: rl2 ->
       let name = if name1 = name2 then name1 else None in
+      let env = { env with Env.pos = Reason.to_pos (fst x1) } in
       let env, _ = unify env x2 x1 in
       let env, rl = unify_params env rl1 rl2 in
       env, (name, x2) :: rl

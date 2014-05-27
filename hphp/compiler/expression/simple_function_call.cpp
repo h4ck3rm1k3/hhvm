@@ -41,7 +41,7 @@
 #include "hphp/runtime/base/array-init.h"
 #include "hphp/runtime/base/string-util.h"
 #include "hphp/runtime/base/zend-functions.h"
-#include "hphp/runtime/ext/ext_variable.h"
+#include "hphp/runtime/ext/std/ext_std_variable.h"
 
 using namespace HPHP;
 
@@ -1254,7 +1254,7 @@ TypePtr SimpleFunctionCall::inferAndCheck(AnalysisResultPtr ar, TypePtr type,
       }
     }
     rtype = checkTypesImpl(ar, type, atype, coerce);
-    m_voidReturn = m_voidWrapper = false;
+    m_voidReturn = m_voidUsed = false;
   }
 
   if (m_valid && !m_className.empty() &&

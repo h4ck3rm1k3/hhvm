@@ -17,8 +17,8 @@
 #ifndef incl_HPHP_STRING_BUFFER_H_
 #define incl_HPHP_STRING_BUFFER_H_
 
-#include "hphp/runtime/base/types.h"
-#include "hphp/runtime/base/complex-types.h"
+#include "hphp/runtime/base/exceptions.h"
+#include "hphp/runtime/base/type-string.h"
 
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
@@ -143,6 +143,14 @@ struct StringBuffer {
    * member function.
    */
   char* appendCursor(int additionalBytes);
+
+  /*
+   * Mutate a character in existing buffer.
+   */
+  void set(int offset, char c) {
+    assert(offset < m_len);
+    m_buffer[offset] = c;
+  }
 
   /*
    * Append various types of things to this string.

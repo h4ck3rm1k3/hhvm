@@ -20,11 +20,11 @@
 #include "hphp/util/ringbuffer.h"
 #include "hphp/util/trace.h"
 
+#include "hphp/runtime/base/arch.h"
 #include "hphp/runtime/base/runtime-option.h"
 #include "hphp/runtime/base/stats.h"
 #include "hphp/runtime/base/types.h"
-#include "hphp/runtime/vm/jit/arch.h"
-#include "hphp/runtime/vm/jit/jump-smash.h"
+#include "hphp/runtime/vm/jit/back-end.h"
 #include "hphp/runtime/vm/jit/translator-inline.h"
 #include "hphp/runtime/vm/jit/mc-generator.h"
 #include "hphp/runtime/vm/jit/mc-generator-internal.h"
@@ -55,21 +55,16 @@ TRACE_SET_MOD(hhir);
  */
 void moveToAlign(CodeBlock& cb,
                  const size_t align /* =kJmpTargetAlign */) {
-  switch (arch()) {
-    case Arch::X64: {
-      X64Assembler a { cb };
-      assert(folly::isPowTwo(align));
-      size_t leftInBlock = align - ((align - 1) & uintptr_t(cb.frontier()));
-      if (leftInBlock == align) return;
-      if (leftInBlock > 2) {
-        a.ud2();
-        leftInBlock -= 2;
-      }
-      break;
-    }
-    case Arch::ARM:
-      // TODO(2967396) implement properly, move function
-      break;
+  X64Assembler a { cb };
+  assert(folly::isPowTwo(align));
+  size_t leftInBlock = align - ((align - 1) & uintptr_t(cb.frontier()));
+  if (leftInBlock == align) return;
+  if (leftInBlock > 2) {
+    a.ud2();
+    leftInBlock -= 2;
+  }
+  if (leftInBlock > 0) {
+    a.emitInt3s(leftInBlock);
   }
 }
 
@@ -79,16 +74,12 @@ void emitEagerSyncPoint(Asm& as, const Op* pc) {
   static COff fpOff = offsetof(ExecutionContext, m_fp);
   static COff pcOff = offsetof(ExecutionContext, m_pc);
 
-  /* we can't use rAsm because the pc store uses it as a
-     temporary */
-  Reg64 rEC = reg::rdi;
-
-  as.  push(rEC);
+  // we can use rAsm because we don't clobber it in X64Assembler
+  Reg64 rEC = rAsm;
   emitGetGContext(as, rEC);
   as.  storeq(rVmFp, rEC[fpOff]);
   as.  storeq(rVmSp, rEC[spOff]);
-  as.  storeq(pc, rEC[pcOff]);
-  as.  pop(rEC);
+  emitImmStoreq(as, intptr_t(pc), rEC[pcOff]);
 }
 
 // emitEagerVMRegSave --
@@ -212,7 +203,7 @@ void emitAssertFlagsNonNegative(Asm& as) {
 
 void emitAssertRefCount(Asm& as, PhysReg base) {
   as.cmpl(HPHP::StaticValue, base[FAST_REFCOUNT_OFFSET]);
-  ifThen(as, CC_NBE, [&] {
+  ifThen(as, CC_NLE, [&] {
       as.cmpl(HPHP::RefCountMaxRealistic, base[FAST_REFCOUNT_OFFSET]);
       ifThen(as, CC_NBE, [&] { as.ud2(); });
   });
@@ -256,7 +247,8 @@ void emitLea(Asm& as, MemoryRef mr, PhysReg dst) {
 }
 
 void emitLdObjClass(Asm& as, PhysReg objReg, PhysReg dstReg) {
-  as.   loadq (objReg[ObjectData::getVMClassOffset()], dstReg);
+  emitLdLowPtr(as, objReg[ObjectData::getVMClassOffset()],
+               dstReg, sizeof(LowClassPtr));
 }
 
 void emitLdClsCctx(Asm& as, PhysReg srcReg, PhysReg dstReg) {
@@ -268,23 +260,51 @@ void emitCall(Asm& a, TCA dest) {
   if (a.jmpDeltaFits(dest) && !Stats::enabled()) {
     a.    call(dest);
   } else {
-    a.    call(mcg->getNativeTrampoline(dest));
+    dest = mcg->getNativeTrampoline(dest);
+    if (a.jmpDeltaFits(dest)) {
+      a.call(dest);
+    } else {
+      // can't do a near call; store address in data section.
+      // call by loading the address using rip-relative addressing.  This
+      // assumes the data section is near the current code section.  Since
+      // this sequence is directly in-line, rip-relative like this is
+      // more compact than loading a 64-bit immediate.
+      TCA* addr = mcg->allocData<TCA>(sizeof(TCA), 1);
+      *addr = dest;
+      a.call(rip[(intptr_t)addr]);
+      assert(((int32_t*)a.frontier())[-1] + a.frontier() == (TCA)addr);
+    }
   }
 }
 
 void emitCall(Asm& a, CppCall call) {
-  if (call.isDirect()) {
-    return emitCall(a, (TCA)call.getAddress());
-  } else if (call.isVirtual()) {
+  switch (call.kind()) {
+  case CppCall::Kind::Direct:
+    return emitCall(a, static_cast<TCA>(call.address()));
+  case CppCall::Kind::Virtual:
     // Virtual call.
     // Load method's address from proper offset off of object in rdi,
     // using rax as scratch.
-    a.  loadq  (*rdi, rax);
-    a.  call   (rax[call.getOffset()]);
-  } else {
-    assert(call.isIndirect());
-    a.  call   (call.getReg());
+    a.  loadq   (*rdi, rax);
+    a.  call    (rax[call.vtableOffset()]);
+    return;
+  case CppCall::Kind::Indirect:
+    a.  call    (call.reg());
+    return;
+  case CppCall::Kind::ArrayVirt:
+    {
+      auto const addr = reinterpret_cast<intptr_t>(call.arrayTable());
+      always_assert_flog(
+        deltaFits(addr, sz::dword),
+        "Array data vtables are expected to be in the data "
+        "segment, with addresses less than 2^31"
+      );
+      a.    loadzbl (rdi[ArrayData::offsetofKind()], eax);
+      a.    call    (baseless(rax*8 + addr));
+    }
+    return;
   }
+  not_reached();
 }
 
 void emitJmpOrJcc(Asm& a, ConditionCode cc, TCA dest) {
@@ -311,22 +331,14 @@ void emitRB(X64Assembler& a,
 }
 
 void emitTraceCall(CodeBlock& cb, int64_t pcOff) {
-  switch (arch()) {
-    case Arch::X64: {
-      Asm a { cb };
-      // call to a trace function
-      a.    movq   (a.frontier(), rcx);
-      a.    movq   (rVmFp, rdi);
-      a.    movq   (rVmSp, rsi);
-      a.    movq   (pcOff, rdx);
-      // do the call; may use a trampoline
-      emitCall(a, reinterpret_cast<TCA>(traceCallback));
-      break;
-    }
-    case Arch::ARM:
-      // TODO(2967396) implement properly, move function
-      break;
-  }
+  Asm a { cb };
+  // call to a trace function
+  a.    movq   (a.frontier(), rcx);
+  a.    movq   (rVmFp, rdi);
+  a.    movq   (rVmSp, rsi);
+  a.    movq   (pcOff, rdx);
+  // do the call; may use a trampoline
+  emitCall(a, reinterpret_cast<TCA>(traceCallback));
 }
 
 void emitTestSurpriseFlags(Asm& a) {
@@ -336,7 +348,6 @@ void emitTestSurpriseFlags(Asm& a) {
 }
 
 void emitCheckSurpriseFlagsEnter(CodeBlock& mainCode, CodeBlock& stubsCode,
-                                 bool inTracelet, FixupMap& fixupMap,
                                  Fixup fixup) {
   Asm a { mainCode };
   Asm astubs { stubsCode };
@@ -346,16 +357,36 @@ void emitCheckSurpriseFlagsEnter(CodeBlock& mainCode, CodeBlock& stubsCode,
 
   astubs.  movq  (rVmFp, argNumToRegName[0]);
   emitCall(astubs, tx->uniqueStubs.functionEnterHelper);
-  if (inTracelet) {
-    fixupMap.recordSyncPoint(stubsCode.frontier(),
-                             fixup.m_pcOffset, fixup.m_spOffset);
-  } else {
-    // If we're being called while generating a func prologue, we
-    // have to record the fixup directly in the fixup map instead of
-    // going through the pending fixup path like normal.
-    fixupMap.recordFixup(stubsCode.frontier(), fixup);
-  }
+  mcg->recordSyncPoint(stubsCode.frontier(),
+                       fixup.m_pcOffset, fixup.m_spOffset);
   astubs.  jmp   (mainCode.frontier());
+}
+
+template<class Mem>
+void emitCmpClass(Asm& as, Reg64 reg, Mem mem) {
+  auto size = sizeof(LowClassPtr);
+
+  if (size == 8) {
+    as.   cmpq    (reg, mem);
+  } else if (size == 4) {
+    as.   cmpl    (r32(reg), mem);
+  } else {
+    not_implemented();
+  }
+}
+
+template void emitCmpClass<MemoryRef>(Asm& as, Reg64 reg, MemoryRef mem);
+
+void emitCmpClass(Asm& as, Reg64 reg1, PhysReg reg2) {
+  auto size = sizeof(LowClassPtr);
+
+  if (size == 8) {
+    as.   cmpq    (reg1, reg2);
+  } else if (size == 4) {
+    as.   cmpl    (r32(reg1), r32(reg2));
+  } else {
+    not_implemented();
+  }
 }
 
 void shuffle2(Asm& as, PhysReg s0, PhysReg s1, PhysReg d0, PhysReg d1) {

@@ -107,43 +107,24 @@ int string_natural_cmp(char const *a, size_t a_len,
                        char const *b, size_t b_len, int fold_case);
 
 /**
- * Changing string's cases. Return's length is always the same as "len".
+ * Changing string's cases in place. Return's length is always the same
+ * as "len".
  */
-char *string_to_case(const char *s, int len, int (*tocase)(int));
-char *string_to_case_first(const char *s, int len, int (*tocase)(int));
-char *string_to_case_words(const char *s, int len, int (*tocase)(int));
+void string_to_case(String& s, int (*tocase)(int));
 
 // Use lambdas wrapping the ctype.h functions because of linker weirdness on
 // OS X Mavericks.
 
-#define string_to_upper(s,len)        \
-  string_to_case((s), (len), [] (int i) -> int { return toupper(i); })
-#define string_to_upper_first(s, len) \
-  string_to_case_first((s), (len), [] (int i) -> int { return toupper(i); })
-#define string_to_upper_words(s, len) \
-  string_to_case_words((s), (len), [] (int i) -> int { return toupper(i); })
-
-#define string_to_lower(s,len)        \
-  string_to_case((s), (len), [] (int i) -> int { return tolower(i); })
-#define string_to_lower_first(s, len) \
-  string_to_case_first((s), (len), [] (int i) -> int { return tolower(i); })
-#define string_to_lower_words(s, len) \
-  string_to_case_words((s), (len), [] (int i) -> int { return tolower(i); })
+#define string_to_upper(s)        \
+  string_to_case((s), [] (int i) -> int { return toupper(i); })
 
 /**
  * Pad a string with pad_string to pad_length. "len" is
  * input string's length, and in return, it's trimmed string's length. pad_type
  * can be k_STR_PAD_RIGHT, k_STR_PAD_LEFT or k_STR_PAD_BOTH.
  */
-char *string_pad(const char *input, int &len, int pad_length,
+String string_pad(const char *input, int len, int pad_length,
                  const char *pad_string, int pad_str_len, int pad_type);
-
-/**
- * Get a substring of input from "start" position with specified length.
- * "start" and "length" can be negative and refer to PHP's doc for meanings.
- */
-char *string_substr(const char *s, int &len, int start, int length,
-                    bool nullable);
 
 /**
  * Find a character or substring and return it's position (or -1 if not found).
@@ -210,42 +191,27 @@ inline String string_replace(const String& str, const String& search,
 /**
  * Reverse, repeat or shuffle a string.
  */
-char *string_reverse(const char *s, int len);
-char *string_repeat(const char *s, int &len, int count);
-char *string_shuffle(const char *str, int len);
-char *string_chunk_split(const char *src, int &srclen, const char *end,
-                         int endlen, int chunklen);
+String string_chunk_split(const char *src, int srclen, const char *end,
+                          int endlen, int chunklen);
 
 /**
  * Strip HTML and PHP tags.
  */
-char *string_strip_tags(const char *s, int &len, const char *allow,
-                        int allow_len, bool allow_tag_spaces);
-
-/**
- * Wrap text on word breaks.
- */
-char *string_wordwrap(const char *text, int &textlen, int linelength,
-                      const char *breakchar, int breakcharlen, bool docut);
+String string_strip_tags(const char *s, int len, const char *allow,
+                         int allow_len, bool allow_tag_spaces);
 
 /**
  * Encoding/decoding strings according to certain formats.
  */
-char *string_addcslashes(const char *str, int &length, const char *what,
-                         int wlength);
-char *string_stripcslashes(const char *input, int &nlen);
-char *string_addslashes(const char *str, int &length);
-char *string_stripslashes(const char *input, int &l);
-char *string_quotemeta(const char *input, int &len);
-char *string_quoted_printable_encode(const char *input, int &len);
-char *string_quoted_printable_decode(const char *input, int &len, bool is_q);
-char *string_uuencode(const char *src, int src_len, int &dest_len);
-char *string_uudecode(const char *src, int src_len, int &dest_len);
-char *string_base64_encode(const char *input, int &len);
-char *string_base64_decode(const char *input, int &len, bool strict);
-char *string_escape_shell_arg(const char *str);
-char *string_escape_shell_cmd(const char *str);
-std::string string_cplus_escape(const char *s, int len);
+String string_addslashes(const char *str, int length);
+String string_quoted_printable_encode(const char *input, int len);
+String string_quoted_printable_decode(const char *input, int len, bool is_q);
+String string_uuencode(const char *src, int src_len);
+String string_uudecode(const char *src, int src_len);
+String string_base64_encode(const char *input, int len);
+String string_base64_decode(const char *input, int len, bool strict);
+String string_escape_shell_arg(const char *str);
+String string_escape_shell_cmd(const char *str);
 
 /**
  * Convert between strings and numbers.
@@ -253,10 +219,9 @@ std::string string_cplus_escape(const char *s, int len);
 inline bool string_validate_base(int base) {
   return (2 <= base && base <= 36);
 }
-char *string_hex2bin(const char *input, int &len);
 Variant string_base_to_numeric(const char *s, int len, int base);
-char *string_long_to_base(unsigned long value, int base);
-char *string_numeric_to_base(const Variant& value, int base);
+String string_long_to_base(unsigned long value, int base);
+String string_numeric_to_base(const Variant& value, int base);
 
 /**
  * Translates characters in str_from into characters in str_to one by one,
@@ -268,10 +233,11 @@ void string_translate(char *str, int len, const char *str_from,
 /**
  * Formatting.
  */
-char *string_money_format(const char *format, double value);
+String string_money_format(const char *format, double value);
 
-char *string_number_format(double d, int dec, char dec_point,
-                           char thousand_sep);
+String string_number_format(double d, int dec,
+                            const String& dec_point,
+                            const String& thousand_sep);
 
 /**
  * Similarity and other properties of strings.
@@ -280,16 +246,15 @@ int string_levenshtein(const char *s1, int l1, const char *s2, int l2,
                        int cost_ins, int cost_rep, int cost_del);
 int string_similar_text(const char *t1, int len1,
                         const char *t2, int len2, float *percent);
-char *string_soundex(const char *str);
+String string_soundex(const String& str);
 
-char *string_metaphone(const char *input, int word_len, long max_phonemes,
-                       int traditional);
+String string_metaphone(const char *input, int word_len, long max_phonemes,
+                        int traditional);
 
 /**
  * Locale strings.
  */
-char *string_convert_cyrillic_string(const char *input, int length,
-                                     char from, char to);
+String string_convert_cyrillic_string(const String& input, char from, char to);
 String string_convert_hebrew_string(const String& str, int max_chars_per_line,
                                     int convert_newlines);
 

@@ -50,15 +50,15 @@ using namespace HPHP;
 
 FunctionScope::FunctionScope(AnalysisResultConstPtr ar, bool method,
                              const std::string &name, StatementPtr stmt,
-                             bool reference, int minParam, int maxParam,
+                             bool reference, int minParam, int numDeclParam,
                              ModifierExpressionPtr modifiers,
                              int attribute, const std::string &docComment,
                              FileScopePtr file,
                              const std::vector<UserAttributePtr> &attrs,
                              bool inPseudoMain /* = false */)
     : BlockScope(name, docComment, stmt, BlockScope::FunctionScope),
-      m_minParam(minParam), m_maxParam(maxParam), m_attribute(attribute),
-      m_modifiers(modifiers), m_hasVoid(false),
+      m_minParam(minParam), m_numDeclParams(numDeclParam),
+      m_attribute(attribute), m_modifiers(modifiers), m_hasVoid(false),
       m_method(method), m_refReturn(reference), m_virtual(false),
       m_hasOverride(false), m_perfectVirtual(false), m_overriding(false),
       m_volatile(false), m_persistent(false), m_pseudoMain(inPseudoMain),
@@ -71,8 +71,7 @@ FunctionScope::FunctionScope(AnalysisResultConstPtr ar, bool method,
       m_async(false),
       m_noLSB(false), m_nextLSB(false),
       m_hasTry(false), m_hasGoto(false), m_localRedeclaring(false),
-      m_redeclaring(-1), m_inlineIndex(0), m_optFunction(0), m_nextID(0),
-      m_yieldLabelCount(0), m_yieldLabelGen(-1) {
+      m_redeclaring(-1), m_inlineIndex(0), m_optFunction(0), m_nextID(0) {
   init(ar);
   for (unsigned i = 0; i < attrs.size(); ++i) {
     if (m_userAttributes.find(attrs[i]->getName()) != m_userAttributes.end()) {
@@ -108,7 +107,7 @@ FunctionScope::FunctionScope(FunctionScopePtr orig,
                              bool user)
     : BlockScope(name, orig->m_docComment, stmt,
                  BlockScope::FunctionScope),
-      m_minParam(orig->m_minParam), m_maxParam(orig->m_maxParam),
+      m_minParam(orig->m_minParam), m_numDeclParams(orig->m_numDeclParams),
       m_attribute(orig->m_attribute), m_modifiers(modifiers),
       m_userAttributes(orig->m_userAttributes), m_hasVoid(orig->m_hasVoid),
       m_method(orig->m_method), m_refReturn(orig->m_refReturn),
@@ -131,11 +130,10 @@ FunctionScope::FunctionScope(FunctionScopePtr orig,
       m_hasGoto(orig->m_hasGoto), m_localRedeclaring(orig->m_localRedeclaring),
       m_redeclaring(orig->m_redeclaring),
       m_inlineIndex(orig->m_inlineIndex), m_optFunction(orig->m_optFunction),
-      m_nextID(0), m_yieldLabelCount(orig->m_yieldLabelCount),
-      m_yieldLabelGen(orig->m_yieldLabelGen) {
+      m_nextID(0) {
   init(ar);
   m_originalName = originalName;
-  setParamCounts(ar, m_minParam, m_maxParam);
+  setParamCounts(ar, m_minParam, m_numDeclParams);
 }
 
 void FunctionScope::init(AnalysisResultConstPtr ar) {
@@ -216,7 +214,7 @@ void FunctionScope::init(AnalysisResultConstPtr ar) {
 FunctionScope::FunctionScope(bool method, const std::string &name,
                              bool reference)
     : BlockScope(name, "", StatementPtr(), BlockScope::FunctionScope),
-      m_minParam(0), m_maxParam(0), m_attribute(0),
+      m_minParam(0), m_numDeclParams(0), m_attribute(0),
       m_modifiers(ModifierExpressionPtr()), m_hasVoid(false),
       m_method(method), m_refReturn(reference), m_virtual(false),
       m_hasOverride(false), m_perfectVirtual(false), m_overriding(false),
@@ -247,43 +245,45 @@ void FunctionScope::setDynamicInvoke() {
 }
 
 void FunctionScope::setParamCounts(AnalysisResultConstPtr ar, int minParam,
-                                   int maxParam) {
+                                   int numDeclParam) {
   if (minParam >= 0) {
     m_minParam = minParam;
-    m_maxParam = maxParam;
+    m_numDeclParams = numDeclParam;
   } else {
-    assert(maxParam == minParam);
+    assert(numDeclParam == minParam);
   }
-  assert(m_minParam >= 0 && m_maxParam >= m_minParam);
-  if (m_maxParam > 0) {
-    m_paramNames.resize(m_maxParam);
-    m_paramTypes.resize(m_maxParam);
-    m_paramTypeSpecs.resize(m_maxParam);
-    m_paramDefaults.resize(m_maxParam);
-    m_paramDefaultTexts.resize(m_maxParam);
-    m_refs.resize(m_maxParam);
+  assert(m_minParam >= 0 && m_numDeclParams >= m_minParam);
+  assert(IMPLIES(hasVariadicParam(), m_numDeclParams > 0));
+  if (m_numDeclParams > 0) {
+    m_paramNames.resize(m_numDeclParams);
+    m_paramTypes.resize(m_numDeclParams);
+    m_paramTypeSpecs.resize(m_numDeclParams);
+    m_paramDefaults.resize(m_numDeclParams);
+    m_paramDefaultTexts.resize(m_numDeclParams);
+    m_refs.resize(m_numDeclParams);
 
     if (m_stmt) {
       MethodStatementPtr stmt = dynamic_pointer_cast<MethodStatement>(m_stmt);
       ExpressionListPtr params = stmt->getParams();
 
-      for (int i = 0; i < m_maxParam; i++) {
+      for (int i = 0; i < m_numDeclParams; i++) {
         if (stmt->isRef(i)) m_refs[i] = true;
 
         ParameterExpressionPtr param =
           dynamic_pointer_cast<ParameterExpression>((*params)[i]);
         m_paramNames[i] = param->getName();
       }
+      assert(m_paramNames.size() == m_numDeclParams);
     }
   }
 }
 
 void FunctionScope::setParamSpecs(AnalysisResultPtr ar) {
-  if (m_maxParam > 0 && m_stmt) {
+  if (m_numDeclParams > 0 && m_stmt) {
     MethodStatementPtr stmt = dynamic_pointer_cast<MethodStatement>(m_stmt);
     ExpressionListPtr params = stmt->getParams();
 
-    for (int i = 0; i < m_maxParam; i++) {
+    for (int i = 0; i < m_numDeclParams; i++) {
       ParameterExpressionPtr param =
         dynamic_pointer_cast<ParameterExpression>((*params)[i]);
       TypePtr specType = param->getTypeSpec(ar, false);
@@ -304,9 +304,9 @@ bool FunctionScope::hasUserAttr(const char *attr) const {
   return m_userAttributes.find(attr) != m_userAttributes.end();
 }
 
-bool FunctionScope::isZendParamMode() const {
+bool FunctionScope::isParamCoerceMode() const {
   return m_attributeClassInfo &
-    (ClassInfo::ZendParamModeNull | ClassInfo::ZendParamModeFalse);
+    (ClassInfo::ParamCoerceModeNull | ClassInfo::ParamCoerceModeFalse);
 }
 
 bool FunctionScope::isPublic() const {
@@ -337,7 +337,15 @@ bool FunctionScope::isFinal() const {
   return m_modifiers && m_modifiers->isFinal();
 }
 
-bool FunctionScope::isVariableArgument() const {
+bool FunctionScope::hasVariadicParam() const {
+  return (m_attribute & FileScope::VariadicArgumentParam);
+}
+
+bool FunctionScope::allowsVariableArguments() const {
+  return hasVariadicParam() || usesVariableArgumentFunc();
+}
+
+bool FunctionScope::usesVariableArgumentFunc() const {
   bool res = (m_attribute & FileScope::VariableArgument) && !m_overriding;
   return res;
 }
@@ -349,9 +357,9 @@ bool FunctionScope::allowOverride() const {
 bool FunctionScope::isReferenceVariableArgument() const {
   bool res = (m_attribute & FileScope::ReferenceVariableArgument) &&
              !m_overriding;
-  // If this method returns true, then isVariableArgument() must also
+  // If this method returns true, then usesVariableArgumentFunc() must also
   // return true.
-  assert(!res || isVariableArgument());
+  assert(!res || usesVariableArgumentFunc());
   return res;
 }
 
@@ -380,26 +388,6 @@ bool FunctionScope::mayContainThis() {
 
 bool FunctionScope::isClosure() const {
   return ParserBase::IsClosureName(name());
-}
-
-int FunctionScope::allocYieldLabel() {
-  assert(m_yieldLabelGen >= 0);
-  return ++m_yieldLabelCount;
-}
-
-int FunctionScope::getYieldLabelCount() const {
-  assert(m_yieldLabelGen >= 0);
-  return m_yieldLabelCount;
-}
-
-int FunctionScope::getYieldLabelGeneration() const {
-  assert(m_yieldLabelGen >= 0);
-  return m_yieldLabelGen;
-}
-
-void FunctionScope::resetYieldLabelCount() {
-  ++m_yieldLabelGen;
-  m_yieldLabelCount = 0;
 }
 
 void FunctionScope::setVariableArgument(int reference) {
@@ -561,15 +549,15 @@ void FunctionScope::addNewObjCaller(BlockScopePtr caller) {
 
 bool FunctionScope::mayUseVV() const {
   VariableTableConstPtr variables = getVariables();
-  return (inPseudoMain() ||
-          isVariableArgument() ||
-          isGenerator() ||
-          isAsync() ||
-          variables->getAttribute(VariableTable::ContainsDynamicVariable) ||
-          variables->getAttribute(VariableTable::ContainsExtract) ||
-          variables->getAttribute(VariableTable::ContainsCompact) ||
-          variables->getAttribute(VariableTable::ContainsGetDefinedVars) ||
-          variables->getAttribute(VariableTable::ContainsDynamicFunctionCall));
+  return
+    (inPseudoMain() ||
+     usesVariableArgumentFunc() ||
+     variables->getAttribute(VariableTable::ContainsDynamicVariable) ||
+     variables->getAttribute(VariableTable::ContainsExtract) ||
+     variables->getAttribute(VariableTable::ContainsCompact) ||
+     variables->getAttribute(VariableTable::ContainsGetDefinedVars) ||
+     (!Option::EnableHipHopSyntax &&
+      variables->getAttribute(VariableTable::ContainsDynamicFunctionCall)));
 }
 
 bool FunctionScope::matchParams(FunctionScopePtr func) {
@@ -578,17 +566,18 @@ bool FunctionScope::matchParams(FunctionScopePtr func) {
   if (isStatic() || func->isStatic()) return false;
 
   // conservative here, as we could normalize them into same counts.
-  if (m_minParam != func->m_minParam || m_maxParam != func->m_maxParam) {
+  if (m_minParam != func->m_minParam || m_numDeclParams != func->m_numDeclParams) {
     return false;
   }
-  if (isVariableArgument() != func->isVariableArgument() ||
+  if (hasVariadicParam() != func->hasVariadicParam() ||
+      usesVariableArgumentFunc() != func->usesVariableArgumentFunc() ||
       isReferenceVariableArgument() != func->isReferenceVariableArgument() ||
       isMixedVariableArgument() != func->isMixedVariableArgument()) {
     return false;
   }
 
   // needs perfect match for ref, hint and defaults
-  for (int i = 0; i < m_maxParam; i++) {
+  for (int i = 0; i < m_numDeclParams; i++) {
     if (m_refs[i] != func->m_refs[i]) return false;
 
     TypePtr type1 = m_paramTypeSpecs[i];
@@ -645,9 +634,9 @@ int FunctionScope::inferParamTypes(AnalysisResultPtr ar, ConstructPtr exp,
     valid = false;
     if (!Option::AllDynamic) setDynamic();
   }
-  if (params->getCount() > m_maxParam) {
-    if (isVariableArgument()) {
-      ret = params->getCount() - m_maxParam;
+  if (params->getCount() > getDeclParamCount()) {
+    if (allowsVariableArguments()) {
+      ret = params->getCount() - getMaxParamCount();
     } else {
       if (exp->getScope()->isFirstPass()) {
         Compiler::Error(Compiler::TooManyArgument, exp, m_stmt);
@@ -658,9 +647,11 @@ int FunctionScope::inferParamTypes(AnalysisResultPtr ar, ConstructPtr exp,
   }
 
   bool canSetParamType = isUserFunction() && !m_overriding && !m_perfectVirtual;
+  auto const numNonVariadicParams = getMaxParamCount();
   for (int i = 0; i < params->getCount(); i++) {
     ExpressionPtr param = (*params)[i];
-    if (i < m_maxParam && param->hasContext(Expression::RefParameter)) {
+    if (i < numNonVariadicParams &&
+        param->hasContext(Expression::RefParameter)) {
       /**
        * This should be very un-likely, since call time pass by ref is a
        * deprecated, not very widely used (at least in FB codebase) feature.
@@ -675,8 +666,9 @@ int FunctionScope::inferParamTypes(AnalysisResultPtr ar, ConstructPtr exp,
       param->clearContext(Expression::RefValue);
       param->clearContext(Expression::NoRefWrapper);
     }
-    bool isRefVararg = (i >= m_maxParam && isReferenceVariableArgument());
-    if ((i < m_maxParam && isRefParam(i)) || isRefVararg) {
+    bool isRefVararg =
+      (i >= numNonVariadicParams && isReferenceVariableArgument());
+    if ((i < numNonVariadicParams && isRefParam(i)) || isRefVararg) {
       param->setContext(Expression::LValue);
       param->setContext(Expression::RefValue);
       param->inferAndCheck(ar, Type::Variant, true);
@@ -690,10 +682,10 @@ int FunctionScope::inferParamTypes(AnalysisResultPtr ar, ConstructPtr exp,
     /**
      * Duplicate the logic of getParamType(i), w/o the mutation
      */
-    TypePtr paramType(i < m_maxParam && !isZendParamMode() ?
+    TypePtr paramType(i < numNonVariadicParams && !isParamCoerceMode() ?
                       m_paramTypes[i] : TypePtr());
     if (!paramType) paramType = Type::Some;
-    if (valid && !canSetParamType && i < m_maxParam &&
+    if (valid && !canSetParamType && i < numNonVariadicParams &&
         (!Option::HardTypeHints || !m_paramTypeSpecs[i])) {
       /**
        * What is this magic, you might ask?
@@ -709,7 +701,7 @@ int FunctionScope::inferParamTypes(AnalysisResultPtr ar, ConstructPtr exp,
     } else {
       expType = param->inferAndCheck(ar, Type::Some, false);
     }
-    if (i < m_maxParam) {
+    if (i < numNonVariadicParams) {
       if (!Option::HardTypeHints || !m_paramTypeSpecs[i]) {
         if (canSetParamType) {
           if (!Type::SameType(paramType, expType) &&
@@ -1008,8 +1000,8 @@ void FunctionScope::serialize(JSON::CodeError::OutputStream &out) const {
     ms.add("retTp", m_returnType->getKindOf());
   }
   ms.add("minArgs", m_minParam)
-    .add("maxArgs", m_maxParam)
-    .add("varArgs", isVariableArgument())
+    .add("maxArgs", m_numDeclParams)
+    .add("varArgs", allowsVariableArguments())
     .add("static", isStatic())
     .add("modifier", mod)
     .add("visibility", vis)
@@ -1037,7 +1029,8 @@ void FunctionScope::serialize(JSON::DocTarget::OutputStream &out) const {
   ms.add("return",    getReturnType());
 
   vector<SymParamWrapper> paramSymbols;
-  for (int i = 0; i < m_maxParam; i++) {
+  auto const limit = getDeclParamCount();
+  for (int i = 0; i < limit; i++) {
     const string &name = getParamName(i);
     const Symbol *sym = getVariables()->getSymbol(name);
     assert(sym && sym->isParameter());
@@ -1121,7 +1114,8 @@ void FunctionScope::RecordFunctionInfo(string fname, FunctionScopePtr func) {
       if (func->isRefParam(i)) info->setRefParam(i);
     }
   }
-  for (int i = 0; i < func->getMaxParamCount(); i++) {
+  auto limit = func->getDeclParamCount();
+  for (int i = 0; i < limit; i++) {
     variables->addParam(func->getParamName(i),
                         TypePtr(), AnalysisResultPtr(), ConstructPtr());
   }

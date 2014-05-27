@@ -699,6 +699,7 @@ static int getOpForAssignmentOp(int op) {
   case T_XOR_EQUAL: return '^';
   case T_SL_EQUAL: return T_SL;
   case T_SR_EQUAL: return T_SR;
+  case T_POW_EQUAL: return T_POW;
   default: return 0;
   }
 }
@@ -1256,6 +1257,7 @@ ExpressionPtr AliasManager::canonicalizeNode(
                     break;
                   case T_MINUS_EQUAL:
                   case T_MUL_EQUAL:
+                  case T_POW_EQUAL:
                   case T_DIV_EQUAL:
                   case T_CONCAT_EQUAL:
                   case T_MOD_EQUAL:
@@ -2487,7 +2489,7 @@ void AliasManager::gatherInfo(AnalysisResultConstPtr ar, MethodStatementPtr m) {
 
   if (m_inlineAsExpr) {
     if (cost > Option::AutoInline ||
-        func->isVariableArgument() ||
+        func->allowsVariableArguments() ||
         m_variables->getAttribute(VariableTable::ContainsDynamicVariable) ||
         m_variables->getAttribute(VariableTable::ContainsExtract) ||
         m_variables->getAttribute(VariableTable::ContainsCompact) ||
@@ -2781,12 +2783,16 @@ private:
               }
             }
           } else if (p->getName() == "is_a" &&
-                     (ep->getCount() >= 2 && isAllScalar(ep, 1))) {
-            // special case is_a
-            bool passStmt;
-            bool negate;
-            createTypeAssertionsForKids(from, 2, passStmt, negate);
-            return newInstanceOfAssertion((*ep)[0], (*ep)[1]);
+                     ep->getCount() >= 2 && isAllScalar(ep, 1)) {
+            Variant v;
+            if (ep->getCount() == 2 ||
+                ((*ep)[2]->getScalarValue(v) && !v.toBoolean())) {
+              // special case is_a
+              bool passStmt;
+              bool negate;
+              createTypeAssertionsForKids(from, 2, passStmt, negate);
+              return newInstanceOfAssertion((*ep)[0], (*ep)[1]);
+            }
           }
           startIdx = 2; // params
         }
@@ -3172,7 +3178,7 @@ void TypeAssertionInserter::BuildAssertionMap() {
     s_type_assertion_map["in_array"]   = PosType(1, Type::Array);
 
     // even though the PHP docs say that in PHP 5.3, this function
-    // only accepts an array for the search, Zend PHP 5.3 still
+    // only accepts an array for the search, PHP 5.3 still
     // accepts objects. Quite a bummer.
     s_type_assertion_map["array_key_exists"] =
       PosType(1,

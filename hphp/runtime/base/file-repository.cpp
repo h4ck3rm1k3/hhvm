@@ -31,7 +31,7 @@
 #include "hphp/runtime/base/zend-string.h"
 #include "hphp/util/process.h"
 #include "hphp/util/trace.h"
-#include "hphp/util/file-util.h"
+#include "hphp/runtime/base/file-util.h"
 #include "hphp/runtime/base/stat-cache.h"
 #include "hphp/runtime/base/stream-wrapper-registry.h"
 #include "hphp/runtime/base/file-stream-wrapper.h"
@@ -196,6 +196,7 @@ PhpFile *FileRepository::checkoutFile(StringData *rname,
       );
     }
     Stream::Wrapper* w = Stream::getWrapperFromURI(name);
+    if (!w) return nullptr;
     File* f = w->open(name, "r", 0, null_variant);
     if (!f) return nullptr;
     StringBuffer sb;
@@ -332,7 +333,8 @@ std::string FileRepository::unitMd5(const std::string& fileMd5) {
     + (RuntimeOption::EnableHipHopSyntax ? '1' : '0')
     + (RuntimeOption::EnableXHP ? '1' : '0')
     + (RuntimeOption::EvalAllowHhas ? '1' : '0')
-    + (RuntimeOption::EvalJitEnableRenameFunction ? '1' : '0');
+    + (RuntimeOption::EvalJitEnableRenameFunction ? '1' : '0')
+    + (RuntimeOption::IntsOverflowToInts ? '1' : '0');
   return string_md5(t.c_str(), t.size());
 }
 
@@ -522,7 +524,7 @@ static bool findFileWrapper(const String& file, void* ctx) {
   assert(context->path.isNull());
 
   Stream::Wrapper* w = Stream::getWrapperFromURI(file);
-  if (!dynamic_cast<FileStreamWrapper*>(w)) {
+  if (w && !dynamic_cast<FileStreamWrapper*>(w)) {
     if (w->stat(file, context->s) == 0) {
       context->path = file;
       return true;
@@ -533,6 +535,8 @@ static bool findFileWrapper(const String& file, void* ctx) {
   if (file.substr(0, 7) == s_file_url) {
     return findFileWrapper(file.substr(7), ctx);
   }
+
+  if (!w) return false;
 
   // TranslatePath() will canonicalize the path and also check
   // whether the file is in an allowed directory.

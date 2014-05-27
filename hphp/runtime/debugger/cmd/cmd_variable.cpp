@@ -19,7 +19,7 @@
 #include "hphp/runtime/vm/runtime.h"
 #include "hphp/runtime/debugger/cmd/cmd_where.h"
 #include "hphp/runtime/ext/ext_asio.h"
-#include "hphp/runtime/ext/ext_continuation.h"
+#include "hphp/runtime/ext/ext_generator.h"
 #include "hphp/runtime/ext/asio/async_function_wait_handle.h"
 #include "hphp/runtime/ext/asio/waitable_wait_handle.h"
 
@@ -131,7 +131,7 @@ void CmdVariable::PrintVariable(DebuggerClient &client, const String& varName) {
   }
 }
 
-const StaticString s_http_response_header("http_response_header");
+const StaticString s_HTTP_RAW_POST_DATA("HTTP_RAW_POST_DATA");
 const StaticString s_omitted("...(omitted)");
 
 
@@ -196,8 +196,8 @@ void CmdVariable::PrintVariables(DebuggerClient &client, const Array& variables,
         client.output("$%s = %s", name.data(), value.data());
       }
 
-      // we know s_http_response_header is the last system global
-      if (global && name == s_http_response_header) {
+      // we know s_HTTP_RAW_POST_DATA is the last system global
+      if (global && name == s_HTTP_RAW_POST_DATA) {
         client.output("%s", "");
         system = false;
       }
@@ -286,13 +286,13 @@ static Array getVariables(const ActRec *fp) {
   } else {
     const Func *func = fp->m_func;
     auto numLocals = func->numNamedLocals();
-    ArrayInit ret(numLocals);
+    ArrayInit ret(numLocals, ArrayInit::Map{});
     for (Id id = 0; id < numLocals; ++id) {
       TypedValue* ptv = frame_local(fp, id);
       if (ptv->m_type == KindOfUninit) {
         continue;
       }
-      Variant name(func->localVarName(id));
+      Variant name(func->localVarName(id), Variant::StaticStrInit{});
       ret.add(name, tvAsVariant(ptv));
     }
     return ret.toArray();
@@ -305,7 +305,7 @@ bool CmdVariable::onServer(DebuggerProxy &proxy) {
     auto frame = getWaitHandleAtAsyncStackPosition(m_frame);
 
     if (frame != nullptr) {
-      auto fp = frame->getActRec();
+      auto fp = frame->actRec();
       if (fp != nullptr) {
         m_variables = getVariables(fp);
       }
@@ -324,7 +324,7 @@ bool CmdVariable::onServer(DebuggerProxy &proxy) {
   }
   if (m_version == 1) {
     // Remove the values before sending to client.
-    ArrayInit ret(m_variables->size());
+    ArrayInit ret(m_variables->size(), ArrayInit::Map{});
     Variant v;
     for (ArrayIter iter(m_variables); iter; ++iter) {
       ret.add(iter.first().toString(), v);
@@ -334,13 +334,13 @@ bool CmdVariable::onServer(DebuggerProxy &proxy) {
   } else if (m_version == 2) {
     // Remove entries that do not match a non empty m_varName.
     if (!m_varName.empty()) {
-      ArrayInit ret(1);
+      ArrayInit ret(1, ArrayInit::Map{});
       ret.add(m_varName, m_variables[m_varName]);
       m_variables = ret.toArray();
     }
     // Remove entries whose name or contents do not match a non empty m_filter
     if (!m_filter.empty()) {
-      ArrayInit ret(1);
+      ArrayInit ret(m_variables.size(), ArrayInit::Map{});
       for (ArrayIter iter(m_variables); iter; ++iter) {
         String name = iter.first().toString();
         if (name.find(m_filter, 0, false) < 0) {

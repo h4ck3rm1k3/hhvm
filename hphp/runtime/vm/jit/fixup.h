@@ -48,8 +48,8 @@ namespace JIT {
  *
  *     The Fixup record just stores an offset relative to the ActRec*
  *     for vpsp, and an offset from the start of the func for pc.  In
- *     the case of generator frames the sp offset is relative to
- *     Stack::generatorStackBase.
+ *     the case of resumable frames the sp offset is relative to
+ *     Stack::resumableStackBase.
  *
  *   - IndirectFixup: this is used for some shared stubs in the TC.
  *
@@ -126,14 +126,6 @@ struct IndirectFixup {
   int32_t returnIpDisp;
 };
 
-struct PendingFixup {
-  TCA m_tca;
-  Fixup m_fixup;
-  PendingFixup() { }
-  PendingFixup(TCA tca, Fixup fixup) :
-    m_tca(tca), m_fixup(fixup) { }
-};
-
 class FixupMap {
   static const uint kInitCapac = 128;
   TRACE_SET_MOD(fixup);
@@ -156,14 +148,10 @@ public:
   bool getFrameRegs(const ActRec* ar, const ActRec* prevAr,
                     VMRegs* outVMRegs) const;
 
-  void recordSyncPoint(CodeAddress frontier, Offset pcOff, Offset spOff);
   void recordIndirectFixup(CodeAddress frontier, int dwordsPushed);
   void fixup(ExecutionContext* ec) const;
   void fixupWork(ExecutionContext* ec, ActRec* rbp) const;
   void fixupWorkSimulated(ExecutionContext* ec) const;
-  void processPendingFixups();
-  void clearPendingFixups() { m_pendingFixups.clear(); }
-  bool pendingFixupsEmpty() const { return m_pendingFixups.empty(); }
 
   static bool eagerRecord(const Func* func);
 
@@ -200,9 +188,9 @@ private:
     outRegs->m_pc = reinterpret_cast<const Op*>(pc(ar, f, fixup));
     outRegs->m_fp = ar;
 
-    if (UNLIKELY(ar->inGenerator())) {
-      TypedValue* genStackBase = Stack::generatorStackBase(ar);
-      outRegs->m_sp = genStackBase - fixup.m_spOffset;
+    if (UNLIKELY(ar->resumed())) {
+      TypedValue* stackBase = Stack::resumableStackBase(ar);
+      outRegs->m_sp = stackBase - fixup.m_spOffset;
     } else {
       outRegs->m_sp = (TypedValue*)ar - fixup.m_spOffset;
     }
@@ -210,8 +198,6 @@ private:
 
 private:
   TreadHashMap<CTCA,FixupEntry,ctca_identity_hash> m_fixups;
-
-  std::vector<PendingFixup> m_pendingFixups;
 };
 
 }}

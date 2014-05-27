@@ -20,7 +20,7 @@
 #include <string>
 
 #include "hphp/util/trace.h"
-#include "hphp/runtime/vm/jit/jump-smash.h"
+#include "hphp/runtime/vm/jit/back-end-x64.h"
 #include "hphp/runtime/vm/jit/mc-generator.h"
 
 namespace HPHP {
@@ -60,7 +60,7 @@ void SrcRec::chainFrom(IncomingBranch br) {
 
 void SrcRec::emitFallbackJump(CodeBlock& cb, ConditionCode cc /* = -1 */) {
   // This is a spurious platform dependency. TODO(2990497)
-  JIT::prepareForSmash(
+  mcg->backEnd().prepareForSmash(
     cb,
     cc == CC_None ? JIT::X64::kJmpLen : JIT::X64::kJmpccLen
   );
@@ -70,7 +70,7 @@ void SrcRec::emitFallbackJump(CodeBlock& cb, ConditionCode cc /* = -1 */) {
   auto incoming = cc < 0 ? IncomingBranch::jmpFrom(from)
                          : IncomingBranch::jccFrom(from);
 
-  JIT::emitSmashableJump(cb, destAddr, cc);
+  mcg->backEnd().emitSmashableJump(cb, destAddr, cc);
 
   // We'll need to know the location of this jump later so we can
   // patch it to new translations added to the chain.
@@ -85,8 +85,8 @@ void SrcRec::newTranslation(TCA newStart) {
   TRACE(1, "SrcRec(%p)::newTranslation @%p, ", this, newStart);
 
   m_translations.push_back(newStart);
-  if (!m_topTranslation) {
-    atomic_release_store(&m_topTranslation, newStart);
+  if (!m_topTranslation.load(std::memory_order_acquire)) {
+    m_topTranslation.store(newStart, std::memory_order_release);
     patchIncomingBranches(newStart);
   }
 
@@ -126,7 +126,7 @@ void SrcRec::addDebuggerGuard(TCA dbgGuard, TCA dbgBranchGuardSrc) {
   // Set m_dbgBranchGuardSrc after patching, so we don't try to patch
   // the debug guard.
   m_dbgBranchGuardSrc = dbgBranchGuardSrc;
-  atomic_release_store(&m_topTranslation, dbgGuard);
+  m_topTranslation.store(dbgGuard, std::memory_order_release);
 }
 
 void SrcRec::patchIncomingBranches(TCA newStart) {
@@ -134,7 +134,7 @@ void SrcRec::patchIncomingBranches(TCA newStart) {
     // We have a debugger guard, so all jumps to us funnel through
     // this.  Just smash m_dbgBranchGuardSrc.
     TRACE(1, "smashing m_dbgBranchGuardSrc @%p\n", m_dbgBranchGuardSrc);
-    JIT::smashJmp(m_dbgBranchGuardSrc, newStart);
+    mcg->backEnd().smashJmp(m_dbgBranchGuardSrc, newStart);
     return;
   }
 
@@ -153,7 +153,7 @@ void SrcRec::replaceOldTranslations() {
   // which is a REQ_RETRANSLATE.
   m_translations.clear();
   m_tailFallbackJumps.clear();
-  atomic_release_store(&m_topTranslation, static_cast<TCA>(0));
+  m_topTranslation.store(nullptr, std::memory_order_release);
 
   /*
    * It may seem a little weird that we're about to point every
@@ -180,18 +180,22 @@ void SrcRec::replaceOldTranslations() {
 void SrcRec::patch(IncomingBranch branch, TCA dest) {
   switch (branch.type()) {
   case IncomingBranch::Tag::JMP: {
-    JIT::smashJmp(branch.toSmash(), dest);
+    mcg->backEnd().smashJmp(branch.toSmash(), dest);
     break;
   }
 
   case IncomingBranch::Tag::JCC: {
-    JIT::smashJcc(branch.toSmash(), dest);
+    mcg->backEnd().smashJcc(branch.toSmash(), dest);
     break;
   }
 
-  case IncomingBranch::Tag::ADDR:
+  case IncomingBranch::Tag::ADDR: {
     // Note that this effectively ignores a
-    atomic_release_store(reinterpret_cast<TCA*>(branch.toSmash()), dest);
+    TCA* addr = reinterpret_cast<TCA*>(branch.toSmash());
+    assert_address_is_atomically_accessible(addr);
+    *addr = dest;
+    break;
+  }
   }
 }
 

@@ -52,7 +52,7 @@ StaticString s_rmdir("rmdir");
 
 ///////////////////////////////////////////////////////////////////////////////
 
-UserFile::UserFile(Class *cls, const Variant& context /*= null */) : UserFSNode(cls) {
+UserFile::UserFile(Class *cls, const Variant& context /*= null */) : UserFSNode(cls, context) {
   m_StreamOpen  = lookupMethod(s_stream_open.get());
   m_StreamClose = lookupMethod(s_stream_close.get());
   m_StreamRead  = lookupMethod(s_stream_read.get());
@@ -194,6 +194,28 @@ int64_t UserFile::writeImpl(const char *buffer, int64_t length) {
 
 bool UserFile::seek(int64_t offset, int whence /* = SEEK_SET */) {
   assert(seekable());
+
+  // Seek within m_buffer if we can, otherwise kill it and call user stream_seek / stream_tell
+  if (whence == SEEK_CUR &&
+      0 <= m_readpos + offset &&
+           m_readpos + offset < m_writepos) {
+    m_readpos += offset;
+    m_position += offset;
+    return true;
+  } else if (whence == SEEK_SET &&
+             0 <= offset - m_position + m_readpos &&
+                  offset - m_position + m_readpos < m_writepos) {
+    m_readpos = offset - m_position + m_readpos;
+    m_position = offset;
+    return true;
+  } else {
+    if (whence == SEEK_CUR) {
+      offset += m_readpos - m_writepos;
+    }
+    m_readpos = 0;
+    m_writepos = 0;
+  }
+
   // bool stream_seek($offset, $whence)
   bool invoked = false;
   bool sought  = invoke(
@@ -202,15 +224,8 @@ bool UserFile::seek(int64_t offset, int whence /* = SEEK_SET */) {
   if (!invoked) {
     always_assert("No seek method? But I found one earlier?");
   }
-
-  // If the userland code failed to update, do it on our buffers instead
   if (!sought) {
-    if (whence == SEEK_CUR) {
-      m_position += offset;
-    } else if (whence == SEEK_SET) {
-      m_position = offset;
-    }
-    return true;
+    return false;
   }
 
   // int stream_tell()
@@ -347,6 +362,15 @@ int UserFile::urlStat(const String& path, struct stat* stat_sb,
                   stat_sb);
 }
 
+static inline int simulateAccessResult(bool allowed) {
+  if (allowed) {
+    return 0;
+  } else {
+    errno = EACCES;
+    return -1;
+  }
+}
+
 extern const int64_t k_STREAM_URL_STAT_QUIET;
 int UserFile::access(const String& path, int mode) {
   struct stat buf;
@@ -354,7 +378,29 @@ int UserFile::access(const String& path, int mode) {
   if (ret < 0 || mode == F_OK) {
     return ret;
   }
-  return buf.st_mode & mode ? 0 : -1;
+
+  // The mode flags in stat are different from the flags used by access.
+  auto uid = geteuid();
+  auto gid = getegid();
+  switch (mode) {
+    case R_OK: // Test for read permission.
+      return simulateAccessResult(
+              (buf.st_uid == uid && (buf.st_mode & S_IRUSR)) ||
+              (buf.st_gid == gid && (buf.st_mode & S_IRGRP)) ||
+              (buf.st_mode & S_IROTH));
+    case W_OK: // Test for write permission.
+      return simulateAccessResult(
+               (buf.st_uid == uid && (buf.st_mode & S_IWUSR)) ||
+               (buf.st_gid == gid && (buf.st_mode & S_IWGRP)) ||
+               (buf.st_mode & S_IWOTH));
+    case X_OK: // Test for execute permission.
+      return simulateAccessResult(
+               (buf.st_uid == uid && (buf.st_mode & S_IXUSR)) ||
+               (buf.st_gid == gid && (buf.st_mode & S_IXGRP)) ||
+               (buf.st_mode & S_IXOTH));
+    default: // Unknown mode.
+      return -1;
+  }
 }
 
 extern const int64_t k_STREAM_URL_STAT_LINK;

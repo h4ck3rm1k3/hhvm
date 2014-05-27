@@ -20,7 +20,7 @@
 
 #include "hphp/runtime/base/container-functions.h"
 #include "hphp/runtime/ext/ext_function.h"
-#include "hphp/runtime/ext/ext_continuation.h"
+#include "hphp/runtime/ext/ext_generator.h"
 #include "hphp/runtime/ext/ext_collections.h"
 #include "hphp/runtime/base/request-local.h"
 #include "hphp/runtime/base/zend-collator.h"
@@ -28,7 +28,7 @@
 #include "hphp/runtime/base/sort-flags.h"
 #include "hphp/runtime/vm/jit/translator.h"
 #include "hphp/runtime/vm/jit/translator-inline.h"
-#include "hphp/runtime/base/hphp-array.h"
+#include "hphp/runtime/base/mixed-array.h"
 #include "hphp/runtime/base/request-event-handler.h"
 #include "hphp/util/logger.h"
 
@@ -78,6 +78,25 @@ using HPHP::JIT::EagerCallerFrame;
   ArrNR arrNR_##input(cell_##input->m_data.parr);                 \
   const Array& arr_##input = arrNR_##input.asArray();
 
+#define getCheckedArrayColumnRet(input, fail)                     \
+  auto const cell_##input = static_cast<const Variant&>(input).asCell(); \
+  if (UNLIKELY(cell_##input->m_type != KindOfArray)) {            \
+    if (cell_##input->m_type == KindOfString ||                   \
+        cell_##input->m_type == KindOfStaticString) {             \
+      throw_bad_type_exception("array_column() expects parameter" \
+                               " 1 to be array, string given");   \
+    } else if (cell_##input->m_type == KindOfInt64) {             \
+      throw_bad_type_exception("array_column() expects parameter" \
+                               " 1 to be array, integer given");  \
+    } else {                                                      \
+      throw_expected_array_exception();                           \
+    }                                                             \
+    return fail;                                                  \
+  }                                                               \
+  ArrNR arrNR_##input(cell_##input->m_data.parr);                 \
+  Array arr_##input = arrNR_##input.asArray();
+
+
 #define getCheckedArray(input) getCheckedArrayRet(input, uninit_null())
 
 Variant f_array_change_key_case(const Variant& input, int64_t case_ /* = 0 */) {
@@ -100,7 +119,8 @@ Variant f_array_chunk(const Variant& input, int chunkSize,
     return init_null();
   }
 
-  Array ret = Array::Create();
+  auto const retSize = (getContainerSize(cellInput) / chunkSize) + 1;
+  PackedArrayInit ret(retSize);
   Array chunk;
   int current = 0;
   for (ArrayIter iter(cellInput); iter; ++iter) {
@@ -118,7 +138,7 @@ Variant f_array_chunk(const Variant& input, int chunkSize,
     ret.append(chunk);
   }
 
-  return ret;
+  return ret.toArray();
 }
 
 static inline bool array_column_coerce_key(Variant &key, const char *name) {
@@ -135,7 +155,8 @@ static inline bool array_column_coerce_key(Variant &key, const char *name) {
     key = key.toString();
     return true;
   } else {
-    raise_warning("The %s key should be either a string or an integer", name);
+    raise_warning("array_column(): The %s key should be either a string "
+                  "or an integer", name);
     return false;
   }
 }
@@ -143,13 +164,13 @@ static inline bool array_column_coerce_key(Variant &key, const char *name) {
 Variant f_array_column(const Variant& input, const Variant& val_key,
                        const Variant& idx_key /* = null_variant */) {
   /* Be strict about array type */
-  getCheckedArrayRet(input, uninit_null());
+  getCheckedArrayColumnRet(input, uninit_null());
   Variant val = val_key, idx = idx_key;
   if (!array_column_coerce_key(val, "column") ||
       !array_column_coerce_key(idx, "index")) {
     return false;
   }
-  Array ret = Array::Create();
+  ArrayInit ret(arr_input.size(), ArrayInit::Map{});
   for(auto it = arr_input.begin(); !it.end(); it.next()) {
     if (!it.second().isArray()) {
       continue;
@@ -169,12 +190,12 @@ Variant f_array_column(const Variant& input, const Variant& val_key,
     if (idx.isNull() || !sub.exists(idx)) {
       ret.append(elem);
     } else if (sub[idx].isObject()) {
-      ret.set(sub[idx].toString(), elem);
+      ret.setKeyUnconverted(sub[idx].toString(), elem);
     } else {
-      ret.set(sub[idx], elem);
+      ret.setKeyUnconverted(sub[idx], elem);
     }
   }
-  return ret;
+  return ret.toArray();
 }
 
 Variant f_array_combine(const Variant& keys, const Variant& values) {
@@ -185,12 +206,13 @@ Variant f_array_combine(const Variant& keys, const Variant& values) {
                   "arrays or collections");
     return uninit_null();
   }
-  if (UNLIKELY(getContainerSize(cell_keys) != getContainerSize(cell_values))) {
+  auto keys_size = getContainerSize(cell_keys);
+  if (UNLIKELY(keys_size != getContainerSize(cell_values))) {
     raise_warning("array_combine(): Both parameters should have an equal "
                   "number of elements");
     return false;
   }
-  Array ret = ArrayData::Create();
+  Array ret = Array::attach(MixedArray::MakeReserveMixed(keys_size));
   for (ArrayIter iter1(cell_keys), iter2(cell_values);
        iter1; ++iter1, ++iter2) {
     const Variant& key = iter1.secondRefPlus();
@@ -219,20 +241,21 @@ Variant f_array_fill_keys(const Variant& keys, const Variant& value) {
   auto size = getContainerSize(cell_keys);
   if (!size) return empty_array;
 
-  ArrayInit ai(size);
+  ArrayInit ai(size, ArrayInit::Mixed{});
   for (ArrayIter iter(cell_keys); iter; ++iter) {
     auto& key = iter.secondRefPlus();
     // This is intentionally different to the $foo[$invalid_key] coercion.
     // See tests/slow/ext_array/array_fill_keys_tostring.php for examples.
     if (LIKELY(key.isInteger() || key.isString())) {
-      ai.set(key, value);
-    } else if (RuntimeOption::EnableHipHopSyntax) {
-      // @todo (fredemmott): Use the Zend toString() behavior, but retain the
-      // warning/error behind a separate config setting
-      raise_warning("array_fill_keys: keys must be ints or strings");
-      ai.set(key, value);
+      ai.setKeyUnconverted(key, value);
     } else {
-      ai.set(key.toString(), value);
+      if (RuntimeOption::StrictArrayFillKeys == HackStrictOption::WARN) {
+        raise_warning("array_fill_keys: keys must be ints or strings");
+      } else if (RuntimeOption::StrictArrayFillKeys ==
+                 HackStrictOption::ERROR) {
+        raise_error("array_fill_keys: keys must be ints or strings");
+      }
+      ai.setKeyUnconverted(key.toString(), value);
     }
   }
   return ai.create();
@@ -244,16 +267,23 @@ Variant f_array_fill(int start_index, int num, const Variant& value) {
     return false;
   }
 
-  Array ret;
-  ret.set(start_index, value);
-  for (int i = num - 1; i > 0; i--) {
-    ret.append(value);
+  if (start_index == 0) {
+    PackedArrayInit pai(num);
+    for (size_t k = 0; k < num; k++) {
+      pai.append(value);
+    }
+    return pai.toVariant();
+  } else {
+    ArrayInit ret(num, ArrayInit::Mixed{});
+    ret.set(start_index, value);
+    for (int i = num - 1; i > 0; i--) {
+      ret.append(value);
+    }
+    return ret.toVariant();
   }
-  return ret;
 }
 
 Variant f_array_flip(const Variant& trans) {
-
   auto const& transCell = *trans.asCell();
   if (UNLIKELY(!isContainer(transCell))) {
     raise_warning("Invalid operand type was used: %s expects "
@@ -261,11 +291,11 @@ Variant f_array_flip(const Variant& trans) {
     return uninit_null();
   }
 
-  ArrayInit ret(getContainerSize(transCell));
+  ArrayInit ret(getContainerSize(transCell), ArrayInit::Mixed{});
   for (ArrayIter iter(transCell); iter; ++iter) {
     const Variant& value(iter.secondRefPlus());
     if (value.isString() || value.isInteger()) {
-      ret.set(value, iter.first());
+      ret.setKeyUnconverted(value, iter.first());
     } else {
       raise_warning("Can only flip STRING and INTEGER values!");
     }
@@ -282,7 +312,7 @@ bool f_array_key_exists(const Variant& key, const Variant& search) {
   } else if (searchCell->m_type == KindOfObject) {
     ObjectData* obj = searchCell->m_data.pobj;
     if (obj->isCollection()) {
-      return collectionOffsetContains(obj, key);
+      return collectionContains(obj, key);
     }
     return f_array_key_exists(key, toArray(search));
   } else {
@@ -334,7 +364,7 @@ Variant f_array_keys(const Variant& input, const Variant& search_value /* = null
     }
     return ai.toArray();
   } else {
-    Array ai = Array::attach(HphpArray::MakeReserve(0));
+    Array ai = Array::attach(MixedArray::MakeReserve(0));
     for (ArrayIter iter(cell_input); iter; ++iter) {
       if ((strict && HPHP::same(iter.secondRefPlus(), search_value)) ||
           (!strict && HPHP::equal(iter.secondRefPlus(), search_value))) {
@@ -367,14 +397,23 @@ Variant f_array_map(int _argc, const Variant& callback, const Variant& arr1, con
         return arr1.toArray();
       }
     }
-    Array ret = Array::Create();
+    ArrayInit ret(getContainerSize(cell_arr1), ArrayInit::Map{});
+    bool keyConverted = (cell_arr1.m_type == KindOfArray);
+    if (!keyConverted) {
+      auto col_type = cell_arr1.m_data.pobj->getCollectionType();
+      assert(col_type != Collection::Type::InvalidType);
+      keyConverted = !Collection::isTypeWithPossibleIntStringKeys(col_type);
+    }
     for (ArrayIter iter(arr1); iter; ++iter) {
       Variant result;
       g_context->invokeFuncFew((TypedValue*)&result, ctx, 1,
-                                 iter.secondRefPlus().asCell());
-      ret.add(iter.first(), result, true);
+                               iter.secondRefPlus().asCell());
+      // if keyConverted is false, it's possible that ret will have fewer
+      // elements than cell_arr1; keys int(1) and string('1') may both be
+      // present
+      ret.add(iter.first(), result, keyConverted);
     }
-    return ret;
+    return ret.toArray();
   }
 
   // Handle the uncommon case where the caller passed a callback
@@ -401,28 +440,29 @@ Variant f_array_map(int _argc, const Variant& callback, const Variant& arr1, con
       if (len > maxLen) maxLen = len;
     }
   }
-  Array ret = Array::Create();
+  PackedArrayInit ret_ai(maxLen);
   for (size_t k = 0; k < maxLen; k++) {
-    Array params;
+    PackedArrayInit params_ai(numIters);
     for (size_t i = 0; i < numIters; ++i) {
       if (iters[i]) {
-        params.append(iters[i].secondRefPlus());
+        params_ai.append(iters[i].secondRefPlus());
         ++iters[i];
       } else {
-        params.append(init_null_variant);
+        params_ai.append(init_null_variant);
       }
     }
+    Array params = params_ai.toArray();
     if (ctx.func) {
       Variant result;
       g_context->invokeFunc((TypedValue*)&result,
                               ctx.func, params, ctx.this_,
                               ctx.cls, nullptr, ctx.invName);
-      ret.append(result);
+      ret_ai.append(result);
     } else {
-      ret.append(params);
+      ret_ai.append(params);
     }
   }
-  return ret;
+  return ret_ai.toArray();
 }
 
 static void php_array_merge(Array &arr1, const Array& arr2) {
@@ -464,10 +504,17 @@ static void php_array_merge_recursive(PointerSet &seen, bool check,
 }
 
 Variant f_array_merge(int _argc, const Variant& array1,
+                      const Variant& array2 /* = null_variant */,
                       const Array& _argv /* = null_array */) {
   getCheckedArray(array1);
   Array ret = Array::Create();
   php_array_merge(ret, arr_array1);
+
+  if (UNLIKELY(_argc < 2)) return ret;
+
+  getCheckedArray(array2);
+  php_array_merge(ret, arr_array2);
+
   for (ArrayIter iter(_argv); iter; ++iter) {
     Variant v = iter.second();
     if (!v.isArray()) {
@@ -481,12 +528,20 @@ Variant f_array_merge(int _argc, const Variant& array1,
 }
 
 Variant f_array_merge_recursive(int _argc, const Variant& array1,
+                                const Variant& array2 /* = null_variant */,
                                 const Array& _argv /* = null_array */) {
   getCheckedArray(array1);
   Array ret = Array::Create();
   PointerSet seen;
   php_array_merge_recursive(seen, false, ret, arr_array1);
   assert(seen.empty());
+
+  if (UNLIKELY(_argc < 2)) return ret;
+
+  getCheckedArray(array2);
+  php_array_merge_recursive(seen, false, ret, arr_array2);
+  assert(seen.empty());
+
   for (ArrayIter iter(_argv); iter; ++iter) {
     Variant v = iter.second();
     if (!v.isArray()) {
@@ -543,10 +598,17 @@ static void php_array_replace_recursive(PointerSet &seen, bool check,
 }
 
 Variant f_array_replace(int _argc, const Variant& array1,
+                        const Variant& array2 /* = null_variant */,
                         const Array& _argv /* = null_array */) {
   getCheckedArray(array1);
   Array ret = Array::Create();
   php_array_replace(ret, arr_array1);
+
+  if (UNLIKELY(_argc < 2)) return ret;
+
+  getCheckedArray(array2);
+  php_array_replace(ret, arr_array2);
+
   for (ArrayIter iter(_argv); iter; ++iter) {
     const Variant& v = iter.secondRef();
     getCheckedArray(v);
@@ -556,12 +618,20 @@ Variant f_array_replace(int _argc, const Variant& array1,
 }
 
 Variant f_array_replace_recursive(int _argc, const Variant& array1,
+                                  const Variant& array2 /* = null_variant */,
                                   const Array& _argv /* = null_array */) {
   getCheckedArray(array1);
   Array ret = Array::Create();
   PointerSet seen;
   php_array_replace_recursive(seen, false, ret, arr_array1);
   assert(seen.empty());
+
+  if (UNLIKELY(_argc < 2)) return ret;
+
+  getCheckedArray(array2);
+  php_array_replace_recursive(seen, false, ret, arr_array2);
+  assert(seen.empty());
+
   for (ArrayIter iter(_argv); iter; ++iter) {
     const Variant& v = iter.secondRef();
     getCheckedArray(v);
@@ -784,7 +854,7 @@ Variant f_array_slice(const Variant& input, int offset,
 
   // PackedArrayInit can't be used because non-numeric keys are preserved
   // even when preserve_keys is false
-  Array ret = Array::attach(HphpArray::MakeReserve(len));
+  Array ret = Array::attach(MixedArray::MakeReserve(len));
   int pos = 0;
   ArrayIter iter(input);
   for (; pos < offset && iter; ++pos, ++iter) {}
@@ -810,6 +880,7 @@ Variant f_array_splice(VRefParam input, int offset,
   input = ArrayUtil::Splice(arr_input, offset, len, replacement, &ret);
   return ret;
 }
+
 Variant f_array_sum(const Variant& array) {
   getCheckedArray(array);
   int64_t i;
@@ -876,10 +947,10 @@ Variant f_array_unshift(int _argc, VRefParam array, const Variant& var, const Ar
       if (!_argv.empty()) {
         for (ssize_t pos = _argv->iter_end(); pos != ArrayData::invalid_index;
              pos = _argv->iter_rewind(pos)) {
-          vec->addFront(cvarToCell(&_argv->getValueRef(pos)));
+          vec->addFront(_argv->getValueRef(pos).asCell());
         }
       }
-      vec->addFront(cvarToCell(&var));
+      vec->addFront(var.asCell());
       return vec->size();
     }
     case Collection::SetType: {
@@ -887,10 +958,10 @@ Variant f_array_unshift(int _argc, VRefParam array, const Variant& var, const Ar
       if (!_argv.empty()) {
         for (ssize_t pos = _argv->iter_end(); pos != ArrayData::invalid_index;
              pos = _argv->iter_rewind(pos)) {
-          st->addFront(cvarToCell(&_argv->getValueRef(pos)));
+          st->addFront(_argv->getValueRef(pos).asCell());
         }
       }
-      st->addFront(cvarToCell(&var));
+      st->addFront(var.asCell());
       return st->size();
     }
     default: {
@@ -969,8 +1040,22 @@ static void compact(VarEnv* v, Array &ret, const Variant& var) {
   }
 }
 
-Array f_compact(int _argc, const Variant& varname, const Array& _argv /* = null_array */) {
-  Array ret = Array::Create();
+Array f_compact(int _argc, const Variant& varname,
+                const Array& _argv /* = null_array */) {
+  raise_disallowed_dynamic_call("compact should not be called dynamically");
+  Array ret = Array::attach(MixedArray::MakeReserve(_argv.size() + 1));
+  VarEnv* v = g_context->getVarEnv();
+  if (v) {
+    compact(v, ret, varname);
+    compact(v, ret, _argv);
+  }
+  return ret;
+}
+
+// __SystemLib\\compact_sl
+Array f_compact_sl(int _argc, const Variant& varname,
+                  const Array& _argv /* = null_array */) {
+  Array ret = Array::attach(MixedArray::MakeReserve(_argv.size() + 1));
   VarEnv* v = g_context->getVarEnv();
   if (v) {
     compact(v, ret, varname);
@@ -1297,7 +1382,7 @@ static void containerValuesToSetHelper(c_Set* st, const Variant& container) {
   Variant strHolder(empty_string.get());
   TypedValue* strTv = strHolder.asTypedValue();
   for (ArrayIter iter(container); iter; ++iter) {
-    const auto& c = *const_cast<TypedValue*>(iter.secondRefPlus().asCell());
+    auto const& c = *iter.secondRefPlus().asCell();
     addToSetHelper(st, c, strTv, true);
   }
 }
@@ -1307,8 +1392,7 @@ static void containerKeysToSetHelper(c_Set* st, const Variant& container) {
   TypedValue* strTv = strHolder.asTypedValue();
   bool isKey = container.asCell()->m_type == KindOfArray;
   for (ArrayIter iter(container); iter; ++iter) {
-    auto key = iter.first();
-    const auto& c = *const_cast<TypedValue*>(key.asCell());
+    auto const& c = *iter.first().asCell();
     addToSetHelper(st, c, strTv, !isKey);
   }
 }
@@ -1612,7 +1696,7 @@ static void containerValuesIntersectHelper(c_Set* st,
   TypedValue* strTv = strHolder.asTypedValue();
   TypedValue intOneTv = make_tv<KindOfInt64>(1);
   for (ArrayIter iter(tvAsCVarRef(&containers[0])); iter; ++iter) {
-    const auto& c = *const_cast<TypedValue*>(iter.secondRefPlus().asCell());
+    const auto& c = *iter.secondRefPlus().asCell();
     // For each value v in containers[0], we add the key/value pair (v, 1)
     // to the map. If a value (after various conversions) occurs more than
     // once in the container, we'll simply overwrite the old entry and that's
@@ -1621,7 +1705,7 @@ static void containerValuesIntersectHelper(c_Set* st,
   }
   for (int pos = 1; pos < count; ++pos) {
     for (ArrayIter iter(tvAsCVarRef(&containers[pos])); iter; ++iter) {
-      const auto& c = *const_cast<TypedValue*>(iter.secondRefPlus().asCell());
+      const auto& c = *iter.secondRefPlus().asCell();
       // We check if the value is present as a key in the map. If an entry
       // exists and its value equals pos, we increment it, otherwise we do
       // nothing. This is essential so that we don't accidentally double-count
@@ -2006,6 +2090,7 @@ static Array::PFUNC_CMP get_cmp_func(int sort_flags, bool ascending) {
   }
 }
 
+namespace {
 class ArraySortTmp {
  public:
   explicit ArraySortTmp(Array& arr) : m_arr(arr) {
@@ -2023,6 +2108,7 @@ class ArraySortTmp {
   Array& m_arr;
   ArrayData* m_ad;
 };
+}
 
 static bool
 php_sort(VRefParam container, int sort_flags,
@@ -2201,16 +2287,16 @@ bool f_uksort(VRefParam container, const Variant& cmp_function) {
   return false;
 }
 
-bool f_array_multisort(int _argc, VRefParam ar1,
+bool f_array_multisort(int _argc, VRefParam arr1,
                        const Array& _argv /* = null_array */) {
-  getCheckedArrayRet(ar1, false);
+  getCheckedArrayRet(arr1, false);
   std::vector<Array::SortData> data;
   std::vector<Array> arrays;
   arrays.reserve(1 + _argv.size()); // so no resize would happen
 
   Array::SortData sd;
-  sd.original = &ar1;
-  arrays.push_back(arr_ar1);
+  sd.original = &arr1;
+  arrays.push_back(arr_arr1);
   sd.array = &arrays.back();
   sd.by_key = false;
 

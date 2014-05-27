@@ -21,8 +21,8 @@
 #include "hphp/runtime/base/execution-context.h"
 #include "hphp/runtime/vm/jit/abi-arm.h"
 #include "hphp/runtime/vm/jit/code-gen-helpers-arm.h"
-#include "hphp/runtime/vm/jit/jump-smash.h"
-#include "hphp/runtime/vm/jit/service-requests.h"
+#include "hphp/runtime/vm/jit/back-end.h"
+#include "hphp/runtime/vm/jit/service-requests-inline.h"
 #include "hphp/runtime/vm/jit/mc-generator.h"
 
 namespace HPHP { namespace JIT { namespace ARM {
@@ -31,30 +31,32 @@ using namespace vixl;
 
 namespace {
 
-void emitBindJ(CodeBlock& cb, CodeBlock& stubs, SrcKey dest,
+void emitBindJ(CodeBlock& cb, CodeBlock& unused, SrcKey dest,
                JIT::ConditionCode cc, ServiceRequest req) {
 
   TCA toSmash = cb.frontier();
-  if (cb.base() == stubs.base()) {
+  if (cb.base() == unused.base()) {
     // This is just to reserve space. We'll overwrite with the real dest later.
-    emitSmashableJump(cb, toSmash, cc);
+    mcg->backEnd().emitSmashableJump(cb, toSmash, cc);
   }
 
   mcg->setJmpTransID(toSmash);
 
   TCA sr = (req == JIT::REQ_BIND_JMP
-            ? emitEphemeralServiceReq(mcg->code.stubs(), mcg->getFreeStub(),
-                                      req, toSmash, dest.offset())
-            : emitServiceReq(mcg->code.stubs(), req, toSmash, dest.offset()));
+            ? emitEphemeralServiceReq(unused,
+                                      mcg->getFreeStub(unused),
+                                      req, toSmash, dest.toAtomicInt())
+            : emitServiceReq(unused, req, toSmash,
+                             dest.toAtomicInt()));
 
   MacroAssembler a { cb };
-  if (cb.base() == stubs.base()) {
+  if (cb.base() == unused.base()) {
     UndoMarker um {cb};
     cb.setFrontier(toSmash);
-    emitSmashableJump(cb, sr, cc);
+    mcg->backEnd().emitSmashableJump(cb, sr, cc);
     um.undo();
   } else {
-    emitSmashableJump(cb, sr, cc);
+    mcg->backEnd().emitSmashableJump(cb, sr, cc);
   }
 }
 
@@ -122,18 +124,18 @@ TCA emitServiceReqWork(CodeBlock& cb, TCA start, bool persist, SRFlags flags,
   return start;
 }
 
-void emitBindJmp(CodeBlock& cb, CodeBlock& stubs, SrcKey dest) {
-  emitBindJ(cb, stubs, dest, JIT::CC_None, REQ_BIND_JMP);
+void emitBindJmp(CodeBlock& cb, CodeBlock& unused, SrcKey dest) {
+  emitBindJ(cb, unused, dest, JIT::CC_None, REQ_BIND_JMP);
 }
 
-void emitBindJcc(CodeBlock& cb, CodeBlock& stubs, JIT::ConditionCode cc,
+void emitBindJcc(CodeBlock& cb, CodeBlock& unused, JIT::ConditionCode cc,
                  SrcKey dest) {
-  emitBindJ(cb, stubs, dest, cc, REQ_BIND_JCC);
+  emitBindJ(cb, unused, dest, cc, REQ_BIND_JCC);
 }
 
-void emitBindSideExit(CodeBlock& cb, CodeBlock& stubs, SrcKey dest,
+void emitBindSideExit(CodeBlock& cb, CodeBlock& unused, SrcKey dest,
                       JIT::ConditionCode cc) {
-  emitBindJ(cb, stubs, dest, cc, REQ_BIND_SIDE_EXIT);
+  emitBindJ(cb, unused, dest, cc, REQ_BIND_SIDE_EXIT);
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -151,20 +153,21 @@ int32_t emitNativeImpl(CodeBlock& cb, const Func* func) {
     a.Str  (rVmSp, rGContextReg[offsetof(ExecutionContext, m_stack) +
                                 Stack::topOfStackOffset()]);
   }
-  auto syncPoint = emitCall(a, CppCall(builtinFuncPtr));
+  auto syncPoint = emitCall(a, CppCall::direct(builtinFuncPtr));
 
   Offset pcOffset = 0;
   Offset stackOff = func->numLocals();
-  mcg->fixupMap().recordSyncPoint(syncPoint, pcOffset, stackOff);
+  mcg->recordSyncPoint(syncPoint, pcOffset, stackOff);
 
   int nLocalCells = func->numSlotsInFrame();
-  a.  Ldr  (rVmFp, rVmFp[AROFF(m_savedRbp)]);
+  a.  Ldr  (rVmFp, rVmFp[AROFF(m_sfp)]);
 
   return sizeof(ActRec) + cellsToBytes(nLocalCells - 1);
 }
 
 int32_t emitBindCall(CodeBlock& mainCode, CodeBlock& stubsCode,
-                  SrcKey srcKey, const Func* funcd, int numArgs) {
+                     CodeBlock& unusedCode, SrcKey srcKey,
+                     const Func* funcd, int numArgs) {
   if (isNativeImplCall(funcd, numArgs)) {
     MacroAssembler a { mainCode };
 
@@ -176,8 +179,7 @@ int32_t emitBindCall(CodeBlock& mainCode, CodeBlock& stubsCode,
     a.    Str  (rAsm, rVmSp[cellsToBytes(numArgs) + AROFF(m_savedRip)]);
 
     emitRegGetsRegPlusImm(a, rVmFp, rVmSp, cellsToBytes(numArgs));
-    emitCheckSurpriseFlagsEnter(mainCode, stubsCode, true, mcg->fixupMap(),
-                                Fixup(0, numArgs));
+    emitCheckSurpriseFlagsEnter(mainCode, stubsCode, Fixup(0, numArgs));
     // rVmSp is already correctly adjusted, because there's no locals other than
     // the arguments passed.
 
@@ -198,14 +200,14 @@ int32_t emitBindCall(CodeBlock& mainCode, CodeBlock& stubsCode,
   ReqBindCall* req = mcg->globalData().alloc<ReqBindCall>();
 
   auto toSmash = mainCode.frontier();
-  emitSmashableCall(mainCode, stubsCode.frontier());
+  mcg->backEnd().emitSmashableCall(mainCode, unusedCode.frontier());
 
-  MacroAssembler astubs { stubsCode };
-  astubs.  Mov  (serviceReqArgReg(1), rStashedAR);
+  MacroAssembler aunused { unusedCode };
+  aunused.  Mov  (serviceReqArgReg(1), rStashedAR);
   // Put return address into pre-live ActRec, and restore the saved one.
-  emitStoreRetIntoActRec(astubs);
+  emitStoreRetIntoActRec(aunused);
 
-  emitServiceReq(stubsCode, REQ_BIND_CALL, req);
+  emitServiceReq(unusedCode, REQ_BIND_CALL, req);
 
   req->m_toSmash = toSmash;
   req->m_nArgs = numArgs;

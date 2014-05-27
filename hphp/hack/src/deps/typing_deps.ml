@@ -22,6 +22,7 @@ module Dep = struct
      * "define('X', ...)".
      *)
     | GConst of string
+    | GConstName of string
 
     (* Const is used to represent class constants. *)
     | Const of string * string
@@ -91,7 +92,6 @@ let get_ideps x =
 (* Gets ALL the dependencies ... hence the name *)
 let get_bazooka x =
   match x with
-  | Dep.GConst cid
   | Dep.Const (cid, _)
   | Dep.CVar (cid, _)
   | Dep.SCVar (cid, _)
@@ -102,6 +102,8 @@ let get_bazooka x =
   | Dep.Class cid -> get_ideps (Dep.Class cid)
   | Dep.Fun fid -> get_ideps (Dep.Fun fid)
   | Dep.FunName fid -> get_ideps (Dep.FunName fid)
+  | Dep.GConst cid -> get_ideps (Dep.GConst cid)
+  | Dep.GConstName cid -> get_ideps (Dep.GConstName cid)
   | Dep.Injectable -> ISet.empty
 
 (*****************************************************************************)
@@ -123,6 +125,7 @@ let update_files workers fast =
     let {FileInfo.funs; classes; types; 
          consts = _ (* TODO probably a bug #3844332 *);
          comments = _;
+         consider_names_just_for_autoload = _;
         } = info in
     let funs = List.fold_left begin fun acc (_, fun_id) ->
       ISet.add (Dep.make (Dep.Fun fun_id)) acc

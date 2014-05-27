@@ -19,21 +19,35 @@
 
 #include "hphp/runtime/base/smart-containers.h"
 #include "hphp/runtime/ext/asio/asio_context.h"
+#include "hphp/runtime/ext/asio/async_function_wait_handle.h"
+#include "hphp/runtime/ext/asio/gen_array_wait_handle.h"
+#include "hphp/runtime/ext/asio/gen_map_wait_handle.h"
+#include "hphp/runtime/ext/asio/gen_vector_wait_handle.h"
 #include "hphp/runtime/ext/asio/waitable_wait_handle.h"
 #include "hphp/system/systemlib.h"
 
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
 
-void c_BlockableWaitHandle::t___construct() {
-  throw NotSupportedException(__func__, "WTF? This is an abstract class");
-}
-
 c_BlockableWaitHandle* c_BlockableWaitHandle::unblock() {
   c_BlockableWaitHandle* next = m_nextParent;
 
   // notify subclass that we are no longer blocked
-  onUnblocked();
+  switch (getKind()) {
+    case Kind::AsyncFunction:
+      static_cast<c_AsyncFunctionWaitHandle*>(this)->onUnblocked(); break;
+    case Kind::GenArray:
+      static_cast<c_GenArrayWaitHandle*>(this)->onUnblocked(); break;
+    case Kind::GenMap:
+      static_cast<c_GenMapWaitHandle*>(this)->onUnblocked(); break;
+    case Kind::GenVector:
+      static_cast<c_GenVectorWaitHandle*>(this)->onUnblocked(); break;
+    case Kind::Static:
+    case Kind::Reschedule:
+    case Kind::Sleep:
+    case Kind::ExternalThreadEvent:
+      not_reached();
+  }
 
   // decrement ref count, we can't be called by child anymore
   decRefObj(this);
@@ -79,12 +93,12 @@ c_BlockableWaitHandle::createCycleException(c_WaitableWaitHandle* child) const {
   exception_msg_items.push_back(folly::stringPrintf(
     "  %s (%" PRId64 ")\n", child->getName().data(), child->t_getid()));
 
-  assert(dynamic_cast<c_BlockableWaitHandle*>(child));
+  assert(child->instanceof(c_BlockableWaitHandle::classof()));
   auto current = static_cast<c_BlockableWaitHandle*>(child);
 
   while (current != this) {
     assert(current->getState() == STATE_BLOCKED);
-    assert(dynamic_cast<c_BlockableWaitHandle*>(current->getChild()));
+    assert(current->getChild()->instanceof(c_BlockableWaitHandle::classof()));
     current = static_cast<c_BlockableWaitHandle*>(current->getChild());
 
     exception_msg_items.push_back(folly::stringPrintf(

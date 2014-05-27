@@ -1,0 +1,36 @@
+string(13) "5.5.99-hiphop"
+string(11) "PHP_VERSION"
+string(1) "c"
+string(1) "B"
+array(1) {
+  [0]=>
+  string(13) "5.5.99-hiphop"
+}
+string(33) "array (
+  0 => "5.5.99-hiphop",
+)"
+array(1) {
+  [0]=>
+  string(1) "c"
+}
+string(21) "array (
+  0 => "c",
+)"
+string(13) "5.5.99-hiphop"
+string(11) "PHP_VERSION"
+string(1) "c"
+string(1) "B"
+array(1) {
+  [0]=>
+  string(13) "5.5.99-hiphop"
+}
+string(33) "array (
+  0 => "5.5.99-hiphop",
+)"
+array(1) {
+  [0]=>
+  string(1) "c"
+}
+string(21) "array (
+  0 => "c",
+)"

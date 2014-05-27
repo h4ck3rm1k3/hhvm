@@ -51,8 +51,14 @@ public:
    * Create an empty array or an array with one element. Note these are
    * different than those copying constructors that also take one value.
    */
-  static Array Create() { return ArrayData::Create(); }
-  static Array Create(const Variant& value) { return ArrayData::Create(value); }
+  static Array Create() {
+    return Array(ArrayData::Create());
+  }
+
+  static Array Create(const Variant& value) {
+    return Array(ArrayData::Create(value));
+  }
+
   static Array Create(const Variant& key, const Variant& value);
 
 public:
@@ -61,9 +67,7 @@ public:
 
   // Take ownership of this ArrayData.
   static Array attach(ArrayData* ad) {
-    Array a(ad, SmartPtr::NoIncRef{});
-    a.m_px = ad;
-    return a;
+    return Array(ad, SmartPtr::NoIncRef{});
   }
 
   // Transfer ownership of our reference to this ArrayData.
@@ -89,7 +93,7 @@ public:
    * array value from the parameter, and they are NOT constructing an array
    * with that single value (then one should use Array::Create() functions).
    */
-  /* implicit */ Array(ArrayData* data) : ArrayBase(data) { }
+  explicit Array(ArrayData* data) : ArrayBase(data) { }
   /* implicit */ Array(const Array& arr) : ArrayBase(arr.m_px) { }
 
   /*
@@ -309,26 +313,14 @@ public:
   void set(const String& key, const Variant& v, bool isKey = false);
   void set(const Variant& key, const Variant& v, bool isKey = false);
 
-  void set(char    key, RefResult v) { setRef(key,variant(v)); }
-  void set(short   key, RefResult v) { setRef(key,variant(v)); }
-  void set(int     key, RefResult v) { setRef(key,variant(v)); }
-  void set(int64_t key, RefResult v) { setRef(key,variant(v)); }
-  void set(double  key, RefResult v) = delete;
-  void set(const String& key, RefResult v, bool isKey = false) {
-    return setRef(key, variant(v), isKey);
-  }
-  void set(const Variant& key, RefResult v, bool isKey = false) {
-    return setRef(key, variant(v), isKey);
-  }
-
   /*
    * Set an element to a reference.
    */
-  void setRef(int     key, const Variant& v) { setRef(int64_t(key), v); }
-  void setRef(int64_t key, const Variant& v);
-  void setRef(double  key, const Variant& v) = delete;
-  void setRef(const String& key, const Variant& v, bool isKey = false);
-  void setRef(const Variant& key, const Variant& v, bool isKey = false);
+  void setRef(int     key, Variant& v) { setRef(int64_t(key), v); }
+  void setRef(int64_t key, Variant& v);
+  void setRef(double  key, Variant& v) = delete;
+  void setRef(const String& key, Variant& v, bool isKey = false);
+  void setRef(const Variant& key, Variant& v, bool isKey = false);
 
   void setWithRef(const Variant& key, const Variant& v, bool isKey = false);
 
@@ -372,8 +364,7 @@ public:
    * Append an element.
    */
   const Variant& append(const Variant& v);
-  const Variant& append(RefResult v) { return appendRef(variant(v)); }
-  const Variant& appendRef(const Variant& v);
+  const Variant& appendRef(Variant& v);
   const Variant& appendWithRef(const Variant& v);
 
   /*
@@ -398,7 +389,7 @@ public:
                  PFUNC_CMP value_cmp_function, const void* value_data) const;
 
   template<typename T> void setImpl(const T& key, const Variant& v);
-  template<typename T> void setRefImpl(const T& key, const Variant& v);
+  template<typename T> void setRefImpl(const T& key, Variant& v);
   template<typename T> void addImpl(const T& key, const Variant& v);
 
   template<typename T>

@@ -74,6 +74,13 @@ enum class PrepKind { Ref, Val, Unknown };
  */
 constexpr int kSystemLibBump = 10;
 
+/*
+ * We may run the interpreter collecting stats and when trace is on
+ * the amount of noise is unbearable. This is to keep tracing out
+ * of stats collection.
+ */
+constexpr int kTraceBump = 50;
+
 //////////////////////////////////////////////////////////////////////
 
 struct trace_time {
@@ -121,36 +128,6 @@ private:
 //////////////////////////////////////////////////////////////////////
 
 /*
- * Sum of SString or a borrowed_ptr<T>.
- */
-template<class T>
-struct SStringOr {
-  explicit SStringOr(SString s)
-    : bits(reinterpret_cast<uintptr_t>(s) | 0x1)
-  {}
-
-  explicit SStringOr(borrowed_ptr<T> t)
-    : bits(reinterpret_cast<uintptr_t>(t))
-  {}
-
-  SString str() const {
-    return isStr() ? reinterpret_cast<SString>(bits & ~0x1) : nullptr;
-  }
-
-  borrowed_ptr<T> other() const {
-    return isStr() ? nullptr : reinterpret_cast<T*>(bits);
-  }
-
-private:
-  bool isStr() const { return bits & 0x1; }
-
-private:
-  uintptr_t bits;
-};
-
-//////////////////////////////////////////////////////////////////////
-
-/*
  * A smart pointer that does deep copies when you copy construct it.
  */
 template<class T>
@@ -189,7 +166,12 @@ struct copy_ptr {
     return *this;
   }
 
-  ~copy_ptr() { delete m_p; assert((m_p = nullptr, true)); }
+  ~copy_ptr() {
+    delete m_p;
+#ifdef DEBUG
+    m_p = nullptr;
+#endif
+  }
 
   explicit operator bool() const { return !!m_p; }
 

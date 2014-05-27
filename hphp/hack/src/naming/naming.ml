@@ -173,13 +173,13 @@ let predef_fun x =
   x
 
 let anon      = predef_fun "?anon"
-let is_int    = predef_fun "is_int"
-let is_bool   = predef_fun "is_bool"
-let is_array  = predef_fun "is_array"
-let is_float  = predef_fun "is_float"
-let is_string = predef_fun "is_string"
-let is_null   = predef_fun "is_null"
-let is_resource = predef_fun "is_resource"
+let is_int    = predef_fun "\\is_int"
+let is_bool   = predef_fun "\\is_bool"
+let is_array  = predef_fun "\\is_array"
+let is_float  = predef_fun "\\is_float"
+let is_string = predef_fun "\\is_string"
+let is_null   = predef_fun "\\is_null"
+let is_resource = predef_fun "\\is_resource"
 
 let predef_tests_list =
   [is_int; is_bool; is_float; is_string; is_null; is_array; is_resource]
@@ -320,7 +320,7 @@ module Env = struct
   let var env (p, x) =
     let v = SMap.get x !env in
     match v with
-    | None   -> error p ("Unbound name: "^x)
+    | None   -> error p ("Unbound name: "^(strip_ns x))
     | Some v -> p, snd v
 
 (* Is called bad_style, but it is still an error ... Whatever *)
@@ -428,41 +428,20 @@ module Env = struct
           end
       | None -> p, Ident.tmp()
 
-  let resolve_namespace genv x =
-    (* Resolve an id to a fully-qualified name. Things in the global namespace
-     * aren't prefixed with a slash so that we don't gum up error message for
-     * folks who don't use namespaces. So we have to manually remove the
-     * leading slash from a fully-qualified name if it's referring to a name in
-     * the global namespace. This logic is shared between classes and functions
-     * and so does not deal with the function name fallback crap. *)
-    let p, id = Namespaces.elaborate_id genv.namespace x in
-    let fq_global = try String.rindex id '\\' = 0 with Not_found -> false in
-    let id =
-      if fq_global then String.sub id 1 (String.length id - 1) else id in
-    p, id
-
   let get_name genv namespace x =
     try ignore (var namespace x); x with exn ->
       match genv.in_mode with
       | Ast.Mstrict -> raise exn
       | Ast.Mdecl | Ast.Mpartial -> x
 
-  let const (genv, env) x  = get_name genv env.consts x
-
-  let global_const (genv, env) x  =
-    let x = resolve_namespace genv x in
-    get_name genv genv.gconsts x
-
-  let class_name (genv, _) x =
-    let x = resolve_namespace genv x in
-    get_name genv genv.classes x
-
-  let fun_id (genv, _) x =
-    let fq_x = resolve_namespace genv x in
+  (* For dealing with namespace fallback on functions and constants. *)
+  let elaborate_and_get_name_with_fallback mk_dep genv genv_sect x =
+    let fq_x = Namespaces.elaborate_id genv.namespace x in
     let need_fallback =
-      (snd fq_x).[0] = '\\' &&
+      genv.namespace.Namespace_env.ns_name <> None &&
       not (String.contains (snd x) '\\') in
     if need_fallback then begin
+      let global_x = (fst x, "\\" ^ (snd x)) in
       (* Explicitly add dependencies on both of the functions we could be
        * referring to here. Normally naming doesn't have to deal with deps at
        * all -- they are added during typechecking just by the nature of
@@ -470,24 +449,45 @@ module Env = struct
        * namespaces here, and the fallback behavior of functions means that we
        * might suddenly be referring to a different function without any
        * change to the callsite at all. Adding both dependencies explicitly
-       * captures this action-at-a-distance. Furthermore note that we're adding
-       * a special kind of dependency -- not just Dep.Fun, but Dep.FunName.
-       * This forces an incremental full redeclaration of this class if either
-       * of those names changes, not just a retypecheck -- the name that is
-       * referred to here actually changes as a result of the other file, which
-       * is stronger than just the need to retypecheck. *)
-      Typing_deps.add_idep genv.droot (Typing_deps.Dep.FunName (snd fq_x));
-      Typing_deps.add_idep genv.droot (Typing_deps.Dep.FunName (snd x));
-      let mem x = SMap.mem (snd x) !(genv.funs) in
-      match mem fq_x, mem x with
+       * captures this action-at-a-distance. *)
+      Typing_deps.add_idep genv.droot (mk_dep (snd fq_x));
+      Typing_deps.add_idep genv.droot (mk_dep (snd global_x));
+      let mem (_, s) = SMap.mem s !(genv_sect) in
+      match mem fq_x, mem global_x with
       (* Found in the current namespace *)
-      | true, _ -> get_name genv genv.funs fq_x
+      | true, _ -> get_name genv genv_sect fq_x
       (* Found in the global namespace *)
-      | _, true -> get_name genv genv.funs x
+      | _, true -> get_name genv genv_sect global_x
       (* Not found. Pick the more specific one to error on. *)
-      | false, false -> get_name genv genv.funs fq_x
+      | false, false -> get_name genv genv_sect fq_x
     end else
-      get_name genv genv.funs fq_x
+      get_name genv genv_sect fq_x
+
+  let const (genv, env) x  = get_name genv env.consts x
+
+  let global_const (genv, env) x  =
+    elaborate_and_get_name_with_fallback
+      (* Same idea as Dep.FunName, see below. *)
+      (fun x -> Typing_deps.Dep.GConstName x)
+      genv
+      genv.gconsts
+      x
+
+  let class_name (genv, _) x =
+    let x = Namespaces.elaborate_id genv.namespace x in
+    get_name genv genv.classes x
+
+  let fun_id (genv, _) x =
+    elaborate_and_get_name_with_fallback
+      (* Not just Dep.Fun, but Dep.FunName. This forces an incremental full
+       * redeclaration of this class if the name changes, not just a
+       * retypecheck -- the name that is referred to here actually changes as
+       * a result of what else is defined, which is stronger than just the need
+       * to retypecheck. *)
+      (fun x -> Typing_deps.Dep.FunName x)
+      genv
+      genv.funs
+      x
 
   let new_const (genv, env) x =
     try ignore (new_var env.consts x); x with exn ->
@@ -502,7 +502,7 @@ module Env = struct
       if Pos.compare p p' = 0 then (p, y)
       else if not !Silent.is_silent_mode
       then
-        error_l [p, "Name already bound: "^x;
+        error_l [p, "Name already bound: "^(Utils.strip_ns x);
                  p', "Previous definition is here"]
       else
         let y = p, Ident.make x in
@@ -613,7 +613,8 @@ let implement env x =
   | _ -> ()
 
 (* Check that a name is not a typedef *)
-let no_typedef (genv, _) (pos, name) =
+let no_typedef (genv, _) cid =
+  let (pos, name) = Namespaces.elaborate_id genv.namespace cid in
   if SMap.mem name !(genv.typedefs)
   then
     let def_pos, _ = SMap.find_unsafe name !(genv.typedefs) in
@@ -697,8 +698,8 @@ and hint_id ~allow_this env is_static_var (p, x as id) hl =
       if !Silent.is_silent_mode
       then N.Hany
       else
-        error p ("Primitive type annotations are always available and may no"^
-                 "longer be referred to in the toplevel namespace.")
+        error p ("Primitive type annotations are always available and may no \
+                  longer be referred to in the toplevel namespace.")
   | "void"             -> N.Hprim N.Tvoid
   | "int"              -> N.Hprim N.Tint
   | "bool"             -> N.Hprim N.Tbool
@@ -794,8 +795,12 @@ and hint_id ~allow_this env is_static_var (p, x as id) hl =
        *   private ?WaitHandle<this> wh = ...; // e.g. generic preparables
        *)
     let cname = snd (Env.class_name env id) in
-    let awaitable_covariance = (cname = "Awaitable" || cname = "WaitHandle") in
-    let allow_this = allow_this && awaitable_covariance in
+    let gen_read_api_covariance =
+      (cname = "\\GenReadApi" || cname = "\\GenReadIdxApi") in
+    let awaitable_covariance =
+      (cname = "\\Awaitable" || cname = "\\WaitHandle") in
+    let allow_this = allow_this &&
+      (awaitable_covariance || gen_read_api_covariance) in
     N.Happly (Env.class_name env id, hintl ~allow_this env hl)
 
 and get_constraint env tparam =
@@ -814,20 +819,26 @@ and hintl ~allow_this env l = List.map (hint ~allow_this env) l
  *)
 (*****************************************************************************)
 
-let add_abstractl c methods =
-  List.map (fun x -> { x with N.m_abstract = true }) methods
+let add_abstract m = {m with N.m_abstract = true}
 
-let interface c methods smethods =
-  if c.c_kind <> Cinterface then methods, smethods else
-  let methods  = add_abstractl c methods in
-  let smethods = add_abstractl c smethods in
-  methods, smethods
+let add_abstractl methods = List.map add_abstract methods
+
+let add_abstractopt = function
+  | None -> None
+  | Some m -> Some (add_abstract m)
+
+let interface c constructor methods smethods =
+  if c.c_kind <> Cinterface then constructor, methods, smethods else
+  let constructor = add_abstractopt constructor in
+  let methods  = add_abstractl methods in
+  let smethods = add_abstractl smethods in
+  constructor, methods, smethods
 
 (*****************************************************************************)
 (* Checking for collision on method names *)
 (*****************************************************************************)
 
-let check_method acc { N.m_name = (p, x) } =
+let check_method acc { N.m_name = (p, x); _ } =
   if SSet.mem x acc && not !Silent.is_silent_mode
   then error p "Name already bound"
   else SSet.add x acc
@@ -839,13 +850,13 @@ let check_name_collision methods =
 (* Checking for shadowing of method type parameters *)
 (*****************************************************************************)
 
-let shadowed_type_param p (pos, name) = 
+let shadowed_type_param p (pos, name) =
   error_l [
     p, Printf.sprintf "You cannot re-bind the type parameter %s" name;
     pos, Printf.sprintf "%s is already bound here" name
   ]
 
-let check_method_tparams class_tparam_names { N.m_tparams = tparams } =
+let check_method_tparams class_tparam_names { N.m_tparams = tparams; _ } =
   List.iter
     (fun ((p,x),_) -> List.iter
        (fun (pc,xc) -> if (x = xc) then shadowed_type_param p (pc, x))
@@ -893,7 +904,6 @@ and class_ genv c =
   let parent   = get_class_parent (fst name) parent c in
   let fmethod  = class_method env sm_names v_names in
   let methods  = List.fold_right fmethod c.c_body [] in
-  let methods, smethods = interface c methods smethods in
   let uses     = List.fold_right (class_use env) c.c_body [] in
   let req_implements, req_extends = List.fold_right
     (class_require env) c.c_body ([], []) in
@@ -902,6 +912,8 @@ and class_ genv c =
   List.iter (hint_no_typedef env) c.c_implements;
   let implements  = List.map (hint ~allow_this:true env) c.c_implements in
   let constructor = List.fold_left (constructor env) None c.c_body in
+  let constructor, methods, smethods =
+    interface c constructor methods smethods in
   let class_tparam_names = List.map (fun (x,_) -> x) c.c_tparams in
   check_name_collision methods;
   check_tparams_shadow class_tparam_names methods;
@@ -936,8 +948,8 @@ and class_check env c =
   List.iter check_constraint c.c_tparams;
   ()
 
-and type_paraml env tparams = 
-  let _, ret = List.fold_left 
+and type_paraml env tparams =
+  let _, ret = List.fold_left
     (fun (seen, tparaml) (((p, name), _) as tparam) ->
       match SMap.get name seen with
       | None -> (SMap.add name p seen, (type_param env tparam)::tparaml)
@@ -1241,12 +1253,12 @@ and fun_ genv f =
     } in
   fun_
 
-and flatten_blocks stl =
-  List.fold_right begin fun st acc ->
-    match st with
-    | Block b -> flatten_blocks b @ acc
-    | st -> st :: acc
-  end stl []
+and cut_and_flatten ?(replacement=Noop) = function
+  | [] -> []
+  | Unsafe :: _ -> [replacement]
+  | Block b :: rest ->
+      (cut_and_flatten ~replacement b) @ (cut_and_flatten ~replacement rest)
+  | x :: rest -> x :: (cut_and_flatten ~replacement rest)
 
 and stmt env st =
   match st with
@@ -1368,14 +1380,8 @@ and try_stmt env st b cl fb =
   Env.promote_pending env;
   result
 
-and cut_unsafe ?(replacement=Noop) = function
-  | [] -> []
-  | Unsafe :: _ -> [replacement]
-  | x :: rl -> x :: cut_unsafe ~replacement rl
-
 and block ?(new_scope=true) env stl =
-  let stl = flatten_blocks stl in
-  let stl = cut_unsafe stl in
+  let stl = cut_and_flatten stl in
   if new_scope
   then
     Env.scope env (
@@ -1384,13 +1390,11 @@ and block ?(new_scope=true) env stl =
   else List.map (stmt env) stl
 
 and branch env stmt_l =
-  let stmt_l = flatten_blocks stmt_l in
-  let stmt_l = cut_unsafe stmt_l in
+  let stmt_l = cut_and_flatten stmt_l in
   let genv, lenv = env in
   let lenv_copy = !(lenv.locals) in
   let lenv_all_locals_copy = !(lenv.all_locals) in
   let lenv_pending_copy = !(lenv.pending_locals) in
-  let stmt_l = flatten_blocks stmt_l in
   let res = List.map (stmt env) stmt_l in
   lenv.locals := lenv_copy;
   let lenv_all_locals = !(lenv.all_locals) in
@@ -1409,18 +1413,18 @@ and expr env (p, e) = p, expr_ env e
 and expr_ env = function
   | Array l -> N.Array (List.map (afield env) l)
   | Collection (id, l) -> begin
-    let p, cn = Env.resolve_namespace (fst env) id in
+    let p, cn = Namespaces.elaborate_id ((fst env).namespace) id in
     match cn with
-      | "Vector"
-      | "ImmVector"
-      | "Set"
-      | "ImmSet" ->
+      | "\\Vector"
+      | "\\ImmVector"
+      | "\\Set"
+      | "\\ImmSet" ->
         N.ValCollection (cn, (List.map (afield_value env cn) l))
-      | "Map"
-      | "ImmMap"
-      | "StableMap" ->
+      | "\\Map"
+      | "\\ImmMap"
+      | "\\StableMap" ->
         N.KeyValCollection (cn, (List.map (afield_kvalue env cn) l))
-      | "Pair" ->
+      | "\\Pair" ->
         (match l with
           | [] -> error p "Too few arguments"
           | e1::e2::[] ->
@@ -1428,7 +1432,7 @@ and expr_ env = function
             N.Pair (afield_value env pn e1, afield_value env pn e2)
           | _ -> error p "Too many arguments"
         )
-      | _ -> error p ("Unexpected collection type " ^ cn)
+      | _ -> error p ("Unexpected collection type " ^ (Utils.strip_ns cn))
   end
   | Clone e -> N.Clone (expr env e)
   | Null -> N.Null
@@ -1523,7 +1527,7 @@ and expr_ env = function
           (match (expr env e1), (expr env e2) with
           | (_, N.String cl), (_, N.String meth)
           | (_, N.Class_const (N.CI cl, (_, "class"))), (_, N.String meth) ->
-            N.Method_caller (cl, meth)
+            N.Method_caller (Env.class_name env cl, meth)
           | (p, _), (_) ->
             let msg =
               "The two arguments to meth_caller() must be:"
@@ -1541,7 +1545,7 @@ and expr_ env = function
           (match (expr env e1), (expr env e2) with
           | (_, N.String cl), (_, N.String meth)
           | (_, N.Class_const (N.CI cl, (_, "class"))), (_, N.String meth) ->
-            N.Smethod_id (cl, meth)
+            N.Smethod_id (Env.class_name env cl, meth)
           | (p, _), (_) ->
             let msg =
               "The two arguments to class_meth() must be:"
@@ -1679,6 +1683,8 @@ and expr_lambda env f =
 and make_class_id env cid =
   no_typedef env cid;
   match snd cid with
+  | x when x.[0] = '$' && (fst env).in_mode = Ast.Mstrict ->
+      error (fst cid) "Don't use dynamic classes"
   | "parent" -> N.CIparent
   | "self" ->  N.CIself
   | "static" -> N.CIstatic
@@ -1689,13 +1695,13 @@ and casel env l =
 
 and case env acc = function
   | Default b ->
-      let b = cut_unsafe ~replacement:Fallthrough b in
+      let b = cut_and_flatten ~replacement:Fallthrough b in
       let all_locals, b = branch env b in
       let acc = SMap.union all_locals acc in
       acc, N.Default b
   | Case (e, b) ->
       let e = expr env e in
-      let b = cut_unsafe ~replacement:Fallthrough b in
+      let b = cut_and_flatten ~replacement:Fallthrough b in
       let all_locals, b = branch env b in
       let acc = SMap.union all_locals acc in
       acc, N.Case (e, b)
@@ -1801,7 +1807,8 @@ let add_files_to_rename nenv failed defl defs_in_env =
   end failed defl
 
 let ndecl_file fn
-    {FileInfo.funs; classes; types; consts; consider_names_just_for_autoload}
+    {FileInfo.funs;
+     classes; types; consts; consider_names_just_for_autoload; comments}
     (errorl, failed, nenv) = try
   dn ("Naming decl: "^fn);
   let nenv =

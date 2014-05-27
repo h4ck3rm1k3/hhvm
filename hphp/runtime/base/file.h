@@ -17,11 +17,13 @@
 #ifndef incl_HPHP_FILE_H_
 #define incl_HPHP_FILE_H_
 
-#include "hphp/runtime/base/types.h"
 #include "hphp/runtime/base/request-event-handler.h"
-#include "hphp/runtime/base/complex-types.h"
 #include "hphp/runtime/base/request-local.h"
 #include "hphp/runtime/base/smart-containers.h"
+#include "hphp/runtime/base/type-array.h"
+#include "hphp/runtime/base/type-resource.h"
+#include "hphp/runtime/base/type-string.h"
+#include "hphp/runtime/base/type-variant.h"
 
 struct stat;
 
@@ -49,14 +51,16 @@ DECLARE_EXTERN_REQUEST_LOCAL(FileData, s_file_data);
  */
 class File : public SweepableResourceData {
 public:
+  static const int CHUNK_SIZE;
+
   static String TranslatePath(const String& filename);
   // Same as TranslatePath except doesn't make paths absolute
   static String TranslatePathKeepRelative(const String& filename);
   // Same as TranslatePath except checks the file cache on miss
   static String TranslatePathWithFileCache(const String& filename);
   static String TranslateCommand(const String& cmd);
-  static Variant Open(const String& filename, const String& mode,
-                      int options = 0, const Variant& context = uninit_null());
+  static Resource Open(const String& filename, const String& mode,
+                       int options = 0, const Variant& context = uninit_null());
 
   static bool IsVirtualDirectory(const String& filename);
   static bool IsPlainFilePath(const String& filename);
@@ -155,7 +159,7 @@ public:
   virtual bool stat(struct stat *sb);
 
   virtual Array getMetaData();
-  virtual Array getWrapperMetaData() { return null_array; }
+  virtual Array getWrapperMetaData() { return Array(); }
   String getWrapperType() const;
   String getStreamType() const { return m_streamType; }
   Resource &getStreamContext() { return m_streamContext; }
@@ -247,12 +251,12 @@ protected:
    */
   int64_t filteredWrite(const char* buffer, int64_t length);
 private:
-  static const int CHUNK_SIZE = 8192;
   char *m_buffer;
   int64_t m_bufferSize;
 
+  template<class ResourceList>
   String applyFilters(const String& buffer,
-                      smart::list<Resource>& filters,
+                      ResourceList& filters,
                       bool closing);
 };
 

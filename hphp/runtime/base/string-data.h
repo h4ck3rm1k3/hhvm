@@ -32,7 +32,6 @@ namespace HPHP {
 
 //////////////////////////////////////////////////////////////////////
 
-class APCHandle;
 class APCString;
 class Array;
 class String;
@@ -114,8 +113,12 @@ struct StringData {
   static StringData* Make(const StringData* s1, const StringData* s2);
   static StringData* Make(const StringData* s1, StringSlice s2);
   static StringData* Make(const StringData* s1, const char* lit2);
-  static StringData* Make(StringSlice s1, StringSlice s2);
   static StringData* Make(StringSlice s1, const char* lit2);
+  static StringData* Make(StringSlice s1, StringSlice s2);
+  static StringData* Make(StringSlice s1, StringSlice s2,
+                          StringSlice s3);
+  static StringData* Make(StringSlice s1, StringSlice s2,
+                          StringSlice s3, StringSlice s4);
 
   /*
    * Create a new request-local empty string big enough to hold
@@ -203,12 +206,6 @@ struct StringData {
   bool isUncounted() const;
 
   /*
-   * Get the wrapped APCHandle, or return null if this string is
-   * not shared.
-   */
-  APCHandle* getAPCHandle() const;
-
-  /*
    * Append the supplied range to this string.  If there is not
    * sufficient capacity in this string to contain the range, a new
    * string may be returned.
@@ -217,6 +214,8 @@ struct StringData {
    * Pre: the string is request-local
    */
   StringData* append(StringSlice r);
+  StringData* append(StringSlice r1, StringSlice r2);
+  StringData* append(StringSlice r1, StringSlice r2, StringSlice r3);
 
   /*
    * Reserve space for a string of length `maxLen' (not counting null
@@ -229,6 +228,17 @@ struct StringData {
    * returned pointer is not yet incref'd.
    */
   StringData* reserve(int maxLen);
+
+  /*
+   * Shrink a string down to length `len` (not counting null terminator).
+   *
+   * May not be called for strings created with MakeMalloced or
+   * MakeStatic.
+   *
+   * Returns: possibly a new StringData, if we decided to reallocate. The
+   * returned pointer is not yet incref'd.
+   */
+  StringData* shrink(int len);
 
   /*
    * Returns a slice with extents sized to the *string* that this

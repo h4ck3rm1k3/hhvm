@@ -471,6 +471,9 @@ enum Flag {
   MeasureXhprofDisable  = 0x20,
   Unused                = 0x40,
   TrackMalloc           = 0x80,
+  // Allows profiling of multiple threads at the same time with TraceProfiler.
+  // Requires a lot of memory.
+  IHaveInfiniteMemory   = 0x100,
 };
 
 const StaticString
@@ -547,7 +550,7 @@ public:
   static void returnVals(phpret& ret, const Name& name, const Counts& counts,
                   int flags, int64_t MHz)
   {
-    ArrayInit arr(5);
+    ArrayInit arr(5, ArrayInit::Map{});
     arr.set(s_ct,  counts.count);
     arr.set(s_wt,  to_usec(counts.wall_time, MHz));
     if (flags & TrackCPU) {
@@ -861,7 +864,7 @@ class TraceWalker {
         Frame fr;
         fr.trace = current;
         fr.level = level - 1;
-        fr.len = symbolLength(current->symbol);
+        fr.len = strlen(current->symbol);
         checkArcBuff(fr.len);
         m_stack.push_back(fr);
       } else if (m_stack.size() > 1) {
@@ -983,17 +986,6 @@ class TraceWalker {
     incStats(m_arcBuff, tIt, callee, stats);
   }
 
-  // Computes the length of the symbol without $continuation on the
-  // end, to ensure that work done in continuations and the original
-  // function are counted together.
-  int symbolLength(const char* symbol) {
-    auto len = strlen(symbol);
-    if ((len > 13) && (strcmp(&symbol[len - 13], "$continuation") == 0)) {
-      return len - 13;
-    }
-    return len;
-  }
-
   vector<std::pair<char*, int>> m_recursion;
   vector<Frame> m_stack;
   int m_arcBuffLen;
@@ -1016,7 +1008,7 @@ class TraceProfiler : public Profiler {
     , m_overflowCalls(0)
     , m_flags(flags)
   {
-    if (pthread_mutex_trylock(&s_inUse)) {
+    if (!(m_flags & IHaveInfiniteMemory) && pthread_mutex_trylock(&s_inUse)) {
       // This profiler uses a very large amount of memory. Only allow
       // one in the process at any time.
       m_successful = false;
@@ -1377,10 +1369,7 @@ private:
 
 class MemoProfiler : public Profiler {
  public:
-  explicit MemoProfiler(int flags)
-    : m_flags(flags)
-  {
-  }
+  explicit MemoProfiler(int flags) {}
 
   ~MemoProfiler() {
   }
@@ -1428,7 +1417,7 @@ class MemoProfiler : public Profiler {
     // Lots of random cases to skip just to keep this simple for
     // now. There's no reason not to do more later.
     if (!g_context->m_faults.empty()) return;
-    if (ar->m_func->isCPPBuiltin() || ar->inGenerator()) return;
+    if (ar->m_func->isCPPBuiltin() || ar->resumed()) return;
     auto ret_tv = g_context->m_stack.topTV();
     auto ret = tvAsCVarRef(ret_tv);
     if (ret.isNull()) return;
@@ -1571,8 +1560,6 @@ class MemoProfiler : public Profiler {
     String m_args;
   };
   vector<Frame> m_stack;
-
-  uint32_t m_flags;
 };
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -1812,6 +1799,7 @@ const int64_t k_XHPROF_FLAGS_VTSC = TrackVtsc;
 const int64_t k_XHPROF_FLAGS_TRACE = XhpTrace;
 const int64_t k_XHPROF_FLAGS_MEASURE_XHPROF_DISABLE = MeasureXhprofDisable;
 const int64_t k_XHPROF_FLAGS_MALLOC = TrackMalloc;
+const int64_t k_XHPROF_FLAGS_I_HAVE_INFINITE_MEMORY = IHaveInfiniteMemory;
 
 ///////////////////////////////////////////////////////////////////////////////
 // injected code

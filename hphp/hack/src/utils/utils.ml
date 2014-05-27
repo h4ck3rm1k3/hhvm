@@ -212,7 +212,7 @@ let rec lfold2 f env l1 l2 =
       let env, rl = lfold2 f env rl1 rl2 in
       env, x :: rl
 
-let rec wlfold2 f env l1 l2 =
+let wlfold2 f env l1 l2 =
   match l1, l2 with
   | [], [] -> env, []
   | [], l | l, [] -> env, l
@@ -324,12 +324,68 @@ let iter_n_acc n f acc =
 let set_of_list list =
   List.fold_right SSet.add list SSet.empty
 
-let cat file =
-  let chan = open_in file in
-  let rec cat_aux acc ()  =
-    let line = try Some (input_line chan) with End_of_file -> None in
-    match line with
-    | Some l -> cat_aux (l::acc) ()
-    | None -> acc
-  in
-  cat_aux [] () |> List.rev |> (fun x -> close_in chan; x)
+let strip_ns s =
+  if s.[0] = '\\' then String.sub s 1 ((String.length s) - 1) else s
+
+(*****************************************************************************)
+(* Primitives *)
+(*****************************************************************************)
+
+let open_in_no_fail fn = 
+  try open_in fn
+  with e -> 
+    let e = Printexc.to_string e in
+    Printf.fprintf stderr "Could not open_in: '%s' (%s)\n" fn e;
+    exit 3
+
+let close_in_no_fail fn ic =
+  try close_in ic with e ->
+    let e = Printexc.to_string e in
+    Printf.fprintf stderr "Could not close: '%s' (%s)\n" fn e;
+    exit 3
+
+let open_out_no_fail fn =
+  try open_out fn
+  with e -> 
+    let e = Printexc.to_string e in
+    Printf.fprintf stderr "Could not open_out: '%s' (%s)\n" fn e;
+    exit 3
+
+let close_out_no_fail fn oc =
+  try close_out oc with e ->
+    let e = Printexc.to_string e in
+    Printf.fprintf stderr "Could not close: '%s' (%s)\n" fn e;
+    exit 3
+
+(*****************************************************************************)
+(* Dumps the content of a file. *)
+(*****************************************************************************)
+
+let cat filename =
+  let ic = open_in filename in
+  let len = in_channel_length ic in
+  let buf = Buffer.create len in
+  Buffer.add_channel buf ic len;
+  let content = Buffer.contents buf in
+  close_in ic;
+  content
+
+let cat_no_fail filename =
+  let ic = open_in_no_fail filename in
+  let len = in_channel_length ic in
+  let buf = Buffer.create len in
+  Buffer.add_channel buf ic len;
+  let content = Buffer.contents buf in
+  close_in_no_fail filename ic;
+  content
+
+let nl_regexp = Str.regexp "[\r\n]"
+let split_lines = Str.split nl_regexp
+
+let str_starts_with long short =
+  try
+    let long = String.sub long 0 (String.length short) in
+    long = short
+  with Invalid_argument _ ->
+    false
+

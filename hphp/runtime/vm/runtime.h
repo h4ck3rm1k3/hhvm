@@ -16,9 +16,12 @@
 #ifndef incl_HPHP_VM_RUNTIME_H_
 #define incl_HPHP_VM_RUNTIME_H_
 
-#include "hphp/runtime/ext/ext_continuation.h"
+#include "hphp/runtime/ext/ext_generator.h"
+#include "hphp/runtime/ext/asio/async_function_wait_handle.h"
+#include "hphp/runtime/ext/std/ext_std_errorfunc.h"
 #include "hphp/runtime/vm/event-hook.h"
 #include "hphp/runtime/vm/func.h"
+#include "hphp/runtime/vm/resumable.h"
 #include "hphp/runtime/base/builtin-functions.h"
 
 namespace HPHP {
@@ -37,6 +40,9 @@ ObjectData* newPairHelper();
 StringData* concat_is(int64_t v1, StringData* v2);
 StringData* concat_si(StringData* v1, int64_t v2);
 StringData* concat_ss(StringData* v1, StringData* v2);
+StringData* concat_s3(StringData* v1, StringData* v2, StringData* v3);
+StringData* concat_s4(StringData* v1, StringData* v2,
+                      StringData* v3, StringData* v4);
 
 void print_string(StringData* s);
 void print_int(int64_t i);
@@ -65,12 +71,27 @@ frame_local_inner(const ActRec* fp, int n) {
   return ret->m_type == KindOfRef ? ret->m_data.pref->tv() : ret;
 }
 
-inline c_Continuation*
-frame_continuation(const ActRec* fp) {
-  auto arOffset = c_Continuation::getArOffset();
-  ObjectData* obj = (ObjectData*)((char*)fp - arOffset);
-  assert(obj->getVMClass() == c_Continuation::classof());
-  return static_cast<c_Continuation*>(obj);
+inline Resumable*
+frame_resumable(const ActRec* fp) {
+  assert(fp->resumed());
+  return (Resumable*)((char*)fp - Resumable::arOff());
+}
+
+inline c_AsyncFunctionWaitHandle*
+frame_afwh(const ActRec* fp) {
+  auto resumable = frame_resumable(fp);
+  auto arOffset = c_AsyncFunctionWaitHandle::arOff();
+  auto waitHandle = (c_AsyncFunctionWaitHandle*)((char*)resumable - arOffset);
+  assert(waitHandle->getVMClass() == c_AsyncFunctionWaitHandle::classof());
+  return waitHandle;
+}
+
+inline c_Generator*
+frame_generator(const ActRec* fp) {
+  auto resumable = frame_resumable(fp);
+  auto obj = (ObjectData*)((char*)resumable - c_Generator::resumableOff());
+  assert(obj->getVMClass() == c_Generator::classof());
+  return static_cast<c_Generator*>(obj);
 }
 
 /*
@@ -92,15 +113,15 @@ frame_free_locals_helper_inl(ActRec* fp, int numLocals) {
     if (fp->hasVarEnv()) {
       // If there is a VarEnv, free the locals and the VarEnv
       // by calling the detach method.
-      fp->m_varEnv->detach(fp);
+      fp->m_varEnv->exitFP(fp);
       return;
     }
     // Free extra args
     assert(fp->hasExtraArgs());
     ExtraArgs* ea = fp->getExtraArgs();
-    int numExtra = fp->numArgs() - fp->m_func->numParams();
+    int numExtra = fp->numArgs() - fp->m_func->numNonVariadicParams();
     if (unwinding) {
-      fp->initNumArgs(fp->m_func->numParams());
+      fp->setNumArgs(fp->m_func->numParams());
       fp->setVarEnv(nullptr);
     }
     ExtraArgs::deallocate(ea, numExtra);
@@ -136,31 +157,31 @@ frame_free_locals_inl_no_hook(ActRec* fp, int numLocals) {
 }
 
 void ALWAYS_INLINE
-frame_free_locals_inl(ActRec* fp, int numLocals) {
+frame_free_locals_inl(ActRec* fp, int numLocals, TypedValue* rv) {
   frame_free_locals_inl_no_hook<false>(fp, numLocals);
-  EventHook::FunctionExit(fp);
+  EventHook::FunctionExit(fp, rv);
 }
 
 void ALWAYS_INLINE
-frame_free_inl(ActRec* fp) { // For frames with no locals
+frame_free_inl(ActRec* fp, TypedValue* rv) { // For frames with no locals
   assert(0 == fp->m_func->numLocals());
   assert(!fp->hasInvName());
   assert(fp->m_varEnv == nullptr);
   assert(fp->hasThis());
   decRefObj(fp->getThis());
-  EventHook::FunctionExit(fp);
+  EventHook::FunctionExit(fp, rv);
 }
 
 void ALWAYS_INLINE
 frame_free_locals_unwind(ActRec* fp, int numLocals) {
   frame_free_locals_inl_no_hook<true>(fp, numLocals);
-  EventHook::FunctionExit(fp);
+  EventHook::FunctionExit(fp, nullptr);
 }
 
 void ALWAYS_INLINE
-frame_free_locals_no_this_inl(ActRec* fp, int numLocals) {
+frame_free_locals_no_this_inl(ActRec* fp, int numLocals, TypedValue* rv) {
   frame_free_locals_helper_inl<false>(fp, numLocals);
-  EventHook::FunctionExit(fp);
+  EventHook::FunctionExit(fp, rv);
 }
 
 // Helper for iopFCallBuiltin.
@@ -212,7 +233,7 @@ RefData* lookupStaticFromClosure(ObjectData* closure,
  * be set up before you use those parts of the runtime.
  */
 
-typedef String (*CompileStringAST)(String, String);
+typedef StringData* (*CompileStringAST)(String, String);
 typedef Unit* (*CompileStringFn)(const char*, int, const MD5&, const char*);
 typedef Unit* (*BuildNativeFuncUnitFn)(const HhbcExtFuncInfo*, ssize_t);
 typedef Unit* (*BuildNativeClassUnitFn)(const HhbcExtClassInfo*, ssize_t);
@@ -245,6 +266,9 @@ bool interface_supports_array(std::string const&);
 bool interface_supports_string(std::string const&);
 bool interface_supports_int(std::string const&);
 bool interface_supports_double(std::string const&);
+
+int64_t zero_error_level();
+void restore_error_level(int64_t oldLevel);
 
 }
 #endif

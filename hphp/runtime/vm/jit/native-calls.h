@@ -44,12 +44,37 @@ enum class FuncType : unsigned {
 
 struct FuncPtr {
   FuncPtr() {}
-  explicit FuncPtr(TCA f) : type(FuncType::Call), call(f) {}
+  explicit FuncPtr(TCA) = delete;
 
   template<class Ret, class... Args>
   /* implicit */ FuncPtr(Ret (*fp)(Args...))
     : type(FuncType::Call)
-    , call(fp)
+    , call(CppCall::direct(fp))
+  {}
+
+  template<class Ret, class Cls, class... Args>
+  /* implicit */ FuncPtr(Ret (Cls::*fp)(Args...))
+    : type(FuncType::Call)
+    , call(CppCall::method(fp))
+  {}
+
+  template<class Ret, class Cls, class... Args>
+  /* implicit */ FuncPtr(Ret (Cls::*fp)(Args...) const)
+    : type(FuncType::Call)
+    , call(CppCall::method(fp))
+  {}
+
+  /*
+   * Create FuncPtrs to array data "rotated" vtables.  For example, in
+   * native-calls.cpp:
+   *
+   *   {NvGetInt, &g_array_funcs.nvGetInt, DSSA, SNone, {{SSA, 0}, {SSA, 1}}},
+   *
+   */
+  template<class Ret, class... Args>
+  /* implicit */ FuncPtr(Ret (*const (*p)[ArrayData::kNumKinds])(Args...))
+    : type(FuncType::Call)
+    , call(CppCall::array(p))
   {}
 
   FuncPtr(FuncType t, uint64_t i) : type(t), srcIdx(i) {

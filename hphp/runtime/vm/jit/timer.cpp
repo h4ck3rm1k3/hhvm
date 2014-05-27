@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -79,6 +79,10 @@ Timer::CounterVec Timer::Counters() {
     ret.emplace_back(pair.str, s_counters[pair.name]);
   }
   return ret;
+}
+
+Timer::Counter Timer::CounterValue(Timer::Name name) {
+  return s_counters[name];
 }
 
 void Timer::RequestInit() {

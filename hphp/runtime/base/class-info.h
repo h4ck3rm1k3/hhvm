@@ -37,7 +37,7 @@ class ClassInfoHook;
 class ClassInfo {
 public:
   enum Attribute {                      //  class   prop   func  method param
-    ZendParamModeNull      = (1 <<  0), //                  x      x
+    ParamCoerceModeNull    = (1 <<  0), //                  x      x
     IsRedeclared           = (1 <<  1), //    x             x
     IsVolatile             = (1 <<  2), //    x             x
 
@@ -54,12 +54,12 @@ public:
     HasCall                = IsPublic,  //    x
     AllowOverride          = IsPrivate, //                  x
     IsReference            = (1 << 11), //                  x      x     x
-    IsConstructor          = (1 << 12), //                         x
+    // Unused              = (1 << 12),
 
     // need a non-zero number for const char * maps
     IsNothing              = (1 << 13),
 
-    ZendCompat             = (1 << 14), //                  x      x
+    // Unused              = (1 << 14),
 
     IsCppSerializable      = (1 << 15), //    x
     HipHopSpecific         = (1 << 16), //    x             x
@@ -79,7 +79,7 @@ public:
     IsSystem               = (1 << 28), //    x             x
 
     IsTrait                = (1 << 29), //    x
-    ZendParamModeFalse     = (1 << 30), //                  x      x
+    ParamCoerceModeFalse   = (1 << 30), //                  x      x
     NoFCallBuiltin         = (1u << 31),//                  x      x
   };
 
@@ -184,16 +184,6 @@ public:
    * Load everything.
    */
   static void Load();
-
-  /**
-   * Return a list of PHP library functions.
-   */
-  static Array GetSystemFunctions();
-
-  /**
-   * Return a list of user defined functions.
-   */
-  static Array GetUserFunctions();
 
   /**
    * Locate one function.

@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    | Copyright (c) 1997-2010 The PHP Group                                |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
@@ -16,8 +16,10 @@
 */
 
 #include "hphp/runtime/ext/stream/ext_stream-user-filters.h"
+#include "hphp/runtime/ext/stream/ext_stream.h"
 #include "hphp/runtime/base/base-includes.h"
 #include "hphp/runtime/ext/ext_array.h"
+#include "hphp/system/constants.h"
 #include "hphp/system/systemlib.h"
 
 namespace HPHP {
@@ -154,14 +156,14 @@ private:
                           const String& filter,
                           const Variant& params) {
     auto class_name = m_registeredFilters.rvalAt(filter).asCStrRef();
-    Class* class_ = Unit::lookupClass(class_name.get());
+    Class* class_ = Unit::getClass(class_name.get(), true);
     Object obj = null_object;
 
     if (LIKELY(class_ != nullptr)) {
-      ArrayInit ctor_args(3);
-      ctor_args.set(stream);
-      ctor_args.set(filter);
-      ctor_args.set(params);
+      PackedArrayInit ctor_args(3);
+      ctor_args.append(stream);
+      ctor_args.append(filter);
+      ctor_args.append(params);
       obj = g_context->createObject(class_name.get(), ctor_args.toArray());
       auto created = obj->o_invoke(s_onCreate, Array::Create());
       /* - true: documented value for success
@@ -201,11 +203,11 @@ int64_t StreamFilter::invokeFilter(Resource in,
   auto consumedTV = make_tv<KindOfInt64>(0);
   auto consumedRef = RefData::Make(consumedTV);
 
-  ArrayInit params(4);
-  params.set(in);
-  params.set(out);
-  params.set(consumedRef);
-  params.set(closing);
+  PackedArrayInit params(4);
+  params.append(in);
+  params.append(out);
+  params.append(consumedRef);
+  params.append(closing);
   return m_filter->o_invoke(s_filter, params.toArray()).toInt64();
 }
 
@@ -229,9 +231,9 @@ bool StreamFilter::remove() {
 // BucketBrigade
 
 BucketBrigade::BucketBrigade(const String& data) {
-  ArrayInit ai(2);
-  ai.set(data);
-  ai.set(data.length());
+  PackedArrayInit ai(2);
+  ai.append(data);
+  ai.append(data.length());
   auto bucket = g_context->createObject(s_bucket_class.get(), ai.toArray());
   appendBucket(bucket);
 }
@@ -272,7 +274,7 @@ bool HHVM_FUNCTION(stream_filter_register,
 Array HHVM_FUNCTION(stream_get_filters) {
   auto filters = s_stream_user_filters.get()->m_registeredFilters;
   if (UNLIKELY(filters.isNull())) {
-    return Array::Create();
+    return empty_array;
   }
   return f_array_keys(filters).toArray();
 }

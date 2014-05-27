@@ -8,7 +8,6 @@ all sub-suites.
 * slow - Slower full featured tests. Grouped into sub-suites.
 * zend/good - Passing tests from Zend's suite.
 * zend/bad - Failing tests from Zend. Fix these and move them to zend/good.
-* vm-perf - Some performance tests that aren't commonly run.
 
 # Examples how to run them
 
@@ -18,8 +17,8 @@ all sub-suites.
 * Zend tests just with the interpreter in RepoAuthoritative mode -
 `test/run test/zend/good -m interp -r`
 
-* Slow tests with the JIT in IR mode -
-`test/run test/slow -m hhir`
+* Slow tests with the JIT in PGO mode -
+`test/run test/slow -m pgo`
 
 * Slow tests with the JIT, using pseudomain_wrapper.php to ensure that
   statements in global scope get jitted (may have false positives due to,
@@ -48,6 +47,7 @@ These are the allowed extensions:
 * .php.diff or hhas.diff - The diff for .expect tests.
 * .hhas - HipHop Assembly.
 * .php.norepo - don't run the test in repo mode
+* .php.noserver - don't run the test in server mode
 
 You must have one `.php`; one and only one of `.php.expect`, `.php.expectf`, and
 `.php.expectregex`; and the rest are optional.

@@ -2236,7 +2236,7 @@
             ]
         },
         {
-            "name": "DOMCDATASection",
+            "name": "DOMCdataSection",
             "parent": "DOMText",
             "desc": "",
             "flags": [
@@ -3021,7 +3021,8 @@
             "parent": "DOMNode",
             "desc": "",
             "flags": [
-                "NoDefaultSweep"
+                "NoDefaultSweep",
+                "IsCppSerializable"
             ],
             "funcs": [
                 {

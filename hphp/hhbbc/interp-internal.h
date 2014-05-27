@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -32,24 +32,32 @@ namespace HPHP { namespace HHBBC {
 TRACE_SET_MOD(hhbbc);
 
 const StaticString s_extract("extract");
+const StaticString s_extract_sl("__SystemLib\\extract");
 const StaticString s_compact("compact");
+const StaticString s_compact_sl("__SystemLib\\compact_sl");
 const StaticString s_get_defined_vars("get_defined_vars");
+const StaticString s_get_defined_vars_sl("__SystemLib\\get_defined_vars");
+
+const StaticString s_http_response_header("http_response_header");
+const StaticString s_php_errormsg("php_errormsg");
 
 //////////////////////////////////////////////////////////////////////
 
 /*
  * Interpreter Step State.
  *
- * This struct is gives interpreter functions access to shared state.
+ * This struct gives interpreter functions access to shared state.
  * It's not in interp-state.h because it's part of the internal
  * implementation of interpreter routines.  The publicized state as
  * results of interpretation are in that header and interp.h.
  */
 struct ISS {
-  explicit ISS(Interp& bag, StepFlags& flags, PropagateFn propagate)
+  explicit ISS(Interp& bag,
+               StepFlags& flags,
+               PropagateFn propagate)
     : index(bag.index)
     , ctx(bag.ctx)
-    , props(bag.props)
+    , collect(bag.collect)
     , blk(*bag.blk)
     , state(bag.state)
     , flags(flags)
@@ -58,7 +66,7 @@ struct ISS {
 
   const Index& index;
   const Context ctx;
-  PropertiesInfo& props;
+  CollectedInfo& collect;
   const php::Block& blk;
   State& state;
   StepFlags& flags;
@@ -76,7 +84,12 @@ void nothrow(ISS& env) {
 
 void calledNoReturn(ISS& env)    { env.flags.calledNoReturn = true; }
 void constprop(ISS& env)         { env.flags.canConstProp = true; }
-void nofallthrough(ISS& env)     { env.flags.tookBranch = true; }
+void nofallthrough(ISS& env)     {
+  env.flags.jmpFlag = StepFlags::JmpFlags::Taken;
+}
+void never_taken(ISS& env)       {
+  env.flags.jmpFlag = StepFlags::JmpFlags::Fallthrough;
+}
 void readUnknownLocals(ISS& env) { env.flags.mayReadLocalSet.set(); }
 void readAllLocals(ISS& env)     { env.flags.mayReadLocalSet.set(); }
 
@@ -116,17 +129,10 @@ void unsetUnknownLocal(ISS& env) {
   for (auto& l : env.state.locals) l = union_of(l, TUninit);
 }
 
-void unsetNamedLocals(ISS& env) {
-  for (auto i = size_t{0}; i < env.state.locals.size(); ++i) {
-    if (env.ctx.func->locals[i]->name) {
-      env.state.locals[i] = TUninit;
-    }
-  }
-}
-
 void specialFunctionEffects(ISS& env, SString name) {
   // extract() trashes the local variable environment.
-  if (name->isame(s_extract.get())) {
+  if (name->isame(s_extract_sl.get())
+      || (!options.DisallowDynamicVarEnvFuncs && name->isame(s_extract.get()))) {
     readUnknownLocals(env);
     killLocals(env);
     return;
@@ -134,8 +140,11 @@ void specialFunctionEffects(ISS& env, SString name) {
   // compact() and get_defined_vars() read the local variable
   // environment.  We could check which locals for compact, but for
   // now we just include them all.
-  if (name->isame(s_compact.get()) ||
-      name->isame(s_get_defined_vars.get())) {
+  if (name->isame(s_get_defined_vars_sl.get()) ||
+      name->isame(s_compact_sl.get()) ||
+      (!options.DisallowDynamicVarEnvFuncs && name->isame(s_compact.get())) ||
+      (!options.DisallowDynamicVarEnvFuncs && name->isame(s_get_defined_vars.get()))
+     ) {
     readUnknownLocals(env);
     return;
   }
@@ -146,10 +155,11 @@ void specialFunctionEffects(ISS& env, ActRec ar) {
   case FPIKind::Unknown:
     // fallthrough
   case FPIKind::Func:
-    // Could be a dynamic call to extract, get_defined_vars, etc:
     if (!ar.func) {
-      readUnknownLocals(env);
-      killLocals(env);
+      if (!options.DisallowDynamicVarEnvFuncs) {
+        readUnknownLocals(env);
+        killLocals(env);
+      }
       return;
     }
     specialFunctionEffects(env, ar.func->name());
@@ -278,6 +288,12 @@ Type locRaw(ISS& env, borrowed_ptr<const php::Local> l) {
 
 void setLocRaw(ISS& env, borrowed_ptr<const php::Local> l, Type t) {
   mayReadLocal(env, l->id);
+  if (l->name && (l->name->same(s_http_response_header.get()) ||
+                  l->name->same(s_php_errormsg.get()))) {
+    auto current = env.state.locals[l->id];
+    assert(current == TGen || current == TCell);
+    return;
+  }
   env.state.locals[l->id] = t;
 }
 
@@ -391,7 +407,7 @@ folly::Optional<Type> selfCls(ISS& env) {
  */
 
 Type* thisPropRaw(ISS& env, SString name) {
-  auto& privateProperties = env.props.privateProperties();
+  auto& privateProperties = env.collect.props.privateProperties();
   auto const it = privateProperties.find(name);
   if (it != end(privateProperties)) {
     return &it->second;
@@ -405,7 +421,9 @@ bool isTrackedThisProp(ISS& env, SString name) {
 
 void killThisProps(ISS& env) {
   FTRACE(2, "    killThisProps\n");
-  for (auto& kv : env.props.privateProperties()) kv.second = TGen;
+  for (auto& kv : env.collect.props.privateProperties()) {
+    kv.second = TGen;
+  }
 }
 
 /*
@@ -456,7 +474,7 @@ void mergeThisProp(ISS& env, SString name, Type type) {
  */
 template<class MapFn>
 void mergeEachThisPropRaw(ISS& env, MapFn fn) {
-  for (auto& kv : env.props.privateProperties()) {
+  for (auto& kv : env.collect.props.privateProperties()) {
     mergeThisProp(env, kv.first, fn(kv.second));
   }
 }
@@ -466,7 +484,7 @@ void unsetThisProp(ISS& env, SString name) {
 }
 
 void unsetUnknownThisProp(ISS& env) {
-  for (auto& kv : env.props.privateProperties()) {
+  for (auto& kv : env.collect.props.privateProperties()) {
     mergeThisProp(env, kv.first, TUninit);
   }
 }
@@ -485,7 +503,7 @@ void boxThisProp(ISS& env, SString name) {
  */
 void loseNonRefThisPropTypes(ISS& env) {
   FTRACE(2, "    loseNonRefThisPropTypes\n");
-  for (auto& kv : env.props.privateProperties()) {
+  for (auto& kv : env.collect.props.privateProperties()) {
     if (kv.second.subtypeOf(TCell)) kv.second = TCell;
   }
 }
@@ -497,7 +515,7 @@ void loseNonRefThisPropTypes(ISS& env) {
 // insensitive types for these.
 
 Type* selfPropRaw(ISS& env, SString name) {
-  auto& privateStatics = env.props.privateStatics();
+  auto& privateStatics = env.collect.props.privateStatics();
   auto it = privateStatics.find(name);
   if (it != end(privateStatics)) {
     return &it->second;
@@ -507,7 +525,9 @@ Type* selfPropRaw(ISS& env, SString name) {
 
 void killSelfProps(ISS& env) {
   FTRACE(2, "    killSelfProps\n");
-  for (auto& kv : env.props.privateStatics()) kv.second = TGen;
+  for (auto& kv : env.collect.props.privateStatics()) {
+    kv.second = TGen;
+  }
 }
 
 void killSelfProp(ISS& env, SString name) {
@@ -540,7 +560,7 @@ void mergeSelfProp(ISS& env, SString name, Type type) {
  */
 template<class MapFn>
 void mergeEachSelfPropRaw(ISS& env, MapFn fn) {
-  for (auto& kv : env.props.privateStatics()) {
+  for (auto& kv : env.collect.props.privateStatics()) {
     mergeSelfProp(env, kv.first, fn(kv.second));
   }
 }
@@ -560,7 +580,7 @@ void boxSelfProp(ISS& env, SString name) {
  */
 void loseNonRefSelfPropTypes(ISS& env) {
   FTRACE(2, "    loseNonRefSelfPropTypes\n");
-  for (auto& kv : env.props.privateStatics()) {
+  for (auto& kv : env.collect.props.privateStatics()) {
     if (kv.second.subtypeOf(TInitCell)) kv.second = TCell;
   }
 }

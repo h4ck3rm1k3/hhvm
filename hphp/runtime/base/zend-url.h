@@ -18,24 +18,23 @@
 #ifndef incl_HPHP_ZEND_URL_H_
 #define incl_HPHP_ZEND_URL_H_
 
+#include "hphp/runtime/base/complex-types.h"
+
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
 
 /**
  * Helper struct storing parsed result from url_parse().
  */
-class Url {
-public:
-  ~Url();
-
-  char *scheme;
-  char *user;
-  char *pass;
-  char *host;
-  unsigned short port;
-  char *path;
-  char *query;
-  char *fragment;
+struct Url {
+  String scheme;
+  String user;
+  String pass;
+  String host;
+  unsigned short port = 0;
+  String path;
+  String query;
+  String fragment;
 };
 
 bool url_parse(Url &output, const char *str, int length);
@@ -43,12 +42,12 @@ bool url_parse(Url &output, const char *str, int length);
 /**
  * raw_ versions ignore "+" or " ".
  */
-char *url_encode(const char *s, int &len);
-char *url_decode(const char *s, int &len);
+String url_encode(const char *s, int len);
+String url_decode(const char *s, int len);
 int url_decode(char *value); // in-place version, also assuming C-string
 int url_decode_ex(char *value, int len);
-char *url_raw_encode(const char *s, int &len);
-char *url_raw_decode(const char *s, int &len);
+String url_raw_encode(const char *s, int len);
+String url_raw_decode(const char *s, int len);
 
 ///////////////////////////////////////////////////////////////////////////////
 }

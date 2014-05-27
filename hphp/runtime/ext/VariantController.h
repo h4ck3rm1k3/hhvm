@@ -67,16 +67,16 @@ struct VariantController {
   static VariantType fromVector(const VectorType& vec) { return vec; }
 
   // map methods
-  static MapType createMap() { return Array::Create(); }
+  static MapType createMap() { return empty_array; }
   static MapType createMap(ArrayInit&& map) {
     return map.toArray();
   }
   static ArrayInit reserveMap(size_t n) {
-    ArrayInit res(n, ArrayInit::mapInit);
+    ArrayInit res(n, ArrayInit::Map{});
     return res;
   }
   static MapType getStaticEmptyMap() {
-    return HphpArray::GetStaticEmptyArray();
+    return MapType(staticEmptyArray());
   }
   static HPHP::serialize::Type mapKeyType(const Variant& k) {
     return type(k);
@@ -91,7 +91,7 @@ struct VariantController {
   }
   template <typename Key>
   static void mapSet(ArrayInit& map, Key&& k, VariantType&& v) {
-    map.set(std::move(k), std::move(v), /* key converted */ true);
+    map.set(std::move(k), std::move(v));
   }
   static int64_t mapSize(const MapType& map) { return map.size(); }
   static ArrayIter mapIterator(const MapType& map) {
@@ -105,7 +105,7 @@ struct VariantController {
   static const VariantType& mapValue(ArrayIter& it) { return it.secondRef(); }
 
   // vector methods
-  static VectorType createVector() { return Array::Create(); }
+  static VectorType createVector() { return empty_array; }
   static void vectorAppend(VectorType& vec, const VariantType& v) {
     vec.append(v);
   }

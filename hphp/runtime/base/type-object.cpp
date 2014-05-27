@@ -46,17 +46,6 @@ Object::~Object() {
   // force it out of line
 }
 
-ArrayIter Object::begin(const String& context /* = null_string */) const {
-  if (!m_px) throw_null_pointer_exception();
-  return m_px->begin(context);
-}
-
-MutableArrayIter Object::begin(Variant *key, Variant &val,
-                               const String& context /*= null_string*/) const {
-  if (!m_px) throw_null_pointer_exception();
-  return m_px->begin(key, val, context);
-}
-
 Array Object::toArray() const {
   return m_px ? m_px->o_toArray() : Array();
 }
@@ -138,19 +127,6 @@ Variant Object::o_set(const String& propName, const Variant& val,
     setToDefaultObject();
   }
   return m_px->o_set(propName, val, context);
-}
-
-Variant Object::o_setRef(const String& propName, const Variant& val,
-                         const String& context /* = null_string */) {
-  if (!m_px) {
-    setToDefaultObject();
-  }
-  return m_px->o_setRef(propName, val, context);
-}
-
-Variant Object::o_set(const String& propName, RefResult val,
-                      const String& context /* = null_string */) {
-  return o_setRef(propName, variant(val), context);
 }
 
 const char* Object::classname_cstr() const {

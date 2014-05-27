@@ -40,6 +40,7 @@
 #include "hphp/runtime/base/ssl-socket.h"
 #include "hphp/runtime/server/server-stats.h"
 #include "hphp/runtime/base/persistent-resource-store.h"
+#include "hphp/runtime/base/zend-php-config.h"
 #include "hphp/util/logger.h"
 
 #define PHP_NORMAL_READ 0x0001
@@ -116,6 +117,7 @@ static bool php_set_inet6_addr(struct sockaddr_in6 *sin6, const char *address,
     hints.ai_family = PF_INET6;
     getaddrinfo(address, NULL, &hints, &addrinfo);
     if (!addrinfo) {
+      // 10000 is a magic value to indicate a host error.
       SOCKET_ERROR(sock, "Host lookup failed", (-10000 - h_errno));
       return false;
     }
@@ -293,7 +295,7 @@ static int php_read(Socket *sock, void *buf, int maxlen, int flags) {
 
 static bool create_new_socket(const HostURL &hosturl,
                               Variant &errnum, Variant &errstr, Resource &ret,
-                              Socket *&sock, double timeout) {
+                              Socket *&sock) {
   int domain = hosturl.isIPv6() ? AF_INET6 : AF_INET;
   int type = SOCK_STREAM;
   const std::string scheme = hosturl.getScheme();
@@ -305,12 +307,12 @@ static bool create_new_socket(const HostURL &hosturl,
   }
 
   sock = new Socket(socket(domain, type, 0), domain,
-                    hosturl.getHost().c_str(), hosturl.getPort(), timeout);
+                    hosturl.getHost().c_str(), hosturl.getPort());
   ret = Resource(sock);
   if (!sock->valid()) {
     SOCKET_ERROR(sock, "unable to create socket", errno);
     errnum = sock->getError();
-    errstr = String(folly::errnoStr(sock->getError()).toStdString());
+    errstr = f_socket_strerror(sock->getError());
     return false;
   }
   return true;
@@ -364,6 +366,9 @@ Variant f_socket_create_listen(int port, int backlog /* = 128 */) {
   return ret;
 }
 
+const StaticString
+  s_socktype_generic("generic_socket");
+
 bool f_socket_create_pair(int domain, int type, int protocol, VRefParam fd) {
   check_socket_parameters(domain, type);
 
@@ -375,8 +380,10 @@ bool f_socket_create_pair(int domain, int type, int protocol, VRefParam fd) {
   }
 
   Array ret;
-  ret.set(0, Resource(new Socket(fds_array[0], domain)));
-  ret.set(1, Resource(new Socket(fds_array[1], domain)));
+  ret.set(0, Resource(new Socket(fds_array[0], domain, nullptr, 0, 0.0,
+                                 s_socktype_generic)));
+  ret.set(1, Resource(new Socket(fds_array[1], domain, nullptr, 0, 0.0,
+                                 s_socktype_generic)));
   fd = ret;
   return true;
 }
@@ -709,7 +716,7 @@ Variant socket_server_impl(const HostURL &hosturl,
                            VRefParam errstr /* = null */) {
   Resource ret;
   Socket *sock = NULL;
-  if (!create_new_socket(hosturl, errnum, errstr, ret, sock, 0.0)) {
+  if (!create_new_socket(hosturl, errnum, errstr, ret, sock)) {
     return false;
   }
   assert(ret.get() && sock);
@@ -1021,6 +1028,19 @@ void f_socket_close(const Resource& socket) {
 }
 
 String f_socket_strerror(int errnum) {
+  /*
+   * PHP5 encodes both the h_errno and errno values into a single int:
+   * < -10000: transformed h_errno value
+   * >= -10000: errno value
+   */
+  if (errnum < -10000) {
+    errnum = (-errnum) - 10000;
+#ifdef HAVE_HSTRERROR
+    return String(hstrerror(errnum), CopyString);
+#endif
+    return folly::format("Host lookup error {}", errnum).str();
+  }
+
   return String(folly::errnoStr(errnum).toStdString());
 }
 
@@ -1073,7 +1093,7 @@ Variant sockopen_impl(const HostURL &hosturl, VRefParam errnum,
   if (sslsock) {
     sock = sslsock;
     ret = sock;
-  } else if (!create_new_socket(hosturl, errnum, errstr, ret, sock, timeout)) {
+  } else if (!create_new_socket(hosturl, errnum, errstr, ret, sock)) {
     return false;
   }
   assert(ret.get() && sock);
@@ -1111,7 +1131,7 @@ Variant sockopen_impl(const HostURL &hosturl, VRefParam errnum,
             std::string msg = "failed to connect to " + hosturl.getHostURL();
             SOCKET_ERROR(sock, msg.c_str(), valopt);
             errnum = sock->getError();
-            errstr = String(folly::errnoStr(sock->getError()).toStdString());
+            errstr = f_socket_strerror(sock->getError());
             return false;
           } else {
             retval = 0; // success
@@ -1122,7 +1142,7 @@ Variant sockopen_impl(const HostURL &hosturl, VRefParam errnum,
           msg += " seconds when connecting to " + hosturl.getHostURL();
           SOCKET_ERROR(sock, msg.c_str(), ETIMEDOUT);
           errnum = sock->getError();
-          errstr = String(folly::errnoStr(sock->getError()).toStdString());
+          errstr = f_socket_strerror(sock->getError());
           return false;
         }
       }
@@ -1134,8 +1154,11 @@ Variant sockopen_impl(const HostURL &hosturl, VRefParam errnum,
   }
 
   if (retval != 0) {
-    errnum = sock->getError();
-    errstr = String(folly::errnoStr(sock->getError()).toStdString());
+    errnum = sock->getLastError();
+    errstr = f_socket_strerror(sock->getLastError());
+    std::string msg = "unable to connect to ";
+    msg += hosturl.getHostURL();
+    SOCKET_ERROR(sock, msg.c_str(), sock->getLastError());
     return false;
   }
 
@@ -1152,18 +1175,18 @@ Variant sockopen_impl(const HostURL &hosturl, VRefParam errnum,
   return ret;
 }
 
-Variant f_fsockopen(const String& hostname, int port /* = -1 */,
-                    VRefParam errnum /* = null */,
-                    VRefParam errstr /* = null */,
-                    double timeout /* = -1.0 */) {
+Variant HHVM_FUNCTION(fsockopen, const String& hostname, int port /* = -1 */,
+                      VRefParam errnum /* = null */,
+                      VRefParam errstr /* = null */,
+                      double timeout /* = -1.0 */) {
   HostURL hosturl(static_cast<const std::string>(hostname), port);
   return sockopen_impl(hosturl, errnum, errstr, timeout, false);
 }
 
-Variant f_pfsockopen(const String& hostname, int port /* = -1 */,
-                     VRefParam errnum /* = null */,
-                     VRefParam errstr /* = null */,
-                     double timeout /* = -1.0 */) {
+Variant HHVM_FUNCTION(pfsockopen, const String& hostname, int port /* = -1 */,
+                                  VRefParam errnum /* = null */,
+                                  VRefParam errstr /* = null */,
+                                  double timeout /* = -1.0 */) {
   // TODO: persistent socket handling
   HostURL hosturl(static_cast<const std::string>(hostname), port);
   return sockopen_impl(hosturl, errnum, errstr, timeout, true);
@@ -1258,7 +1281,7 @@ Variant f_getaddrinfo(const String& host, const String& port, int family /* = 0 
       }
     }
 
-    data.set(s_sockaddr, (sockinfo.empty() ? nullptr : sockinfo));
+    data.set(s_sockaddr, (sockinfo.empty() ? Array() : sockinfo));
 
     ret.append(data);
   }

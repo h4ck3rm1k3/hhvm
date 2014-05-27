@@ -62,7 +62,14 @@ public:
            const HeaderMap *requestHeaders = nullptr,
            std::vector<String> *responseHeaders = nullptr);
 
+  int request(const char* method,
+              const char *url, const char *data, int size,
+              StringBuffer &response, const HeaderMap *requestHeaders,
+              std::vector<String> *responseHeaders);
+
   std::string getLastError() const { return m_error;}
+
+  static const int defaultMaxRedirect = 20;
 
 private:
   int m_timeout;
@@ -85,9 +92,6 @@ private:
 
   Array       m_stream_context_options;
 
-  int impl(const char *url, const char *data, int size, StringBuffer &response,
-           const HeaderMap *requestHeaders,
-           std::vector<String> *responseHeaders);
 
   static size_t curl_write(char *data, size_t size, size_t nmemb, void *ctx);
   static size_t curl_header(char *data, size_t size, size_t nmemb, void *ctx);

@@ -25,6 +25,7 @@
 #include "hphp/runtime/base/runtime-option.h"
 #include "hphp/runtime/base/type-conversions.h"
 #include "hphp/runtime/base/builtin-functions.h"
+#include "hphp/runtime/base/apc-stats.h"
 #include "hphp/runtime/server/server-stats.h"
 #include <tbb/concurrent_hash_map.h>
 #include <tbb/concurrent_priority_queue.h>
@@ -106,12 +107,17 @@ struct ConcurrentTableSharedStore {
   bool clear();
 
   void prime(const std::vector<KeyValuePair> &vars);
-  bool constructPrime(const String& v, KeyValuePair& item, bool serialized);
+  bool constructPrime(const String& v, KeyValuePair& item, bool serObj);
   bool constructPrime(const Variant& v, KeyValuePair& item);
   void primeDone();
 
   // debug support
-  void dump(std::ostream & out, bool keyOnly, int waitSeconds);
+  enum class DumpMode {
+    keyOnly=0,
+    keyAndValue=1,
+    keyAndMeta=2
+  };
+  void dump(std::ostream& out, DumpMode dumpMode, int waitSeconds);
 
 private:
 
@@ -165,25 +171,34 @@ private:
 
 private:
   APCHandle* construct(const Variant& v) {
-    return APCHandle::Create(v, false);
+    return APCHandle::Create(v);
   }
 
   bool eraseImpl(const String& key, bool expired, int64_t oldestTime = 0);
 
   void eraseAcc(Map::accessor &acc) {
     const char *pkey = acc->first;
+    if (RuntimeOption::EnableAPCStats) {
+      m_apcStats.removeKey(pkey);
+    }
     m_vars.erase(acc);
     free((void *)pkey);
   }
 
   // Should be called outside m_lock
   void purgeExpired();
-
   void addToExpirationQueue(const char* key, int64_t etime);
 
   bool handleUpdate(const String& key, APCHandle* svar);
-  bool handlePromoteObj(const String& key, APCHandle* svar, const Variant& valye);
+  bool handlePromoteObj(const String& key,
+                        APCHandle* svar,
+                        const Variant& val);
   APCHandle* unserialize(const String& key, const StoreValue* sval);
+
+  // helpers for dumping APC
+  void dumpKeyOnly(std::ostream& out);
+  void dumpKeyAndValue(std::ostream& out);
+  void dumpKeyAndMeta(std::ostream& out);
 
 private:
   int m_id;
@@ -197,6 +212,7 @@ private:
                                  ExpirationCompare> m_expQueue;
   ExpMap m_expMap;
   std::atomic<uint64_t> m_purgeCounter;
+  APCStats m_apcStats;
 };
 
 //////////////////////////////////////////////////////////////////////

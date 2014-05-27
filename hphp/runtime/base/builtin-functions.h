@@ -185,6 +185,8 @@ void throw_collection_modified() ATTRIBUTE_NORETURN;
 void throw_collection_property_exception() ATTRIBUTE_NORETURN;
 void throw_collection_compare_exception() ATTRIBUTE_NORETURN;
 void throw_param_is_not_container() ATTRIBUTE_NORETURN;
+void throw_cannot_modify_immutable_object(const char* className)
+  ATTRIBUTE_NORETURN;
 void check_collection_compare(ObjectData* obj);
 void check_collection_compare(ObjectData* obj1, ObjectData* obj2);
 void check_collection_cast_to_array();
@@ -200,6 +202,9 @@ Object create_object(const String& s, const Array &params, bool init = true);
  */
 void throw_missing_arguments_nr(const char *fn, int expected, int got,
                                 int level = 0, TypedValue *rv = nullptr)
+  __attribute__((cold));
+void throw_missing_min_arguments_nr(const char *fn, int expected, int got,
+                                    int level = 0, TypedValue *rv = nullptr)
   __attribute__((cold));
 void throw_toomany_arguments_nr(const char *fn, int num, int level = 0,
                                 TypedValue *rv = nullptr)
@@ -232,7 +237,8 @@ void throw_expected_array_or_collection_exception();
  * If RuntimeOption::ThrowInvalidArguments is off, we will log a
  * warning and swallow the error.
  */
-void throw_invalid_argument(const char *fmt, ...) ATTRIBUTE_PRINTF(1,2);
+void throw_invalid_argument(const char *fmt, ...) ATTRIBUTE_PRINTF(1,2)
+   __attribute__((cold));
 
 /**
  * Unsetting ClassName::StaticProperty.

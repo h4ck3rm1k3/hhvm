@@ -22,7 +22,7 @@ namespace __SystemLib {
     private $level = -1; // zlib default
     private $buffer = '';
 
-    public function filter($in, $out, &$consumed, $closing) {
+    public function filter($in, $out, &$consumed, $closing): int {
       while ($bucket = stream_bucket_make_writeable($in)) {
         $this->buffer .= $bucket->data;
       }
@@ -48,12 +48,12 @@ namespace __SystemLib {
   }
 
   class InflateStreamFilter extends \php_user_filter {
-    public function onCreate() {
+    public function onCreate(): bool {
       $this->impl = new \__SystemLib_ChunkedInflator();
       return true;
     }
 
-    public function filter($in, $out, &$consumed, $closing) {
+    public function filter($in, $out, &$consumed, $closing): int {
       while ($bucket = stream_bucket_make_writeable($in)) {
         if ($this->impl->eof()) {
           return \PSFS_ERR_FATAL;
@@ -65,16 +65,12 @@ namespace __SystemLib {
         );
       }
 
-      if ($this->impl->eof()) {
-        return \PSFS_PASS_ON;
-      } else {
-        return \PSFS_FEED_ME;
-      }
+      return \PSFS_PASS_ON;
     }
   }
 
   class StringToUpperStreamFilter extends \php_user_filter {
-    public function filter($in, $out, &$consumed, $closing) {
+    public function filter($in, $out, &$consumed, $closing): int {
       while ($bucket = stream_bucket_make_writeable($in)) {
         stream_bucket_append(
           $out,
@@ -86,7 +82,7 @@ namespace __SystemLib {
   }
 
   class StringToLowerStreamFilter extends \php_user_filter {
-    public function filter($in, $out, &$consumed, $closing) {
+    public function filter($in, $out, &$consumed, $closing): int {
       while ($bucket = stream_bucket_make_writeable($in)) {
         stream_bucket_append(
           $out,
@@ -98,7 +94,7 @@ namespace __SystemLib {
   }
 
   class StringRot13StreamFilter extends \php_user_filter {
-    public function filter($in, $out, &$consumed, $closing) {
+    public function filter($in, $out, &$consumed, $closing): int {
       while ($bucket = stream_bucket_make_writeable($in)) {
         stream_bucket_append(
           $out,

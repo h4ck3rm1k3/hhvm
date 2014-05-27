@@ -22,6 +22,7 @@
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <boost/algorithm/string/predicate.hpp>
 
 #include "folly/FBString.h"
 #include "folly/Format.h"
@@ -207,6 +208,9 @@ void emitCast(const PhpParam& param, int32_t index, std::ostream& out,
     out << ind << "  rv->m_type = KindOfBoolean;\n"
         << ind << "  rv->m_data.num = 0;\n";
     emitZendParamSuffix(out, ind);
+  } else if (param.kindOf() == KindOfObject && param.hasDefault()) {
+    out << ind << "tvCastToNullableObject"
+        << "InPlace(args-" << index << ");\n";
   } else if (param.kindOf() != KindOfAny) {
     out << ind << "tvCastTo" << kindOfString(param.kindOf())
         << "InPlace(args-" << index << ");\n";
@@ -261,8 +265,8 @@ void emitBuildExtraArgs(const PhpFunc& func, std::ostream& out,
   out << folly::format(
     R"(
 {0}Array extraArgs;
-{0}{{
-{0}  ArrayInit ai(count-{1});
+{0}if (count > {1}) {{
+{0}  ArrayInit ai((size_t)count-{1}, ArrayInit::Mixed{{}});
 {0}  for (int32_t i = {1}; i < count; ++i) {{
 {0}    TypedValue* extraArg = ar->getExtraArg(i-{1});
 {0}    if (tvIsStronglyBound(extraArg)) {{
@@ -434,15 +438,30 @@ void emitExtCall(const PhpFunc& func, std::ostream& out, const char* ind) {
       if (kindof != KindOfAny ||
           (defVal != "null" && defVal != "null_variant")) {
         out << " = ";
-        std::string nullToType =
-          kindof == KindOfArray ? ".toArray()" :
-          kindof == KindOfString ? ".toString()" :
-          kindof == KindOfResource ? ".toResource()" :
-          kindof == KindOfObject ? ".toObject()" :
-          kindof == KindOfRef ? "" :
-          "icantconvertthisfromnull";
-        if (defVal == "null_variant") defVal += nullToType;
-        out << (defVal == "null" ? "uninit_null()" + nullToType : defVal);
+
+        if (boost::starts_with(defVal, "null")) {
+          switch (kindof) {
+            case KindOfArray:
+              out << "Array()";
+              break;
+            case KindOfString:
+              out << "String()";
+              break;
+            case KindOfResource:
+              out << "Resource()";
+              break;
+            case KindOfObject:
+              out << "Object()";
+              break;
+            case KindOfRef:
+              out << "init_null()";
+              break;
+            default:
+              out << "No valid null object.";
+          }
+        } else {
+          out << defVal;
+        }
       }
       out << ";\n";
     }
@@ -614,9 +633,7 @@ void processSymbol(const fbstring& symbol, std::ostream& header,
 
   std::ostringstream decl;
   emitRemappedFuncDecl(func, symbol, declPrefix, decl);
-  if (!isMethod) {
-    header << decl.str();
-  }
+  header << decl.str();
   cpp << decl.str();
 
   if (func.numTypeChecks() > 0) {
@@ -676,7 +693,7 @@ void processSymbol(const fbstring& symbol, std::ostream& header,
   // Call the f_ function via the fh_ alias
   emitExtCall(func, cpp, in);
   if (needArgMiscountClause && (func.numParams() == 0) && func.usesThis()) {
-    cpp << in << "frame_free_inl(ar);\n";
+    cpp << in << "frame_free_inl(ar, rv);\n";
     cpp << in << "ar->m_r = *rv;\n";
     cpp << in << "return &ar->m_r;\n";
   }
@@ -696,14 +713,17 @@ void processSymbol(const fbstring& symbol, std::ostream& header,
   if (needArgMiscountClause) {
     cpp << in + 2 << "} else {\n";
     if (func.isVarArgs()) {
-      cpp << in << "throw_missing_arguments_nr(\"" << func.getPrettyName()
+      cpp << in << "throw_missing_arguments_nr(\""
+          << escapeCpp(func.getPrettyName())
           << "\", " << func.minNumParams() << ", count, 1, rv);\n";
     } else {
       if (func.minNumParams() == 0) {
-        cpp << in << "throw_toomany_arguments_nr(\"" << func.getPrettyName()
+        cpp << in << "throw_toomany_arguments_nr(\""
+            << escapeCpp(func.getPrettyName())
             << "\", " << func.numParams() << ", 1, rv);\n";
       } else {
-        cpp << in << "throw_wrong_arguments_nr(\"" << func.getPrettyName()
+        cpp << in << "throw_wrong_arguments_nr(\""
+            << escapeCpp(func.getPrettyName())
             << "\", count, " << func.minNumParams() << ", "
             << func.numParams() << ", 1, rv);\n";
       }
@@ -715,7 +735,7 @@ void processSymbol(const fbstring& symbol, std::ostream& header,
   if (func.isMethod() && !func.isStatic()) {
     cpp << in + 2 << "} else {\n";
     cpp << in << "throw_instance_method_fatal(\"" << func.className()
-        << "::" << func.name() << "\");\n";
+        << "::" << func.getCppName() << "\");\n";
     in += 2;
     cpp << in << "}\n";
   }
@@ -723,7 +743,7 @@ void processSymbol(const fbstring& symbol, std::ostream& header,
   auto numLocals = func.numParams();
   auto frameFree =
     func.usesThis() ? "frame_free_locals_inl" : "frame_free_locals_no_this_inl";
-  cpp << in << frameFree << "(ar, " << numLocals << ");\n";
+  cpp << in << frameFree << "(ar, " << numLocals << ", rv);\n";
   cpp << in << "ar->m_r = *rv;\n";
   cpp << in << "return &ar->m_r;\n";
   cpp << "}\n\n";

@@ -89,7 +89,7 @@ final class ImmVector<Tv> implements ConstVector<Tv> {
   public function toKeysArray(): array;
 
   /**
-   * Returns an iterator that points to beginning of this ImmVector.
+   * Returns an iterator that points to the beginning of this ImmVector.
    */
   public function getIterator(): VectorIterator<Tv>;
 
@@ -107,12 +107,11 @@ final class ImmVector<Tv> implements ConstVector<Tv> {
   public static function fromItems(?Traversable<Tv> $items): ImmVector<Tv>;
 
   /**
-   * Slice an ImmVector. This function provides the functionality of
-   * array_slice() for ImmVectors. Note that this function returns
-   * a new ImmVector and does not modify the original ImmVector.
+   * Returns a Vector built from the keys of the specified container.
    */
-  public static function slice(ImmVector<Tv> $v, int $offset,
-                               ?int $len = null): ImmVector<Tv>;
+  public static function fromKeysOf<Tk,Tv2>(
+    ?KeyedContainer<Tk,Tv2> $container
+  ): Vector<Tk>;
 
   public function __toString(): string;
 
@@ -150,6 +149,16 @@ final class ImmVector<Tv> implements ConstVector<Tv> {
   public function filter((function(Tv): bool) $callback): ImmVector<Tv>;
   public function filterWithKey((function(int, Tv): bool) $callback):
     ImmVector<Tv>;
-  public function zip<Tu>(Traversable<Tu> $iterable):
+  public function zip<Tu>(Traversable<Tu> $traversable):
     ImmVector<Pair<Tv, Tu>>;
+  public function take(int $n): ImmVector<Tv>;
+  public function takeWhile((function(Tv): bool) $fn): ImmVector<Tv>;
+  public function skip(int $n): ImmVector<Tv>;
+  public function skipWhile((function(Tv): bool) $fn): ImmVector<Tv>;
+  public function slice(int $start, int $len): ImmVector<Tv>;
+  public function concat(Traversable<Tv> $traversable): ImmVector<Tv>;
+  public function firstValue(): ?Tv;
+  public function firstKey(): ?int;
+  public function lastValue(): ?Tv;
+  public function lastKey(): ?int;
 }

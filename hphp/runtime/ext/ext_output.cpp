@@ -19,6 +19,7 @@
 #include "hphp/runtime/ext/json/ext_json.h"
 #include "hphp/runtime/base/runtime-option.h"
 #include "hphp/runtime/base/hardware-counter.h"
+#include "hphp/system/constants.h"
 #include "hphp/util/lock.h"
 #include "hphp/util/logger.h"
 
@@ -41,13 +42,16 @@ bool f_ob_start(const Variant& callback /* = uninit_null() */,
   return true;
 }
 void f_ob_clean() {
-  g_context->obClean();
+  // PHP_OUTPUT_HANDLER_START is included by PHP5
+  g_context->obClean(k_PHP_OUTPUT_HANDLER_START | k_PHP_OUTPUT_HANDLER_CLEAN);
 }
 void f_ob_flush() {
   g_context->obFlush();
 }
 bool f_ob_end_clean() {
-  g_context->obClean();
+  g_context->obClean(k_PHP_OUTPUT_HANDLER_START |
+                     k_PHP_OUTPUT_HANDLER_CLEAN |
+                     k_PHP_OUTPUT_HANDLER_END);
   return g_context->obEnd();
 }
 bool f_ob_end_flush() {
@@ -161,7 +165,7 @@ Variant f_hphp_get_timers(bool get_as_float /* = true */) {
   const int64_t &nsleep_time_s = transport->getnSleepTimeS();
   const int32_t &nsleep_time_n = transport->getnSleepTimeN();
 
-  ArrayInit ret(7);
+  ArrayInit ret(7, ArrayInit::Map{});
   if (get_as_float) {
     ret.set(s_queue,        ts_float(tsQueue));
     ret.set(s_process_wall, ts_float(tsWall));

@@ -29,21 +29,18 @@ namespace HPHP {
  * asynchronous. A WaitHandle class is a base class of all such objects. There
  * are multiple types of wait handles, this is their hierarchy:
  *
- * WaitHandle                     - abstract wait handle
- *   StaticWaitHandle             - statically finished wait handle
- *     StaticResultWaitHandle     - statically succeeded wait handle with result
- *     StaticExceptionWaitHandle  - statically failed wait handle with exception
- *   WaitableWaitHandle           - wait handle that can be waited for
- *     BlockableWaitHandle        - wait handle that can be blocked by other WH
- *       AsyncFunctionWaitHandle  - async function-based asynchronous execution
- *       GenArrayWaitHandle       - wait handle representing an array of WHs
- *       GenMapWaitHandle         - wait handle representing an Map of WHs
- *       GenVectorWaitHandle      - wait handle representing an Vector of WHs
- *       SetResultToRefWaitHandle - wait handle that sets result to reference
- *     RescheduleWaitHandle       - wait handle that reschedules execution
- *     SessionScopedWaitHandle    - wait handle with session-managed execution
- *       SleepWaitHandle          - wait handle that finishes after a timeout
- *       ExternalThreadEventWaitHandle  - thread-powered asynchronous execution
+ * WaitHandle                      - abstract wait handle
+ *  StaticWaitHandle               - statically finished wait handle
+ *  WaitableWaitHandle             - wait handle that can be waited for
+ *   BlockableWaitHandle           - wait handle that can be blocked by other WH
+ *    ResumableWaitHandle          - wait handle that can resume PHP execution
+ *     AsyncFunctionWaitHandle     - async function-based asynchronous execution
+ *    GenArrayWaitHandle           - wait handle representing an array of WHs
+ *    GenMapWaitHandle             - wait handle representing an Map of WHs
+ *    GenVectorWaitHandle          - wait handle representing an Vector of WHs
+ *   RescheduleWaitHandle          - wait handle that reschedules execution
+ *   SleepWaitHandle               - wait handle that finishes after a timeout
+ *   ExternalThreadEventWaitHandle - thread-powered asynchronous execution
  *
  * A wait handle can be either synchronously joined (waited for the operation
  * to finish) or passed in various contexts as a dependency and waited for
@@ -54,6 +51,17 @@ FORWARD_DECLARE_CLASS(WaitHandle);
 class c_WaitHandle : public ExtObjectDataFlags<ObjectData::IsWaitHandle> {
  public:
   DECLARE_CLASS_NO_SWEEP(WaitHandle)
+
+  enum class Kind : uint8_t {
+    Static,
+    AsyncFunction,
+    GenArray,
+    GenMap,
+    GenVector,
+    Reschedule,
+    Sleep,
+    ExternalThreadEvent,
+  };
 
   explicit c_WaitHandle(Class* cls = c_WaitHandle::classof())
     : ExtObjectDataFlags(cls)
@@ -74,38 +82,43 @@ class c_WaitHandle : public ExtObjectDataFlags<ObjectData::IsWaitHandle> {
   Object t_getexceptioniffailed();
 
  public:
-  static c_WaitHandle* fromCell(Cell* cell) {
+  static constexpr ptrdiff_t stateOff() {
+    return offsetof(c_WaitHandle, o_subclassData.u8[0]);
+  }
+  static constexpr ptrdiff_t resultOff() {
+    return offsetof(c_WaitHandle, m_resultOrException);
+  }
+
+  static c_WaitHandle* fromCell(const Cell* cell) {
     return (
         cell->m_type == KindOfObject &&
         cell->m_data.pobj->getAttribute(ObjectData::IsWaitHandle)
       ) ? static_cast<c_WaitHandle*>(cell->m_data.pobj) : nullptr;
   }
-  bool isFinished() { return getState() <= STATE_FAILED; }
-  bool isSucceeded() { return getState() == STATE_SUCCEEDED; }
-  bool isFailed() { return getState() == STATE_FAILED; }
-  Cell& getResult() {
+  bool isFinished() const { return getState() <= STATE_FAILED; }
+  bool isSucceeded() const { return getState() == STATE_SUCCEEDED; }
+  bool isFailed() const { return getState() == STATE_FAILED; }
+  const Cell& getResult() const {
     assert(isSucceeded());
     return m_resultOrException;
   }
-  ObjectData* getException() {
+  ObjectData* getException() const {
     assert(isFailed());
     return m_resultOrException.m_data.pobj;
   }
 
-  uint8_t getState() { return o_subclassData.u8[0]; }
-  void setState(uint8_t state) { o_subclassData.u8[0] = state; }
-
-  // Access for the TC; the offset of the result from an ObjectData*.
-  static ptrdiff_t resultOffset() {
-    auto const objOffset =
-      reinterpret_cast<uintptr_t>(
-        static_cast<ObjectData*>(reinterpret_cast<c_WaitHandle*>(0x100))
-      ) - 0x100;
-    return offsetof(c_WaitHandle, m_resultOrException) - objOffset;
+  Kind getKind() const { return static_cast<Kind>(o_subclassData.u8[0] >> 4); }
+  uint8_t getState() const { return o_subclassData.u8[0] & 0x0F; }
+  static uint8_t toKindState(Kind kind, uint8_t state) {
+    assert((uint8_t)kind < 0x10 && state < 0x10);
+    return ((uint8_t)kind << 4) | state;
+  }
+  void setKindState(Kind kind, uint8_t state) {
+    o_subclassData.u8[0] = toKindState(kind, state);
   }
 
   // The code in the TC will depend on the values of these constants.
-  // See emitAsyncAwait().
+  // See emitAwait().
   static const int8_t STATE_SUCCEEDED = 0;
   static const int8_t STATE_FAILED    = 1;
 

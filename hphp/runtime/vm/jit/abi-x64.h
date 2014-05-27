@@ -27,6 +27,7 @@
 #define incl_HPHP_VM_RUNTIME_TRANSLATOR_ABI_X64_H_
 
 #include "hphp/util/asm-x64.h"
+#include "hphp/runtime/vm/jit/abi.h"
 #include "hphp/runtime/vm/jit/phys-reg.h"
 #include "hphp/runtime/vm/jit/reserved-stack.h"
 
@@ -58,6 +59,18 @@ constexpr PhysReg rVmSp      = reg::rbx;
  */
 constexpr PhysReg rVmTl      = reg::r12;
 
+/*
+ * scratch register
+ */
+constexpr Reg64 rAsm         = reg::r10;
+
+/*
+ * Reserved for CodeGenerator.
+ */
+constexpr Reg64 rCgGP        = reg::r11;
+constexpr RegXMM rCgXMM0     = reg::xmm6;
+constexpr RegXMM rCgXMM1     = reg::xmm7;
+
 //////////////////////////////////////////////////////////////////////
 /*
  * Registers used during a tracelet for program locations.
@@ -67,72 +80,87 @@ constexpr PhysReg rVmTl      = reg::r12;
  * translator manages via its RegMap.
  */
 
+const RegSet kGPCallerSaved = RegSet()
+  | RegSet(reg::rax)
+  | RegSet(reg::rcx)
+  | RegSet(reg::rdx)
+  | RegSet(reg::rsi)
+  | RegSet(reg::rdi)
+  | RegSet(reg::r8)
+  | RegSet(reg::r9)
+  ;
+
+const RegSet kGPCalleeSaved = RegSet()
+  | RegSet(reg::r13)
+  | RegSet(reg::r14)
+  | RegSet(reg::r15)
+  ;
+
+const RegSet kGPUnreserved = RegSet()
+  | kGPCallerSaved
+  | kGPCalleeSaved
+  ;
+
+const RegSet kGPReserved = RegSet()
+  | RegSet(rVmSp)
+  | RegSet(reg::rsp)
+  | RegSet(rVmFp)
+  | RegSet(rVmTl)
+  | RegSet(rCgGP)
+  | RegSet(rAsm)
+  ;
+
+const RegSet kGPRegs = RegSet()
+  | kGPUnreserved
+  | kGPReserved
+  ;
+
+const RegSet kXMMCallerSaved = RegSet()
+  | RegSet(reg::xmm0)
+  | RegSet(reg::xmm1)
+  | RegSet(reg::xmm2)
+  | RegSet(reg::xmm3)
+  | RegSet(reg::xmm4)
+  | RegSet(reg::xmm5)
+  //| RegSet(reg::xmm6) rCgXMM0
+  //| RegSet(reg::xmm7) rCgXMM1
+  | RegSet(reg::xmm8)
+  | RegSet(reg::xmm9)
+  | RegSet(reg::xmm10)
+  | RegSet(reg::xmm11)
+  | RegSet(reg::xmm12)
+  | RegSet(reg::xmm13)
+  | RegSet(reg::xmm14)
+  | RegSet(reg::xmm15)
+  ;
+
+const RegSet kXMMCalleeSaved = RegSet()
+  ;
+
+const RegSet kXMMUnreserved = RegSet()
+  | kXMMCallerSaved
+  | kXMMCalleeSaved
+  ;
+
+const RegSet kXMMReserved = RegSet()
+  | RegSet(rCgXMM0)
+  | RegSet(rCgXMM1)
+  ;
+
 const RegSet kCallerSaved = RegSet()
-                          // ------------
-                          // GP registers
-                          // ------------
-                          | RegSet(reg::rax)
-                          | RegSet(reg::rcx)
-                          | RegSet(reg::rdx)
-                          | RegSet(reg::rsi)
-                          | RegSet(reg::rdi)
-                          | RegSet(reg::r8)
-                          | RegSet(reg::r9)
-                          // r10 is reserved for the assembler (rAsm), and for
-                          //     various extremely-specific scratch uses
-                          // r11 is reserved for CodeGenerator (rCgGP)
-                          //
-                          // -------------
-                          // XMM registers
-                          // -------------
-                          // xmm0 is reserved for CodeGenerator (rCgXMM0)
-                          // xmm1 is reserved for CodeGenerator (rCgXMM1)
-                          | RegSet(reg::xmm2)
-                          | RegSet(reg::xmm3)
-                          | RegSet(reg::xmm4)
-                          | RegSet(reg::xmm5)
-                          | RegSet(reg::xmm6)
-                          | RegSet(reg::xmm7)
-                          | RegSet(reg::xmm8)
-                          | RegSet(reg::xmm9)
-                          | RegSet(reg::xmm10)
-                          | RegSet(reg::xmm11)
-                          | RegSet(reg::xmm12)
-                          | RegSet(reg::xmm13)
-                          | RegSet(reg::xmm14)
-                          | RegSet(reg::xmm15)
-                          ;
+  | kGPCallerSaved
+  | kXMMCallerSaved
+  ;
 
 const RegSet kCalleeSaved = RegSet()
-                            // r12 is reserved for rVmTl
-                          | RegSet(reg::r13)
-                          | RegSet(reg::r14)
-                          | RegSet(reg::r15)
-                          ;
+  | kGPCalleeSaved
+  | kXMMCalleeSaved
+  ;
 
-const RegSet kAllRegs     = kCallerSaved | kCalleeSaved;
-
-const RegSet kXMMRegs     = RegSet()
-                          | RegSet(reg::xmm0)
-                          | RegSet(reg::xmm1)
-                          | RegSet(reg::xmm2)
-                          | RegSet(reg::xmm3)
-                          | RegSet(reg::xmm4)
-                          | RegSet(reg::xmm5)
-                          | RegSet(reg::xmm6)
-                          | RegSet(reg::xmm7)
-                          | RegSet(reg::xmm8)
-                          | RegSet(reg::xmm9)
-                          | RegSet(reg::xmm10)
-                          | RegSet(reg::xmm11)
-                          | RegSet(reg::xmm12)
-                          | RegSet(reg::xmm13)
-                          | RegSet(reg::xmm14)
-                          | RegSet(reg::xmm15)
-                          ;
-
-const RegSet kGPCallerSaved = kCallerSaved - kXMMRegs;
-const RegSet kGPCalleeSaved = kCalleeSaved - kXMMRegs;
+const RegSet kXMMRegs = RegSet()
+  | kXMMUnreserved
+  | kXMMReserved
+  ;
 
 //////////////////////////////////////////////////////////////////////
 /*
@@ -158,7 +186,9 @@ const RegSet kSpecialCrossTraceRegs
   | RegSet(rStashedAR)
   // These registers go through various states between tracelets, but
   // should all be considered special.
-  | RegSet(rVmFp) | RegSet(rVmSp) | RegSet(rVmTl)
+  | RegSet(rVmFp)
+  | RegSet(rVmSp)
+  | RegSet(rVmTl)
   ;
 
 /*
@@ -169,18 +199,29 @@ const RegSet kSpecialCrossTraceRegs
  * assertions if you remove rax, rdx, or rcx from this set without
  * modifying them.
  */
-const RegSet kScratchCrossTraceRegs = kAllRegs - kSpecialCrossTraceRegs;
+const RegSet kScratchCrossTraceRegs
+  = RegSet()
+  | (kGPUnreserved - kSpecialCrossTraceRegs)
+  | kXMMCallerSaved
+  ;
 
 //////////////////////////////////////////////////////////////////////
 /*
  * Calling convention registers for service requests or calling C++.
  */
 
-// x64 C argument registers.
+// x64 INTEGER class argument registers.
 const PhysReg argNumToRegName[] = {
   reg::rdi, reg::rsi, reg::rdx, reg::rcx, reg::r8, reg::r9
 };
 const int kNumRegisterArgs = sizeof(argNumToRegName) / sizeof(PhysReg);
+
+// x64 SSE class argument registers.
+const PhysReg argNumToSIMDRegName[] = {
+  reg::xmm0, reg::xmm1, reg::xmm2, reg::xmm3,
+  reg::xmm4, reg::xmm5, reg::xmm6, reg::xmm7,
+};
+const int kNumSIMDRegisterArgs = sizeof(argNumToSIMDRegName) / sizeof(PhysReg);
 
 /*
  * JIT'd code "reverse calls" the enterTC routine by returning to it,
@@ -193,18 +234,22 @@ const PhysReg serviceReqArgRegs[] = {
 const int kNumServiceReqArgRegs =
   sizeof(serviceReqArgRegs) / sizeof(PhysReg);
 
-//////////////////////////////////////////////////////////////////////
-// Set of all the x64 registers.
-const RegSet kAllX64Regs = RegSet(kAllRegs).add(reg::r10)
-                         | kSpecialCrossTraceRegs;
-
 /*
  * Some data structures are accessed often enough from translated code
  * that we have shortcuts for getting offsets into them.
  */
-#define TVOFF(nm) offsetof(TypedValue, nm)
-#define AROFF(nm) offsetof(ActRec, nm)
-#define CONTOFF(nm) offsetof(c_Continuation, nm)
+#define TVOFF(nm) int(offsetof(TypedValue, nm))
+#define AROFF(nm) int(offsetof(ActRec, nm))
+#define AFWHOFF(nm) int(offsetof(c_AsyncFunctionWaitHandle, nm))
+#define CONTOFF(nm) int(offsetof(c_Generator, nm))
+
+UNUSED const Abi abi {
+  kGPUnreserved,  // gpUnreserved
+  kGPReserved,    // gpReserved
+  kXMMUnreserved, // simdUnreserved
+  kXMMReserved,   // simdReserved
+  kCalleeSaved    // calleeSaved
+};
 
 //////////////////////////////////////////////////////////////////////
 

@@ -24,6 +24,7 @@
 #include "hphp/runtime/base/strings.h"
 #include "hphp/runtime/base/runtime-error.h"
 #include "hphp/runtime/base/tv-conversions.h"
+#include "hphp/runtime/ext/ext_math.h"
 #include "hphp/util/overflow.h"
 
 namespace HPHP {
@@ -61,7 +62,7 @@ again:
     for (;;) {
       if (c2.m_type == KindOfInt64)  return o(c1.m_data.num, c2.m_data.num);
       if (c2.m_type == KindOfDouble) return o(c1.m_data.num, c2.m_data.dbl);
-      c2 = numericConvHelper(c2);
+      cellCopy(numericConvHelper(c2), c2);
       assert(c2.m_type == KindOfInt64 || c2.m_type == KindOfDouble);
     }
   }
@@ -70,7 +71,7 @@ again:
     for (;;) {
       if (c2.m_type == KindOfDouble) return o(c1.m_data.dbl, c2.m_data.dbl);
       if (c2.m_type == KindOfInt64)  return o(c1.m_data.dbl, c2.m_data.num);
-      c2 = numericConvHelper(c2);
+      cellCopy(numericConvHelper(c2), c2);
       assert(c2.m_type == KindOfInt64 || c2.m_type == KindOfDouble);
     }
   }
@@ -79,7 +80,7 @@ again:
     return make_tv<KindOfArray>(o(c1.m_data.parr, c2.m_data.parr));
   }
 
-  c1 = numericConvHelper(c1);
+  cellCopy(numericConvHelper(c1), c1);
   assert(c1.m_type == KindOfInt64 || c1.m_type == KindOfDouble);
   goto again;
 }
@@ -94,7 +95,7 @@ Cell cellArithO(Op o, Check ck, Over ov, Cell c1, Cell c2) {
 
   auto ensure_num = [](Cell& c) {
     if (c.m_type != KindOfInt64 && c.m_type != KindOfDouble) {
-      c = numericConvHelper(c);
+      cellCopy(numericConvHelper(c), c);
     }
   };
 
@@ -190,7 +191,7 @@ again:
         c1.m_data.dbl = op(c1.m_data.num, c2.m_data.dbl);
         return;
       }
-      c2 = numericConvHelper(c2);
+      cellCopy(numericConvHelper(c2), c2);
       assert(c2.m_type == KindOfInt64 || c2.m_type == KindOfDouble);
     }
   }
@@ -205,7 +206,7 @@ again:
         c1.m_data.dbl = op(c1.m_data.dbl, c2.m_data.dbl);
         return;
       }
-      c2 = numericConvHelper(c2);
+      cellCopy(numericConvHelper(c2), c2);
       assert(c2.m_type == KindOfInt64 || c2.m_type == KindOfDouble);
     }
   }
@@ -327,12 +328,12 @@ void stringIncDecOp(Op op, Cell& cell) {
   switch (dt) {
   case KindOfInt64:
     decRefStr(sd);
-    cell = make_int(ival);
+    cellCopy(make_int(ival), cell);
     op.intCase(cell);
     break;
   case KindOfDouble:
     decRefStr(sd);
-    cell = make_dbl(dval);
+    cellCopy(make_dbl(dval), cell);
     op.dblCase(cell);
     break;
   default:
@@ -490,6 +491,10 @@ Cell cellDiv(Cell c1, Cell c2) {
   return cellArith(Div(), c1, c2);
 }
 
+Cell cellPow(Cell c1, Cell c2) {
+  return *f_pow(tvAsVariant(&c1), tvAsVariant(&c2)).asCell();
+}
+
 Cell cellMod(Cell c1, Cell c2) {
   auto const i1 = cellToInt(c1);
   auto const i2 = cellToInt(c2);
@@ -548,8 +553,12 @@ void cellDivEq(Cell& c1, Cell c2) {
   cellCopy(cellDiv(c1, c2), c1);
 }
 
+void cellPowEq(Cell& c1, Cell c2) {
+  cellSet(cellPow(c1, c2), c1);
+}
+
 void cellModEq(Cell& c1, Cell c2) {
-  cellCopy(cellMod(c1, c2), c1);
+  cellSet(cellMod(c1, c2), c1);
 }
 
 void cellBitAndEq(Cell& c1, Cell c2) {

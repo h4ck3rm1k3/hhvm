@@ -35,6 +35,7 @@ struct HhbcExtFuncInfo {
 struct HhbcExtMethodInfo {
   const char* m_name;
   TypedValue* (*m_pGenericMethod)(ActRec* ar);
+  void* m_nativeFunc;
 };
 
 struct HhbcExtClassInfo {
@@ -45,7 +46,7 @@ struct HhbcExtClassInfo {
   ptrdiff_t m_objectDataOffset;
   long long m_methodCount;
   const HhbcExtMethodInfo* m_methods;
-  HPHP::Class** m_clsPtr;
+  LowClassPtr* m_clsPtr;
 };
 
 extern const long long hhbc_ext_funcs_count;

@@ -1,7 +1,7 @@
 # -*- makefile -*-
 
 ##############################################################################
-# Prelude 
+# Prelude
 ##############################################################################
 
 # This file assumes the "includer" will have set a few variables and then do a
@@ -25,10 +25,11 @@ OPTOBJS?= $(SRC:.ml=.cmx)
 
 #-w +9 is for better warning on records, needs ocaml 3.12
 #-w +9
-#DO NOT USE -thread, the runtime is already chaotic enough to debug, we 
-# don't want to add an extra layer of complexity. In fact, we are not 
+#DO NOT USE -thread, the runtime is already chaotic enough to debug, we
+# don't want to add an extra layer of complexity. In fact, we are not
 # even sure it would work with -thread ...
-OCAMLCFLAGS?=-g -dtypes $(OCAMLCFLAGS_EXTRA) -w -21 -warn-error +a
+OCAMLDTYPES?=-dtypes
+OCAMLCFLAGS?=-g $(OCAMLDTYPES) $(OCAMLCFLAGS_EXTRA) -w -21 -warn-error +a
 
 # This flag is also used in subdirectories so don't change its name here.
 OPTFLAGS?= $(OCAMLCFLAGS)
@@ -71,11 +72,11 @@ all::
 .ml.cmx:
 	$(OCAMLOPT)  -c $<
 
-.ml.mldepend: 
+.ml.mldepend:
 	$(OCAMLC) -i $<
 
 .c.o:
-	$(OCAMLC) -c $^ -o $@
+	$(OCAMLC) -ccopt -g -c $^ -o $@
 
 clean::
 	rm -f *.cm[ioxa] *.cmt* *.o *.a *.so *.cmxa *.annot *.opt *.bc

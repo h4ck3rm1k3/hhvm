@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -19,9 +19,7 @@
 #include "hphp/runtime/vm/jit/block.h"
 #include "hphp/runtime/vm/jit/reg-alloc.h"
 #include "hphp/runtime/vm/jit/cfg.h"
-#include "hphp/runtime/vm/jit/code-gen-arm.h"
-#include "hphp/runtime/vm/jit/code-gen-x64.h"
-#include "hphp/runtime/vm/jit/code-gen-helpers-x64.h"
+#include "hphp/runtime/vm/jit/mc-generator.h"
 #include "hphp/runtime/vm/jit/layout.h"
 #include "hphp/runtime/vm/jit/timer.h"
 #include "hphp/runtime/vm/jit/print.h"
@@ -55,29 +53,38 @@ const Func* loadClassCtor(Class* cls) {
  * registers whose lifetimes end at inst, nor registers defined by inst.
  */
 LiveRegs computeLiveRegs(const IRUnit& unit, const RegAllocInfo& regs) {
-  StateVector<Block, RegSet> liveMap(unit, RegSet());
+  StateVector<Block, RegSet> live_in(unit, RegSet());
   LiveRegs live_regs(unit, RegSet());
-  postorderWalk(unit,
-    [&](Block* block) {
-      RegSet& live = liveMap[block];
-      if (Block* taken = block->taken()) live = liveMap[taken];
-      if (Block* next = block->next()) live |= liveMap[next];
-      for (auto it = block->end(); it != block->begin(); ) {
-        IRInstruction& inst = *--it;
-        live -= regs.dstRegs(inst);
-        live_regs[inst] = live;
-        live |= regs.srcRegs(inst);
-      }
-    });
+  for (bool changed = true; changed;) {
+    changed = false;
+    postorderWalk(unit,
+      [&](Block* block) {
+        RegSet live;
+        if (Block* taken = block->taken()) live = live_in[taken];
+        if (Block* next = block->next()) live |= live_in[next];
+        for (auto it = block->end(); it != block->begin(); ) {
+          IRInstruction& inst = *--it;
+          live -= regs.dstRegs(inst);
+          live_regs[inst] = live;
+          live |= regs.srcRegs(inst);
+        }
+        changed |= (live != live_in[block]);
+        live_in[block] = live;
+      });
+  }
   return live_regs;
 }
 
-template <class CG>
-void genBlock(IRUnit& unit, CodeBlock& cb, CodeBlock& stubsCode,
-              MCGenerator* mcg, CodegenState& state, Block* block,
-              std::vector<TransBCMapping>* bcMap) {
+static void genBlock(IRUnit& unit, CodeBlock& cb, CodeBlock& stubsCode,
+                     CodeBlock& unusedCode, MCGenerator* mcg,
+                     CodegenState& state, Block* block,
+                     std::vector<TransBCMapping>* bcMap) {
   FTRACE(6, "genBlock: {}\n", block->id());
-  CG cg(unit, cb, stubsCode, mcg, state);
+  std::unique_ptr<CodeGenerator> cg(mcg->backEnd().newCodeGenerator(unit, cb,
+                                                                    stubsCode,
+                                                                    unusedCode,
+                                                                    mcg,
+                                                                    state));
 
   BCMarker prevMarker;
   for (IRInstruction& instr : *block) {
@@ -87,22 +94,20 @@ void genBlock(IRUnit& unit, CodeBlock& cb, CodeBlock& stubsCode,
     if ((!prevMarker.valid() || inst->marker() != prevMarker) &&
         (mcg->tx().isTransDBEnabled() ||
         RuntimeOption::EvalJitUseVtuneAPI) && bcMap) {
-      bcMap->push_back(TransBCMapping{inst->marker().func->unit()->md5(),
-                                      inst->marker().bcOff,
+      bcMap->push_back(TransBCMapping{inst->marker().func()->unit()->md5(),
+                                      inst->marker().bcOff(),
                                       cb.frontier(),
                                       stubsCode.frontier()});
       prevMarker = inst->marker();
     }
-    auto* addr = cg.cgInst(inst);
+    auto* addr = cg->cgInst(inst);
     if (state.asmInfo && addr) {
       state.asmInfo->updateForInstruction(inst, addr, cb.frontier());
     }
   }
 }
 
-void genCodeImpl(CodeBlock& mainCode,
-                 CodeBlock& stubsCode,
-                 IRUnit& unit,
+void genCodeImpl(IRUnit& unit,
                  std::vector<TransBCMapping>* bcMap,
                  JIT::MCGenerator* mcg,
                  const RegAllocInfo& regs,
@@ -114,6 +119,12 @@ void genCodeImpl(CodeBlock& mainCode,
   DEBUG_ONLY auto isEmitted = [&](Block* block) {
     return state.addresses[block];
   };
+
+  CodeBlock& mainCode   = mcg->code.main();
+  CodeBlock& stubsCode  = mcg->code.stubs();
+  CodeBlock& unusedCode = mcg->code.unused();
+  mcg->code.lock();
+  SCOPE_EXIT { mcg->code.unlock(); };
 
   /*
    * Emit the given block on the supplied assembler.  The `nextLinear'
@@ -129,14 +140,7 @@ void genCodeImpl(CodeBlock& mainCode,
 
     auto const aStart      = cb.frontier();
     auto const astubsStart = stubsCode.frontier();
-    switch (arch()) {
-      case Arch::X64:
-        X64::patchJumps(cb, state, block);
-        break;
-      case Arch::ARM:
-        ARM::patchJumps(cb, state, block);
-        break;
-    }
+    mcg->backEnd().patchJumps(cb, state, block);
     state.addresses[block] = aStart;
 
     // If the block ends with a Jmp and the next block is going to be
@@ -148,25 +152,10 @@ void genCodeImpl(CodeBlock& mainCode,
       state.asmInfo->asmRanges[block] = TcaRange(aStart, cb.frontier());
     }
 
-    switch (arch()) {
-      case Arch::X64: {
-        genBlock<X64::CodeGenerator>(unit, cb, stubsCode, mcg, state, block,
-                                     bcMap);
-        auto nextFlow = block->next();
-        if (nextFlow && nextFlow != nextLinear) {
-          X64::emitFwdJmp(cb, nextFlow, state);
-        }
-        break;
-      }
-      case Arch::ARM: {
-        genBlock<ARM::CodeGenerator>(unit, cb, stubsCode, mcg, state, block,
-                                     bcMap);
-        auto nextFlow = block->next();
-        if (nextFlow && nextFlow != nextLinear) {
-          ARM::emitFwdJmp(cb, nextFlow, state);
-        }
-        break;
-      }
+    genBlock(unit, cb, stubsCode, unusedCode, mcg, state, block, bcMap);
+    auto nextFlow = block->next();
+    if (nextFlow && nextFlow != nextLinear) {
+      mcg->backEnd().emitFwdJmp(cb, nextFlow, state);
     }
 
     if (state.asmInfo) {
@@ -179,13 +168,7 @@ void genCodeImpl(CodeBlock& mainCode,
   };
 
   if (RuntimeOption::EvalHHIRGenerateAsserts) {
-    switch (arch()) {
-      case Arch::X64:
-        X64::emitTraceCall(mainCode, unit.bcOff());
-        break;
-      case Arch::ARM:
-        break;
-    }
+    mcg->backEnd().emitTraceCall(mainCode, unit.bcOff());
   }
 
   auto const linfo = layoutBlocks(unit);
@@ -195,10 +178,15 @@ void genCodeImpl(CodeBlock& mainCode,
       ? *boost::next(it) : nullptr;
     emitBlock(mainCode, *it, nextLinear);
   }
-  for (auto it = linfo.astubsIt; it != linfo.blocks.end(); ++it) {
-    Block* nextLinear = boost::next(it) != linfo.blocks.end()
+  for (auto it = linfo.astubsIt; it != linfo.aunusedIt; ++it) {
+    Block* nextLinear = boost::next(it) != linfo.aunusedIt
       ? *boost::next(it) : nullptr;
     emitBlock(stubsCode, *it, nextLinear);
+  }
+  for (auto it = linfo.aunusedIt; it != linfo.blocks.end(); ++it) {
+    Block* nextLinear = boost::next(it) != linfo.blocks.end()
+      ? *boost::next(it) : nullptr;
+    emitBlock(unusedCode, *it, nextLinear);
   }
 
   if (debug) {
@@ -208,18 +196,17 @@ void genCodeImpl(CodeBlock& mainCode,
   }
 }
 
-void genCode(CodeBlock& main, CodeBlock& stubs, IRUnit& unit,
-             std::vector<TransBCMapping>* bcMap,
+void genCode(IRUnit& unit, std::vector<TransBCMapping>* bcMap,
              JIT::MCGenerator* mcg,
              const RegAllocInfo& regs) {
   Timer _t(Timer::codeGen);
 
   if (dumpIREnabled()) {
     AsmInfo ai(unit);
-    genCodeImpl(main, stubs, unit, bcMap, mcg, regs, &ai);
-    dumpTrace(kCodeGenLevel, unit, " after code gen ", &regs, &ai);
+    genCodeImpl(unit, bcMap, mcg, regs, &ai);
+    printUnit(kCodeGenLevel, unit, " after code gen ", &regs, &ai);
   } else {
-    genCodeImpl(main, stubs, unit, bcMap, mcg, regs, nullptr);
+    genCodeImpl(unit, bcMap, mcg, regs, nullptr);
   }
 }
 

@@ -98,7 +98,12 @@ void ElfWriter::initStrtab() {
 bool ElfWriter::initDwarfProducer() {
   Dwarf_Error error = 0;
   /* m_dwarfProducer is the handle used for interaction for libdwarf */
-  m_dwarfProducer = dwarf_producer_init_c(
+  m_dwarfProducer =
+#ifdef FACEBOOK
+    dwarf_producer_init_b(
+#else
+    dwarf_producer_init_c(
+#endif
     DW_DLC_WRITE | DW_DLC_SIZE_64 | DW_DLC_SYMBOLIC_RELOCATIONS,
     g_dwarfCallback,
     nullptr,
@@ -533,14 +538,15 @@ int ElfWriter::writeStringSection() {
 
 int ElfWriter::writeTextSection() {
   int section = -1;
-  CodeBlock& a = mcg->code.main();
+  auto& code = mcg->code;
   if ((section = newSection(
-      ".text.tracelets", a.capacity(), SHT_NOBITS, SHF_ALLOC | SHF_EXECINSTR,
-      reinterpret_cast<uint64_t>(a.base()))) < 0) {
+         ".text.tracelets", code.codeSize(),
+         SHT_NOBITS, SHF_ALLOC | SHF_EXECINSTR,
+         reinterpret_cast<uint64_t>(code.base()))) < 0) {
     logError("unable to create text section");
     return -1;
   }
-  if (!addSectionData(section, nullptr, a.capacity())) {
+  if (!addSectionData(section, nullptr, code.codeSize())) {
     logError("unable to add text data");
     return -1;
   }

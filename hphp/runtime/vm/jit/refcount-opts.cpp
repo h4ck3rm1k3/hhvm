@@ -39,7 +39,7 @@
 
 namespace HPHP { namespace JIT {
 
-TRACE_SET_MOD(hhir);
+TRACE_SET_MOD(hhir_refcount);
 
 namespace {
 
@@ -121,17 +121,13 @@ struct Value {
     return pendingIncs.empty() && realCount == 0 && !fromLoad;
   }
 
-  void pessimize() {
-    realCount = 0;
-    pendingIncs.clear();
-  }
-
-  /* Merge other's state with this state. realCount becomes the minimum from
-   * the two. pendingIncs is truncated to the size of the smaller of the two,
-   * then the sets at each index are merged. */
+  /* Merge other's state with this state. fromLoad and realCount must match
+   * between the two. pendingIncs is truncated to the size of the smaller of
+   * the two, then the sets at each index are merged. */
   void merge(const Value& other) {
-    assert(fromLoad == other.fromLoad);
-    realCount = std::min(realCount, other.realCount);
+    always_assert(fromLoad == other.fromLoad);
+    always_assert(realCount == other.realCount);
+
     auto minSize = std::min(pendingIncs.size(), other.pendingIncs.size());
     pendingIncs.resize(minSize);
     for (unsigned i = 0; i < minSize; ++i) {
@@ -152,6 +148,10 @@ struct Value {
     auto incs = std::move(pendingIncs.back());
     pendingIncs.pop_back();
     return incs;
+  }
+
+  void clearPendingIncs() {
+    pendingIncs.clear();
   }
 
   /* realCount is the number of live references currently owned by the
@@ -273,6 +273,10 @@ struct FrameStack {
 
   bool operator==(const FrameStack& b) const {
     return live == b.live && preLive == b.preLive;
+  }
+
+  bool operator!=(const FrameStack& b) const {
+    return !(*this == b);
   }
 
   /* Map from the instruction defining the frame to a Frame object. */
@@ -407,11 +411,11 @@ Point idForEdge(const Block* from, const Block* to, const IdMap& ids) {
   assert(next || taken);
 
   auto before = [&](const IRInstruction& inst) {
-    ITRACE(3, "id for B{} -> B{} is before {}\n", from->id(), to->id(), inst);
+    ITRACE(6, "id for B{} -> B{} is before {}\n", from->id(), to->id(), inst);
     return ids.before(inst);
   };
   auto after = [&](const IRInstruction& inst) {
-    ITRACE(3, "id for B{} -> B{} is after {}\n", from->id(), to->id(), inst);
+    ITRACE(6, "id for B{} -> B{} is after {}\n", from->id(), to->id(), inst);
     return ids.after(inst);
   };
 
@@ -435,20 +439,24 @@ Point idForEdge(const Block* from, const Block* to, const IdMap& ids) {
   }
 }
 
+const StaticString s_get_defined_vars("get_defined_vars"),
+  s_get_defined_vars_SystemLib("__SystemLib\\get_defined_vars");
+
 /*
  * SinkPointAnalyzer is responsible for inspecting a trace and determining two
  * things: the latest safe point to sink each IncRef to, and which DecRefs
  * cannot take their src to 0.
  */
 struct SinkPointAnalyzer : private LocalStateHook {
-  SinkPointAnalyzer(const BlockList* blocks, const IdMap* ids, IRUnit& unit)
+  SinkPointAnalyzer(const BlockList* blocks, const IdMap* ids,
+                    IRUnit& unit, FrameState&& frameState)
     : m_unit(unit)
     , m_blocks(*blocks)
     , m_block(nullptr)
     , m_inst(nullptr)
     , m_ids(*ids)
     , m_takenState(nullptr)
-    , m_frameState(unit)
+    , m_frameState(std::move(frameState))
   {}
 
   SinkPointsMap find() {
@@ -466,7 +474,7 @@ struct SinkPointAnalyzer : private LocalStateHook {
 
       if (block != m_blocks.front()) {
         assert(m_savedStates.count(block) == 1);
-        m_state = mergeStates(m_savedStates[block]);
+        m_state = mergeStates(std::move(m_savedStates[block]));
         m_savedStates.erase(block);
       }
 
@@ -535,7 +543,7 @@ struct SinkPointAnalyzer : private LocalStateHook {
     smart::vector<IncomingBranch> inBlocks;
   };
 
-  State mergeStates(const IncomingStateVec& states) {
+  State mergeStates(IncomingStateVec&& states) {
     DEBUG_ONLY auto doTrace = [&] {
       ITRACE(3, "merging {} state(s) into B{}\n", states.size(), m_block->id());
       for (DEBUG_ONLY auto const& inState : states) {
@@ -548,26 +556,87 @@ struct SinkPointAnalyzer : private LocalStateHook {
     ONTRACE(3, doTrace());
 
     assert(!states.empty());
-    // Short circuit the easy, common case: one incoming state
-    if (states.size() == 1) return states.front().state;
-
-    // We start by building a map from values to their merged incoming state
-    // and which blocks provide information about the value.
+    /*
+     * Short circuit the easy, common case: one incoming state.  (This
+     * is just to save JIT time.)
+     *
+     * Except if it's a DefLabel---there could still be unconsumed
+     * references that need to be forwarded through the DefLabel (for
+     * example in the case of a control flow diamond where one side
+     * was optimized away because the branch turned into a Nop).
+     */
+    if (states.size() == 1 && !m_block->front().is(DefLabel)) {
+      return states.front().state;
+    }
 
     auto const& firstFrames = states.front().state.frames;
+    State retState;
+    retState.canon = mergeCanons(states);
+    retState.frames = firstFrames;
+
+    // If the current block begins with a DefLabel, we start by taking
+    // unconsumed references for each dest of the label that produces a
+    // reference.
+    if (m_block->front().is(DefLabel)) {
+      auto& label = m_block->front();
+      auto& refsVec = m_unit.labelRefs().at(&label);
+      always_assert(refsVec.size() == label.numDsts());
+
+      ITRACE(3, "producing refs for dests of {}\n", label);
+      Indent _i;
+      for (auto i = 0U, n = label.numDsts(); i < n; ++i) {
+        if (label.dst(i)->type().notCounted()) continue;
+
+        auto refs = refsVec[i];
+        if (refs == 0) continue;
+
+        ITRACE(3, "dest {} produces {} ref(s)\n", i, refs);
+        Indent _i;
+        m_block->forEachSrc(
+          i, [&](IRInstruction* jmp, SSATmp* src) {
+            if (src->type().notCounted()) return;
+
+            auto it = find_if(states.begin(), states.end(),
+                              [jmp](const IncomingState& s) {
+                                return s.from == jmp->block();
+                              });
+            always_assert(it != states.end());
+            src = canonical(src);
+            auto& valState = it->state.values[src];
+            always_assert(valState.optDelta() == 0);
+            ITRACE(3, "consuming refs from {} | {}\n",
+                   show(valState), *src->inst());
+            if (valState.realCount >= refs) {
+              valState.realCount -= refs;
+            } else {
+              always_assert(valState.fromLoad);
+              valState.realCount = 0;
+            }
+          });
+
+        retState.values[label.dst(i)].realCount = refs;
+      }
+    }
+
+    // Now, we build a map from values to their merged incoming state and which
+    // blocks provide information about the value.
     smart::hash_map<SSATmp*, IncomingValue> mergedValues;
-    for (auto const& inState : states) {
-      assert(inState.state.frames == firstFrames &&
-             "merging states with different FrameStacks is not supported");
+    for (auto& inState : states) {
+      if (inState.state.frames != firstFrames) {
+        if (RuntimeOption::EvalHHIRBytecodeControlFlow) {
+          throw ControlFlowFailedExc(__FILE__, __LINE__);
+        }
+        always_assert(false &&
+          "merging states with different FrameStacks is not supported");
+      }
 
       for (auto const& inPair : inState.state.values) {
+        if (inPair.second.empty()) continue;
+
         auto* value = inPair.first;
         assert(!value->inst()->isPassthrough());
         const bool existed = mergedValues.count(value);
         auto& mergedState = mergedValues[value];
-
-        // If the value was already provided by another block, merge this
-        // block's state in.
         if (existed) {
           mergedState.value.merge(inPair.second);
         } else {
@@ -579,20 +648,19 @@ struct SinkPointAnalyzer : private LocalStateHook {
       }
     }
 
-    State retState;
-    retState.canon = mergeCanons(states);
-    retState.frames = firstFrames;
-
     // Now, for each incoming value, insert it into the resulting state. If
     // there is a difference in a value's state between incoming branches,
     // resolve it by inserting sink points on the appropriate incoming edges.
     for (auto& pair : mergedValues) {
       auto mergedState = pair.second.value;
 
-      // If the value wasn't provided by every incoming branch, we have to
-      // completely resolve it in all incoming branches.
+      // If the value wasn't provided by every incoming branch, we're hosed
+      // unless it was just fromLoad in some branches.
       if (pair.second.inBlocks.size() < states.size()) {
-        mergedState.pessimize();
+        for (auto& inBlock : pair.second.inBlocks) {
+          always_assert(inBlock.value.realCount == 0 &&
+                        inBlock.value.optDelta() == 0);
+        }
       }
 
       auto* incVal =
@@ -606,8 +674,9 @@ struct SinkPointAnalyzer : private LocalStateHook {
         while (inState.optDelta() > mergedDelta) {
           ITRACE(3, "Inserting sink point on edge B{} -> B{}\n",
                  inBlock.from->id(), m_block->id());
-          m_ret.points[pair.first].insert(std::make_pair(inState.popRef(),
-                                           SinkPoint(insertId, incVal, false)));
+          m_ret.points[pair.first].insert(
+            std::make_pair(inState.popRef(),
+                           SinkPoint(insertId, incVal, false)));
         }
       }
 
@@ -619,6 +688,9 @@ struct SinkPointAnalyzer : private LocalStateHook {
       }
     }
 
+    ITRACE(3, "returning state:\n");
+    Indent _i;
+    FTRACE(3, "{}", show(retState));
     return retState;
   }
 
@@ -731,8 +803,6 @@ struct SinkPointAnalyzer : private LocalStateHook {
     Indent _i;
 
     auto const nSrcs = m_inst->numSrcs();
-    auto const nDsts = m_inst->numDsts();
-    auto const bcOp = m_inst->marker().sk().op();
     m_frameState.setMarker(m_inst->marker());
 
     if (auto* taken = m_inst->taken()) {
@@ -788,47 +858,41 @@ struct SinkPointAnalyzer : private LocalStateHook {
       for (uint32_t i = 0; i < nSrcs; ++i) {
         resolveValue(m_inst->src(i));
       }
-    } else if (m_inst->is(DefLabel)) {
-      // Values produced by a label take the pessimistic combinations of
-      // their incoming values.
-      constexpr int32_t kInfCount = 1 << 30;
-      auto minCount = kInfCount;
-      auto fromLoad = false;
-      for (uint32_t i = 0; i < nDsts; ++i) {
-        m_block->forEachSrc(i, [&](const IRInstruction* inst, SSATmp* src) {
-          src = canonical(src);
-          if (src->type().notCounted()) return;
-
-          auto const& valState = m_state.values[src];
-          minCount = std::min(minCount, valState.realCount);
-          fromLoad = fromLoad || valState.fromLoad;
-        });
-
-        assert(IMPLIES(fromLoad, minCount != kInfCount));
-        if (minCount != kInfCount) {
-          m_state.values.emplace(m_inst->dst(i),
-                                 Value(minCount, fromLoad));
-        }
-      }
-    } else if (m_inst == &m_block->back() &&
-               (!m_block->taken() && !m_block->next()) &&
+    } else if (m_inst == &m_block->back() && m_block->isExit() &&
+               // Make sure it's not a RetCtrl from Ret{C,V}
                (!m_inst->is(RetCtrl) ||
-                bcOp == OpContSuspend || bcOp == OpContSuspendK ||
-                bcOp == OpContRetC) &&
+                m_inst->extra<RetCtrlData>()->suspendingResumed) &&
                // The EndCatch in FunctionExitSurpriseHook's catch block is
                // special: it happens after locals and $this have been
                // decreffed, so we don't want to do the normal cleanup
-               !(m_inst->is(EndCatch) && isRet(bcOp) &&
-                 m_block->preds().front().inst()->is(
-                   FunctionExitSurpriseHook))) {
+               !(m_inst->is(EndCatch) &&
+                 m_block->preds().front().inst()
+                   ->is(FunctionExitSurpriseHook) &&
+                 !m_block->preds().front().inst()
+                   ->extra<RetCtrlData>()->suspendingResumed)) {
       // When leaving a trace, we need to account for all live references in
       // locals and $this pointers.
       consumeAllLocals();
       consumeAllFrames();
     } else if (m_inst->is(GenericRetDecRefs, NativeImpl)) {
       consumeAllLocals();
+    } else if (m_inst->is(CreateCont)) {
+      consumeAllLocals();
+      consumeInputs();
+      defineOutputs();
+    } else if (m_inst->is(CreateAFWH)) {
+      consumeAllLocals();
+      consumeInputs();
+      auto frame = frameRoot(m_inst->src(0)->inst());
+      consumeFrame(m_state.frames.live.at(frame));
+      defineOutputs();
     } else if (m_inst->is(DecRefLoc)) {
       consumeLocal(m_inst->extra<DecRefLoc>()->locId);
+    } else if (m_inst->is(DecRefThis)) {
+      // This only happens during a RetC, and it happens instead of a normal
+      // DecRef on $this.
+      auto frame = frameRoot(m_inst->src(0)->inst());
+      consumeFrame(m_state.frames.live.at(frame));
     } else {
       // All other instructions take the generic path.
       consumeInputs();
@@ -880,7 +944,7 @@ struct SinkPointAnalyzer : private LocalStateHook {
         m_ret.decRefs[m_ids.before(m_inst)] = valState.realCount;
       }
     } else if (m_inst->is(SpillFrame)) {
-      auto* this_ = m_inst->src(3);
+      auto* this_ = m_inst->src(2);
       if (this_->isA(Type::Obj)) {
         m_state.frames.pushPreLive(Frame(canonical(this_), this_));
         // When spilling an Object to a pre-live ActRec, we can reliably track
@@ -905,18 +969,19 @@ struct SinkPointAnalyzer : private LocalStateHook {
     } else if (m_inst->is(InlineReturn)) {
       FTRACE(3, "{}", show(m_state));
       m_state.frames.popInline(frameRoot(m_inst->src(0)->inst()));
-    } else if (m_inst->is(RetCtrl) &&
-               !m_inst->extra<InGeneratorData>()->inGenerator) {
+    } else if (m_inst->is(RetAdjustStack)) {
       m_state.frames.pop();
     } else if (m_inst->is(Call, CallArray)) {
       resolveAllFrames();
       callPreLiveFrame();
     } else if (m_inst->is(ContEnter)) {
       resolveAllFrames();
-    } else if (m_inst->is(CallBuiltin) &&
-               !strcasecmp(m_inst->src(0)->funcVal()->fullName()->data(),
-                           "get_defined_vars")) {
-      observeLocalRefs();
+    } else if (m_inst->is(CallBuiltin)) {
+      const auto callee = m_inst->extra<CallBuiltinData>()->callee->fullName();
+      if (callee->isame(s_get_defined_vars.get()) ||
+          callee->isame(s_get_defined_vars_SystemLib.get())) {
+        observeLocalRefs();
+      }
     } else if (m_inst->is(InterpOne, InterpOneCF)) {
       // InterpOne can push and pop ActRecs.
       auto const op = m_inst->extra<InterpOneData>()->opcode;
@@ -961,7 +1026,7 @@ struct SinkPointAnalyzer : private LocalStateHook {
                              Call, CallArray, ContEnter)) {
         // If the StkPtr being consumed points to a pre-live ActRec, observe
         // its $this pointer since many of our helper functions decref it.
-        auto* this_ = src->inst()->src(3);
+        auto* this_ = src->inst()->src(2);
         if (this_->isA(Type::Obj)) {
           auto const sinkPoint = SinkPoint(m_ids.before(m_inst), this_, false);
           this_ = canonical(this_);
@@ -1010,12 +1075,7 @@ struct SinkPointAnalyzer : private LocalStateHook {
     // If we have no prelive frames the FPush* was in a different trace.
     if (m_state.frames.preLive.empty()) return;
 
-    auto& frame = m_state.frames.preLive.back();
-    if (frame.currentThis) {
-      consumeValue(frame.currentThis);
-    } else if (frame.mainThis) {
-      consumeValueEraseOnly(frame.mainThis);
-    }
+    consumeFrame(m_state.frames.preLive.back());
     m_state.frames.preLive.pop_back();
   }
 
@@ -1043,16 +1103,26 @@ struct SinkPointAnalyzer : private LocalStateHook {
   }
 
   /*
+   * Consume the $this pointer for a Frame, if it has one. If currentThis is
+   * nullptr but mainThis exists we use an "erase-only" sink point, which means
+   * it's not safe to actually sink the IncRef but it's safe to erase the
+   * IncRef/DecRef pair (usually because the value has been smashed by a Call).
+   */
+  void consumeFrame(Frame& f) {
+    if (f.currentThis) {
+      consumeValue(f.currentThis);
+    } else if (f.mainThis) {
+      consumeValueEraseOnly(f.mainThis);
+    }
+  }
+
+  /*
    * When we leave a trace, we have to account for all the references we're
    * tracking in pre-live frames and inlined frames.
    */
   void consumeAllFrames() {
     forEachFrame([this](Frame& f) {
-      if (f.currentThis) {
-        consumeValue(f.currentThis);
-      } else if (f.mainThis) {
-        consumeValueEraseOnly(f.mainThis);
-      }
+      consumeFrame(f);
     });
   }
 
@@ -1143,27 +1213,8 @@ struct SinkPointAnalyzer : private LocalStateHook {
       };
 
       // This is ok as long as the value came from a load (see the Value struct
-      // for why) or it's from a phi node where one or more of the incoming
-      // values has an uncounted type (when we process the DefLabel we take the
-      // pessimistic combination of all inputs and the uncounted value won't
-      // have any references).
-      auto uncountedPhiSource = [&]{
-        auto* inst = value->inst();
-        if (!inst->is(DefLabel)) return false;
-        for (uint32_t i = 0; i < inst->numDsts(); ++i) {
-          auto foundUncounted = false;
-          inst->block()->forEachSrc(i,
-            [&](const IRInstruction* inst, SSATmp* src) {
-              if (src->type().notCounted()) foundUncounted = true;
-            }
-          );
-          if (foundUncounted) return true;
-        }
-        return false;
-      };
-
-      always_assert_log((valState.fromLoad && valState.optCount() == 0) ||
-                        uncountedPhiSource(),
+      // for why).
+      always_assert_log((valState.fromLoad && valState.optCount() == 0),
                         showFailure);
     } else if (checkConsume) {
       auto showFailure = [&] {
@@ -1239,6 +1290,14 @@ struct SinkPointAnalyzer : private LocalStateHook {
       // already been tracked in setLocalValue().
       return;
     } else if (m_inst->is(LdThis)) {
+      if (!m_inst->marker().func()->mayHaveThis()) {
+        // If this function can't have a $this pointer everything after the
+        // LdThis is unreachable. More importantly, we aren't going to decref
+        // the non-existent $this pointer in RetC, so don't track a reference
+        // to it.
+        return;
+      }
+
       auto* fpInst = frameRoot(m_inst->src(0)->inst());
       assert(m_state.frames.live.count(fpInst));
       auto& frame = m_state.frames.live[fpInst];
@@ -1297,24 +1356,28 @@ struct SinkPointAnalyzer : private LocalStateHook {
 
       if (dst->type().notCounted()) continue;
 
-      auto pair = m_state.values.emplace(dst, Value());
-      assert(pair.second);
+      if (m_inst->producesReference(i) || m_inst->isRawLoad()) {
+        assert(!m_state.values.count(dst));
+        ITRACE(3, "defining value {}\n", *m_inst);
+        Indent _i;
 
-      ITRACE(3, "defining value {}\n", *m_inst);
-      Indent _i;
+        auto& state = m_state.values[dst];
+        if (m_inst->producesReference(i)) state.realCount = 1;
+        if (m_inst->isRawLoad()) state.fromLoad = true;
 
-      auto& state = pair.first->second;
-      if (m_inst->producesReference(i)) state.realCount = 1;
-
-      if (m_inst->isRawLoad()) state.fromLoad = true;
-      ITRACE(3, "{}\n", show(state));
-      assert(state.optDelta() == 0);
+        ITRACE(3, "{}\n", show(state));
+      }
     }
   }
 
   ///// LocalStateHook overrides /////
   void setLocalValue(uint32_t id, SSATmp* newVal) override {
-    assert(IMPLIES(m_inst->is(LdLoc), m_frameState.localValue(id) == nullptr));
+    // TrackLoc is only used for the dests of labels, and those references are
+    // handled in mergeStates.
+    if (m_inst->is(TrackLoc)) {
+      assert(newVal->inst()->is(DefLabel));
+      return;
+    }
 
     // When a local's value is updated by StLoc(NT), the consumption of the old
     // value should've been visible to us, so we ignore that here.
@@ -1711,19 +1774,20 @@ void eliminateTakeStacks(const BlockList& blocks) {
  * complete, a separate validation pass is run to ensure the net effect on the
  * refcount of each object has not changed.
  */
-void optimizeRefcounts(IRUnit& unit) noexcept {
+void optimizeRefcounts(IRUnit& unit, FrameState&& fs) {
   Timer _t(Timer::optimize_refcountOpts);
   FTRACE(2, "vvvvvvvvvv refcount opts vvvvvvvvvv\n");
   auto const changed = splitCriticalEdges(unit);
   if (changed) {
-    dumpTrace(6, unit, "after splitting critical edges for refcount opts");
+    printUnit(6, unit, "after splitting critical edges for refcount opts");
   }
 
   auto const blocks = rpoSortCfg(unit);
   IdMap ids(blocks, unit);
 
   Indent _i;
-  auto const sinkPoints = SinkPointAnalyzer(&blocks, &ids, unit).find();
+  auto const sinkPoints =
+    SinkPointAnalyzer(&blocks, &ids, unit, std::move(fs)).find();
   ITRACE(2, "Found sink points:\n{}\n", show(sinkPoints, ids));
 
   BlockMap before;
@@ -1739,7 +1803,7 @@ void optimizeRefcounts(IRUnit& unit) noexcept {
     BlockMap after;
     getRefDeltas(unit, after);
     if (!validateDeltas(before, after)) {
-      dumpTrace(0, unit, "after refcount optimization");
+      printUnit(0, unit, "after refcount optimization");
       always_assert(false && "refcount validation failed");
     }
   }

@@ -41,8 +41,30 @@ struct Block : boost::noncopyable {
   typedef InstructionList::reference reference;
   typedef InstructionList::const_reference const_reference;
 
-  // Execution frequency hint; codegen will put Unlikely blocks in astubs.
-  enum class Hint { Neither, Likely, Unlikely };
+  /*
+   * Execution frequency hint; codegen will put Unlikely blocks in astubs,
+   * and Unused blocks in aunused.
+   *
+   * 'Main' code, or code that executes most frequently, should have either
+   * the 'Likely' or 'Neither' Block::Hint. Code for these blocks is
+   * emitted into the 'a' section.
+   *
+   * Code that handles infrequent cases should have the 'Unlikely'
+   * Block::Hint. Example of such code are decref helpers that free objects
+   * when the ref-count goes to zero. Code for these blocks is emitted into
+   * the 'astubs' section.
+   *
+   * Code that is either executed once, or is highly unlikely to be ever
+   * executed, or code that will become dead in the future should have
+   * the 'Unlikely' Hint. Examples of these include Service Request stubs
+   * (executed once), Catch blocks (highly unlikely), and stubs code
+   * emitted in profiling mode (which become dead after optimized code is
+   * emitted). Code for these blocks is emitted into the 'aunused' section.
+   *
+   * See also util/code-cache.h for comment on the 'ahot' and 'aprof' sections.
+   */
+
+  enum class Hint { Neither, Likely, Unlikely, Unused };
 
   explicit Block(unsigned id)
     : m_id(id)
@@ -61,6 +83,8 @@ struct Block : boost::noncopyable {
 
   // Returns whether this block starts with BeginCatch
   bool isCatch() const;
+  // If its a catch block, the BeginCatch's marker
+  BCMarker catchMarker() const;
 
   // return the fallthrough block.  Should be nullptr if the last instruction
   // is a Terminal.
@@ -125,6 +149,7 @@ struct Block : boost::noncopyable {
   iterator         erase(IRInstruction* inst);
   iterator insert(iterator pos, IRInstruction* inst);
   void splice(iterator pos, Block* from, iterator begin, iterator end);
+  void push_back(std::initializer_list<IRInstruction*> insts);
   void push_back(IRInstruction* inst);
   template <class Predicate> void remove_if(Predicate p);
   InstructionList&& moveInstrs();
@@ -256,6 +281,10 @@ void Block::splice(iterator pos, Block* from, iterator begin, iterator end) {
   m_instrs.splice(pos, from->instrs(), begin, end);
 }
 
+inline void Block::push_back(std::initializer_list<IRInstruction*> insts) {
+  for (auto inst : insts) { push_back(inst); }
+}
+
 inline void Block::push_back(IRInstruction* inst) {
   assert(inst->marker().valid());
   inst->setBlock(this);
@@ -278,6 +307,13 @@ inline bool Block::isCatch() const {
   auto it = skipHeader();
   if (it == begin()) return false;
   return (--it)->op() == BeginCatch;
+}
+
+inline BCMarker Block::catchMarker() const {
+  assert(isCatch());
+  auto it = skipHeader();
+  assert(it != begin());
+  return (--it)->marker();
 }
 
 // defined here to avoid circular dependencies

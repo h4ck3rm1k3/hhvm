@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    | Copyright (c) 1997-2010 The PHP Group                                |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
@@ -102,5 +102,11 @@ inline void php_error_docref(const char *docref, int type,
 #define tsrm_mutex_free(x) pthread_mutex_destroy(&x)
 #define tsrm_mutex_lock(x) pthread_mutex_lock(&x)
 #define tsrm_mutex_unlock(x) pthread_mutex_unlock(&x)
+
+// Double definition with libjpeg, which can affect PCH builds
+#undef MAXJSAMPLE
+
+// And double definition with libxml2
+#undef ESC
 
 #endif // incl_HPHP_LIBGD_COMPAT_H_

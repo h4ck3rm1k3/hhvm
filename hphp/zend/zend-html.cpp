@@ -561,7 +561,7 @@ inline static bool decode_entity(char *entity, int *len,
 }
 
 inline static bool encode_entity(char* buf, int* buflen,
-                                 unsigned char entity, bool utf8) {
+                                 const char* entity, bool utf8) {
   entity_charset charset = cs_utf_8;
   if (!utf8){ charset = cs_8859_1; }
 
@@ -569,7 +569,7 @@ inline static bool encode_entity(char* buf, int* buflen,
 
   for(HtmlEntityMap::const_iterator iter = entityMap->begin();
       iter != entityMap->end(); iter++) {
-    if (static_cast<unsigned char>(*iter->second.c_str()) == entity) {
+    if (strcmp(iter->second.c_str(), entity) == 0) {
       memcpy(buf, iter->first, strlen(iter->first));
       *buflen = strlen(iter->first);
       return true;
@@ -606,6 +606,8 @@ char *string_html_encode(const char *input, int &len,
   char *q = ret;
   for (const char *p = input, *end = input + len; p < end; p++) {
     unsigned char c = *p;
+    char entity[5];
+    int codeLength = 0;
     switch (c) {
     case '"':
       if (qsBitmask & static_cast<int64_t>(EntBitmask::ENT_BM_DOUBLE)) {
@@ -616,7 +618,13 @@ char *string_html_encode(const char *input, int &len,
       break;
     case '\'':
       if (qsBitmask & static_cast<int64_t>(EntBitmask::ENT_BM_SINGLE)) {
-        *q++ = '&'; *q++ = '#'; *q++ = '0'; *q++ = '3'; *q++ = '9'; *q++ = ';';
+        *q++ = '&';
+        if ((qsBitmask & static_cast<int64_t>(EntBitmask::ENT_BM_XML1))) {
+          *q++ = 'a'; *q++ = 'p'; *q++ = 'o'; *q++ = 's';
+        } else {
+          *q++ = '#'; *q++ = '0'; *q++ = '3'; *q++ = '9';
+        }
+        *q++ = ';';
       } else {
         *q++ = c;
       }
@@ -667,7 +675,7 @@ char *string_html_encode(const char *input, int &len,
           p--;
           *q++ = '&'; *q++ = 'a'; *q++ = 'm'; *q++ = 'p'; *q++ = ';';
         }
-	    } else {
+      } else {
         *q++ = '&'; *q++ = 'a'; *q++ = 'm'; *q++ = 'p'; *q++ = ';';
       }
       break;
@@ -684,8 +692,86 @@ char *string_html_encode(const char *input, int &len,
         *q++ = c;
         break;
       }
-      if (qsBitmask & static_cast<int64_t>(EntBitmask::ENT_BM_IGNORE)) {
+
+      bool should_skip =
+        qsBitmask & static_cast<int64_t>(EntBitmask::ENT_BM_IGNORE);
+      bool should_replace =
+        qsBitmask & static_cast<int64_t>(EntBitmask::ENT_BM_SUBSTITUTE);
+
+      if (!utf8 && should_skip) {
+        *q++ = c;
         break;
+      }
+
+      auto avail = end - p;
+      auto utf8_trail = [](unsigned char c) { return c >= 0x80 && c <= 0xbf; };
+
+      // This has to be a macro since it needs to be able to break away from
+      // the for loop we're in.
+      // ENT_IGNORE has higher precedence than ENT_SUBSTITUTE
+      // \uFFFD is Unicode Replacement Character (U+FFFD)
+      #define UTF8_ERROR_IF(cond) \
+        if (cond) { \
+          if (should_skip) { break; } \
+          else if (should_replace) { strcpy(q, "\uFFFD"); q += 3; break; } \
+          else { goto exit_error; } \
+        }
+
+      if (utf8) {
+        if (c < 0xc2) {
+          UTF8_ERROR_IF(true);
+        } else if (c < 0xe0) {
+          UTF8_ERROR_IF(avail < 2 || !utf8_trail(*(p + 1)));
+
+          uint16_t tc = ((c & 0x1f) << 6) | (p[1] & 0x3f);
+          UTF8_ERROR_IF(tc < 0x80); // non-shortest form
+
+          codeLength = 2;
+          entity[0] = *p;
+          entity[1] = *(p + 1);
+          entity[2] = '\0';
+        } else if (c < 0xf0) {
+          UTF8_ERROR_IF(avail < 3);
+          UTF8_ERROR_IF(!utf8_trail(*(p + 1)) || !utf8_trail(*(p + 2)));
+
+          uint32_t tc = ((c & 0x0f) << 12) |
+                        ((*(p+1) & 0x3f) << 6) |
+                        (*(p+2) & 0x3f);
+          UTF8_ERROR_IF(tc < 0x800); // non-shortest form
+          UTF8_ERROR_IF(tc >= 0xd800 && tc <= 0xdfff); // surrogate
+
+          codeLength = 3;
+          entity[0] = *p;
+          entity[1] = *(p + 1);
+          entity[2] = *(p + 2);
+          entity[3] = '\0';
+        } else if (c < 0xf5) {
+          UTF8_ERROR_IF(avail < 4);
+          UTF8_ERROR_IF(!utf8_trail(*(p + 1)));
+          UTF8_ERROR_IF(!utf8_trail(*(p + 2)));
+          UTF8_ERROR_IF(!utf8_trail(*(p + 3)));
+
+          uint32_t tc = ((c & 0x07) << 18) |
+                        ((*(p+1) & 0x3f) << 12) |
+                        ((*(p+2) & 0x3f) << 6) |
+                        (*(p+3) & 0x3f);
+
+          // non-shortest form or outside range
+          UTF8_ERROR_IF(tc < 0x10000 || tc > 0x10ffff);
+
+          codeLength = 4;
+          entity[0] = *p;
+          entity[1] = *(p + 1);
+          entity[2] = *(p + 2);
+          entity[3] = *(p + 3);
+          entity[4] = '\0';
+        } else {
+          UTF8_ERROR_IF(true);
+        }
+      } else {
+        codeLength = 1;
+        entity[0] = *p;
+        entity[1] = '\0';
       }
 
       if (htmlEnt) {
@@ -695,84 +781,31 @@ char *string_html_encode(const char *input, int &len,
         buf[0] = c;
         int len = 1;
 
-        if (encode_entity(buf, &len, c, utf8)) {
+        if (encode_entity(buf, &len, const_cast<char*>(entity), utf8)) {
           *q++ = '&';
           const char *s = buf;
-          for(int n = 0; n < len; n++) {
-            *q++ = *s;
-            s++;
+          for (int n = 0; n < len; n++) {
+            *q++ = *s++;
           }
           *q++ = ';';
-          break;
+        } else {
+          memcpy(q, p, codeLength);
+          q += codeLength;
         }
-      }
-
-      auto avail = end - p;
-      auto utf8_trail = [](unsigned char c) { return c >= 0x80 && c <= 0xbf; };
-
-      if (c < 0xc2) {
-        goto exit_error;
-      } else if (c < 0xe0) {
-        if (avail < 2 || !utf8_trail(*(p + 1))) {
-          goto exit_error;
-        }
-
-        uint16_t tc = ((c & 0x1f) << 6) | (p[1] & 0x3f);
-        if (tc < 0x80) {  // non-shortest form
-          goto exit_error;
-        }
-        memcpy(q, p, 2);
-        q += 2;
-        p++;
-      } else if (c < 0xf0) {
-        if (avail < 3) {
-          goto exit_error;
-        }
-        for (int i = 1; i < 3; ++i) {
-          if (!utf8_trail(*(p + i))) {
-            goto exit_error;
-          }
-        }
-
-        uint32_t tc = ((c & 0x0f) << 12) |
-                      ((*(p+1) & 0x3f) << 6) |
-                      (*(p+2) & 0x3f);
-        if (tc < 0x800) { // non-shortest form
-          goto exit_error;
-        } else if (tc >= 0xd800 && tc <= 0xdfff) { // surrogate
-          goto exit_error;
-        }
-        memcpy(q, p, 3);
-        q += 3;
-        p += 2;
-      } else if (c < 0xf5) {
-        if (avail < 4) {
-          goto exit_error;
-        }
-        for (int i = 1; i < 4; ++i) {
-          if (!utf8_trail(*(p + i))) {
-            goto exit_error;
-          }
-        }
-
-        uint32_t tc = ((c & 0x07) << 18) |
-                      ((*(p+1) & 0x3f) << 12) |
-                      ((*(p+2) & 0x3f) << 6) |
-                      (*(p+3) & 0x3f);
-        if (tc < 0x10000 || tc > 0x10ffff) {
-          // non-shortest form or outside range
-          goto exit_error;
-        }
-        memcpy(q, p, 4);
-        q += 4;
-        p += 3;
       } else {
-        goto exit_error;
+        memcpy(q, p, codeLength);
+        q += codeLength;
       }
+      p += codeLength - 1;
+
       break;
     }
     }
+
   }
+
+  #undef UTF8_ERROR_IF
+
   if (q - ret > INT_MAX) {
     goto exit_error;
   }
@@ -971,4 +1004,3 @@ const html_entity_map* html_get_entity_map() {
 
 ///////////////////////////////////////////////////////////////////////////////
 }
-

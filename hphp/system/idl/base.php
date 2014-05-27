@@ -118,7 +118,7 @@ function get_php_name($type, $null = 'mixed') {
 // flags
 
 // ClassInfo attributes, and these numbers need to be consistent with them!
-define('ZendParamModeNull',              1 <<  0);
+define('ParamCoerceModeNull',              1 <<  0);
 define('IsAbstract',                     1 <<  4);
 define('IsFinal',                        1 <<  5);
 define('IsPublic',                       1 <<  6);
@@ -128,7 +128,6 @@ define('AllowOverride',                  1 <<  8);
 define('IsStatic',                       1 <<  9);
 define('IsCppAbstract',                  1 << 10);
 define('IsReference',                    1 << 11);
-define('IsConstructor',                  1 << 12);
 define('IsNothing',                      1 << 13);
 define('ZendCompat',                     1 << 14);
 define('IsCppSerializable',              1 << 15);
@@ -146,7 +145,7 @@ define('ContextSensitive',               1 << 26);
 define('NoDefaultSweep',                 1 << 27);
 define('IsSystem',                       1 << 28);
 define('IsTrait',                        1 << 29);
-define('ZendParamModeFalse',             1 << 30);
+define('ParamCoerceModeFalse',             1 << 30);
 define('NoFCallBulitin',                 1 << 31);
 
 // Mask for checking the flags related to variable arguments

@@ -32,16 +32,18 @@ namespace HPHP {
  * For the per-request struct, see TypeAliasReq below.
  */
 struct TypeAlias {
-  const StringData* name;
-  const StringData* value;
-  DataType          kind;
-  bool              nullable; // Null is allowed; for ?Foo aliases
+  LowStringPtr name;
+  LowStringPtr value;
+  DataType     kind;
+  bool         nullable; // Null is allowed; for ?Foo aliases
+  Attr         attrs;
 
   template<class SerDe> void serde(SerDe& sd) {
     sd(name)
       (value)
       (kind)
       (nullable)
+      (attrs)
       ;
   }
 };
@@ -52,10 +54,10 @@ struct TypeAlias {
  * validate parameter type hints for a type alias at runtime.
  */
 struct TypeAliasReq {
-  DataType kind;          // may be KindOfAny for "HH\\mixed"
-  bool nullable;          // for option types, like ?Foo
-  Class* klass;           // nullptr if kind != KindOfObject
-  const StringData* name; // needed for error messages; nullptr if not defined
+  DataType kind;      // may be KindOfAny for "HH\\mixed"
+  bool nullable;      // for option types, like ?Foo
+  LowClassPtr klass;  // nullptr if kind != KindOfObject
+  LowStringPtr name;  // needed for error messages; nullptr if not defined
 };
 
 //////////////////////////////////////////////////////////////////////

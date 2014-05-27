@@ -127,8 +127,10 @@ bool c_Memcache::t_connect(const String& host, int port /*= 0*/,
                            int timeoutms /*= 0*/) {
   memcached_return_t ret;
 
-  if (!host.empty() && host[0] == '/') {
-    ret = memcached_server_add_unix_socket(&m_memcache, host.c_str());
+  if (!host.empty() &&
+      !strncmp(host.c_str(), "unix://", sizeof("unix://") - 1)) {
+    const char *socket_path = host.substr(sizeof("unix://") - 1).c_str();
+    ret = memcached_server_add_unix_socket(&m_memcache, socket_path);
   } else {
     ret = memcached_server_add(&m_memcache, host.c_str(), port);
   }
@@ -437,7 +439,7 @@ Array static memcache_build_stats(const memcached_st *ptr,
     if (stat_keys) {
       free(stat_keys);
     }
-    return NULL;
+    return Array();
   }
 
   Array return_val = Array::Create();
@@ -461,7 +463,7 @@ Array static memcache_build_stats(const memcached_st *ptr,
 Array c_Memcache::t_getstats(const String& type /* = null_string */,
                              int slabid /* = 0 */, int limit /* = 100 */) {
   if (!memcached_server_count(&m_memcache)) {
-    return NULL;
+    return Array();
   }
 
   char extra_args[30] = {0};
@@ -481,7 +483,7 @@ Array c_Memcache::t_getstats(const String& type /* = null_string */,
   memcached_stat_st stats;
   if (memcached_stat_servername(&stats, extra_args, hostname,
                                 port) != MEMCACHED_SUCCESS) {
-    return NULL;
+    return Array();
   }
 
   memcached_return_t ret;
@@ -496,7 +498,7 @@ Array c_Memcache::t_getextendedstats(const String& type /* = null_string */,
 
   stats = memcached_stat(&m_memcache, NULL, &ret);
   if (ret != MEMCACHED_SUCCESS) {
-    return NULL;
+    return Array();
   }
 
   int server_count = memcached_server_count(&m_memcache);
@@ -547,9 +549,11 @@ bool c_Memcache::t_addserver(const String& host, int port /* = 11211 */,
                              int timeoutms /* = 0 */) {
   memcached_return_t ret;
 
-  if (!host.empty() && host[0] == '/') {
+  if (!host.empty() &&
+      !strncmp(host.c_str(), "unix://", sizeof("unix://") - 1)) {
+    const char *socket_path = host.substr(sizeof("unix://") - 1).c_str();
     ret = memcached_server_add_unix_socket_with_weight(&m_memcache,
-                                                       host.c_str(), weight);
+                                                       socket_path, weight);
   } else {
     ret = memcached_server_add_with_weight(&m_memcache, host.c_str(),
                                            port, weight);

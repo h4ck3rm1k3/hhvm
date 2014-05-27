@@ -51,13 +51,12 @@ let rec is_option env ty =
 (* Unification error *)
 (*****************************************************************************)
 let uerror r1 ty1 r2 ty2 =
-  let p1 = Reason.to_pos r1 in
-  let p2 = Reason.to_pos r2 in
   let ty1 = Typing_print.error ty1 in
   let ty2 = Typing_print.error ty2 in
-  error_l [p1, "This is "^ ty1 ^ Reason.to_string r1;
-           p2, "It is incompatible with " ^ ty2 ^
-           Reason.to_string r2]
+  error_l (
+    (Reason.to_string ("This is " ^ ty1) r1) @
+    (Reason.to_string ("It is incompatible with " ^ ty2) r2)
+  )
 
 (*****************************************************************************)
 (* Adding results to auto-completion  *)
@@ -67,7 +66,7 @@ let add_auto_result env class_members =
   Autocomplete.auto_complete_result :=
     SMap.fold begin fun x class_elt acc ->
       let ty = class_elt.ce_type in
-      let type_ = Typing_print.full env ty in
+      let type_ = Typing_print.full_strip_ns env ty in
       let pos = Reason.to_pos (fst ty) in
       let sig_ = x^" "^type_ in
       SMap.add sig_ (Autocomplete.make_result x pos type_) acc
@@ -107,7 +106,7 @@ let process_arg_info fun_args used_args env =
     end (0, None) used_args in
     if result <> None then (
       argument_info_expected := Some (List.map begin
-          fun (x,y) -> x, Typing_print.full env y end fun_args);
+          fun (x,y) -> x, Typing_print.full_strip_ns env y end fun_args);
       argument_info_position := result
     );
   ()
@@ -129,19 +128,19 @@ let save_infer env pos ty =
       let l, start, end_ = Pos.info_pos pos in
       if l = line && start <= char_pos && char_pos <= end_ && !infer_type = None
       then begin
-        infer_type := Some (Typing_print.full env ty);
+        infer_type := Some (Typing_print.full_strip_ns env ty);
         infer_pos := Some (Reason.to_pos (fst ty));
       end
       else ()
 
 (* Find the first defined position in a list of types *)
-let rec find_pos tyl =
+let rec find_pos p_default tyl =
   match tyl with
-  | [] -> Pos.none
+  | [] -> p_default
   | (r, _) :: rl ->
       let p = Reason.to_pos r in
       if p = Pos.none
-      then find_pos rl
+      then find_pos p_default rl
       else p
 
 (*****************************************************************************)

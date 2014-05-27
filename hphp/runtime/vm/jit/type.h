@@ -17,17 +17,20 @@
 #ifndef incl_HPHP_JIT_TYPE_H_
 #define incl_HPHP_JIT_TYPE_H_
 
-#include <cstdint>
-#include <cstring>
+#include "hphp/runtime/base/repo-auth-type.h"
+#include "hphp/runtime/base/repo-auth-type-array.h"
+#include "hphp/runtime/base/string-data.h"
+#include "hphp/runtime/base/type-array.h"
 
-#include "folly/Optional.h"
+#include "hphp/runtime/vm/class.h"
+#include "hphp/runtime/vm/jit/types.h"
 
 #include "hphp/util/data-block.h"
 
-#include "hphp/runtime/base/repo-auth-type.h"
-#include "hphp/runtime/base/complex-types.h"
-#include "hphp/runtime/vm/class.h"
-#include "hphp/runtime/vm/jit/types.h"
+#include "folly/Optional.h"
+
+#include <cstdint>
+#include <cstring>
 
 namespace HPHP {
 struct Func;
@@ -91,6 +94,7 @@ namespace constToBits_detail {
   c(Null,          kUninit|kInitNull)                                   \
   c(Str,           kStaticStr|kCountedStr)                              \
   c(Arr,           kStaticArr|kCountedArr)                              \
+  c(NullableObj,   kObj|kInitNull|kUninit)                              \
   c(UncountedInit, kInitNull|kBool|kInt|kDbl|kStaticStr|kStaticArr)     \
   c(Uncounted,     kUncountedInit|kUninit)                              \
   c(InitCell,      kUncountedInit|kStr|kArr|kObj|kRes)                  \
@@ -170,6 +174,11 @@ class Type {
 #undef IRT
   };
 
+  // An ArrayKind in the top 16 bits, optional RepoAuthType::Array* in
+  // the lower 48 bits, and the low bit that says whether the kind is
+  // valid.
+  enum class ArrayInfo : uintptr_t {};
+
   bits_t m_bits:63;
   bool m_hasConstVal:1;
 
@@ -188,14 +197,39 @@ class Type {
     RDS::Handle m_rdsHandleVal;
     TypedValue* m_ptrVal;
 
-    // Specialization for object classes and array kinds.
+    // Specialization for object classes and arrays.
     const Class* m_class;
-    struct {
-      bool m_arrayKindValid;
-      ArrayData::ArrayKind m_arrayKind;
-      uint64_t m_padding:48; // We want all 8 bytes of m_extra to be defined.
-    };
+    ArrayInfo m_arrayInfo;
   };
+
+  static ArrayInfo makeArrayInfo(folly::Optional<ArrayData::ArrayKind> kind,
+                                 const RepoAuthType::Array* arrTy) {
+    auto ret = reinterpret_cast<uintptr_t>(arrTy);
+    if (kind.hasValue()) {
+      ret |= 0x1;
+      ret |= uintptr_t{*kind} << 48;
+    }
+    return static_cast<ArrayInfo>(ret);
+  }
+
+  static bool arrayKindValid(ArrayInfo info) {
+    return static_cast<uintptr_t>(info) & 0x1;
+  }
+
+  static ArrayData::ArrayKind kind(ArrayInfo info) {
+    assert(arrayKindValid(info));
+    return static_cast<ArrayData::ArrayKind>(
+      static_cast<uintptr_t>(info) >> 48
+    );
+  }
+
+  // May return nullptr if we have no specialized array type
+  // information.
+  static const RepoAuthType::Array* arrayType(ArrayInfo info) {
+    return reinterpret_cast<const RepoAuthType::Array*>(
+      static_cast<uintptr_t>(info) & (-1ull >> 16) & ~0x1
+    );
+  }
 
   bool checkValid() const;
 
@@ -215,15 +249,15 @@ class Type {
     assert(checkValid());
   }
 
-  explicit Type(bits_t bits, ArrayData::ArrayKind arrayKind)
+  explicit Type(bits_t bits, ArrayInfo arrayInfo)
     : m_bits(bits)
     , m_hasConstVal(false)
-    , m_arrayKindValid(true)
-    , m_arrayKind(arrayKind)
-    , m_padding(0)
+    , m_arrayInfo(arrayInfo)
   {
     assert(checkValid());
   }
+
+  explicit Type(bits_t bits, ArrayData::ArrayKind) = delete;
 
   static bits_t bitsFromDataType(DataType outer, DataType inner);
 
@@ -234,6 +268,7 @@ class Type {
 
   struct Union;
   struct Intersect;
+  struct ArrayOps;
 
 public:
 # define IRT(name, ...) static const Type name;
@@ -340,11 +375,12 @@ public:
   }
 
   static Type cns(const TypedValue tv) {
+    if (tv.m_type == KindOfUninit) return Type::Uninit;
+    if (tv.m_type == KindOfNull)   return Type::InitNull;
+
     auto ret = [&] {
       switch (tv.m_type) {
         case KindOfClass:
-        case KindOfUninit:
-        case KindOfNull:
         case KindOfBoolean:
         case KindOfInt64:
         case KindOfDouble:
@@ -380,6 +416,9 @@ public:
     }
     return Type(m_bits);
   }
+
+  // Relaxes the type to one that we can check in codegen
+  Type relaxToGuardable() const;
 
   bool hasRawVal() const {
     return m_hasConstVal;
@@ -558,14 +597,14 @@ public:
   }
 
   /*
-   * True if type can have a specialized array kind.
+   * True if type can have specialized array information.
    */
-  bool canSpecializeArrayKind() const {
+  bool canSpecializeArray() const {
     return (m_bits & kAnyArr) && !(m_bits & kAnyObj);
   }
 
   bool canSpecializeAny() const {
-    return canSpecializeClass() || canSpecializeArrayKind();
+    return canSpecializeClass() || canSpecializeArray();
   }
 
   Type specialize(const Class* klass) const {
@@ -574,13 +613,18 @@ public:
   }
 
   Type specialize(ArrayData::ArrayKind arrayKind) const {
-    assert(canSpecializeArrayKind());
-    return Type(m_bits, arrayKind);
+    assert(canSpecializeArray());
+    return Type(m_bits, makeArrayInfo(arrayKind, nullptr));
+  }
+
+  Type specialize(const RepoAuthType::Array* array) const {
+    assert(canSpecializeArray());
+    return Type(m_bits, makeArrayInfo(folly::none, array));
   }
 
   bool isSpecialized() const {
     return (canSpecializeClass() && getClass()) ||
-      (canSpecializeArrayKind() && hasArrayKind());
+      (canSpecializeArray() && (hasArrayKind() || getArrayType()));
   }
 
   Type unspecialize() const {
@@ -593,13 +637,23 @@ public:
   }
 
   bool hasArrayKind() const {
-    assert(canSpecializeArrayKind());
-    return m_hasConstVal || m_arrayKindValid;
+    assert(canSpecializeArray());
+    return m_hasConstVal || arrayKindValid(m_arrayInfo);
   }
 
   ArrayData::ArrayKind getArrayKind() const {
     assert(hasArrayKind());
-    return m_hasConstVal ? m_arrVal->kind() : m_arrayKind;
+    return m_hasConstVal ? m_arrVal->kind() : kind(m_arrayInfo);
+  }
+
+  folly::Optional<ArrayData::ArrayKind> getOptArrayKind() const {
+    if (hasArrayKind()) return getArrayKind();
+    return folly::none;
+  }
+
+  const RepoAuthType::Array* getArrayType() const {
+    assert(canSpecializeArray());
+    return m_hasConstVal ? nullptr : arrayType(m_arrayInfo);
   }
 
   // Returns a subset of *this containing only the members relating to its
@@ -609,7 +663,7 @@ public:
   Type specializedType() const {
     assert(isSpecialized());
     if (canSpecializeClass()) return *this & AnyObj;
-    if (canSpecializeArrayKind()) return *this & AnyArr;
+    if (canSpecializeArray()) return *this & AnyArr;
     not_reached();
   }
 
@@ -618,31 +672,7 @@ public:
   /*
    * Returns true iff this represents a non-strict subset of t2.
    */
-  bool subtypeOf(Type t2) const {
-    // First, check for any members in m_bits that aren't in t2.m_bits.
-    if ((m_bits & t2.m_bits) != m_bits) return false;
-
-    // If t2 is a constant, we must be the same constant or Bottom.
-    if (t2.m_hasConstVal) {
-      assert(!t2.isUnion());
-      return m_bits == kBottom || (m_hasConstVal && m_extra == t2.m_extra);
-    }
-
-    // If t2 is specialized, we must either not be eligible for the same kind
-    // of specialization (Int <= {Int|Arr<Packed>}) or have a specialization
-    // that is a subtype of t2's specialization.
-    if (t2.isSpecialized()) {
-      if (t2.canSpecializeClass()) {
-        return !canSpecializeClass() ||
-          (m_class != nullptr && m_class->classof(t2.m_class));
-      }
-
-      return !canSpecializeArrayKind() ||
-        (m_arrayKindValid && getArrayKind() == t2.getArrayKind());
-    }
-
-    return true;
-  }
+  bool subtypeOf(Type t2) const;
 
   template<typename... Types>
   bool subtypeOfAny(Type t2, Types... ts) const {
@@ -798,16 +828,21 @@ Type boxType(Type);
  */
 Type convertToType(RepoAuthType ty);
 
+/*
+ * Return the type resulting from refining oldType with the fact that it also
+ * belongs to newType. This essentially intersects the two types, except that
+ * it has special logic for boxed types.
+ */
+Type refineType(Type oldType, Type newType);
+
 //////////////////////////////////////////////////////////////////////
 
 struct TypeConstraint {
   /* implicit */ TypeConstraint(DataTypeCategory cat = DataTypeGeneric,
-                                Type aType = Type::Gen,
                                 DataTypeCategory inner = DataTypeGeneric)
     : category(cat)
     , innerCat(inner)
     , weak(false)
-    , assertedType(aType)
   {}
 
   std::string toString() const;
@@ -817,28 +852,33 @@ struct TypeConstraint {
     return *this;
   }
 
+  bool operator==(TypeConstraint tc2) const {
+    return category == tc2.category && innerCat == tc2.innerCat &&
+      weak == tc2.weak;
+  }
+
+  bool empty() const {
+    return category == DataTypeGeneric && innerCat == DataTypeGeneric && !weak;
+  }
+
   // category starts as DataTypeGeneric and is refined to more specific values
   // by consumers of the type.
   DataTypeCategory category;
 
   // When a value is boxed, innerCat is used to determine how we can relax the
-  // inner type.
+  // inner type. innerCat is only meaningful when category is at least
+  // DataTypeCountness, since a category of DataTypeGeneric relaxes types all
+  // the way to Gen which has no meaningful inner type.
   DataTypeCategory innerCat;
 
   // If weak is true, the consumer of the value being constrained doesn't
   // actually want to constrain the guard (if found). Most often used to figure
   // out if a type can be used without further constraining guards.
   bool weak;
-
-  // It's fairly common to emit an AssertType op with a type that is less
-  // specific than the current guard type, but more specific than the type the
-  // guard will eventually be relaxed to. We want to simplify these
-  // instructions away, and when we do, we remember their type in assertedType.
-  Type assertedType;
 };
 
-const size_t kTypeWordOffset = (offsetof(TypedValue, m_type) % 8);
-const size_t kTypeShiftBits = kTypeWordOffset * CHAR_BIT;
+const int kTypeWordOffset = offsetof(TypedValue, m_type) % 8;
+const int kTypeShiftBits = kTypeWordOffset * CHAR_BIT;
 
 // left shift an immediate DataType, for type, to the correct position
 // within one of the registers used to pass a TypedValue by value.

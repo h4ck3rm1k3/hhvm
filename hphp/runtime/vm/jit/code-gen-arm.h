@@ -28,13 +28,15 @@
 
 namespace HPHP { namespace JIT { namespace ARM {
 
-struct CodeGenerator {
+struct CodeGenerator : public JIT::CodeGenerator {
 
   CodeGenerator(const IRUnit& unit, CodeBlock& mainCode, CodeBlock& stubsCode,
-                JIT::MCGenerator* mcg, CodegenState& state)
+                CodeBlock& unusedCode, JIT::MCGenerator* mcg,
+                CodegenState& state)
       : m_unit(unit)
       , m_mainCode(mainCode)
       , m_stubsCode(stubsCode)
+      , m_unusedCode(unusedCode)
       , m_as(mainCode)
       , m_astubs(stubsCode)
       , m_mcg(mcg)
@@ -43,7 +45,10 @@ struct CodeGenerator {
     {
     }
 
-  Address cgInst(IRInstruction* inst);
+  virtual ~CodeGenerator() {
+  }
+
+  Address cgInst(IRInstruction* inst) override;
 
  private:
   template<class Then>
@@ -66,7 +71,8 @@ struct CodeGenerator {
     a.  bind(&done);
   }
 
-  const Func* curFunc() { return m_curInst->marker().func; }
+  const Func* curFunc() const { return m_curInst->marker().func(); }
+  bool resumed() const { return m_curInst->marker().resumed(); }
 
   void emitJumpToBlock(CodeBlock& cb, Block* target, ConditionCode cc);
 
@@ -78,7 +84,7 @@ struct CodeGenerator {
   CallDest callDest(PhysReg reg0, PhysReg reg1 = InvalidReg) const;
   CallDest callDest(const IRInstruction*) const;
   CallDest callDestTV(const IRInstruction*) const;
-  CallDest callDest2(const IRInstruction*) const;
+  CallDest callDestDbl(const IRInstruction*) const;
 
   void cgCallNative(vixl::MacroAssembler& as, IRInstruction* inst);
   void cgCallHelper(vixl::MacroAssembler& a,
@@ -93,9 +99,12 @@ struct CodeGenerator {
                     SyncOptions sync,
                     ArgGroup& args);
 
-  void emitDecRefDynamicType(vixl::Register baseReg, ptrdiff_t offset);
+  void emitDecRefDynamicType(vixl::Register baseReg, int offset);
+
+  void cgStLocWork(IRInstruction* inst);
+
   void emitDecRefStaticType(Type type, vixl::Register reg);
-  void emitDecRefMem(Type type, vixl::Register baseReg, ptrdiff_t offset);
+  void emitDecRefMem(Type type, vixl::Register baseReg, int offset);
 
   template<class Loc, class JmpFn>
   void emitTypeTest(Type type, vixl::Register typeReg, Loc dataSrc,
@@ -132,15 +141,13 @@ struct CodeGenerator {
   const IRUnit&               m_unit;
   CodeBlock&                  m_mainCode;
   CodeBlock&                  m_stubsCode;
+  CodeBlock&                  m_unusedCode;
   vixl::MacroAssembler        m_as;
   vixl::MacroAssembler        m_astubs;
   MCGenerator*                m_mcg;
   CodegenState&               m_state;
   IRInstruction*              m_curInst;
 };
-
-void patchJumps(CodeBlock& cb, CodegenState& state, Block* block);
-void emitFwdJmp(CodeBlock& cb, Block* target, CodegenState& state);
 
 }}}
 

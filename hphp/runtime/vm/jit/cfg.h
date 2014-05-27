@@ -38,7 +38,6 @@ void postorderWalk(const IRUnit&, Visitor visitor, Block* start = nullptr);
  */
 BlockList rpoSortCfg(const IRUnit&);
 
-
 /*
  * Similar to repoSortCfg, but also returns a StateVector mapping Blocks to
  * their index in the BlockList.
@@ -48,6 +47,11 @@ struct BlocksWithIds {
   StateVector<Block, uint32_t> ids;
 };
 BlocksWithIds rpoSortCfgWithIds(const IRUnit&);
+
+/*
+ * Split the edge between "from" and "to", returning the new middle block.
+ */
+Block* splitEdge(IRUnit& unit, Block* from, Block* to, BCMarker marker);
 
 /*
  * Removes unreachable blocks from the unit and then splits any critical edges.
@@ -100,11 +104,6 @@ void forPreorderDoms(Block* block, const DomChildren& children,
                      State state, Body body);
 
 /*
- * Visit the main trace followed by exit traces.
- */
-template <class Body> void forEachTrace(const IRUnit&, Body body);
-
-/*
  * Visit the instructions in this blocklist, in block order.
  */
 template <class BlockList, class Body>
@@ -137,7 +136,10 @@ namespace detail {
       m_visitor(block);
     }
   private:
-    static bool cold(Block* b) { return b->hint() == Block::Hint::Unlikely; }
+    static bool cold(Block* b) {
+      return b->hint() == Block::Hint::Unlikely ||
+             b->hint() == Block::Hint::Unused;
+    }
   private:
     boost::dynamic_bitset<> m_visited;
     Visitor &m_visitor;

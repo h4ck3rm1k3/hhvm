@@ -17,9 +17,11 @@
 
 #include "hphp/runtime/ext/extension.h"
 #include "hphp/runtime/ext/ext_apc.h"
+#include "hphp/runtime/ext/apache/ext_apache.h"
 #include "hphp/runtime/ext/ext_string.h"
 #include "hphp/runtime/base/complex-types.h"
 #include "hphp/runtime/base/program-functions.h"
+#include "hphp/runtime/base/config.h"
 #include "hphp/runtime/vm/runtime.h"
 #include "hphp/runtime/vm/unit.h"
 #include "hphp/system/systemlib.h"
@@ -110,12 +112,12 @@ Extension::Extension(litstr name, const char *version /* = "" */)
   (*s_registered_extensions)[name] = this;
 }
 
-void Extension::LoadModules(Hdf hdf) {
+void Extension::LoadModules(const IniSetting::Map& ini, Hdf hdf) {
   // Load up any dynamic extensions
-  std::string path = hdf["DynamicExtensionPath"].getString(".");
+  std::string path = Config::GetString(ini, hdf["DynamicExtensionPath"], ".");
   for (Hdf ext = hdf["DynamicExtensions"].firstChild();
        ext.exists(); ext = ext.next()) {
-    std::string extLoc = ext.getString();
+    std::string extLoc = Config::GetString(ini, ext);
     if (extLoc.empty()) {
       continue;
     }
@@ -153,7 +155,7 @@ void Extension::LoadModules(Hdf hdf) {
   // Invoke Extension::moduleLoad() callbacks
   assert(s_registered_extensions);
   for (auto& kv : *s_registered_extensions) {
-    kv.second->moduleLoad(hdf);
+    kv.second->moduleLoad(ini, hdf);
   }
 }
 
@@ -215,11 +217,19 @@ void Extension::ShutdownModules() {
   s_registered_extensions->clear();
 }
 
-const StaticString s_apc("apc");
+const StaticString
+  s_apache("apache"),
+  s_apc("apc"),
+  s_xhp("xhp");
 
 bool Extension::IsLoaded(const String& name) {
+  if (name == s_apache) {
+    return ApacheExtension::Enable;
+  }
   if (name == s_apc) {
     return apcExtension::Enable;
+  } else if (name == s_xhp) {
+    return RuntimeOption::EnableXHP;
   }
   assert(s_registered_extensions);
   return s_registered_extensions->find(name.data()) !=
@@ -240,6 +250,9 @@ Array Extension::GetLoadedExtensions() {
   Array ret = Array::Create();
   for (auto& kv : *s_registered_extensions) {
     if (!apcExtension::Enable && kv.second->m_name == s_apc) {
+      continue;
+    }
+    if (!RuntimeOption::EnableXHP && kv.second->m_name == s_xhp) {
       continue;
     }
     ret.append(kv.second->m_name);
@@ -270,27 +283,22 @@ void Extension::CompileSystemlib(const std::string &slib,
  * Loads a named systemlib section from the main binary (or DSO)
  * using the label "ext.{hash(name)}"
  *
- * If {name} is not passed, then {m_name} is assumed for
- * builtin extensions.  DSOs pull from the fixed "systemlib" label
+ * If {name} is not passed, then {m_name} is assumed.
  */
 void Extension::loadSystemlib(const std::string& name /*= "" */) {
-  std::string hhas, slib, phpname("systemlib.php.");
   std::string n = name.empty() ?
     std::string(m_name.data(), m_name.size()) : name;
-  phpname += n;
-  if (m_dsoName.empty() || !name.empty()) {
-    std::string section("ext.");
-    section += f_md5(n, false).substr(0, 12).data();
-    slib = get_systemlib(&hhas, section);
-  } else {
-    slib = get_systemlib(&hhas, "systemlib", m_dsoName);
-  }
+  std::string section("ext.");
+  section += f_md5(n, false).substr(0, 12).data();
+  std::string hhas, slib = get_systemlib(&hhas, section, m_dsoName);
   if (!slib.empty()) {
+    std::string phpname("systemlib.php");
+    phpname += n;
     CompileSystemlib(slib, phpname);
   }
   if (!hhas.empty()) {
     std::string hhasname("systemlib.hhas.");
-    hhasname += m_name.data();
+    hhasname += n;
     CompileSystemlib(hhas, hhasname);
   }
 }

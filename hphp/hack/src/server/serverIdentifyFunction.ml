@@ -7,7 +7,6 @@
  * of patent rights can be found in the PATENTS file in the same directory.
  *
  *)
-open Utils
 
 let setup line char =
   Find_refs.find_method_at_cursor_result := None;
@@ -27,7 +26,7 @@ let identify content line char =
   restore();
   ServerIdeUtils.revive funs classes;
   match result with
-  | Some result -> result.Find_refs.name
+  | Some result -> Utils.strip_ns result.Find_refs.name
   | _ -> ""
 
 let go content line char oc =

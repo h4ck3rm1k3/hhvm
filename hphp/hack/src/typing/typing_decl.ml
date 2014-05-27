@@ -113,7 +113,7 @@ let get_class_parents_and_traits env class_nast =
   env, parents, is_complete
 
 let error_trait_req pos req =
-  error pos ("Failure to satisfy trait requirement: "^req)
+  error pos ("Failure to satisfy trait requirement: "^(Utils.strip_ns req))
 
 (* for non-traits, check that each used trait's requirements have been
  * satisfied; for traits, accumulate the requirements so that we can
@@ -198,7 +198,7 @@ type class_env = {
   }
 
 let error_cyclic stack pos =
-  let stack = SSet.fold (fun x y -> x^" "^y) stack "" in
+  let stack = SSet.fold (fun x y -> (Utils.strip_ns x)^" "^y) stack "" in
   error pos ("Cyclic class definition : "^stack)
 
 let error_final ~parent ~child =
@@ -320,13 +320,17 @@ and class_decl_ c =
   SMap.iter (check_static_method m) sm;
   let parent_cstr = inherited.Typing_inherit.ih_cstr in
   let env, cstr = constructor_decl env parent_cstr c in
+  let need_init = match cstr with
+    | None
+    | Some {ce_type = (_, Tfun ({ft_abstract = true; _})); _} -> false
+    | _ -> true in
   let impl = c.c_extends @ c.c_implements @ c.c_uses in
   let impl = match SMap.get "__toString" m with
-    | Some {ce_type = (_, Tfun ft)} when cls_name <> "Stringish" ->
+    | Some {ce_type = (_, Tfun ft); _} when cls_name <> "\\Stringish" ->
       (* HHVM implicitly adds Stringish interface for every class/iface/trait
        * with a __toString method; "string" also implements this interface *)
       let pos = ft.ft_pos in
-      let h = (pos, Nast.Happly ((pos, "Stringish"), [])) in
+      let h = (pos, Nast.Happly ((pos, "\\Stringish"), [])) in
       h :: impl
     | _ -> impl
   in
@@ -371,7 +375,7 @@ and class_decl_ c =
   let tc = {
     tc_final = c.c_final;
     tc_abstract = is_abstract;
-    tc_need_init = cstr <> None;
+    tc_need_init = need_init;
     tc_members_init = NastInitCheck.class_decl env c;
     tc_members_fully_known = ext_strict;
     tc_kind = c.c_kind;
@@ -417,7 +421,7 @@ and trait_exists env acc trait =
       )
     | _ -> false
 
-and check_static_method obj method_name { ce_type = (reason_for_type, _) } =
+and check_static_method obj method_name { ce_type = (reason_for_type, _); _ } =
   if SMap.mem method_name obj && not !is_silent_mode
   then begin
     let static_position = Reason.to_pos reason_for_type in
@@ -432,7 +436,7 @@ and check_static_method obj method_name { ce_type = (reason_for_type, _) } =
 and constructor_decl env pcstr c =
   match c.c_constructor, pcstr with
     | None, Some cstr -> env, Some cstr
-    | Some m, Some { ce_final = true; ce_type = (r, _) } ->
+    | Some m, Some { ce_final = true; ce_type = (r, _); _ } ->
       error_final ~parent:(Reason.to_pos r) ~child:(fst m.m_name)
     | Some m, _ ->
       let env, ty = method_decl c env m in
@@ -561,15 +565,15 @@ and method_check_override c m acc =
   let class_pos, class_id = c.c_name in
   let override = SMap.mem "Override" m.m_user_attributes in
   if m.m_visibility = Private && override then
-    error pos (class_id^"::"^id
+    error pos ((Utils.strip_ns class_id)^"::"^id
                ^": combining private and override is nonsensical");
   match SMap.get id acc with
-    | Some { ce_final = true; ce_type = (r, _) } when not !is_silent_mode ->
+    | Some { ce_final = true; ce_type = (r, _); _ } when not !is_silent_mode ->
       error_final ~parent:(Reason.to_pos r) ~child:pos
     | Some _ -> false
     | None when override && c.c_kind = Ast.Ctrait -> true
     | None when override ->
-      error pos (class_id^"::"^id^"() should be an override; \
+      error pos ((Utils.strip_ns class_id)^"::"^id^"() should be an override; \
                     no non-private parent definition found \
                     or overridden parent is defined in non-<?hh code")
     | None -> false
@@ -580,7 +584,7 @@ and method_decl_acc c (env, acc) m =
   let _, id = m.m_name in
   let vis =
     match SMap.get id acc, m.m_visibility with
-      | Some { ce_visibility = Vprotected _ as parent_vis }, Protected ->
+      | Some { ce_visibility = Vprotected _ as parent_vis; _ }, Protected ->
         parent_vis
     | _ -> visibility (snd c.c_name) m.m_visibility
   in
@@ -595,8 +599,8 @@ and method_check_trait_overrides c id method_ce =
   if method_ce.ce_override then
     let c_pos, c_name = c.c_name in
     let err_msg =
-      ("Method "^c_name^"::"^id^" is should be an override per the declaring \
-        trait; no non-private parent definition found \
+      ("Method "^(Utils.strip_ns c_name)^"::"^id^" is should be an override \
+        per the declaring trait; no non-private parent definition found \
         or overridden parent is defined in non-<?hh code")
     in error_l [
       c_pos, err_msg;
@@ -658,7 +662,7 @@ and type_typedef_naming_and_decl nenv tdef =
 (* Global constants *)
 (*****************************************************************************)
 
-let rec iconst_decl nenv cst =
+let iconst_decl nenv cst =
   let cst = Naming.global_const nenv cst in
   let _cst_pos, cst_name = cst.cst_name in
   Naming_heap.ConstHeap.add cst_name cst;

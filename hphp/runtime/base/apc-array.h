@@ -38,7 +38,7 @@ struct APCArray {
   // Entry point to create an APCArray of any kind
   static APCHandle* MakeShared(ArrayData* data,
                                bool inner,
-                               bool unserializeObj);
+                               bool forceAPCObj);
   static APCHandle* MakeShared();
 
   static Variant MakeArray(APCHandle* handle);
@@ -48,6 +48,11 @@ struct APCArray {
   static APCArray* fromHandle(APCHandle* handle) {
     assert(offsetof(APCArray, m_handle) == 0);
     return reinterpret_cast<APCArray*>(handle);
+  }
+
+  static const APCArray* fromHandle(const APCHandle* handle) {
+    assert(offsetof(APCArray, m_handle) == 0);
+    return reinterpret_cast<const APCArray*>(handle);
   }
 
   APCHandle* getHandle() {
@@ -105,8 +110,7 @@ private:
   explicit APCArray(size_t size) : m_handle(KindOfArray), m_size(size) {
     m_handle.setPacked();
   }
-  explicit APCArray(unsigned int cap)
-      : m_handle(KindOfArray) {
+  explicit APCArray(unsigned int cap) : m_handle(KindOfArray) {
     m.m_capacity_mask = cap - 1;
     m.m_num = 0;
   }
@@ -129,9 +133,9 @@ private:
   // Create API
   //
   static APCHandle* MakeShared(ArrayData* data,
-                               bool unserializeObj);
+                               bool forceAPCObj);
   static APCHandle* MakePackedShared(ArrayData* data,
-                                     bool unserializeObj);
+                                     bool forceAPCObj);
 
   void mustCache() { m_handle.m_shouldCache = true; }
   void setPacked() { m_handle.setPacked(); }
@@ -152,6 +156,7 @@ private:
 
 private:
   friend struct APCHandle;
+  friend size_t getMemSize(const APCArray*);
 
   APCHandle m_handle;
   union {

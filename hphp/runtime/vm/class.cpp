@@ -15,7 +15,7 @@
 */
 #include "hphp/runtime/base/complex-types.h"
 #include "hphp/runtime/base/comparisons.h"
-#include "hphp/runtime/base/hphp-array.h"
+#include "hphp/runtime/base/mixed-array.h"
 #include "hphp/runtime/base/array-init.h"
 #include "hphp/runtime/base/rds.h"
 #include "hphp/runtime/base/enum-cache.h"
@@ -35,6 +35,16 @@ namespace HPHP {
 static StringData* sd86ctor = makeStaticString("86ctor");
 static StringData* sd86pinit = makeStaticString("86pinit");
 static StringData* sd86sinit = makeStaticString("86sinit");
+
+/*
+ * We clone methods with static locals into derived classes,
+ * but the clone still points to the class the method was defined
+ * in (because it needs to have the right context class). For data
+ * profiling, we need to find the actual class that a Func belongs to
+ * so we put such Func's into this map.
+ */
+typedef tbb::concurrent_hash_map<uint64_t, const Class*> FuncIdToClassMap;
+static FuncIdToClassMap* s_funcIdToClassMap;
 
 hphp_hash_map<const StringData*, const HhbcExtClassInfo*,
               string_data_hash, string_data_isame> Class::s_extClassHash;
@@ -64,6 +74,20 @@ const StringData* PreClass::manglePropName(const StringData* className,
   }
   default: not_reached();
   }
+}
+
+const Class* getOwningClassForFunc(const Func* f) {
+  // currently we only populate s_funcIdToClassMap
+  // when EvalPerfDataMap is true.
+  assert(RuntimeOption::EvalPerfDataMap);
+
+  if (s_funcIdToClassMap) {
+    FuncIdToClassMap::const_accessor acc;
+    if (s_funcIdToClassMap->find(acc, f->getFuncId())) {
+      return acc->second;
+    }
+  }
+  return f->cls();
 }
 
 //=============================================================================
@@ -220,29 +244,46 @@ void PreClass::setUserAttributes(const UserAttributeMap &ua) {
 //=============================================================================
 // Class.
 
-static_assert(sizeof(Class) == 376, "Change this only on purpose");
+static_assert(sizeof(Class) == 392, "Change this only on purpose");
 
 Class* Class::newClass(PreClass* preClass, Class* parent) {
   auto const classVecLen = parent != nullptr ? parent->m_classVecLen + 1 : 1;
-  auto const size = offsetof(Class, m_classVec) + sizeof(Class*) * classVecLen;
+  auto  funcVecLen = (parent != nullptr ? parent->m_methods.size() : 0)
+                      + preClass->numMethods();
+
+  // In non-RepoAuthoritative mode, trait methods are not included
+  // in the method count, and they need to be estimated separately.
+  std::vector<ClassPtr> usedTraits;
+  if (!RuntimeOption::RepoAuthoritative) {
+    funcVecLen += loadUsedTraits(preClass, usedTraits);
+  }
+
+  auto const size = offsetof(Class, m_classVec)
+                    + sizeof(m_classVec[0]) * classVecLen
+                    + sizeof(Func*) * funcVecLen;
   auto const mem = low_malloc(size);
+  auto const classPtr = (void *)((uintptr_t)mem + funcVecLen * sizeof(Func*));
   try {
-    return new (mem) Class(preClass, parent, classVecLen);
+    return new (classPtr) Class(preClass, parent, std::move(usedTraits),
+                                classVecLen, funcVecLen);
   } catch (...) {
     low_free(mem);
     throw;
   }
 }
 
-void (*Class::MethodCreateHook)(Class* cls, MethodMap::Builder& builder);
+void (*Class::MethodCreateHook)(Class* cls, MethodMapBuilder& builder);
 
-Class::Class(PreClass* preClass, Class* parent, unsigned classVecLen)
-  : m_parent(parent)
+Class::Class(PreClass* preClass, Class* parent,
+             std::vector<ClassPtr>&& usedTraits, unsigned classVecLen,
+             unsigned funcVecLen)
+  : m_usedTraits(std::move(usedTraits))
+  , m_parent(parent)
   , m_preClass(PreClassPtr(preClass))
   , m_classVecLen(classVecLen)
+  , m_funcVecLen(funcVecLen)
 {
   setParent();
-  setUsedTraits();
   setMethods();
   setSpecial();
   setODAttributes();
@@ -258,9 +299,16 @@ Class::Class(PreClass* preClass, Class* parent, unsigned classVecLen)
 Class::~Class() {
   releaseRefs();
 
-  auto methods = methodRange();
-  while (!methods.empty()) {
-    Func* meth = methods.popFront();
+  if (m_sPropCache) {
+    for (unsigned i = 0, n = numStaticProperties(); i < n; ++i) {
+      m_sPropCache[i].~Link();
+    }
+    free(m_sPropCache);
+  }
+
+  auto num = numMethods();
+  for (auto i = 0; i < num; i++) {
+    Func* meth = getMethod(i);
     if (meth) Func::destroy(meth);
   }
   // clean enum cache
@@ -283,14 +331,14 @@ void Class::releaseRefs() {
    * have a reference to those func's (and its only reference to
    * our parent is via this class).
    */
-  auto methods = mutableMethodRange();
+  auto num = numMethods();
   bool okToReleaseParent = true;
-  while (!methods.empty()) {
-    Func*& meth = methods.popFront();
+  for (auto i = 0; i < num; i++) {
+    Func* meth = getMethod(i);
     if (meth /* releaseRefs can be called more than once */ &&
         meth->cls() != this &&
         ((meth->attrs() & AttrPrivate) || !meth->hasStaticLocals())) {
-      meth = nullptr;
+      setMethod(i, nullptr);
       okToReleaseParent = false;
     }
   }
@@ -298,6 +346,7 @@ void Class::releaseRefs() {
   if (okToReleaseParent) {
     m_parent.reset();
   }
+  m_numDeclInterfaces = 0;
   m_declInterfaces.reset();
   m_usedTraits.clear();
 }
@@ -330,14 +379,23 @@ void Class::destroy() {
   );
 }
 
+Func** Class::mallocPtrFromThis() const {
+  return (Func**)((uintptr_t)this - m_funcVecLen * sizeof(Func *));
+}
+
 void Class::atomicRelease() {
   assert(!m_cachedClass.bound());
   assert(!getCount());
   this->~Class();
-  low_free(this);
+  low_free(mallocPtrFromThis());
 }
 
-Class *Class::getCached() const {
+void Class::setClassHandle(RDS::Link<Class*> link) const {
+  assert(!m_cachedClass.bound());
+  m_cachedClass = link;
+}
+
+Class* Class::getCached() const {
   return *m_cachedClass;
 }
 
@@ -457,28 +515,13 @@ const Class* Class::commonAncestor(const Class* cls) const {
   return nullptr;
 }
 
-void Class::initialize(TypedValue*& sProps) const {
-  if (m_pinitVec.size() > 0) {
-    if (getPropData() == nullptr) {
-      initProps();
-    }
-  }
-  // The asymmetry between the logic around initProps() above and initSProps()
-  // below is due to the fact that instance properties only require storage in
-  // g_context if there are non-scalar initializers involved, whereas static
-  // properties *always* require storage in g_context.
-  if (numStaticProperties() > 0) {
-    if ((sProps = getSPropData()) == nullptr) {
-      sProps = initSProps();
-    }
-  } else {
-    sProps = nullptr;
-  }
-}
-
 void Class::initialize() const {
-  TypedValue* sProps;
-  initialize(sProps);
+  if (m_pinitVec.size() > 0 && getPropData() == nullptr) {
+    initProps();
+  }
+  if (numStaticProperties() > 0 && needsInitSProps()) {
+    initSProps();
+  }
 }
 
 Class::PropInitVec* Class::initPropsImpl() const {
@@ -616,68 +659,52 @@ Slot Class::getDeclPropIndex(Class* ctx, const StringData* key,
   return propInd;
 }
 
-TypedValue* Class::initSPropsImpl() const {
-  assert(getSPropData() == nullptr);
+void Class::initSProps() const {
+  assert(needsInitSProps());
 
-  // Initialize static props for parent
+  // Initialize static props for parent.
   Class* parent = this->parent();
-  if (parent && parent->getSPropData() == nullptr) {
-    parent->initSPropsImpl();
+  if (parent && parent->needsInitSProps()) {
+    parent->initSProps();
   }
 
-  if (!numStaticProperties()) return nullptr;
+  if (!numStaticProperties()) return;
 
-  // Create an array that is initially large enough to hold all static
-  // properties.
-  TypedValue* const spropTable =
-    smart_new_array<TypedValue>(m_staticProperties.size());
-  memset(spropTable, 0, m_staticProperties.size() * sizeof(TypedValue));
-  setSPropData(spropTable);
+  initSPropHandles();
+
+  // Perform scalar inits.
+  for (Slot slot = 0, n = m_staticProperties.size(); slot < n; ++slot) {
+    auto const& sProp = m_staticProperties[slot];
+
+    if (sProp.m_class == this && !m_sPropCache[slot].isPersistent()) {
+      *m_sPropCache[slot] = sProp.m_val;
+    }
+  }
 
   const bool hasNonscalarInit = !m_sinitVec.empty();
 
   // If there are non-scalar initializers (i.e. 86sinit methods), run them now.
-  // They'll put their initialized values into an array, and we'll read any
-  // values we need out of the array later.
+  // They will override the KindOfUninit values set by scalar initialization.
   if (hasNonscalarInit) {
-    for (unsigned i = 0; i < m_sinitVec.size(); i++) {
+    for (unsigned i = 0, n = m_sinitVec.size(); i < n; i++) {
       TypedValue retval;
       g_context->invokeFunc(&retval, m_sinitVec[i], init_null_variant,
-                              nullptr, const_cast<Class*>(this));
+                            nullptr, const_cast<Class*>(this));
       assert(retval.m_type == KindOfNull);
     }
   }
 
-  for (Slot slot = 0; slot < m_staticProperties.size(); ++slot) {
-    auto const& sProp = m_staticProperties[slot];
-    auto const* propName = sProp.m_name;
-
-    if (sProp.m_class == this) {
-      if (spropTable[slot].m_type == KindOfUninit) {
-        spropTable[slot] = sProp.m_val;
-      }
-    } else {
-      bool visible, accessible;
-      auto* storage = sProp.m_class->getSProp(nullptr, propName,
-                                              visible, accessible);
-      tvBindIndirect(&spropTable[slot], storage);
-    }
-  }
-
-  return spropTable;
+  *m_sPropCacheInit = true;
 }
 
-TypedValue* Class::getSProp(Class* ctx, const StringData* sPropName,
-                            bool& visible, bool& accessible) const {
-  TypedValue* sProps;
-  initialize(sProps);
-
+Slot Class::findSProp(Class* ctx, const StringData* sPropName,
+                      bool& visible, bool& accessible) const {
   Slot sPropInd = lookupSProp(sPropName);
   if (sPropInd == kInvalidSlot) {
-    // Non-existant property.
+    // Non-existent property.
     visible = false;
     accessible = false;
-    return nullptr;
+    return kInvalidSlot;
   }
 
   visible = true;
@@ -691,28 +718,47 @@ TypedValue* Class::getSProp(Class* ctx, const StringData* sPropName,
       // Property access is from within a parent class's method, which is
       // allowed for protected/public properties.
       switch (sPropAttrs & (AttrPublic|AttrProtected|AttrPrivate)) {
-      case AttrPublic:
-      case AttrProtected: accessible = true; break;
-      case AttrPrivate:
-        accessible = g_context->debuggerSettings.bypassCheck; break;
-      default:            not_reached();
+        case AttrPublic:
+        case AttrProtected:
+          accessible = true;
+          break;
+        case AttrPrivate:
+          accessible = g_context->debuggerSettings.bypassCheck;
+          break;
+        default:
+          not_reached();
       }
     } else {
       // Property access is in an effectively anonymous context, so only public
       // properties are accessible.
       switch (sPropAttrs & (AttrPublic|AttrProtected|AttrPrivate)) {
-      case AttrPublic:    accessible = true; break;
-      case AttrProtected:
-      case AttrPrivate:
-        accessible = g_context->debuggerSettings.bypassCheck; break;
-      default:            not_reached();
+        case AttrPublic:
+          accessible = true;
+          break;
+        case AttrProtected:
+        case AttrPrivate:
+          accessible = g_context->debuggerSettings.bypassCheck;
+          break;
+        default:
+          not_reached();
       }
     }
   }
 
-  assert(sProps != nullptr);
-  TypedValue* sProp = tvDerefIndirect(&sProps[sPropInd]);
-  assert(sProp->m_type != KindOfUninit &&
+  return sPropInd;
+}
+
+TypedValue* Class::getSProp(Class* ctx, const StringData* sPropName,
+                            bool& visible, bool& accessible) const {
+  initialize();
+
+  Slot sPropInd = findSProp(ctx, sPropName, visible, accessible);
+  if (sPropInd == kInvalidSlot) {
+    return nullptr;
+  }
+
+  TypedValue* sProp = getSPropData(sPropInd);
+  assert(sProp && sProp->m_type != KindOfUninit &&
          "static property initialization failed to initialize a property");
   return sProp;
 }
@@ -732,8 +778,8 @@ TypedValue Class::getStaticPropInitVal(const SProp& prop) {
   return declCls->m_staticProperties[s].m_val;
 }
 
-Cell* Class::cnsNameToTV(const StringData* clsCnsName,
-                         Slot& clsCnsInd) const {
+const Cell* Class::cnsNameToTV(const StringData* clsCnsName,
+                               Slot& clsCnsInd) const {
   clsCnsInd = m_constants.findIndex(clsCnsName);
   if (clsCnsInd == kInvalidSlot) {
     return nullptr;
@@ -745,7 +791,7 @@ Cell* Class::cnsNameToTV(const StringData* clsCnsName,
 
 Cell Class::clsCnsGet(const StringData* clsCnsName) const {
   Slot clsCnsInd;
-  Cell* clsCns = cnsNameToTV(clsCnsName, clsCnsInd);
+  auto clsCns = cnsNameToTV(clsCnsName, clsCnsInd);
   if (!clsCns) return make_tv<KindOfUninit>();
   if (clsCns->m_type != KindOfUninit) {
     return *clsCns;
@@ -758,7 +804,7 @@ Cell Class::clsCnsGet(const StringData* clsCnsName) const {
   auto& clsCnsData = *m_nonScalarConstantCache;
 
   if (clsCnsData.get() == nullptr) {
-    clsCnsData = Array::attach(HphpArray::MakeReserve(m_constants.size()));
+    clsCnsData = Array::attach(MixedArray::MakeReserve(m_constants.size()));
   } else {
     clsCns = clsCnsData->nvGet(clsCnsName);
     if (clsCns) return *clsCns;
@@ -770,7 +816,7 @@ Cell Class::clsCnsGet(const StringData* clsCnsName) const {
     m_constants[clsCnsInd].m_class->lookupMethod(sd86cinit);
   TypedValue args[1] = {
     make_tv<KindOfStaticString>(
-      const_cast<StringData*>(m_constants[clsCnsInd].m_name))
+      const_cast<StringData*>(m_constants[clsCnsInd].m_name.get()))
   };
 
   Cell ret;
@@ -782,11 +828,8 @@ Cell Class::clsCnsGet(const StringData* clsCnsName) const {
     1,
     args
   );
-  assert(isUncounted(ret));
 
   clsCnsData.set(StrNR(clsCnsName), cellAsCVarRef(ret), true /* isKey */);
-
-  assert(cellIsPlausible(ret));
   return ret;
 }
 
@@ -828,7 +871,7 @@ void Class::setParent() {
     m_instanceDtor = m_preClass->instanceDtor();
     m_builtinODTailSize = m_preClass->builtinObjSize() -
       m_preClass->builtinODOffset();
-    m_clsInfo = ClassInfo::FindSystemClassInterfaceOrTrait(nameRef());
+    m_clsInfo = ClassInfo::FindSystemClassInterfaceOrTrait(nameStr());
   } else if (m_parent.get()) {
     m_instanceCtor = m_parent->m_instanceCtor;
     m_instanceDtor = m_parent->m_instanceDtor;
@@ -885,25 +928,32 @@ void Class::setSpecial() {
     m_invoke = nullptr;
   }
 
+  auto matchedClassOrIsTrait = [this](const StringData* sd) {
+    auto func = lookupMethod(sd);
+    if (func && (func->preClass() == m_preClass.get() ||
+                 func->preClass()->attrs() & AttrTrait)) {
+      m_ctor = func;
+      return true;
+    }
+    return false;
+  };
+
   // Look for __construct() declared in either this class or a trait
-  Func* fConstruct = lookupMethod(s_construct.get());
-  if (fConstruct && (fConstruct->preClass() == m_preClass.get() ||
-                     fConstruct->preClass()->attrs() & AttrTrait)) {
-    m_ctor = fConstruct;
+  if (matchedClassOrIsTrait(s_construct.get())) {
+    auto func = lookupMethod(m_preClass->name());
+    if (func && (func->preClass()->attrs() & AttrTrait ||
+                 m_ctor->preClass()->attrs() & AttrTrait)) {
+      throw Exception(
+        "%s has colliding constructor definitions coming from traits",
+        m_preClass->name()->data()
+      );
+    }
     return;
   }
 
   if (!(attrs() & AttrTrait)) {
-    // Look for Foo::Foo() declared in this class (cannot be via trait).
-    Func* fNamedCtor = lookupMethod(m_preClass->name());
-    if (fNamedCtor && fNamedCtor->preClass() == m_preClass.get() &&
-        !(fNamedCtor->attrs() & AttrTrait)) {
-      /*
-        Note: AttrTrait was set by the emitter if hphpc inlined a trait
-        method into a class (WholeProgram mode only), so that we dont
-        accidently mark it as a constructor here
-      */
-      m_ctor = fNamedCtor;
+    // Look for Foo::Foo() declared in this class
+    if (matchedClassOrIsTrait(m_preClass->name())) {
       return;
     }
   }
@@ -964,7 +1014,7 @@ Class* Class::findSingleTraitWithMethod(const StringData* methName) {
   // Note: m_methods includes methods from parents / traits recursively
   Class* traitCls = nullptr;
   for (auto const& t : m_usedTraits) {
-    if (t->m_methods.contains(methName)) {
+    if (t->m_methods.find(methName)) {
       if (traitCls != nullptr) { // more than one trait contains method
         raise_error("more than one trait contains method '%s'",
           methName->data());
@@ -1035,6 +1085,7 @@ void Class::applyTraitAliasRule(const PreClass::TraitAliasRule& rule,
   }
 
   // Save info to support ReflectionClass::getTraitAliases
+  traitName = traitCls->name();
   addTraitAlias(traitName, origMethName, newMethName);
 
   Func* traitMeth = traitCls->lookupMethod(origMethName);
@@ -1067,11 +1118,11 @@ void Class::applyTraitRules(MethodToTraitListMap& importMethToTraitMap) {
 
 void Class::importTraitMethod(const TraitMethod&  traitMethod,
                               const StringData*   methName,
-                              MethodMap::Builder& builder) {
+                              MethodMapBuilder& builder) {
   Func*    method    = traitMethod.m_method;
   Attr     modifiers = traitMethod.m_modifiers;
 
-  MethodMap::Builder::iterator mm_iter = builder.find(methName);
+  MethodMapBuilder::iterator mm_iter = builder.find(methName);
   // For abstract methods, simply return if method already declared
   if ((modifiers & AttrAbstract) && mm_iter != builder.end()) {
     return;
@@ -1098,9 +1149,8 @@ void Class::importTraitMethod(const TraitMethod&  traitMethod,
     }
     parentMethod = existingMethod;
   }
-  Func* f = method->clone(this);
+  Func* f = method->clone(this, methName);
   f->setNewFuncId();
-  f->setName(methName);
   f->setAttrs(modifiers);
   if (!parentMethod) {
     // New method
@@ -1166,14 +1216,14 @@ void Class::removeSpareTraitAbstractMethods(
 }
 
 // fatals on error
-void Class::importTraitMethods(MethodMap::Builder& builder) {
+void Class::importTraitMethods(MethodMapBuilder& builder) {
   MethodToTraitListMap importMethToTraitMap;
 
   // 1. Find all methods to be imported
   for (auto const& t : m_usedTraits) {
     Class* trait = t.get();
     for (Slot i = 0; i < trait->m_methods.size(); ++i) {
-      Func* method = trait->m_methods[i];
+      Func* method = trait->getMethod(i);
       const StringData* methName = method->name();
       TraitMethod traitMethod(trait, method, method->attrs());
       if (!Func::isSpecial(methName)) {
@@ -1263,18 +1313,18 @@ void Class::methodOverrideCheck(const Func* parentMethod, const Func* method) {
   if (!(method->attrs() & AttrAbstract) &&
       (baseMethod->attrs() & AttrAbstract) &&
       (!hphpiCompat || strcmp(method->name()->data(), "__construct"))) {
-    method->parametersCompat(m_preClass.get(), baseMethod);
+    method->checkDeclarationCompat(m_preClass.get(), baseMethod);
   }
 }
 
 void Class::setMethods() {
   std::vector<Slot> parentMethodsWithStaticLocals;
-  MethodMap::Builder builder;
+  MethodMapBuilder builder;
 
   if (m_parent.get() != nullptr) {
     // Copy down the parent's method entries. These may be overridden below.
     for (Slot i = 0; i < m_parent->m_methods.size(); ++i) {
-      Func* f = m_parent->m_methods[i];
+      Func* f = m_parent->getMethod(i);
       assert(f);
       if ((f->attrs() & AttrClone) ||
           (!(f->attrs() & AttrPrivate) && f->hasStaticLocals())) {
@@ -1306,7 +1356,7 @@ void Class::setMethods() {
         continue;
       }
     }
-    MethodMap::Builder::iterator it2 = builder.find(method->name());
+    MethodMapBuilder::iterator it2 = builder.find(method->name());
     if (it2 != builder.end()) {
       Func* parentMethod = builder[it2->second];
       // We should never have null func pointers to deal with
@@ -1359,6 +1409,21 @@ void Class::setMethods() {
       // class.
       f = f->clone(f->attrs() & AttrClone ? this : f->cls());
       f->setNewFuncId();
+      if (RuntimeOption::EvalPerfDataMap) {
+        if (!s_funcIdToClassMap) {
+          Lock l(Unit::s_classesMutex);
+          if (!s_funcIdToClassMap) {
+            s_funcIdToClassMap = new FuncIdToClassMap;
+          }
+        }
+        FuncIdToClassMap::accessor acc;
+        if (!s_funcIdToClassMap->insert(
+              acc, FuncIdToClassMap::value_type(f->getFuncId(), this))) {
+          // we only just allocated this id, which is supposedly
+          // process unique
+          assert(false);
+        }
+      }
     }
   }
 
@@ -1381,10 +1446,11 @@ void Class::setMethods() {
     }
   }
 
-  m_methods.create(builder);
-  for (Slot i = 0; i < m_methods.size(); ++i) {
-    m_methods[i]->setMethodSlot(i);
+  builder.create(m_methods);
+  for (Slot i = 0; i < builder.size(); ++i) {
+    builder[i]->setMethodSlot(i);
   }
+  setFuncVec(builder);
 }
 
 void Class::setODAttributes() {
@@ -1698,14 +1764,9 @@ void Class::setProperties() {
       // Prohibit non-static-->static redeclaration.
       auto const it2 = curPropMap.find(preProp->name());
       if (it2 != curPropMap.end()) {
-        // Find class that declared non-static property.
-        Class* ancestor;
-        for (ancestor = m_parent.get();
-             !ancestor->m_preClass->hasProp(preProp->name());
-             ancestor = ancestor->m_parent.get()) {
-        }
+        auto& prop = curPropMap[it2->second];
         raise_error("Cannot redeclare non-static %s::$%s as static %s::$%s",
-                    ancestor->name()->data(),
+                    prop.m_class->name()->data(),
                     preProp->name()->data(),
                     m_preClass->name()->data(),
                     preProp->name()->data());
@@ -1777,6 +1838,12 @@ void Class::setProperties() {
 
   m_declProperties.create(curPropMap);
   m_staticProperties.create(curSPropMap);
+
+  m_sPropCache = (RDS::Link<TypedValue>*)
+    malloc(numStaticProperties() * sizeof(*m_sPropCache));
+  for (unsigned i = 0, n = numStaticProperties(); i < n; ++i) {
+    new (&m_sPropCache[i]) RDS::Link<TypedValue>(RDS::kInvalidHandle);
+  }
 
   m_declPropNumAccessible = m_declProperties.size() - numInaccessible;
 }
@@ -1944,14 +2011,11 @@ void Class::setInitializers() {
 
   m_needInitialization = (m_pinitVec.size() > 0 ||
     m_staticProperties.size() > 0);
-  m_hasInitMethods = (m_pinitVec.size() > 0 || m_sinitVec.size() > 0);
 
-  // The __init__ method defined in the Exception class gets special treatment
-  static StringData* sd__init__ = makeStaticString("__init__");
-  static StringData* sd_exn = makeStaticString("Exception");
-  const Func* einit = lookupMethod(sd__init__);
-  m_callsCustomInstanceInit =
-    (einit && einit->preClass()->name()->isame(sd_exn));
+  // The __init__ method gets special treatment
+  static StringData* s_init__ = makeStaticString("__init__");
+  auto method = lookupMethod(s_init__);
+  m_callsCustomInstanceInit = method && method->isBuiltin();
 }
 
 // Checks if interface methods are OK:
@@ -1965,7 +2029,7 @@ void Class::checkInterfaceMethods() {
     const Class* iface = m_interfaces[i];
 
     for (size_t m = 0; m < iface->m_methods.size(); m++) {
-      Func* imeth = iface->m_methods[m];
+      Func* imeth = iface->getMethod(m);
       const StringData* methName = imeth->name();
 
       // Skip special methods
@@ -2003,7 +2067,7 @@ void Class::checkInterfaceMethods() {
                     "(as in interface %s)", m_preClass->name()->data(),
                     methName->data(), iface->m_preClass->name()->data());
       }
-      meth->parametersCompat(m_preClass.get(), imeth);
+      meth->checkDeclarationCompat(m_preClass.get(), imeth);
     }
   }
 }
@@ -2018,7 +2082,7 @@ void Class::addInterfacesFromUsedTraits(InterfaceMap::Builder& builder) const {
     int numIfcs = trait->m_interfaces.size();
 
     for (int i = 0; i < numIfcs; i++) {
-      Class* interface = trait->m_interfaces[i];
+      auto interface = trait->m_interfaces[i];
       if (builder.find(interface->name()) == builder.end()) {
         builder.add(interface->name(), interface);
       }
@@ -2033,7 +2097,7 @@ void Class::setInterfaces() {
   if (m_parent.get() != nullptr) {
     int size = m_parent->m_interfaces.size();
     for (int i = 0; i < size; i++) {
-      Class* interface = m_parent->m_interfaces[i];
+      auto interface = m_parent->m_interfaces[i];
       interfacesBuilder.add(interface->name(), interface);
     }
   }
@@ -2053,11 +2117,11 @@ void Class::setInterfaces() {
     }
     declInterfaces.push_back(ClassPtr(cp));
     if (interfacesBuilder.find(cp->name()) == interfacesBuilder.end()) {
-      interfacesBuilder.add(cp->name(), cp);
+      interfacesBuilder.add(cp->name(), LowClassPtr(cp));
     }
     int size = cp->m_interfaces.size();
     for (int i = 0; i < size; i++) {
-      Class* interface = cp->m_interfaces[i];
+      auto interface = cp->m_interfaces[i];
       interfacesBuilder.find(interface->name());
       if (interfacesBuilder.find(interface->name()) ==
           interfacesBuilder.end()) {
@@ -2081,7 +2145,7 @@ void Class::setInterfaces() {
       Class* stringish = Unit::lookupClass(s_Stringish.get());
       assert(stringish != nullptr);
       assert((stringish->attrs() & AttrInterface));
-      interfacesBuilder.add(stringish->name(), stringish);
+      interfacesBuilder.add(stringish->name(), LowClassPtr(stringish));
     }
   }
 
@@ -2099,15 +2163,17 @@ void Class::setNativeDataInfo() {
   }
 }
 
-void Class::setUsedTraits() {
-  for (auto const& traitName : m_preClass->usedTraits()) {
+unsigned Class::loadUsedTraits(PreClass* preClass,
+                               std::vector<ClassPtr>& usedTraits) {
+  unsigned methodCount = 0;
+  for (auto const& traitName : preClass->usedTraits()) {
     Class* classPtr = Unit::loadClass(traitName);
     if (classPtr == nullptr) {
       raise_error(Strings::TRAITS_UNKNOWN_TRAIT, traitName->data());
     }
     if (!(classPtr->attrs() & AttrTrait)) {
       raise_error("%s cannot use %s - it is not a trait",
-                  m_preClass->name()->data(),
+                  preClass->name()->data(),
                   classPtr->name()->data());
     }
 
@@ -2122,8 +2188,19 @@ void Class::setUsedTraits() {
       continue;
     }
 
-    m_usedTraits.push_back(ClassPtr(classPtr));
+    usedTraits.push_back(ClassPtr(classPtr));
+    methodCount += classPtr->m_methods.size();
+
   }
+  // Trait aliases can increase method count. Get an estimate of
+  // the number of aliased functions.
+  for (auto const& rule : preClass->traitAliasRules()) {
+    auto origName = rule.getOrigMethodName();
+    auto newName = rule.getNewMethodName();
+    if (origName != newName) methodCount++;
+  }
+
+  return methodCount;
 }
 
 void Class::checkTraitConstraints() const {
@@ -2220,9 +2297,23 @@ void Class::setClassVec() {
   if (m_classVecLen > 1) {
     assert(m_parent.get() != nullptr);
     memcpy(m_classVec, m_parent->m_classVec,
-           (m_classVecLen-1) * sizeof(Class*));
+           (m_classVecLen-1) * sizeof(m_classVec[0]));
   }
   m_classVec[m_classVecLen-1] = this;
+}
+
+void Class::setFuncVec(MethodMapBuilder& builder) {
+  Func** funcVec = (Func**)mallocPtrFromThis();
+
+  memset(funcVec, 0, m_funcVecLen * sizeof(Func*));
+
+  funcVec = (Func**)this;
+  assert(builder.size() <= m_funcVecLen);
+
+  for (Slot i = 0; i < builder.size(); i++) {
+    assert(builder[i]->methodSlot() < builder.size());
+    funcVec[-((int32_t)builder[i]->methodSlot() + 1)] = builder[i];
+  }
 }
 
 void Class::setInstanceBits() {
@@ -2354,7 +2445,7 @@ void Class::getClassInfo(ClassInfoVM* ci) {
   }
 
   for (Slot i = m_traitsBeginIdx; i < m_traitsEndIdx; ++i) {
-    Func* func = m_methods[i];
+    Func* func = getMethod(i);
     assert(func);
     if (!func->isGenerated()) {
       SET_FUNCINFO_BODY;
@@ -2486,30 +2577,74 @@ void Class::setPropData(PropInitVec* propData) const {
   *m_propDataCache = propData;
 }
 
-TypedValue* Class::getSPropData() const {
-  return m_propSDataCache.bound() ? *m_propSDataCache : nullptr;
+TypedValue* Class::getSPropData(Slot index) const {
+  assert(numStaticProperties() > index);
+  return m_sPropCache[index].bound() ? m_sPropCache[index].get() : nullptr;
 }
 
-void Class::initSPropHandle() const {
-  m_propSDataCache.bind();
+bool Class::needsInitSProps() const {
+  return !m_sPropCacheInit.bound() || !*m_sPropCacheInit;
 }
 
-TypedValue* Class::initSProps() const {
-  TypedValue* sprops = initSPropsImpl();
-  return sprops;
-}
+void Class::initSPropHandles() const {
+  if (m_sPropCacheInit.bound()) return;
 
-void Class::setSPropData(TypedValue* sPropData) const {
-  assert(getSPropData() == nullptr);
-  initSPropHandle();
-  *m_propSDataCache = sPropData;
-}
+  bool usePersistentHandles = m_cachedClass.isPersistent();
+  bool allPersistentHandles = usePersistentHandles;
 
-void Class::getChildren(std::vector<TypedValue*>& out) {
-  for (Slot i = 0; i < m_staticProperties.size(); ++i) {
-    if (m_staticProperties[i].m_class != this) continue;
-    out.push_back(&m_staticProperties[i].m_val);
+  // Propagate to parents so we can link inherited static props.
+  Class* parent = this->parent();
+  if (parent) {
+    parent->initSPropHandles();
   }
+
+  // Bind all the static prop handles.
+  for (Slot slot = 0, n = m_staticProperties.size(); slot < n; ++slot) {
+    auto& propHandle = m_sPropCache[slot];
+    if (!propHandle.bound()) {
+
+      auto const& sProp = m_staticProperties[slot];
+
+      if (sProp.m_class == this) {
+        if (usePersistentHandles && (sProp.m_attrs & AttrPersistent)) {
+          RDS::Link<TypedValue> tmp{RDS::kInvalidHandle};
+          tmp.bind(RDS::Mode::Persistent);
+          *tmp = sProp.m_val;
+          propHandle = tmp;
+        } else {
+          propHandle.bind(RDS::Mode::Local);
+        }
+
+        auto msg = name()->toCppString() + "::" + sProp.m_name->toCppString();
+        RDS::recordRds(propHandle.handle(),
+                       sizeof(TypedValue), "SPropCache", msg);
+      } else {
+        auto realSlot = sProp.m_class->lookupSProp(sProp.m_name);
+        propHandle = sProp.m_class->m_sPropCache[realSlot];
+      }
+    }
+    if (!propHandle.isPersistent()) {
+      allPersistentHandles = false;
+    }
+  }
+
+  // Bind the init handle; this indicates that all handles are bound.
+  if (allPersistentHandles) {
+    RDS::Link<bool> tmp{RDS::kInvalidHandle};
+    tmp.bind(RDS::Mode::Persistent);
+    *tmp = true;
+    m_sPropCacheInit = tmp;
+  } else {
+    m_sPropCacheInit.bind();
+  }
+  RDS::recordRds(m_sPropCacheInit.handle(),
+                 sizeof(bool), "SPropCacheInit", name()->data());
+}
+
+RDS::Handle Class::sPropHandle(Slot index) const {
+  assert(m_sPropCacheInit.bound());
+  assert(numStaticProperties() > index);
+  return m_sPropCache[index].handle();
 }
 
 // True if a CPP extension class has opted into serialization.

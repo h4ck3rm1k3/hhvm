@@ -548,6 +548,10 @@ struct Parser : ParserBase {
     out.setNodeType(ONCONSTANTVALUE).appendChild(&constant);
   }
 
+  void onConst(Token &out, Token &name, Token &value) {
+    // TODO
+  }
+
   void onScalar(Token &out, int type, Token &scalar) {
     out.setNodeType(ONSCALAR).appendChild(&scalar)
       .setExtra(new OnScalarEI(type));
@@ -666,6 +670,11 @@ struct Parser : ParserBase {
     out.setNodeType(ONPARAM).appendChild(params).appendChild(&type)
       .appendChild(&var).appendChild(defValue).appendChild(attr)
       .appendChild(mods).setExtra(new OnParamEI(ref));
+  }
+
+  void onVariadicParam(Token &out, Token *params, Token &type, Token &var,
+                       bool ref, Token *attr, Token *mods) {
+    /* TODO */
   }
 
   void onClassStart(int type, Token &name) {
@@ -992,6 +1001,14 @@ struct Parser : ParserBase {
   std::string resolve(const std::string &ns, bool cls) {
     // TODO
     return ns;
+  }
+
+  void onUseFunction(const std::string &fn, const std::string &as) {
+    // TODO
+  }
+
+  void onUseConst(const std::string &cnst, const std::string &as) {
+    // TODO
   }
 
   void onNewLabelScope(bool fresh) {}

@@ -330,11 +330,11 @@ bool RuntimeType::operator==(const RuntimeType& r) const {
     case VALUE:
       return r.m_value.innerType == m_value.innerType &&
              r.m_value.outerType == m_value.outerType &&
-             r.m_value.klass == m_value.klass;
-    default:
-      assert(false);
-      return false;
+             // punning through unions to compare a few things here:
+             r.m_value.klass == m_value.klass &&
+             r.m_value.knownClass == m_value.knownClass;
   }
+  not_reached();
 }
 
 size_t
@@ -376,20 +376,27 @@ string RuntimeType::pretty() const {
   string retval = buf;
   if (valueType() == KindOfObject) {
     if (valueClass() != nullptr) {
-      retval += folly::format("(OfClass {})",
-                valueClass()->name()->data()).str();
+      folly::format(&retval,
+                    "(OfClass {})",
+                    valueClass()->name()->data());
     } else if (hasKnownClass()) {
-      retval += folly::format("(Known Class {})",
-                knownClass()->name()->data()).str();
+      folly::format(&retval,
+                    "(Known Class {})",
+                    knownClass()->name()->data());
     }
   }
   if (valueType() == KindOfClass && valueClass() != nullptr) {
-    retval += folly::format("(Class {})",
-              valueClass()->name()->data()).str();
+    folly::format(&retval,
+                  "(Class {})",
+                  valueClass()->name()->data());
   }
   if (valueType() == KindOfArray && hasArrayKind()) {
-    retval += folly::format("(Kind {})",
-                            ArrayData::kindToString(arrayKind())).str();
+    folly::format(&retval,
+                  "(Kind {})",
+                  ArrayData::kindToString(arrayKind()));
+  }
+  if (valueType() == KindOfBoolean && valueBoolean() != -1) {
+    folly::format(&retval, "(Val {})", valueBoolean());
   }
   return retval;
 }

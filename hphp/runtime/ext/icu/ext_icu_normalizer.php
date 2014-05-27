@@ -59,7 +59,7 @@ class Normalizer {
  *   error
  */
 function normalizer_is_normalized(string $input,
-                                  int $form = Normalizer::FORM_C) {
+                                  int $form = Normalizer::FORM_C): mixed {
   return Normalizer::isNormalized($input, $form);
 }
 
@@ -73,7 +73,7 @@ function normalizer_is_normalized(string $input,
  * @return string - The normalized string or NULL if an error occurred.
  */
 function normalizer_normalize(string $input,
-                              int $form = Normalizer::FORM_C) {
+                              int $form = Normalizer::FORM_C): mixed {
   return Normalizer::normalize($input, $form);
 }
 

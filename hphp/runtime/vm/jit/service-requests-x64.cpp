@@ -19,10 +19,12 @@
 #include "folly/Optional.h"
 
 #include "hphp/runtime/vm/jit/code-gen-helpers-x64.h"
-#include "hphp/runtime/vm/jit/jump-smash.h"
+#include "hphp/runtime/vm/jit/back-end.h"
+#include "hphp/runtime/vm/jit/back-end-x64.h"
 #include "hphp/runtime/vm/jit/translator-inline.h"
 #include "hphp/runtime/vm/jit/mc-generator.h"
 #include "hphp/runtime/vm/jit/mc-generator-internal.h"
+#include "hphp/runtime/vm/jit/service-requests-inline.h"
 #include "hphp/runtime/vm/jit/types.h"
 #include "hphp/runtime/vm/srckey.h"
 #include "hphp/util/asm-x64.h"
@@ -55,7 +57,7 @@ StoreImmPatcher::StoreImmPatcher(CodeBlock& cb, uint64_t initial,
   X64Assembler as { cb };
   m_is32 = deltaFits(initial, sz::dword);
   if (m_is32) {
-    as.storeq(initial, r64(base)[offset]);
+    as.storeq(int32_t(initial), r64(base)[offset]);
     m_addr = cb.frontier() - 4;
   } else {
     as.movq(initial, r64(reg));
@@ -78,11 +80,11 @@ void StoreImmPatcher::patch(uint64_t actual) {
   }
 }
 
-void emitBindJ(CodeBlock& cb, CodeBlock& stubs,
+void emitBindJ(CodeBlock& cb, CodeBlock& unused,
                ConditionCode cc, SrcKey dest, ServiceRequest req) {
-  prepareForSmash(cb, cc == JIT::CC_None ? kJmpLen : kJmpccLen);
+  mcg->backEnd().prepareForSmash(cb, cc == JIT::CC_None ? kJmpLen : kJmpccLen);
   TCA toSmash = cb.frontier();
-  if (cb.base() == stubs.base()) {
+  if (cb.base() == unused.base()) {
     Asm a { cb };
     emitJmpOrJcc(a, cc, toSmash);
   }
@@ -90,12 +92,13 @@ void emitBindJ(CodeBlock& cb, CodeBlock& stubs,
   mcg->setJmpTransID(toSmash);
 
   TCA sr = (req == JIT::REQ_BIND_JMP
-            ? emitEphemeralServiceReq(mcg->code.stubs(), mcg->getFreeStub(),
-                                      req, toSmash, dest.offset())
-            : emitServiceReq(mcg->code.stubs(), req, toSmash, dest.offset()));
+            ? emitEphemeralServiceReq(unused, mcg->getFreeStub(unused),
+                                      req, toSmash, dest.toAtomicInt())
+            : emitServiceReq(unused, req, toSmash,
+                             dest.toAtomicInt()));
 
   Asm a { cb };
-  if (cb.base() == stubs.base()) {
+  if (cb.base() == unused.base()) {
     CodeCursor cursor(cb, toSmash);
     emitJmpOrJcc(a, cc, sr);
   } else {
@@ -144,7 +147,7 @@ int32_t emitNativeImpl(CodeBlock& mainCode, const Func* func) {
   Offset pcOffset = 0;  // NativeImpl is the only instruction in the func
   Offset stackOff = func->numLocals(); // Builtin stubs have no
                                        // non-arg locals
-  mcg->fixupMap().recordSyncPoint(mainCode.frontier(), pcOffset, stackOff);
+  mcg->recordSyncPoint(mainCode.frontier(), pcOffset, stackOff);
 
   /*
    * The native implementation already put the return value on the
@@ -158,13 +161,13 @@ int32_t emitNativeImpl(CodeBlock& mainCode, const Func* func) {
    * reg-to-reg move.
    */
   int nLocalCells = func->numSlotsInFrame();
-  a.   loadq  (rVmFp[AROFF(m_savedRbp)], rVmFp);
+  a.   loadq  (rVmFp[AROFF(m_sfp)], rVmFp);
 
   emitRB(a, Trace::RBTypeFuncExit, func->fullName()->data());
   return sizeof(ActRec) + cellsToBytes(nLocalCells-1);
 }
 
-void emitBindCallHelper(CodeBlock& mainCode, CodeBlock& stubsCode,
+void emitBindCallHelper(CodeBlock& mainCode, CodeBlock& unusedCode,
                         SrcKey srcKey,
                         const Func* funcd,
                         int numArgs) {
@@ -175,17 +178,17 @@ void emitBindCallHelper(CodeBlock& mainCode, CodeBlock& stubsCode,
   ReqBindCall* req = mcg->globalData().alloc<ReqBindCall>();
 
   Asm a { mainCode };
-  prepareForSmash(mainCode, kCallLen);
+  mcg->backEnd().prepareForSmash(mainCode, kCallLen);
   TCA toSmash = mainCode.frontier();
-  a.    call(stubsCode.frontier());
+  a.    call(unusedCode.frontier());
 
-  Asm astubs { stubsCode };
-  astubs.    movq   (rStashedAR, serviceReqArgRegs[1]);
-  emitPopRetIntoActRec(astubs);
-  emitServiceReq(stubsCode, JIT::REQ_BIND_CALL, req);
+  Asm aunused { unusedCode };
+  aunused.    movq   (rStashedAR, serviceReqArgRegs[1]);
+  emitPopRetIntoActRec(aunused);
+  emitServiceReq(unusedCode, JIT::REQ_BIND_CALL, req);
 
   TRACE(1, "will bind static call: tca %p, funcd %p, astubs %p\n",
-        toSmash, funcd, stubsCode.frontier());
+        toSmash, funcd, unusedCode.frontier());
   req->m_toSmash = toSmash;
   req->m_nArgs = numArgs;
   req->m_sourceInstr = srcKey;
@@ -248,9 +251,9 @@ emitServiceReqWork(CodeBlock& cb, TCA start, bool persist, SRFlags flags,
   }
   emitEagerVMRegSave(as, RegSaveFlags::SaveFP);
   if (persist) {
-    as.  emitImmReg(0, JIT::reg::rAsm);
+    as.  emitImmReg(0, JIT::X64::rAsm);
   } else {
-    as.  emitImmReg((uint64_t)start, JIT::reg::rAsm);
+    as.  emitImmReg((uint64_t)start, JIT::X64::rAsm);
   }
   TRACE(3, ")\n");
   as.    emitImmReg(req, JIT::reg::rdi);
@@ -270,8 +273,6 @@ emitServiceReqWork(CodeBlock& cb, TCA start, bool persist, SRFlags flags,
     as.  ret();
   }
 
-  // TODO(2796856): we should record an OpServiceRequest pseudo-bytecode here.
-
   if (debug) {
     // not reached
     as.ud2();
@@ -289,22 +290,23 @@ emitServiceReqWork(CodeBlock& cb, TCA start, bool persist, SRFlags flags,
   return retval;
 }
 
-void emitBindSideExit(CodeBlock& cb, CodeBlock& stubs, JIT::ConditionCode cc,
+void emitBindSideExit(CodeBlock& cb, CodeBlock& unused, JIT::ConditionCode cc,
                       SrcKey dest) {
-  emitBindJ(cb, stubs, cc, dest, REQ_BIND_SIDE_EXIT);
+  emitBindJ(cb, unused, cc, dest, REQ_BIND_SIDE_EXIT);
 }
 
-void emitBindJcc(CodeBlock& cb, CodeBlock& stubs, JIT::ConditionCode cc,
+void emitBindJcc(CodeBlock& cb, CodeBlock& unused, JIT::ConditionCode cc,
                  SrcKey dest) {
-  emitBindJ(cb, stubs, cc, dest, REQ_BIND_JCC);
+  emitBindJ(cb, unused, cc, dest, REQ_BIND_JCC);
 }
 
-void emitBindJmp(CodeBlock& cb, CodeBlock& stubs, SrcKey dest) {
-  emitBindJ(cb, stubs, JIT::CC_None, dest, REQ_BIND_JMP);
+void emitBindJmp(CodeBlock& cb, CodeBlock& unused, SrcKey dest) {
+  emitBindJ(cb, unused, JIT::CC_None, dest, REQ_BIND_JMP);
 }
 
 int32_t emitBindCall(CodeBlock& mainCode, CodeBlock& stubsCode,
-                     SrcKey srcKey, const Func* funcd, int numArgs) {
+                     CodeBlock& unusedCode, SrcKey srcKey,
+                     const Func* funcd, int numArgs) {
   // If this is a call to a builtin and we don't need any argument
   // munging, we can skip the prologue system and do it inline.
   if (isNativeImplCall(funcd, numArgs)) {
@@ -315,8 +317,7 @@ int32_t emitBindCall(CodeBlock& mainCode, CodeBlock& stubsCode,
     assert(funcd->numIterators() == 0);
     Asm a { mainCode };
     emitLea(a, rVmSp[cellsToBytes(numArgs)], rVmFp);
-    emitCheckSurpriseFlagsEnter(mainCode, stubsCode, true, mcg->fixupMap(),
-                                Fixup(0, numArgs));
+    emitCheckSurpriseFlagsEnter(mainCode, stubsCode, Fixup(0, numArgs));
     // rVmSp is already correctly adjusted, because there's no locals
     // other than the arguments passed.
     auto retval = emitNativeImpl(mainCode, funcd);
@@ -325,13 +326,13 @@ int32_t emitBindCall(CodeBlock& mainCode, CodeBlock& stubsCode,
   }
 
   Asm a { mainCode };
-  if (debug) {
-    a.    storeq (kUninitializedRIP,
-                  rVmSp[cellsToBytes(numArgs) + AROFF(m_savedRip)]);
+  if (debug && RuntimeOption::EvalHHIRGenerateAsserts) {
+    auto off = cellsToBytes(numArgs) + AROFF(m_savedRip);
+    emitImmStoreq(a, kUninitializedRIP, rVmSp[off]);
   }
   // Stash callee's rVmFp into rStashedAR for the callee's prologue
   emitLea(a, rVmSp[cellsToBytes(numArgs)], rStashedAR);
-  emitBindCallHelper(mainCode, stubsCode, srcKey, funcd, numArgs);
+  emitBindCallHelper(mainCode, unusedCode, srcKey, funcd, numArgs);
   return 0;
 }
 

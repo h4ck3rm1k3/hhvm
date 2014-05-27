@@ -60,10 +60,11 @@ class apcExtension : public Extension {
   static bool FileStorageKeepFileLinked;
   static std::vector<std::string> NoTTLPrefix;
   static bool UseUncounted;
+  static bool InnerUncounted;
   static bool Stat;
   static bool EnableCLI;
 
-  virtual void moduleLoad(Hdf config);
+  virtual void moduleLoad(const IniSetting::Map& ini, Hdf config);
   virtual void moduleInit();
   virtual void moduleShutdown();
 };
@@ -119,7 +120,7 @@ public:
   int64_t content_length;
   std::string filename;
   std::string name;
-  char *temp_filename;
+  std::string temp_filename;
   int cancel_upload;
   double start_time;
   int64_t bytes_processed;
@@ -159,8 +160,8 @@ String apc_reserialize(const String& str);
 
 ///////////////////////////////////////////////////////////////////////////////
 // debugging support
-
-bool apc_dump(const char *filename, bool keyOnly, int waitSeconds);
+bool apc_dump(const char *filename, bool keyOnly, bool metaDump,
+              int waitSeconds);
 size_t get_const_map_size();
 
 ///////////////////////////////////////////////////////////////////////////////

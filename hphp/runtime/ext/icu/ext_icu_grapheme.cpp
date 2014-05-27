@@ -7,12 +7,13 @@
 namespace HPHP { namespace Intl {
 /////////////////////////////////////////////////////////////////////////////
 
-#define CHECK_CONVERR(error) \
+#define CHECK_CONVERR(error, ret) \
   if (U_FAILURE(error)) { \
     s_intl_error->setError(error, \
                            "Error converting input string to UTF-16"); \
-    return false; \
+    return ret; \
   }
+#define CHECK_CONVERR_FALSE(error) CHECK_CONVERR(error, false);
 
 enum GraphemeExtractType {
   MIN = 0,
@@ -101,19 +102,21 @@ static Variant grapheme_do_strpos(const String& haystack,
   // or if it is and the haystack is ascii
   // (meaning the needle must have been as well)
   // Then we can skip the ICU overhead and return
-  pos = reverse ?
-    haystack.rfind(needle, offset, !case_insensitive) :
-    haystack.find( needle, offset, !case_insensitive);
-  if (pos < 0) return false;
-  if (is_ascii(haystack)) return pos;
+  if (!case_insensitive || is_ascii(haystack)) {
+    pos = reverse ?
+      haystack.rfind(needle, offset, !case_insensitive) :
+      haystack.find( needle, offset, !case_insensitive);
+    if (pos < 0) return false; // case-sensitive unicode can still early-exit
+    if (is_ascii(haystack)) return pos;
+  }
 
   UErrorCode error = U_ZERO_ERROR;
   icu::UnicodeString haystack16(u16(haystack, error));
-  CHECK_CONVERR(error);
+  CHECK_CONVERR_FALSE(error);
 
   error = U_ZERO_ERROR;
   icu::UnicodeString needle16(u16(needle, error));
-  CHECK_CONVERR(error);
+  CHECK_CONVERR_FALSE(error);
 
   auto bi = get_break_iterator(haystack16.getBuffer(), haystack16.length());
   if (!bi) return false;
@@ -337,7 +340,7 @@ static Variant HHVM_FUNCTION(grapheme_strlen, const String& str) {
   }
   UErrorCode error = U_ZERO_ERROR;
   icu::UnicodeString str16(u16(str, error));
-  CHECK_CONVERR(error);
+  CHECK_CONVERR(error, null_variant);
   auto bi = get_break_iterator(str16.getBuffer(), str16.length());
   if (!bi) return false;
   SCOPE_EXIT { ubrk_close(bi); };
@@ -349,6 +352,7 @@ static Variant HHVM_FUNCTION(grapheme_strlen, const String& str) {
 static Variant HHVM_FUNCTION(grapheme_strpos, const String& haystack,
                                               const String& needle,
                                               int64_t offset /* = 0 */) {
+  offset = offset >= 0 ? offset : 0;
   return grapheme_do_strpos(haystack, needle, offset, false, false);
 }
 
@@ -389,7 +393,7 @@ static Variant HHVM_FUNCTION(grapheme_substr, const String& str,
 
   UErrorCode error = U_ZERO_ERROR;
   icu::UnicodeString str16(u16(str, error));
-  CHECK_CONVERR(error);
+  CHECK_CONVERR_FALSE(error);
   auto bi = get_break_iterator(str16.getBuffer(), str16.length());
   if (!bi) return false;
   SCOPE_EXIT { ubrk_close(bi); };
@@ -463,7 +467,10 @@ static Variant HHVM_FUNCTION(grapheme_substr, const String& str,
     const char *s = str.c_str();
     int64_t ret_start = 0, ret_len = 0;
     U8_FWD_N(s, ret_start, str.size(), start_pos);
-    U8_FWD_N(s, ret_len, str.size() - ret_start, end_pos - start_pos);
+    U8_FWD_N(&s[ret_start],
+             ret_len,
+             str.size() - ret_start,
+             end_pos - start_pos);
     return str.substr(ret_start, ret_len);
   }
 }

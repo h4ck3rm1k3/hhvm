@@ -17,15 +17,18 @@
 #ifndef incl_HPHP_VM_FUNC_H_
 #define incl_HPHP_VM_FUNC_H_
 
-#include "hphp/runtime/base/types.h"
-#include "hphp/runtime/base/complex-types.h"
-#include "hphp/runtime/vm/type-constraint.h"
-#include "hphp/runtime/vm/repo-helpers.h"
-#include "hphp/runtime/vm/indexed-string-map.h"
-#include "hphp/runtime/vm/unit.h"
-#include "hphp/runtime/base/intercept.h"
-#include "hphp/runtime/base/rds.h"
 #include "hphp/runtime/base/class-info.h"
+#include "hphp/runtime/base/rds.h"
+#include "hphp/runtime/base/tv-helpers.h"
+#include "hphp/runtime/base/type-string.h"
+
+#include "hphp/runtime/vm/indexed-string-map.h"
+#include "hphp/runtime/vm/repo-helpers.h"
+#include "hphp/runtime/vm/type-constraint.h"
+#include "hphp/runtime/vm/unit.h"
+
+#include <utility>
+#include <vector>
 
 namespace HPHP {
 
@@ -38,7 +41,7 @@ class PreClassEmitter;
 /*
  * Vector of pairs (param number, offset of corresponding DV funclet).
  */
-typedef std::vector<std::pair<int,Offset> > DVFuncletsVec;
+typedef std::vector<std::pair<int,Offset>> DVFuncletsVec;
 
 /*
  * Metadata about a php function or object method.
@@ -50,7 +53,7 @@ struct Func {
     // construct a dummy ParamInfo
     ParamInfo()
       : m_builtinType(KindOfInvalid), m_funcletOff(InvalidAbsoluteOffset),
-        m_phpCode(nullptr), m_userType(nullptr) {
+        m_phpCode(nullptr), m_userType(nullptr), m_variadic(false) {
       tvWriteUninit(&m_defVal);
     }
 
@@ -61,6 +64,7 @@ struct Func {
         (m_defVal)
         (m_phpCode)
         (m_typeConstraint)
+        (m_variadic)
         (m_userAttributes)
         (m_userType)
         ;
@@ -83,6 +87,9 @@ struct Func {
     }
     void setDefaultValue(const TypedValue& defVal) { m_defVal = defVal; }
     const TypedValue& defaultValue() const { return m_defVal; }
+
+    void setVariadic(const bool isVariadic) { m_variadic = isVariadic; }
+    bool isVariadic() const { return m_variadic; }
 
     void setPhpCode(const StringData* phpCode) { m_phpCode = phpCode; }
     const StringData* phpCode() const { return m_phpCode; }
@@ -107,20 +114,21 @@ struct Func {
     }
 
   private:
-    DataType m_builtinType;     // typehint for builtins
+    DataType m_builtinType; // typehint for builtins
     Offset m_funcletOff; // If no default: InvalidAbsoluteOffset.
     TypedValue m_defVal; // Set to uninit null if there is no default value
                          // or if there is a non-scalar default value.
-    const StringData* m_phpCode; // eval'able PHP code.
+    LowStringPtr m_phpCode; // eval'able PHP code.
+    // the type the user typed in source code, contains type parameters and all
+    LowStringPtr m_userType;
     TypeConstraint m_typeConstraint;
+    bool m_variadic;
 
     UserAttributeMap m_userAttributes;
-    // the type the user typed in source code, contains type parameters and all
-    const StringData* m_userType;
   };
   struct SVInfo { // Static variable info.
-    const StringData* name;
-    const StringData* phpCode; // eval'able PHP or NULL if no default.
+    LowStringPtr name;
+    LowStringPtr phpCode; // eval'able PHP or NULL if no default.
 
     template<class SerDe> void serde(SerDe& sd) { sd(name)(phpCode); }
   };
@@ -136,7 +144,7 @@ struct Func {
   ~Func();
   static void destroy(Func* func);
 
-  Func* clone(Class* cls) const;
+  Func* clone(Class* cls, const StringData* name = nullptr) const;
   Func* cloneAndSetClass(Class* cls) const;
 
   void validate() const {
@@ -178,7 +186,9 @@ struct Func {
   const FPIEnt* findFPI(Offset o) const;
   const FPIEnt* findPrecedingFPI(Offset o) const;
 
-  void parametersCompat(const PreClass* preClass, const Func* imeth) const;
+  // imeth: an abstract / interface method
+  void checkDeclarationCompat(const PreClass* preClass,
+                              const Func* imeth) const;
 
   // This can be thought of as "if I look up this Func's name while in fromUnit,
   // will I always get this Func back?" This is important for the translator: if
@@ -186,6 +196,22 @@ struct Func {
   // making assumptions about where function calls will go.
   bool isNameBindingImmutable(const Unit* fromUnit) const;
 
+  /*
+   * Access to the maximum stack cells this function can use.  This is
+   * used for stack overflow checks.
+   *
+   * The maximum cells for a function includes all its locals, all
+   * cells for its iterators, all temporary eval stack slots, and all
+   * cells it pushes for ActRecs in FPI regions.  It does not include
+   * its own ActRec, because whoever called it must have(+) included
+   * the size of the ActRec in an FPI region for itself.  The reason
+   * it must still count its parameter locals is that the caller may
+   * or may not pass any of the parameters, regardless of how many are
+   * declared.
+   *
+   *   + Except in a re-entry situation.  That must be handled
+   *     specially in bytecode.cpp.
+   */
   void setMaxStackCells(int cells) { m_maxStackCells = cells; }
   int maxStackCells() const { return m_maxStackCells; }
 
@@ -207,8 +233,20 @@ struct Func {
   void prettyPrint(std::ostream& out, const PrintOpts& = PrintOpts()) const;
 
   bool isPseudoMain() const { return m_name->empty(); }
+
+  bool hasVariadicCaptureParam() const {
+#ifdef DEBUG
+    assert(bool(m_attrs & AttrVariadicParam) ==
+           (numParams() && params()[numParams() - 1].isVariadic()));
+#endif
+    return m_attrs & AttrVariadicParam;
+  }
+  bool discardExtraArgs() const {
+    return ! (m_attrs & (AttrMayUseVV | AttrVariadicParam));
+  }
   bool isBuiltin() const { return m_attrs & AttrBuiltin; }
   bool isCPPBuiltin() const { return m_shared->m_builtinFuncPtr; }
+  bool isNative() const { return m_attrs & AttrNative; }
   bool skipFrame() const { return m_attrs & AttrSkipFrame; }
   bool isMethod() const {
     return !isPseudoMain() && (bool)cls();
@@ -217,6 +255,7 @@ struct Func {
     PreClass* pcls = preClass();
     return pcls && (pcls->attrs() & AttrTrait);
   }
+  bool isReturnRef() const { return bool(m_attrs & AttrReference); }
   bool isPublic() const { return bool(m_attrs & AttrPublic); }
   bool isStatic() const { return bool(m_attrs & AttrStatic); }
   bool isAbstract() const { return bool(m_attrs & AttrAbstract); }
@@ -251,16 +290,13 @@ struct Func {
   DVFuncletsVec getDVFunclets() const;
   bool isEntry(Offset offset) const;
   bool isDVEntry(Offset offset) const;
+  int  getEntryNumParams(Offset offset) const;
   int  getDVEntryNumParams(Offset offset) const;
   Offset getEntryForNumArgs(int numArgsPassed) const;
 
   Unit* unit() const { return m_unit; }
   PreClass* preClass() const { return shared()->m_preClass; }
   Class* cls() const { return m_cls; }
-  void setName(const StringData* name) {
-    m_name = name;
-    setFullName();
-  }
   Class* baseCls() const { return m_baseCls; }
   void setBaseCls(Class* baseCls) { m_baseCls = baseCls; }
   bool hasPrivateAncestor() const { return m_hasPrivateAncestor; }
@@ -288,17 +324,17 @@ struct Func {
     assert(m_name != nullptr);
     return m_name;
   }
-  const String& nameRef() const {
+  StrNR nameStr() const {
     assert(m_name != nullptr);
-    return *(String*)(&m_name);
+    return StrNR(m_name);
   }
   const StringData* fullName() const {
     if (m_fullName == nullptr) return m_name;
     return m_fullName;
   }
-  const String& fullNameRef() const {
+  StrNR fullNameStr() const {
     assert(m_fullName != nullptr);
-    return *(String*)(&m_fullName);
+    return StrNR(m_fullName);
   }
   // Assembly linkage.
   static size_t fullNameOffset() {
@@ -311,11 +347,21 @@ struct Func {
     return offsetof(SharedData, m_base);
   }
   char &maybeIntercepted() const { return m_maybeIntercepted; }
-  int numParams() const { return m_numParams; }
+  uint32_t numParams() const {
+    assert(bool(m_attrs & AttrVariadicParam) != bool(m_paramCounts & 1));
+    assert((m_paramCounts >> 1) == params().size());
+    return (m_paramCounts) >> 1;
+  }
+
+  uint32_t numNonVariadicParams() const {
+    assert(bool(m_attrs & AttrVariadicParam) != bool(m_paramCounts & 1));
+    assert((m_paramCounts >> 1) == params().size());
+    return (m_paramCounts - 1) >> 1;
+  }
   const ParamInfoVec& params() const { return shared()->m_params; }
   int numLocals() const { return shared()->m_numLocals; }
 
-  const StringData* const* localNames() const {
+  LowStringPtr const* localNames() const {
     return shared()->m_localNames.accessList();
   }
   Id numNamedLocals() const { return shared()->m_localNames.size(); }
@@ -324,7 +370,7 @@ struct Func {
   // unnamed local.
   const StringData* localVarName(Id id) const {
     assert(id >= 0);
-    return id < numNamedLocals() ? shared()->m_localNames[id] : 0;
+    return id < numNamedLocals() ? shared()->m_localNames[id] : nullptr;
   }
 
   const TypeConstraint& returnTypeConstraint() const {
@@ -348,45 +394,24 @@ struct Func {
   const StringData* docComment() const { return shared()->m_docComment; }
   bool isClosureBody() const { return shared()->m_isClosureBody; }
   bool isClonedClosure() const;
+  bool isAsync() const { return shared()->m_isAsync; }
   bool isGenerator() const { return shared()->m_isGenerator; }
-  bool isGeneratorFromClosure() const {
-    return shared()->m_isGeneratorFromClosure;
-  }
   bool isPairGenerator() const { return shared()->m_isPairGenerator; }
-  /**
-   * If this function is a generator then it is implemented as a simple
-   * function that just returns another function. hasGeneratorAsBody() will be
-   * true for the outer functions and isGenerator() is true for the
-   * inner function.
-   *
-   * This isn't a pointer to the function itself because it was too hard to
-   * hook the parts up. If you know more and need it, there probably isn't a
-   * technical reason not to.
-   */
-  bool hasGeneratorAsBody() const { return shared()->m_generatorBodyName; }
-  const StringData* getGeneratorBodyName() const {
-    return shared()->m_generatorBodyName;
-  }
-  const Func* getGeneratorBody() const;
-
-  void setGeneratorOrigFunc(const Func* origFunc) {
-    assert(isGenerator());
-    ((const Func**)this)[-1] = origFunc;
-  }
-  const Func* getGeneratorOrigFunc() const {
-    assert(isGenerator());
-    return ((Func**)this)[-1];
-  }
+  bool isAsyncFunction() const { return isAsync() && !isGenerator(); }
+  bool isAsyncGenerator() const { return isAsync() && isGenerator(); }
+  bool isNonAsyncGenerator() const { return !isAsync() && isGenerator(); }
+  bool isResumable() const { return isAsync() || isGenerator(); }
 
   /**
    * Was this generated specially by the compiler to aide the runtime?
    */
   bool isGenerated() const { return shared()->m_isGenerated; }
-  bool isAsync() const { return shared()->m_isAsync; }
   bool hasStaticLocals() const { return !shared()->m_staticVars.empty(); }
   int numStaticLocals() const { return shared()->m_staticVars.size(); }
   const ClassInfo::MethodInfo* methInfo() const { return shared()->m_info; }
   bool isAllowOverride() const { return m_attrs & AttrAllowOverride; }
+
+  bool isParamCoerceMode() const;
 
   const BuiltinFunction& nativeFuncPtr() const {
     return shared()->m_nativeFuncPtr;
@@ -408,13 +433,12 @@ struct Func {
    * const here is the equivalent of "mutable" since this is just a cache
    */
   Func*& nextClonedClosure() const {
-    assert(isClosureBody() || isGeneratorFromClosure());
-    return ((Func**)this)[-1 - (int)isGenerator()];
+    assert(isClosureBody());
+    return ((Func**)this)[-1];
   }
 
   static void* allocFuncMem(
     const StringData* name, int numParams,
-    bool needsGeneratorOrigFunc,
     bool needsNextClonedClosure,
     bool lowMem);
 
@@ -430,9 +454,7 @@ struct Func {
   unsigned char* getPrologue(int index) const {
     return m_prologueTable[index];
   }
-  int numPrologues() const {
-    return getMaxNumPrologues(m_numParams);
-  }
+  int numPrologues() const;
   static int getMaxNumPrologues(int numParams) {
     // maximum number of prologues is numParams+2. The extra 2 are for
     // the case where the number of actual params equals numParams and
@@ -444,7 +466,7 @@ struct Func {
   void resetPrologues() {
     // Useful when killing code; forget what we've learned about the contents
     // of the translation cache.
-    initPrologues(m_numParams);
+    initPrologues(numParams());
   }
 
   const NamedEntity* getNamedEntity() const {
@@ -467,6 +489,8 @@ struct Func {
     m_cachedFunc = l;
   }
 
+  bool anyBlockEndsAt(Offset off) const;
+
 public: // Offset accessors for the translator.
 #define X(f) static constexpr ptrdiff_t f##Off() {      \
     return offsetof(Func, m_##f);                       \
@@ -474,7 +498,7 @@ public: // Offset accessors for the translator.
   X(attrs);
   X(unit);
   X(cls);
-  X(numParams);
+  X(paramCounts);
   X(refBitVal);
   X(fullName);
   X(prologueTable);
@@ -485,7 +509,7 @@ public: // Offset accessors for the translator.
 #undef X
 
 private:
-  typedef IndexedStringMap<const StringData*,true,Id> NamedLocalsMap;
+  typedef IndexedStringMap<LowStringPtr, true, Id> NamedLocalsMap;
 
   struct SharedData : public AtomicCountable {
     PreClass* m_preClass;
@@ -508,20 +532,19 @@ private:
     SVInfoVec m_staticVars;
     EHEntVec m_ehtab;
     FPIEntVec m_fpitab;
-    const StringData* m_docComment;
+    hphp_hash_set<Offset> m_blockEnds;
+    LowStringPtr m_docComment;
     bool m_top : 1; // Defined at top level.
     bool m_isClosureBody : 1;
+    bool m_isAsync : 1;
     bool m_isGenerator : 1;
-    bool m_isGeneratorFromClosure : 1;
     bool m_isPairGenerator : 1;
     bool m_isGenerated : 1;
-    bool m_isAsync : 1;
     UserAttributeMap m_userAttributes;
-    const StringData* m_generatorBodyName;
     TypeConstraint m_retTypeConstraint;
-    const StringData* m_retUserType;
+    LowStringPtr m_retUserType;
     // per-func filepath for traits flattened during repo construction
-    const StringData* m_originalFilename;
+    LowStringPtr m_originalFilename;
     SharedData(PreClass* preClass, Id id, Offset base,
         Offset past, int line1, int line2, bool top,
         const StringData* docComment);
@@ -536,11 +559,12 @@ private:
   static const int kMagic = 0xba5eba11;
 
 private:
-  void setFullName();
+  void setFullName(int numParams);
   void init(int numParams);
   void initPrologues(int numParams);
   void appendParam(bool ref, const ParamInfo& info,
                    std::vector<ParamInfo>& pBuilder);
+  void finishedEmittingParams(std::vector<ParamInfo>& pBuilder);
   void allocVarId(const StringData* name);
   const SharedData* shared() const { return m_shared.get(); }
   SharedData* shared() { return m_shared.get(); }
@@ -554,21 +578,22 @@ private:
 #ifdef DEBUG
   int m_magic; // For asserts only.
 #endif
-  const StringData* m_fullName;
+  LowStringPtr m_fullName;
   uint32_t m_profCounter{0};     // profile counter used to detect hot functions
   unsigned char* volatile m_funcBody;  // Accessed from assembly.
   mutable RDS::Link<Func*> m_cachedFunc{RDS::kInvalidHandle};
   FuncId m_funcId{InvalidFuncId};
-  const StringData* m_name;
-  Class* m_baseCls{nullptr};// The first Class in the inheritance hierarchy that
-                            // declared this method; note that this may be an
-                            // abstract class that did not provide an
-                            // implementation
+  LowStringPtr m_name;
+  // The first Class in the inheritance hierarchy that declared this method;
+  // note that this may be an abstract class that did not provide an
+  // implementation.
+  LowClassPtr m_baseCls{nullptr};
+  // The Class that provided this method implementation.
+  LowClassPtr m_cls{nullptr};
   union {
     const NamedEntity* m_namedEntity{nullptr};
     Slot m_methodSlot;
   };
-  Class* m_cls{nullptr};  // The Class that provided this method implementation
   // TODO(#1114385) intercept should work via invalidation.
   mutable char m_maybeIntercepted; // -1, 0, or 1.  Accessed atomically.
   bool m_hasPrivateAncestor : 1; // This flag indicates if any of this
@@ -579,7 +604,10 @@ private:
   uint64_t m_refBitVal{0};
   Unit* m_unit;
   SharedDataPtr m_shared;
-  int m_numParams{0};
+  // Initialized by Func::finishedEmittingParams, the least significant bit
+  // is 1 if the last param is not variadic; the 31 most significant bits
+  // are the total number of params (including the variadic param)
+  uint32_t m_paramCounts{0};
   Attr m_attrs;
   // This must be the last field declared in this structure
   // and the Func class should not be inherited from.
@@ -703,6 +731,9 @@ public:
 
   void setAttrs(Attr attrs) { m_attrs = attrs; }
   Attr attrs() const { return m_attrs; }
+  bool isVariadic() const {
+    return m_params.size() && m_params[(m_params.size() - 1)].isVariadic();
+  }
 
   void setTop(bool top) { m_top = top; }
   bool top() const { return m_top; }
@@ -719,17 +750,8 @@ public:
     return !isPseudoMain() && (bool)pce();
   }
 
-  void setIsGeneratorFromClosure(bool b) { m_isGeneratorFromClosure = b; }
-  bool isGeneratorFromClosure() const { return m_isGeneratorFromClosure; }
-
   void setIsPairGenerator(bool b) { m_isPairGenerator = b; }
   bool isPairGenerator() const { return m_isPairGenerator; }
-
-  void setGeneratorBodyName(const StringData* name) {
-    m_generatorBodyName = name;
-  }
-  const StringData* getGeneratorBodyName() const { return m_generatorBodyName; }
-  bool hasGeneratorAsBody() const { return m_generatorBodyName; }
 
   void setContainsCalls() { m_containsCalls = true; }
 
@@ -797,7 +819,7 @@ private:
   Offset m_past;
   int m_line1;
   int m_line2;
-  const StringData* m_name;
+  LowStringPtr m_name;
 
   ParamInfoVec m_params;
   Func::NamedLocalsMap::Builder m_localNames;
@@ -810,7 +832,7 @@ private:
   SVInfoVec m_staticVars;
 
   TypeConstraint m_retTypeConstraint;
-  const StringData* m_retUserType;
+  LowStringPtr m_retUserType;
 
   EHEntVec m_ehtab;
   bool m_ehTabSorted;
@@ -819,13 +841,12 @@ private:
   Attr m_attrs;
   DataType m_returnType;
   bool m_top;
-  const StringData* m_docComment;
+  LowStringPtr m_docComment;
   bool m_isClosureBody;
+  bool m_isAsync;
   bool m_isGenerator;
-  bool m_isGeneratorFromClosure;
   bool m_isPairGenerator;
   bool m_containsCalls;
-  bool m_isAsync;
 
   UserAttributeMap m_userAttributes;
 
@@ -833,8 +854,7 @@ private:
   BuiltinFunction m_builtinFuncPtr;
   BuiltinFunction m_nativeFuncPtr;
 
-  const StringData* m_generatorBodyName;
-  const StringData* m_originalFilename;
+  LowStringPtr m_originalFilename;
 };
 
 class FuncRepoProxy : public RepoProxy {

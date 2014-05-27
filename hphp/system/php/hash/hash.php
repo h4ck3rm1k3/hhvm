@@ -83,7 +83,7 @@ function hash_final(resource $context, bool $raw_output = false): string;
 function hash_hmac(?string $algo = null,
                    ?mixed $data = null,
                    ?string $key = null,
-                   ?bool $raw_output = false) {
+                   ?bool $raw_output = false): mixed {
   // Behave like a builtin function so that we pass Zend's tests
   $args = func_num_args();
   if ($args < 3) {
@@ -124,7 +124,7 @@ function hash_hmac(?string $algo = null,
 function hash_hmac_file(?string $algo = null,
                         ?string $filename = null,
                         ?string $key = null,
-                        ?bool $raw_output = false) {
+                        ?bool $raw_output = false): mixed {
   $args = func_num_args();
   if ($args < 3) {
     trigger_error("hash_hmac_file() expects 3 parameters, $args given",
@@ -183,7 +183,7 @@ function hash_update(resource $context, string $data): bool;
  * @return bool - Returns TRUE on success, FALSE on failure
  */
 function hash_update_file(mixed $context, string $filename,
-                          mixed $stream_context = null) {
+                          mixed $stream_context = null): bool {
   $fp = fopen($filename, 'r', false, $stream_context);
   if (!$fp) {
     return false;
@@ -210,7 +210,7 @@ function hash_update_file(mixed $context, string $filename,
  *               from handle.
  */
 function hash_update_stream(mixed $context, mixed $handle,
-                            int $maxlen = -1) {
+                            int $maxlen = -1): int {
   $didread = 0;
   while ($maxlen) {
     $chunk = fread($handle, ($maxlen > 0) ? $maxlen : 1024);
@@ -266,7 +266,7 @@ function hash_copy(resource $context): resource;
  */
 function hash_pbkdf2(string $algo, string $password, string $salt,
                      int $iterations, int $length = 0,
-                     bool $raw_output = false) {
+                     bool $raw_output = false): mixed {
   $algo = strtolower($algo);
   if (!in_array($algo, hash_algos())) {
     error_log("\nWarning: hash_pbkdf2(): Unknown hashing algorithm: ".
@@ -313,4 +313,43 @@ function hash_pbkdf2(string $algo, string $password, string $salt,
     return substr(bin2hex($result), 0, $length);
   }
   return $result;
+}
+
+/**
+ * hash_equals - Compare two strings in constant time
+ *
+ * Note that this function is meant to be slower than a standard
+ * strcmp which short-circuits the comparison once the result is
+ * known.
+ *
+ * This function is meant to take the same amount of time
+ * (based on user_string length) regardless of the length or
+ * contents of known_string.
+ *
+ * @param string $known - Fixed string to be compared against
+ * @param string $user - User-supplied string to check
+ *
+ * @return bool - Whether $known == $user
+ */
+function hash_equals(string $known, string $user): bool {
+  $known_len = strlen($known);
+  $user_len  = strlen($user);
+  $equals    = ($known_len == $user_len);
+
+  // Special case to avoid divide by zeros
+  if ($user_len == 0) {
+    // Doesn't actually let it match $known === "\0"
+    // since the length check already failed.
+    // Just gives the loop below something to run against.
+    $user = "\0";
+    $user_len = 1;
+  }
+
+  for ($i = 0; $i < $known_len; ++$i) {
+    if ($user[$i % $user_len] !== $known[$i]) {
+      $equals = false;
+      // break; intentionally left out see docblock above
+    }
+  }
+  return $equals;
 }

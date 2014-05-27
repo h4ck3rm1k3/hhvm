@@ -27,10 +27,11 @@
 #include "hphp/runtime/base/smart-containers.h"
 #include "hphp/runtime/base/type-conversions.h"
 #include "hphp/runtime/base/variable-serializer.h"
+#include "hphp/runtime/base/mixed-array-defs.h"
 
 #include "hphp/runtime/ext/ext_closure.h"
 #include "hphp/runtime/ext/ext_collections.h"
-#include "hphp/runtime/ext/ext_continuation.h"
+#include "hphp/runtime/ext/ext_generator.h"
 #include "hphp/runtime/ext/ext_datetime.h"
 #include "hphp/runtime/ext/ext_domdocument.h"
 #include "hphp/runtime/ext/ext_simplexml.h"
@@ -39,6 +40,8 @@
 #include "hphp/runtime/vm/member-operations.h"
 #include "hphp/runtime/vm/native-data.h"
 #include "hphp/runtime/vm/jit/translator-inline.h"
+#include "hphp/runtime/vm/repo.h"
+#include "hphp/runtime/vm/repo-global-data.h"
 
 #include "hphp/system/systemlib.h"
 
@@ -62,17 +65,18 @@ const StaticString
   s_serialize("serialize"),
   s_clone("__clone");
 
-static Array ArrayObject_toArray(const ObjectData* obj) {
+static Array convert_to_array(const ObjectData* obj, HPHP::Class* cls) {
   bool visible, accessible, unset;
   auto prop = obj->getProp(
-    SystemLib::s_ArrayObjectClass, s_storage.get(),
+    cls, s_storage.get(),
     visible, accessible, unset
   );
   assert(visible && accessible && !unset);
   return tvAsCVarRef(prop).toArray();
 }
 
-static_assert(sizeof(ObjectData) == 32, "Change this only on purpose");
+static_assert(sizeof(ObjectData) == use_lowptr ? 16 : 32,
+              "Change this only on purpose");
 
 //////////////////////////////////////////////////////////////////////
 
@@ -114,8 +118,8 @@ bool ObjectData::destruct() {
 ///////////////////////////////////////////////////////////////////////////////
 // class info
 
-const String& ObjectData::o_getClassName() const {
-  return *(const String*)(&m_cls->preClass()->nameRef());
+StrNR ObjectData::o_getClassName() const {
+  return m_cls->preClass()->nameStr();
 }
 
 bool ObjectData::o_instanceof(const String& s) const {
@@ -195,35 +199,6 @@ Object ObjectData::iterableObject(bool& isIterable,
   return obj;
 }
 
-ArrayIter ObjectData::begin(const String& context /* = null_string */) {
-  bool isIterable;
-  if (isCollection()) {
-    return ArrayIter(this);
-  }
-  Object iterable = iterableObject(isIterable);
-  if (isIterable) {
-    return ArrayIter(iterable.detach(), ArrayIter::noInc);
-  } else {
-    return ArrayIter(iterable->o_toIterArray(context));
-  }
-}
-
-MutableArrayIter ObjectData::begin(Variant* key, Variant& val,
-                                   const String& context /* = null_string */) {
-  bool isIterable;
-  if (isCollection()) {
-    raise_error("Collection elements cannot be taken by reference");
-  }
-  Object iterable = iterableObject(isIterable);
-  if (isIterable) {
-    throw FatalErrorException("An iterator cannot be used with "
-                              "foreach by reference");
-  }
-  Array properties = iterable->o_toIterArray(context, true);
-  ArrayData* arr = properties.detach();
-  return MutableArrayIter(arr, key, val);
-}
-
 Array& ObjectData::dynPropArray() const {
   assert(getAttribute(HasDynPropArr));
   assert(g_context->dynPropTable.count(this));
@@ -235,7 +210,7 @@ Array& ObjectData::reserveProperties(int numDynamic /* = 2 */) {
 
   assert(!g_context->dynPropTable.count(this));
   auto& arr = g_context->dynPropTable[this].arr();
-  arr = Array::attach(HphpArray::MakeReserve(numDynamic));
+  arr = Array::attach(MixedArray::MakeReserveMixed(numDynamic));
   setAttribute(HasDynPropArr);
   return arr;
 }
@@ -336,27 +311,9 @@ Variant ObjectData::o_set(const String& propName, const Variant& v) {
   return o_setImpl<const Variant&>(propName, v, null_string);
 }
 
-Variant ObjectData::o_set(const String& propName, RefResult v) {
-  return o_setRef(propName, variant(v), null_string);
-}
-
-Variant ObjectData::o_setRef(const String& propName, const Variant& v) {
-  return o_setImpl<RefResult>(propName, ref(v), null_string);
-}
-
 Variant ObjectData::o_set(const String& propName, const Variant& v,
                           const String& context) {
   return o_setImpl<const Variant&>(propName, v, context);
-}
-
-Variant ObjectData::o_set(const String& propName, RefResult v,
-                          const String& context) {
-  return o_setRef(propName, variant(v), context);
-}
-
-Variant ObjectData::o_setRef(const String& propName, const Variant& v,
-                             const String& context) {
-  return o_setImpl<RefResult>(propName, ref(v), context);
 }
 
 void ObjectData::o_setArray(const Array& properties) {
@@ -383,7 +340,13 @@ void ObjectData::o_setArray(const Array& properties) {
     }
 
     const Variant& secondRef = iter.secondRef();
-    setProp(ctx, k.get(), (TypedValue*)(&secondRef),
+    setProp(ctx,
+            k.get(),
+            // Set prop is happening with WithRef semantics---we only
+            // use a binding assignment if it was already KindOfRef,
+            // so despite the const_cast here we're safely not
+            // modifying the original Variant.
+            const_cast<TypedValue*>(secondRef.asTypedValue()),
             secondRef.isReferenced());
   }
 }
@@ -404,7 +367,7 @@ void ObjectData::o_getArray(Array& props, bool pubOnly /* = false */) const {
   do {
     getProps(cls, pubOnly, cls->preClass(), props, inserted);
     for (auto const& traitCls : cls->usedTraitClasses()) {
-      getProps(cls, pubOnly, traitCls->preClass(), props, inserted);
+      getTraitProps(cls, pubOnly, traitCls.get(), props, inserted);
     }
     cls = cls->parent();
   } while (cls);
@@ -448,7 +411,9 @@ Array ObjectData::o_toArray(bool pubOnly /* = false */) const {
     assert(instanceof(c_SimpleXMLElement::classof()));
     return c_SimpleXMLElement::ToArray(this);
   } else if (UNLIKELY(instanceof(SystemLib::s_ArrayObjectClass))) {
-    return ArrayObject_toArray(this);
+    return convert_to_array(this, SystemLib::s_ArrayObjectClass);
+  } else if (UNLIKELY(instanceof(SystemLib::s_ArrayIteratorClass))) {
+    return convert_to_array(this, SystemLib::s_ArrayIteratorClass);
   } else {
     Array ret(ArrayData::Create());
     o_getArray(ret, pubOnly);
@@ -464,7 +429,7 @@ Array ObjectData::o_toIterArray(const String& context,
     dynProps = &dynPropArray();
     size += dynProps->size();
   }
-  Array retArray { Array::attach(HphpArray::MakeReserve(size)) };
+  Array retArray { Array::attach(MixedArray::MakeReserveMixed(size)) };
 
   Class* ctx = nullptr;
   if (!context.empty()) {
@@ -487,7 +452,7 @@ Array ObjectData::o_toIterArray(const String& context,
           if (val->m_type != KindOfRef) {
             tvBox(val);
           }
-          retArray.setRef(StrNR(key), tvAsCVarRef(val), true /* isKey */);
+          retArray.setRef(StrNR(key), tvAsVariant(val), true /* isKey */);
         } else {
           retArray.set(StrNR(key), tvAsCVarRef(val), true /* isKey */);
         }
@@ -509,26 +474,22 @@ Array ObjectData::o_toIterArray(const String& context,
       // property with a non-string name.
       if (UNLIKELY(!IS_STRING_TYPE(key.m_type))) {
         assert(key.m_type == KindOfInt64);
-        TypedValue* val = dynProps->get()->nvGet(key.m_data.num);
         if (getRef) {
-          if (val->m_type != KindOfRef) {
-            tvBox(val);
-          }
-          retArray.setRef(key.m_data.num, tvAsCVarRef(val));
+          auto& lval = dynProps->lvalAt(key.m_data.num);
+          retArray.setRef(key.m_data.num, lval);
         } else {
+          auto const val = dynProps->get()->nvGet(key.m_data.num);
           retArray.set(key.m_data.num, tvAsCVarRef(val));
         }
         continue;
       }
 
-      StringData* strKey = key.m_data.pstr;
-      TypedValue* val = dynProps->get()->nvGet(strKey);
+      auto const strKey = key.m_data.pstr;
       if (getRef) {
-        if (val->m_type != KindOfRef) {
-          tvBox(val);
-        }
-        retArray.setRef(StrNR(strKey), tvAsCVarRef(val), true /* isKey */);
+        auto& lval = dynProps->lvalAt(StrNR(strKey), AccessFlags::Key);
+        retArray.setRef(StrNR(strKey), lval, true /* isKey */);
       } else {
+        auto const val = dynProps->get()->nvGet(strKey);
         retArray.set(StrNR(strKey), tvAsCVarRef(val), true /* isKey */);
       }
       decRefStr(strKey);
@@ -630,7 +591,6 @@ const StaticString
   s_PHP_DebugDisplay("__PHP_DebugDisplay"),
   s_PHP_Incomplete_Class("__PHP_Incomplete_Class"),
   s_PHP_Incomplete_Class_Name("__PHP_Incomplete_Class_Name"),
-  s_PHP_Unserializable_Class_Name("__PHP_Unserializable_Class_Name"),
   s_debugInfo("__debugInfo");
 
 /* Get properties from the actual object unless we're
@@ -640,6 +600,22 @@ const StaticString
  */
 inline Array getSerializeProps(const ObjectData* obj,
                                VariableSerializer* serializer) {
+  if (serializer->getType() == VariableSerializer::Type::VarExport) {
+    Array props;
+    for (ArrayIter iter(obj->o_toArray()); iter; ++iter) {
+      auto key = iter.first().toString();
+      // Jump over any class attribute mangling
+      if (key[0] == '\0' && key.size() > 0) {
+        int sizeToCut = 0;
+        do {
+          sizeToCut++;
+        } while (key[sizeToCut] != '\0');
+        key = key.substr(sizeToCut+1);
+      }
+      props.setWithRef(key, iter.secondRef());
+    }
+    return props;
+  }
   if ((serializer->getType() != VariableSerializer::Type::PrintR) &&
       (serializer->getType() != VariableSerializer::Type::VarDump)) {
     return obj->o_toArray();
@@ -647,6 +623,14 @@ inline Array getSerializeProps(const ObjectData* obj,
   auto cls = obj->getVMClass();
   auto debuginfo = cls->lookupMethod(s_debugInfo.get());
   if (!debuginfo) {
+    // When ArrayIterator is casted to an array, it return it's array object,
+    // however when it's being var_dump'd or print_r'd, it shows it's properties
+    if (UNLIKELY(obj->instanceof(SystemLib::s_ArrayIteratorClass))) {
+      Array ret(ArrayData::Create());
+      obj->o_getArray(ret);
+      return ret;
+    }
+
     return obj->o_toArray();
   }
   if (debuginfo->attrs() & (AttrPrivate|AttrProtected|
@@ -660,7 +644,7 @@ inline Array getSerializeProps(const ObjectData* obj,
     return ret.toArray();
   }
   if (ret.isNull()) {
-    return Array::Create();
+    return empty_array;
   }
   raise_error("__debugInfo() must return an array");
   not_reached();
@@ -687,13 +671,14 @@ void ObjectData::serializeImpl(VariableSerializer* serializer) const {
       return;
     }
     // Only serialize CPP extension type instances which can actually
-    // be deserialized.
+    // be deserialized.  Otherwise, raise a warning and serialize
+    // null.
     auto cls = getVMClass();
     if (cls->instanceCtor() && !cls->isCppSerializable()) {
-      Object placeholder = ObjectData::newInstance(
-        SystemLib::s___PHP_Unserializable_ClassClass);
-      placeholder->o_set(s_PHP_Unserializable_Class_Name, o_getClassName());
-      placeholder->serialize(serializer);
+      raise_warning("Attempted to serialize unserializable builtin class %s",
+        getVMClass()->preClass()->name()->data());
+      Variant placeholder = init_null();
+      placeholder.serialize(serializer);
       return;
     }
     if (getAttribute(HasSleep)) {
@@ -781,7 +766,7 @@ void ObjectData::serializeImpl(VariableSerializer* serializer) const {
             if (prop->m_type != KindOfUninit) {
               auto attrs = m_cls->declProperties()[propInd].m_attrs;
               if (attrs & AttrPrivate) {
-                memberName = concat4(s_zero, ctx->nameRef(),
+                memberName = concat4(s_zero, ctx->nameStr(),
                                      s_zero, memberName);
               } else if (attrs & AttrProtected) {
                 memberName = concat(s_protected_prefix, memberName);
@@ -816,7 +801,7 @@ void ObjectData::serializeImpl(VariableSerializer* serializer) const {
     if (isCollection()) {
       collectionSerialize(const_cast<ObjectData*>(this), serializer);
     } else {
-      const String& className = o_getClassName();
+      auto className = o_getClassName();
       Array properties = getSerializeProps(this, serializer);
       if (serializer->getType() ==
         VariableSerializer::Type::DebuggerSerialize) {
@@ -834,12 +819,12 @@ void ObjectData::serializeImpl(VariableSerializer* serializer) const {
         Variant* debugDispVal = const_cast<ObjectData*>(this)->  // XXX
           o_realProp(s_PHP_DebugDisplay, 0);
         if (debugDispVal) {
-          debugDispVal->serialize(serializer);
+          debugDispVal->serialize(serializer, false, false, true);
           return;
         }
       }
       if (serializer->getType() != VariableSerializer::Type::VarDump &&
-          className == s_PHP_Incomplete_Class) {
+          className.asString() == s_PHP_Incomplete_Class) {
         Variant* cname = const_cast<ObjectData*>(this)-> // XXX
           o_realProp(s_PHP_Incomplete_Class_Name, 0);
         if (cname && cname->isString()) {
@@ -877,8 +862,8 @@ ObjectData* ObjectData::clone() {
       }
     } else if (instanceof(c_Closure::classof())) {
       return c_Closure::Clone(this);
-    } else if (instanceof(c_Continuation::classof())) {
-      return c_Continuation::Clone(this);
+    } else if (instanceof(c_Generator::classof())) {
+      return c_Generator::Clone(this);
     } else if (instanceof(c_DateTime::classof())) {
       return c_DateTime::Clone(this);
     } else if (instanceof(c_DateTimeZone::classof())) {
@@ -1030,15 +1015,15 @@ Object ObjectData::FromArray(ArrayData* properties) {
   auto& dynArr = retval->reserveProperties(properties->size());
   for (ssize_t pos = properties->iter_begin(); pos != ArrayData::invalid_index;
        pos = properties->iter_advance(pos)) {
-    TypedValue* value = properties->nvGetValueRef(pos);
+    auto const value = properties->getValueRef(pos);
     TypedValue key;
     properties->nvGetKey(&key, pos);
     if (key.m_type == KindOfInt64) {
-      dynArr.set(key.m_data.num, tvAsCVarRef(value));
+      dynArr.set(key.m_data.num, value);
     } else {
       assert(IS_STRING_TYPE(key.m_type));
       StringData* strKey = key.m_data.pstr;
-      dynArr.set(StrNR(strKey), tvAsCVarRef(value), true /* isKey */);
+      dynArr.set(StrNR(strKey), value, true /* isKey */);
       decRefStr(strKey);
     }
   }
@@ -1059,34 +1044,49 @@ Slot ObjectData::declPropInd(TypedValue* prop) const {
 TypedValue* ObjectData::getProp(Class* ctx, const StringData* key,
                                 bool& visible, bool& accessible,
                                 bool& unset) {
-  TypedValue* prop = nullptr;
   unset = false;
+
   Slot propInd = m_cls->getDeclPropIndex(ctx, key, accessible);
   visible = (propInd != kInvalidSlot);
-  if (propInd != kInvalidSlot) {
+  if (LIKELY(propInd != kInvalidSlot)) {
     // We found a visible property, but it might not be accessible.
     // No need to check if there is a dynamic property with this name.
-    prop = &propVec()[propInd];
+    auto const prop = &propVec()[propInd];
     if (prop->m_type == KindOfUninit) {
       unset = true;
     }
-  } else {
-    assert(!visible && !accessible);
-    // We could not find a visible declared property. We need to check
-    // for a dynamic property with this name.
-    if (UNLIKELY(getAttribute(HasDynPropArr))) {
-      prop = dynPropArray()->nvGet(key);
-      if (prop) {
-        // Returned a non-declared property, we know that it is
-        // visible and accessible (since all dynamic properties are),
-        // and we know it is not unset (since unset dynamic properties
-        // don't appear in the dynamic property array).
-        visible = true;
-        accessible = true;
+
+    if (debug) {
+      if (RuntimeOption::RepoAuthoritative) {
+        auto const repoTy = m_cls->declPropRepoAuthType(propInd);
+        always_assert(tvMatchesRepoAuthType(*prop, repoTy));
       }
     }
+
+    return prop;
   }
-  return prop;
+
+  // We could not find a visible declared property. We need to check
+  // for a dynamic property with this name.
+  assert(!visible && !accessible);
+  if (UNLIKELY(getAttribute(HasDynPropArr))) {
+    if (auto const prop = dynPropArray()->nvGet(key)) {
+      // Returned a non-declared property, we know that it is
+      // visible and accessible (since all dynamic properties are),
+      // and we know it is not unset (since unset dynamic properties
+      // don't appear in the dynamic property array).
+      visible = true;
+      accessible = true;
+      // We are using an HphpArray for storage, but not really
+      // treating it as a normal array, so this cast is safe in this
+      // situation.
+      assert(!dynPropArray()->hasMultipleRefs());
+      assert(dynPropArray()->isMixed());
+      return const_cast<TypedValue*>(prop);
+    }
+  }
+
+  return nullptr;
 }
 
 const TypedValue* ObjectData::getProp(Class* ctx, const StringData* key,
@@ -1416,13 +1416,13 @@ void ObjectData::setProp(Class* ctx,
       throw_invalid_property_name(StrNR(key));
     }
     // when seting a dynamic property, do not write
-    // directly to the TypedValue in the HphpArray, since
+    // directly to the TypedValue in the MixedArray, since
     // its m_aux field is used to store the string hash of
     // the property name. Instead, call the appropriate
     // setters (set() or setRef()).
     if (UNLIKELY(bindingAssignment)) {
       reserveProperties().setRef(
-        StrNR(key), tvAsCVarRef(val), true /* isKey */);
+        StrNR(key), tvAsVariant(val), true /* isKey */);
     } else {
       reserveProperties().set(
         StrNR(key), tvAsCVarRef(val), true /* isKey */);
@@ -1531,7 +1531,7 @@ void ObjectData::incDecProp(TypedValue& tvRef,
   auto propVal = getProp(ctx, key, visible, accessible, unset);
 
   if (visible && accessible) {
-    auto tvResult = make_tv<KindOfUninit>();
+    auto tvResult = make_tv<KindOfNull>();
     if (unset && getAttribute(UseGet) && invokeGet(&tvResult, key)) {
       IncDecBody<setResult>(op, &tvResult, &dest);
       TypedValue ignored;
@@ -1544,6 +1544,11 @@ void ObjectData::incDecProp(TypedValue& tvRef,
       return;
     }
 
+    if (unset) {
+      tvWriteNull(propVal);
+    } else {
+      propVal = tvToCell(propVal);
+    }
     IncDecBody<setResult>(op, propVal, &dest);
     return;
   }
@@ -1693,6 +1698,19 @@ void ObjectData::getProps(const Class* klass, bool pubOnly,
   }
 }
 
+void ObjectData::getTraitProps(const Class* klass, bool pubOnly,
+                               const Class* trait, Array& props,
+                               std::vector<bool>& inserted) const {
+  assert(isNormalClass(klass));
+  assert(isTrait(trait));
+
+  getProps(klass, pubOnly, trait->preClass(), props, inserted);
+  for (auto const& traitCls : trait->usedTraitClasses()) {
+    getProps(klass, pubOnly, traitCls->preClass(), props, inserted);
+    getTraitProps(klass, pubOnly, traitCls.get(), props, inserted);
+  }
+}
+
 Variant ObjectData::invokeSleep() {
   const Func* method = m_cls->lookupMethod(s___sleep.get());
   if (method) {
@@ -1774,19 +1792,34 @@ void ObjectData::cloneSet(ObjectData* clone) {
 
     ssize_t iter = dynProps.get()->iter_begin();
     while (iter != ArrayData::invalid_index) {
-      auto props = static_cast<HphpArray*>(dynProps.get());
-      TypedValue key;
-      props->nvGetKey(&key, iter);
-      assert(tvIsString(&key));
-      StringData* strKey = key.m_data.pstr;
-      TypedValue* val = props->nvGet(strKey);
+      auto const props = dynProps.get();
+      assert(MixedArray::asMixed(props));
 
-      auto const retval = reinterpret_cast<TypedValue*>(
-        &cloneProps.lvalAt(String(strKey), AccessFlags::Key)
-      );
-      tvDupFlattenVars(val, retval, cloneProps.get());
-      iter = dynProps.get()->iter_advance(iter);
-      decRefStr(strKey);
+      TypedValue key;
+      MixedArray::NvGetKey(props, &key, iter);
+
+      const TypedValue* val;
+      TypedValue* ret;
+      switch (key.m_type) {
+      case HPHP::KindOfString: {
+        StringData* str = key.m_data.pstr;
+        val = MixedArray::NvGetStr(props, str);
+        ret = cloneProps.lvalAt(String(str), AccessFlags::Key).asTypedValue();
+        decRefStr(str);
+        break;
+      }
+      case HPHP::KindOfInt64: {
+        int64_t num = key.m_data.num;
+        val = MixedArray::NvGetInt(props, num);
+        ret = cloneProps.lvalAt(num, AccessFlags::Key).asTypedValue();
+        break;
+      }
+      default:
+        always_assert(false);
+      }
+
+      tvDupFlattenVars(val, ret, cloneProps.get());
+      iter = MixedArray::IterAdvance(dynProps.get(), iter);
     }
   }
 }
@@ -1831,16 +1864,6 @@ RefData* ObjectData::zGetProp(Class* ctx, const StringData* key,
 
 bool ObjectData::hasDynProps() const {
   return getAttribute(HasDynPropArr) && dynPropArray().size() != 0;
-}
-
-void ObjectData::getChildren(std::vector<TypedValue*>& out) {
-  Slot nProps = m_cls->numDeclProperties();
-  for (Slot i = 0; i < nProps; ++i) {
-    out.push_back(&propVec()[i]);
-  }
-  if (UNLIKELY(getAttribute(HasDynPropArr))) {
-    dynPropArray()->getChildren(out);
-  }
 }
 
 const char* ObjectData::classname_cstr() const {

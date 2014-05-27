@@ -229,7 +229,7 @@ let rec lfold2 f env l1 l2 =
       let env, rl = lfold2 f env rl1 rl2 in
       env, x :: rl
 
-let rec wlfold2 f env l1 l2 =
+let wlfold2 f env l1 l2 =
   match l1, l2 with
   | [], [] -> env, []
   | [], l | l, [] -> env, l
@@ -338,3 +338,9 @@ let iter_n_acc n f acc =
     acc := f !acc
   done;
   !acc
+
+let strip_ns s =
+  if s.[0] = '\\' then String.sub s 1 ((String.length s) - 1) else s
+
+let cat fn = failwith "Cannot use cat in JS"
+

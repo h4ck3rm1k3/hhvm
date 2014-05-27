@@ -11,7 +11,7 @@ class EncodingDetector {
   /**
    * Creates an encoding detector.
    */
-  public function __construct() {}
+  public function __construct(): void {}
 
   /**
    * Sets the input byte array whose encoding is to be guessed.
@@ -60,7 +60,7 @@ class EncodingMatch {
   /**
    * Internal only: Creates an encoding match.
    */
-  private function __construct() {}
+  private function __construct(): void {}
 
   /**
    * Checks if the encoding match succeeded.

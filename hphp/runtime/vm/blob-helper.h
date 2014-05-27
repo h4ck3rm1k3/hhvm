@@ -18,14 +18,18 @@
 #define incl_HPHP_RUNTIME_VM_BLOB_HELPER_H_
 
 #include <algorithm>
-#include <vector>
 #include <cstdlib>
 #include <type_traits>
-
-#include "hphp/runtime/base/builtin-functions.h"
-#include "hphp/runtime/base/complex-types.h"
+#include <vector>
+#include <limits>
 
 #include "folly/Varint.h"
+
+#include "hphp/runtime/base/builtin-functions.h"
+#include "hphp/runtime/base/tv-helpers.h"
+#include "hphp/runtime/base/type-string.h"
+#include "hphp/runtime/vm/repo.h"
+#include "hphp/runtime/vm/repo-global-data.h"
 
 /*
  * This module contains helpers for serializing and deserializing
@@ -143,6 +147,11 @@ struct BlobEncoder {
     std::copy(sd->data(), sd->data() + sz, &m_blob[start]);
   }
 
+  void encode(const RepoAuthType::Array* ar) {
+    if (!ar) return encode(std::numeric_limits<uint32_t>::max());
+    encode(ar->id());
+  }
+
   void encode(const TypedValue& tv) {
     if (tv.m_type == KindOfUninit) {
       // This represents an empty string
@@ -242,6 +251,20 @@ struct BlobDecoder {
     sd = s.get() ? makeStaticString(s) : 0;
   }
 
+  void decode(LowStringPtr& s) {
+    const StringData* sd;
+    decode(sd);
+    s = sd;
+  }
+
+  void decode(const RepoAuthType::Array*& ar) {
+    uint32_t id;
+    decode(id);
+    ar = id == std::numeric_limits<uint32_t>::max()
+      ? nullptr
+      : Repo::get().global().arrayTypeTable.lookup(id);
+  }
+
   void decode(TypedValue& tv) {
     tvWriteUninit(&tv);
 
@@ -309,7 +332,8 @@ private:
     assert(m_last - m_p >= sz);
     std::copy(m_p, m_p + sz, pch);
     m_p += sz;
-    return s.setSize(sz);
+    s.setSize(sz);
+    return s;
   }
 
 private:

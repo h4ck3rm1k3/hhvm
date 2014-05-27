@@ -69,7 +69,7 @@ bool cellIsPlausible(const Cell cell) {
     assert(!"KindOfRef found in a Cell");
     break;
   default:
-    not_reached();
+    assert(!"Invalid Cell type");
   }
   return true;
 }
@@ -111,7 +111,11 @@ void tvCastToBooleanInPlace(TypedValue* tv) {
   case KindOfDouble:  b = (tv->m_data.dbl != 0); break;
   case KindOfStaticString: b = tv->m_data.pstr->toBoolean(); break;
   case KindOfString:  b = tv->m_data.pstr->toBoolean(); tvDecRefStr(tv); break;
-  case KindOfArray:   b = (!tv->m_data.parr->empty()); tvDecRefArr(tv); break;
+  // Note that this is intentionally incorrect for NameValueTableWrapper, for
+  // which getSize() will always return -1, empty or not.
+  case KindOfArray:   b = !!tv->m_data.parr->getSize();
+                      tvDecRefArr(tv);
+                      break;
   case KindOfObject:  b = tv->m_data.pobj->o_toBoolean();
                       tvDecRefObj(tv);
                       break;
@@ -376,6 +380,20 @@ void tvCastToObjectInPlace(TypedValue* tv) {
   tv->m_data.pobj->incRefCount();
 }
 
+void tvCastToNullableObjectInPlace(TypedValue* tv) {
+  if (IS_NULL_TYPE(tv->m_type)) {
+    // XXX(t3879280) This happens immediately before calling an extension
+    // function that takes an optional Object argument. We want to end up
+    // passing const Object& holding nullptr, so by clearing out m_data.pobj we
+    // can unconditionally treat &tv->m_data.pobj as a const Object& in the
+    // function being called. This violates the invariant that the value of
+    // m_data doesn't matter in a KindOfNull TypedValue.
+    tv->m_data.pobj = nullptr;
+  } else {
+    tvCastToObjectInPlace(tv);
+  }
+}
+
 void tvCastToResourceInPlace(TypedValue* tv) {
   assert(tvIsPlausible(*tv));
   tvUnboxIfNeeded(tv);
@@ -484,10 +502,12 @@ bool tvCoerceParamToArrayInPlace(TypedValue* tv) {
   tvUnboxIfNeeded(tv);
   if (tv->m_type == KindOfArray) {
     return true;
-  } else if (tv->m_type == KindOfObject) {
+  }
+  if (tv->m_type == KindOfObject) {
     tvAsVariant(tv) = tv->m_data.pobj->o_toArray();
     return true;
-  } else if (tv->m_type == KindOfResource) {
+  }
+  if (tv->m_type == KindOfResource) {
     tvAsVariant(tv) = tv->m_data.pres->o_toArray();
     return true;
   }
@@ -497,6 +517,17 @@ bool tvCoerceParamToArrayInPlace(TypedValue* tv) {
 bool tvCoerceParamToObjectInPlace(TypedValue* tv) {
   assert(tvIsPlausible(*tv));
   tvUnboxIfNeeded(tv);
+  return tv->m_type == KindOfObject;
+}
+
+bool tvCoerceParamToNullableObjectInPlace(TypedValue* tv) {
+  assert(tvIsPlausible(*tv));
+  tvUnboxIfNeeded(tv);
+  if (IS_NULL_TYPE(tv->m_type)) {
+    // See comment in tvCastToNullableObjectInPlace
+    tv->m_data.pobj = nullptr;
+    return true;
+  }
   return tv->m_type == KindOfObject;
 }
 

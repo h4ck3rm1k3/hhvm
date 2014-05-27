@@ -44,6 +44,9 @@ TRACE_SET_MOD(hhbbc);
 
 const StaticString s_86pinit("86pinit");
 const StaticString s_86sinit("86sinit");
+const StaticString s_Generator("Generator");
+const StaticString s_http_response_header("http_response_header");
+const StaticString s_php_errormsg("php_errormsg");
 
 //////////////////////////////////////////////////////////////////////
 
@@ -65,8 +68,9 @@ State entry_state(const Index& index,
   }
 
   /*
-   * Closures have a hidden local that's always the first local, which
-   * stores the closure itself.
+   * Closures have a hidden local that's always the first
+   * (non-parameter) local, which stores the closure itself, and we
+   * also need to look up the types of use vars from the index.
    */
   if (ctx.func->isClosureBody) {
     assert(locId < ret.locals.size());
@@ -75,23 +79,43 @@ State entry_state(const Index& index,
     assert(rcls && "Closure classes must always be unique and must resolve");
     ret.locals[locId++] = objExact(*rcls);
   }
+  auto const useVars = ctx.func->isClosureBody
+    ? index.lookup_closure_use_vars(ctx.func)
+    : std::vector<Type>{};
 
-  for (; locId < ctx.func->locals.size(); ++locId) {
+  auto afterParamsLocId = uint32_t{0};
+  for (; locId < ctx.func->locals.size(); ++locId, ++afterParamsLocId) {
+    auto name = ctx.func->locals[locId]->name;
+
     /*
-     * Generators and closures don't (necessarily) start with the
-     * frame locals uninitialized.
-     *
-     * Ideas:
-     *
-     *  - maybe we can do better for generators by adding edges from
-     *    the yields to the top of the generator
-     *
-     *  - for closures, since they are all unique to their creation
-     *    sites and in the same unit, looking at the CreateCl could
-     *    tell the types of used vars, even in single unit mode.
+     * These can be set by various builtin calls, so
+     * we never try to track their type.
      */
-    ret.locals[locId] =
-      ctx.func->isGeneratorBody || ctx.func->isClosureBody ? TGen : TUninit;
+    if (name && (name->isame(s_http_response_header.get()) ||
+                 name->isame(s_php_errormsg.get()))) {
+      ret.locals[locId] = TGen;
+      continue;
+    }
+
+    /*
+     * Some of the closure locals are mapped to used variables or
+     * static locals.  The types of use vars are looked up from the
+     * index, but we don't currently do anything to try to track
+     * closure static local types.
+     */
+    if (ctx.func->isClosureBody) {
+      if (afterParamsLocId < useVars.size()) {
+        ret.locals[locId] = useVars[afterParamsLocId];
+        continue;
+      }
+      if (afterParamsLocId < ctx.func->staticLocals.size()) {
+        ret.locals[locId] = TGen;
+        continue;
+      }
+    }
+
+    // Otherwise the local will start uninitialized, like normal.
+    ret.locals[locId] = TUninit;
   }
 
   return ret;
@@ -173,6 +197,9 @@ FuncAnalysis do_analyze(const Index& index,
   // For debugging, count how many times basic blocks get interpreted.
   auto interp_counter = uint32_t{0};
 
+  // Accumulated information crossing blocks goes here.
+  CollectedInfo collect { index, inputCtx, clsAnalysis };
+
   /*
    * Iterate until a fixed point.
    *
@@ -184,7 +211,6 @@ FuncAnalysis do_analyze(const Index& index,
   while (!incompleteQ.empty()) {
     auto const blk = ai.rpoBlocks[*begin(incompleteQ)];
     incompleteQ.erase(begin(incompleteQ));
-    PropertiesInfo props(index, inputCtx, clsAnalysis);
 
     if (nonWideVisits[blk->id]++ > options.analyzeFuncWideningLimit) {
       nonWideVisits[blk->id] = 0;
@@ -192,7 +218,7 @@ FuncAnalysis do_analyze(const Index& index,
 
     FTRACE(2, "block #{}\nin {}{}", blk->id,
       state_string(*ctx.func, ai.bdata[blk->id].stateIn),
-      property_state_string(props));
+      property_state_string(collect.props));
     ++interp_counter;
 
     auto propagate = [&] (php::Block& target, const State& st) {
@@ -223,12 +249,29 @@ FuncAnalysis do_analyze(const Index& index,
     };
 
     auto stateOut = ai.bdata[blk->id].stateIn;
-    auto interp   = Interp { index, ctx, props, blk, stateOut };
+    auto interp   = Interp { index, ctx, collect, blk, stateOut };
     auto flags    = run(interp, propagate);
     if (flags.returned) {
       ai.inferredReturn = union_of(std::move(ai.inferredReturn),
                                    std::move(*flags.returned));
     }
+  }
+
+  ai.closureUseTypes = std::move(collect.closureUseTypes);
+
+  /*
+   * Async functions always return WaitH<T>, where T is the type returned
+   * internally.
+   */
+  if (ctx.func->isAsync) {
+    ai.inferredReturn = wait_handle(index, ai.inferredReturn);
+  }
+
+  /*
+   * Generators always return Generator object.
+   */
+  if (ctx.func->isGenerator) {
+    ai.inferredReturn = objExact(index.builtin_class(s_Generator.get()));
   }
 
   /*
@@ -305,10 +348,11 @@ void expand_hni_prop_types(ClassAnalysis& clsAnalysis) {
     std::fprintf(
       stderr,
       "HNI class %s::%s inferred property type (%s) doesn't "
-        "match annotation\n",
+        "match annotation (%s)\n",
       clsAnalysis.ctx.cls->name->data(),
       prop.name->data(),
-      show(it->second).c_str()
+      show(it->second).c_str(),
+      show(hniTy).c_str()
     );
     always_assert(!"HNI property type annotation was wrong");
   };
@@ -370,9 +414,14 @@ ClassAnalysis analyze_class(const Index& index, Context const ctx) {
     if (isHNIBuiltin) {
       auto const hniTy = from_hni_constraint(prop.typeConstraint);
       if (!cellTy.subtypeOf(hniTy)) {
-        std::fprintf(stderr, "hni %s::%s has impossible type\n",
+        std::fprintf(stderr, "hni %s::%s has impossible type. "
+                     "The annotation says it is type (%s) "
+                     "but the default value is type (%s).\n",
                      ctx.cls->name->data(),
-                     prop.name->data());
+                     prop.name->data(),
+                     show(hniTy).c_str(),
+                     show(cellTy).c_str()
+                     );
         always_assert(0 && "HNI systemlib has invalid type annotations");
       }
     }
@@ -474,15 +523,6 @@ ClassAnalysis analyze_class(const Index& index, Context const ctx) {
     // Analyze every method in the class until we reach a fixed point
     // on the private property states.
     for (auto& f : ctx.cls->methods) {
-      if (f->isAsync && f->isGeneratorBody) {
-        /*
-         * Inner-bodies of async functions don't need to have their
-         * inner body analyzed for class analysis, because it is
-         * required to do the same thing as the eager-execution
-         * version.
-         */
-        continue;
-      }
       if (f->name->isame(s_86pinit.get()) ||
           f->name->isame(s_86sinit.get())) {
         continue;
@@ -568,8 +608,8 @@ locally_propagated_states(const Index& index,
   std::vector<std::pair<State,StepFlags>> ret;
   ret.reserve(blk->hhbcs.size() + 1);
 
-  PropertiesInfo props { index, ctx, nullptr };
-  auto interp = Interp { index, ctx, props, blk, state };
+  CollectedInfo collect { index, ctx, nullptr};
+  auto interp = Interp { index, ctx, collect, blk, state };
   for (auto& op : blk->hhbcs) {
     ret.emplace_back(state, StepFlags{});
     ret.back().second = step(interp, op);

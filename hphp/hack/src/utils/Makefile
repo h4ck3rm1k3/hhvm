@@ -2,7 +2,7 @@ TOP=..
 ##############################################################################
 # Variables
 ##############################################################################
-TARGET=lib
+TARGET=utils
 
 SRC= json.ml \
      path.ml pos.ml \
@@ -11,11 +11,11 @@ SRC= json.ml \
      printSignal.ml ttyColor.ml \
      utils.ml \
      lock.ml wwwroot.ml \
-     pidLog.ml fork.ml
+     pidLog.ml fork.ml trie.ml \
 
 INCLUDEDIRS=
 
-COBJS=nproc.o realpath.o
+COBJS=nproc.o realpath.o get_build_id.o get_build_id.gen.o
 
 # because we need C code
 OCAMLMKLIB=ocamlmklib
@@ -38,11 +38,11 @@ all.opt:: $(TARGET).cmxa
 # need to use ocamlmklib, otherwise with ocamlc or ocamlopt get some
 # pbs with realpath.c at some point
 $(TARGET).cma: $(OBJS) $(COBJS)
-	$(OCAMLMKLIB) -o lib $^
+	$(OCAMLMKLIB) -o $(TARGET) $^
 
 $(TARGET).cmxa: $(OBJS:.cmo=.cmx) $(LIBS:.cma=.cmxa) $(COBJS)
-	$(OCAMLMKLIB) -o lib $^
+	$(OCAMLMKLIB) -o $(TARGET) $^
 
 # Create the build stamp if it's not already there
-build_id.ml:
-	echo 'let build_id_ohai = "${DATE}-${SHA}"' > build_id.ml
+get_build_id.gen.c:
+	echo 'const char* const BuildInfo_kRevision = "${SHA}";' > get_build_id.gen.c

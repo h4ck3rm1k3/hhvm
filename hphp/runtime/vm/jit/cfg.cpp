@@ -19,6 +19,7 @@
 #include "hphp/runtime/vm/jit/id-set.h"
 #include "hphp/runtime/vm/jit/ir-unit.h"
 #include "hphp/runtime/vm/jit/block.h"
+#include "hphp/runtime/vm/jit/mutation.h"
 
 namespace HPHP {  namespace JIT {
 
@@ -49,6 +50,26 @@ BlocksWithIds rpoSortCfgWithIds(const IRUnit& unit) {
   return ret;
 }
 
+Block* splitEdge(IRUnit& unit, Block* from, Block* to, BCMarker marker) {
+  auto& branch = from->back();
+  Block* middle = unit.defBlock();
+  FTRACE(3, "splitting edge from B{} -> B{} using B{}\n",
+         from->id(), to->id(), middle->id());
+  if (branch.taken() == to) {
+    branch.setTaken(middle);
+  } else {
+    assert(branch.next() == to);
+    branch.setNext(middle);
+  }
+
+  middle->prepend(unit.gen(Jmp, marker, to));
+  auto const unlikely = Block::Hint::Unlikely;
+  if (from->hint() == unlikely || to->hint() == unlikely) {
+    middle->setHint(unlikely);
+  }
+  return middle;
+}
+
 namespace {
 
 // If edge is critical, split it by inserting an intermediate block.
@@ -62,28 +83,14 @@ void splitCriticalEdge(IRUnit& unit, Edge* edge) {
   auto* from = branch->block();
   if (to->numPreds() <= 1 || from->numSuccs() <= 1) return;
 
-  Block* middle = unit.defBlock();
-  FTRACE(3, "splitting edge from B{} -> B{} using B{}\n",
-         from->id(), to->id(), middle->id());
-  if (branch->taken() == to) {
-    branch->setTaken(middle);
-  } else {
-    assert(branch->next() == to);
-    branch->setNext(middle);
-  }
-
-  auto& marker = to->front().marker();
-  middle->prepend(unit.gen(Jmp, marker, to));
-  auto const unlikely = Block::Hint::Unlikely;
-  if (from->hint() == unlikely || to->hint() == unlikely) {
-    middle->setHint(unlikely);
-  }
+  splitEdge(unit, from, to, to->front().marker());
 }
 }
 
 bool splitCriticalEdges(IRUnit& unit) {
   FTRACE(2, "splitting critical edges\n");
   auto modified = removeUnreachable(unit);
+  if (modified) reflowTypes(unit);
   auto const startBlocks = unit.numBlocks();
 
   // Try to split outgoing edges of each reachable block.  This is safe in

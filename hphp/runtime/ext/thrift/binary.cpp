@@ -17,7 +17,7 @@
 
 #include "hphp/runtime/ext/thrift/transport.h"
 #include "hphp/runtime/ext/ext_thrift.h"
-#include "hphp/runtime/ext/ext_class.h"
+#include "hphp/runtime/ext/std/ext_std_classobj.h"
 #include "hphp/runtime/ext/ext_collections.h"
 #include "hphp/runtime/ext/reflection/ext_reflection.h"
 #include "hphp/runtime/base/base-includes.h"
@@ -32,6 +32,7 @@ namespace HPHP {
 
 StaticString PHPTransport::s_getTransport("getTransport");
 StaticString PHPTransport::s_flush("flush");
+StaticString PHPTransport::s_onewayFlush("onewayFlush");
 StaticString PHPTransport::s_write("write");
 StaticString PHPTransport::s_putBack("putBack");
 StaticString PHPTransport::s_read("read");
@@ -53,8 +54,8 @@ IMPLEMENT_DEFAULT_EXTENSION_VERSION(thrift_protocol, NO_EXTENSION_VERSION_YET);
 
 const int32_t VERSION_MASK = 0xffff0000;
 const int32_t VERSION_1 = 0x80010000;
-const int8_t T_CALL = 1;
-const int8_t T_REPLY = 2;
+const int8_t T_CALL UNUSED = 1;
+const int8_t T_REPLY UNUSED = 2;
 const int8_t T_EXCEPTION = 3;
 // tprotocolexception
 const int INVALID_DATA = 1;
@@ -68,7 +69,7 @@ void skip_element(long thrift_typeID, PHPInputTransport& transport);
 // Create a PHP object given a typename and call the ctor, optionally passing up to 2 arguments
 Object createObject(const String& obj_typename, int nargs = 0,
                     const Variant& arg1 = null_variant, const Variant& arg2 = null_variant) {
-  if (!f_class_exists(obj_typename)) {
+  if (!HHVM_FN(class_exists)(obj_typename)) {
     raise_warning("runtime/ext_thrift: Class %s does not exist",
                   obj_typename.data());
     return Object();
@@ -176,9 +177,10 @@ Variant binary_deserialize(int8_t thrift_typeID, PHPInputTransport& transport,
         String s = String(size, ReserveString);
         char* strbuf = s.bufferSlice().ptr;
         transport.readBytes(strbuf, size);
-        return s.setSize(size);
+        s.setSize(size);
+        return s;
       } else {
-        return "";
+        return empty_string;
       }
     }
     case T_MAP: { // array of key -> value
@@ -261,13 +263,13 @@ Variant binary_deserialize(int8_t thrift_typeID, PHPInputTransport& transport,
 
         ret = Variant(set_ret);
       } else {
-        ArrayInit init(size);
+        ArrayInit init(size, ArrayInit::Mixed{});
         for (uint32_t s = 0; s < size; ++s) {
           Variant key = binary_deserialize(type, transport, elemspec);
           if (key.isInteger()) {
             init.set(key, true);
           } else {
-            init.set(key.toString(), true);
+            init.setKeyUnconverted(key, true);
           }
         }
         ret = init.toArray();
@@ -536,7 +538,7 @@ void binary_serialize_spec(const Object& zthis, PHPOutputTransport& transport,
 
 void f_thrift_protocol_write_binary(const Object& transportobj, const String& method_name,
                                     int64_t msgtype, const Object& request_struct,
-                                    int seqid, bool strict_write) {
+                                    int seqid, bool strict_write, bool oneway) {
 
   PHPOutputTransport transport(transportobj);
 
@@ -557,7 +559,11 @@ void f_thrift_protocol_write_binary(const Object& transportobj, const String& me
                                             false);
   binary_serialize_spec(request_struct, transport, spec.toArray());
 
-  transport.flush();
+  if (oneway) {
+    transport.onewayFlush();
+  } else {
+    transport.flush();
+  }
 }
 
 Variant f_thrift_protocol_read_binary(const Object& transportobj,

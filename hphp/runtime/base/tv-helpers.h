@@ -27,7 +27,7 @@
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
 
-class Variant;
+struct Variant;
 
 /*
  * Assertions on Cells and TypedValues.  Should usually only happen
@@ -183,13 +183,13 @@ inline TypedValue* tvBox(TypedValue* tv) {
 
 // Assumes 'tv' is live
 // Assumes 'IS_REFCOUNTED_TYPE(tv->m_type)'
-inline void tvIncRef(TypedValue* tv) {
+inline void tvIncRef(const TypedValue* tv) {
   assert(tvIsPlausible(*tv));
   assert(IS_REFCOUNTED_TYPE(tv->m_type));
   tv->m_data.pstr->incRefCount();
 }
 
-ALWAYS_INLINE void tvRefcountedIncRef(TypedValue* tv) {
+ALWAYS_INLINE void tvRefcountedIncRef(const TypedValue* tv) {
   assert(tvIsPlausible(*tv));
   if (IS_REFCOUNTED_TYPE(tv->m_type)) {
     tvIncRef(tv);
@@ -311,6 +311,10 @@ inline Cell* tvAssertCell(TypedValue* tv) {
   assert(cellIsPlausible(*tv));
   return tv;
 }
+inline const Cell* tvAssertCell(const TypedValue* tv) {
+  assert(cellIsPlausible(*tv));
+  return tv;
+}
 
 /*
  * Assign the value of the Cell in `fr' to `to', with appropriate
@@ -333,16 +337,24 @@ inline void tvSet(const Cell& fr, TypedValue& inTo) {
 /*
  * Assign null to `to', with appropriate reference count modifications.
  *
+ * `to' must contain a live php value; use tvWriteNull when it doesn't.
+ */
+inline void cellSetNull(Cell& to) {
+  auto const oldType = to.m_type;
+  auto const oldDatum = to.m_data.num;
+  tvWriteNull(&to);
+  tvRefcountedDecRefHelper(oldType, oldDatum);
+}
+
+/*
+ * Assign null to `to', with appropriate reference count modifications.
+ *
  * If `to' is KindOfRef, places the null in the RefData pointed to by `to'.
  *
  * `to' must contain a live php value; use tvWriteNull when it doesn't.
  */
-inline void tvSetNull(TypedValue& inTo) {
-  Cell* to = tvToCell(&inTo);
-  auto const oldType = to->m_type;
-  auto const oldDatum = to->m_data.num;
-  tvWriteNull(to);
-  tvRefcountedDecRefHelper(oldType, oldDatum);
+inline void tvSetNull(TypedValue& to) {
+  cellSetNull(*tvToCell(&to));
 }
 
 /*
@@ -396,26 +408,33 @@ inline void tvBindRef(RefData* fr, TypedValue* to) {
   tvRefcountedDecRefHelper(oldType, oldDatum);
 }
 
+/*
+ * Duplicate the value in `frIn' to `dst' in a reference-preserving
+ * way.
+ *
+ * This means either the effects of tvDup(frIn, dst) or the effects of
+ * cellDup(tvToCell(fIn), dst), depending on whether `frIn' is
+ * "observably referenced"---i.e. if it KindOfRef and
+ * RefData::isReferenced() is true.
+ *
+ * Pre: `frIn' is a live value, and `dst' is dead
+ */
+ALWAYS_INLINE
+void tvDupWithRef(const TypedValue& frIn, TypedValue& dst) {
+  assert(tvIsPlausible(frIn));
+  auto fr = &frIn;
+  if (UNLIKELY(fr->m_type == KindOfRef)) {
+    if (!fr->m_data.pref->isReferenced()) {
+      fr = fr->m_data.pref->tv();
+    }
+  }
+  tvDup(*fr, dst);
+}
+
 // Assumes 'to' is live
 inline void tvUnset(TypedValue * to) {
   tvRefcountedDecRef(to);
   tvWriteUninit(to);
-}
-
-// Assumes `fr' is dead and binds it using KindOfIndirect to `to'.
-inline void tvBindIndirect(TypedValue* fr, TypedValue* to) {
-  assert(tvIsPlausible(*to));
-  fr->m_type = KindOfIndirect;
-  fr->m_data.pind = to;
-}
-
-// If a TypedValue is KindOfIndirect, dereference to the inner
-// TypedValue.
-inline TypedValue* tvDerefIndirect(TypedValue* tv) {
-  return tv->m_type == KindOfIndirect ? tv->m_data.pind : tv;
-}
-inline const TypedValue* tvDerefIndirect(const TypedValue* tv) {
-  return tvDerefIndirect(const_cast<TypedValue*>(tv));
 }
 
 /*
@@ -541,6 +560,7 @@ void tvCastToStringInPlace(TypedValue* tv);
 StringData* tvCastToString(const TypedValue* tv);
 void tvCastToArrayInPlace(TypedValue* tv);
 void tvCastToObjectInPlace(TypedValue* tv);
+void tvCastToNullableObjectInPlace(TypedValue* tv);
 void tvCastToResourceInPlace(TypedValue* tv);
 
 bool tvCanBeCoercedToNumber(TypedValue* tv);
@@ -550,6 +570,7 @@ bool tvCoerceParamToDoubleInPlace(TypedValue* tv);
 bool tvCoerceParamToStringInPlace(TypedValue* tv);
 bool tvCoerceParamToArrayInPlace(TypedValue* tv);
 bool tvCoerceParamToObjectInPlace(TypedValue* tv);
+bool tvCoerceParamToNullableObjectInPlace(TypedValue* tv);
 bool tvCoerceParamToResourceInPlace(TypedValue* tv);
 
 typedef void(*RawDestructor)(void*);

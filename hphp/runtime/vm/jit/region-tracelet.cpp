@@ -85,7 +85,6 @@ private:
   bool m_blockFinished;
   IRTranslator m_irTrans;
   HhbcTranslator& m_ht;
-  Unit::MetaHandle m_metaHand;
   smart::vector<ActRecState> m_arStates;
   RefDeps m_refDeps;
   const int m_inlineDepth;
@@ -94,6 +93,7 @@ private:
   const Func* curFunc() const;
   const Unit* curUnit() const;
   Offset curSpOffset() const;
+  bool resumed() const;
   int inliningDepth() const;
 
   bool prepareInstruction();
@@ -108,18 +108,22 @@ RegionFormer::RegionFormer(const RegionContext& ctx, InterpSet& interp,
                            int inlineDepth, bool profiling)
   : m_ctx(ctx)
   , m_interp(interp)
-  , m_sk(ctx.func, ctx.bcOffset)
+  , m_sk(ctx.func, ctx.bcOffset, ctx.resumed)
   , m_startSk(m_sk)
   , m_region(std::make_shared<RegionDesc>())
-  , m_curBlock(m_region->addBlock(ctx.func, m_sk.offset(), 0, ctx.spOffset))
+  , m_curBlock(m_region->addBlock(ctx.func, m_sk.resumed(), m_sk.offset(), 0,
+                                  ctx.spOffset))
   , m_blockFinished(false)
-  , m_irTrans(ctx.bcOffset, ctx.spOffset, ctx.inGenerator, ctx.func)
+  , m_irTrans(TransContext { kInvalidTransID,
+                             ctx.bcOffset,
+                             ctx.spOffset,
+                             ctx.resumed,
+                             ctx.func })
   , m_ht(m_irTrans.hhbcTrans())
   , m_arStates(1)
   , m_inlineDepth(inlineDepth)
   , m_profiling(profiling)
-{
-}
+{}
 
 const Func* RegionFormer::curFunc() const {
   return m_ht.curFunc();
@@ -131,6 +135,10 @@ const Unit* RegionFormer::curUnit() const {
 
 Offset RegionFormer::curSpOffset() const {
   return m_ht.spOffset();
+}
+
+bool RegionFormer::resumed() const {
+  return m_ht.resumed();
 }
 
 int RegionFormer::inliningDepth() const {
@@ -187,7 +195,6 @@ RegionDescPtr RegionFormer::go() {
       m_curBlock->setInlinedCallee(callee);
       m_ht.beginInlining(m_inst.imm[0].u_IVA, callee, returnFuncOff,
                          doPrediction ? m_inst.outPred : Type::Gen);
-      m_metaHand = Unit::MetaHandle();
 
       m_sk = m_ht.curSrcKey();
       m_blockFinished = true;
@@ -212,7 +219,6 @@ RegionDescPtr RegionFormer::go() {
     if (inlineReturn) {
       // If we just translated an inlined RetC, grab the updated SrcKey from
       // m_ht and clean up.
-      m_metaHand = Unit::MetaHandle();
       m_sk = m_ht.curSrcKey().advanced(curUnit());
       m_arStates.pop_back();
       m_blockFinished = true;
@@ -229,13 +235,13 @@ RegionDescPtr RegionFormer::go() {
 
     // Since the current instruction is over, advance HhbcTranslator's sk
     // before emitting the prediction (if any).
-    if (doPrediction) {
+    if (doPrediction && m_inst.outPred < m_ht.topType(0, DataTypeGeneric)) {
       m_ht.setBcOff(m_sk.offset(), false);
       m_ht.checkTypeStack(0, m_inst.outPred, m_sk.offset());
     }
   }
 
-  dumpTrace(2, m_ht.unit(), " after tracelet formation ",
+  printUnit(2, m_ht.unit(), " after tracelet formation ",
             nullptr, nullptr, m_ht.irBuilder().guards());
 
   if (m_region && !m_region->blocks.empty()) {
@@ -270,7 +276,6 @@ bool RegionFormer::prepareInstruction() {
   m_inst.changesPC = opcodeChangesPC(m_inst.op());
   m_inst.funcd = m_arStates.back().knownFunc();
   populateImmediates(m_inst);
-  preInputApplyMetaData(m_metaHand, &m_inst);
   m_ht.setBcOff(m_sk.offset(), false);
 
   InputInfos inputInfos;
@@ -287,17 +292,16 @@ bool RegionFormer::prepareInstruction() {
   };
 
   for (auto const& ii : inputInfos) m_inst.inputs.push_back(newDynLoc(ii));
-  try {
-    readMetaData(m_metaHand, m_inst, m_ht, m_profiling);
-  } catch (const FailedTraceGen& exn) {
-    FTRACE(1, "failed to apply metadata for {}: {}\n",
-           m_inst, exn.what());
-    return false;
+
+  // This may not be necessary, but for now it's preserving
+  // side-effects that the call to readMetaData used to have.
+  if (isAlwaysNop(m_inst.op())) {
+    m_inst.noOp = true;
   }
 
-  // This reads valueClass from the inputs so it needs to happen after
-  // readMetaData.
-  if (inliningDepth() == 0) annotate(&m_inst);
+  // This reads valueClass from the inputs so it used to need to
+  // happen after readMetaData.  But now readMetaData is gone ...
+  annotate(&m_inst);
 
   // Check all the inputs for unknown values.
   assert(inputInfos.size() == m_inst.inputs.size());
@@ -338,7 +342,12 @@ void RegionFormer::addInstruction() {
   if (m_blockFinished) {
     FTRACE(2, "selectTracelet adding new block at {} after:\n{}\n",
            showShort(m_sk), show(*m_curBlock));
-    m_curBlock = m_region->addBlock(curFunc(), m_sk.offset(), 0, curSpOffset());
+    RegionDesc::Block* newCurBlock = m_region->addBlock(curFunc(),
+                                                        m_sk.resumed(),
+                                                        m_sk.offset(), 0,
+                                                        curSpOffset());
+    m_region->addArc(m_curBlock->id(), newCurBlock->id());
+    m_curBlock = newCurBlock;
     m_blockFinished = false;
   }
 
@@ -348,8 +357,12 @@ void RegionFormer::addInstruction() {
 
 bool RegionFormer::tryInline() {
   if (!RuntimeOption::RepoAuthoritative ||
-      m_inst.op() != Op::FCall ||
-      m_inst.op() != Op::FCallD) {
+      (m_inst.op() != Op::FCall && m_inst.op() != Op::FCallD)) {
+    return false;
+  }
+
+  if (curFunc()->isPseudoMain()) {
+    // TODO(#4238160): Hack inlining into pseudomain callsites is still buggy
     return false;
   }
 
@@ -372,6 +385,11 @@ bool RegionFormer::tryInline() {
     return refuse("call is recursive");
   }
 
+  if (callee->hasVariadicCaptureParam()) {
+    // FIXME: this doesn't have to remove inlining
+    return refuse("callee has a variadic capture");
+  }
+
   if (m_inst.imm[0].u_IVA != callee->numParams()) {
     return refuse("numArgs doesn't match numParams of callee");
   }
@@ -379,7 +397,7 @@ bool RegionFormer::tryInline() {
   // For analysis purposes, we require that the FPush* instruction is in the
   // same region.
   auto fpi = curFunc()->findFPI(m_sk.offset());
-  const SrcKey pushSk{curFunc(), fpi->m_fpushOff};
+  const SrcKey pushSk{curFunc(), fpi->m_fpushOff, resumed()};
   int pushBlock = -1;
   auto& blocks = m_region->blocks;
   for (unsigned i = 0; i < blocks.size(); ++i) {
@@ -434,12 +452,11 @@ bool RegionFormer::tryInline() {
 
   // Set up the region context, mapping stack slots in the caller to locals in
   // the callee.
-  assert(!callee->isGenerator());
   RegionContext ctx;
   ctx.func = callee;
   ctx.bcOffset = callee->base();
   ctx.spOffset = callee->numSlotsInFrame();
-  ctx.inGenerator = false;
+  ctx.resumed = false;
   for (int i = 0; i < callee->numParams(); ++i) {
     // DataTypeGeneric is used because we're just passing the locals into the
     // callee. It's up to the callee to constraint further if needed.
@@ -457,7 +474,10 @@ bool RegionFormer::tryInline() {
   }
 
   RegionDescIter iter(*region);
-  return shouldIRInline(curFunc(), callee, iter);
+  if (!shouldIRInline(curFunc(), callee, iter)) {
+    return refuse("shouldIRInline failed");
+  }
+  return true;
 }
 
 void RegionFormer::truncateLiterals() {
@@ -552,7 +572,7 @@ void RegionFormer::recordDependencies() {
     firstBlock.addPredicted(blockStart, pred);
   });
   if (changed) {
-    dumpTrace(3, unit, " after guard relaxation ",
+    printUnit(3, unit, " after guard relaxation ",
               nullptr, nullptr, m_ht.irBuilder().guards());
   }
 

@@ -20,6 +20,7 @@
 #include "hphp/runtime/base/string-util.h"
 #include "hphp/runtime/base/zend-functions.h"
 #include "hphp/runtime/base/zend-string.h"
+#include "hphp/runtime/base/config.h"
 #include "hphp/util/process.h"
 
 namespace HPHP {
@@ -57,10 +58,8 @@ void ReplayTransport::recordInput(Transport* transport, const char *filename) {
   int size;
   const void *data = transport->getPostData(size);
   if (size) {
-    int len;
-    char *encoded = string_uuencode((const char *)data, size, len);
-    hdf["post"] = encoded;
-    free(encoded);
+    String encoded = string_uuencode((const char *)data, size);
+    hdf["post"] = encoded.get()->data();
   } else {
     hdf["post"] = "";
   }
@@ -69,7 +68,7 @@ void ReplayTransport::recordInput(Transport* transport, const char *filename) {
 }
 
 void ReplayTransport::replayInput(const char *filename) {
-  m_hdf.open(filename);
+  Config::Parse(filename, m_ini, m_hdf);
   replayInputImpl();
 }
 
@@ -79,24 +78,26 @@ void ReplayTransport::replayInput(Hdf hdf) {
 }
 
 void ReplayTransport::replayInputImpl() {
-  String postData = StringUtil::UUDecode(m_hdf["post"].get(""));
+  String postData = StringUtil::UUDecode(Config::Get(m_ini, m_hdf["post"], ""));
   m_postData = std::string(postData.data(), postData.size());
   m_requestHeaders.clear();
   for (Hdf hdf = m_hdf["headers"].firstChild(); hdf.exists();
        hdf = hdf.next()) {
-    m_requestHeaders[hdf["name"].get("")].push_back(hdf["value"].get(""));
+    m_requestHeaders[Config::Get(m_ini, hdf["name"], "")].push_back(
+      Config::Get(m_ini, hdf["value"], "")
+    );
   }
 }
 
 const char *ReplayTransport::getUrl() {
-  return m_hdf["url"].get("");
+  return Config::Get(m_ini, m_hdf["url"], "");
 }
 
 const char *ReplayTransport::getRemoteHost() {
-  return m_hdf["remote_host"].get("");
+  return Config::Get(m_ini, m_hdf["remote_host"], "");
 }
 uint16_t ReplayTransport::getRemotePort() {
-  return m_hdf["remote_port"].getUInt16(0);
+  return Config::GetUInt16(m_ini, m_hdf["remote_port"], 0);
 }
 
 const void *ReplayTransport::getPostData(int &size) {
@@ -105,7 +106,7 @@ const void *ReplayTransport::getPostData(int &size) {
 }
 
 Transport::Method ReplayTransport::getMethod() {
-  return (Transport::Method)m_hdf["cmd"].getInt32();
+  return (Transport::Method)Config::GetInt32(m_ini, m_hdf["cmd"]);
 }
 
 std::string ReplayTransport::getHeader(const char *name) {

@@ -23,6 +23,7 @@
 #include "hphp/runtime/vm/jit/trans-cfg.h"
 #include "hphp/runtime/vm/jit/translator-inline.h"
 #include "hphp/runtime/vm/jit/region-hot-trace.h"
+#include "hphp/runtime/vm/jit/region-whole-cfg.h"
 #include "hphp/runtime/vm/jit/timer.h"
 
 namespace HPHP { namespace JIT {
@@ -39,11 +40,14 @@ typedef hphp_hash_map<RegionDescPtr, TransIDVec,
  * covered given the new region containing the translations in
  * selectedVec.
  */
-static void markCovered(const TransCFG& cfg, const TransIDVec selectedVec,
-                        const TransIDSet heads, TransIDSet& coveredNodes,
+static void markCovered(const TransCFG& cfg, const RegionDescPtr region,
+                        const TransIDVec& selectedVec, const TransIDSet heads,
+                        TransIDSet& coveredNodes,
                         TransCFG::ArcPtrSet& coveredArcs) {
   assert(selectedVec.size() > 0);
   TransID newHead = selectedVec[0];
+  assert(region->blocks.size() > 0);
+  assert(newHead == getTransId(region->blocks[0]->id()));
 
   // Mark all region's nodes as covered.
   coveredNodes.insert(selectedVec.begin(), selectedVec.end());
@@ -56,13 +60,15 @@ static void markCovered(const TransCFG& cfg, const TransIDVec selectedVec,
     }
   }
 
-  // Mark all arcs between consecutive region nodes as covered.
-  for (size_t i = 0; i < selectedVec.size() - 1; i++) {
-    TransID node = selectedVec[i];
-    TransID next = selectedVec[i + 1];
+  // Mark all CFG arcs within the region as covered.
+  for (auto& arc : region->arcs) {
+    if (!hasTransId(arc.src) || !hasTransId(arc.dst)) continue;
+    TransID srcTid = getTransId(arc.src);
+    TransID dstTid = getTransId(arc.dst);
+    assert(cfg.hasArc(srcTid, dstTid));
     bool foundArc = false;
-    for (auto arc : cfg.outArcs(node)) {
-      if (arc->dst() == next) {
+    for (auto arc : cfg.outArcs(srcTid)) {
+      if (arc->dst() == dstTid) {
         coveredArcs.insert(arc);
         foundArc = true;
       }
@@ -107,18 +113,18 @@ static const TransIDVec& getRegionTransIDVec(const RegionToTransIDsMap& map,
 /**
  * Sorts the regions vector in a linear order to be used for
  * translation.  The goal is to obtain an order that improves locality
- * when the function is executed.
+ * when the function is executed.  Each region is translated separately.
  */
-static void sortRegion(RegionVec&                  regions,
-                       const Func*                 func,
-                       const TransCFG&             cfg,
-                       const ProfData*             profData,
-                       const TransIDToRegionMap&   headToRegion,
-                       const RegionToTransIDsMap&  regionToTransIds) {
+static void sortRegions(RegionVec&                  regions,
+                        const Func*                 func,
+                        const TransCFG&             cfg,
+                        const ProfData*             profData,
+                        const TransIDToRegionMap&   headToRegion,
+                        const RegionToTransIDsMap&  regionToTransIds) {
   RegionVec sorted;
   RegionSet selected;
 
-  if (regions.size() == 0) return;
+  if (regions.empty()) return;
 
   // First, pick the region starting at the lowest bytecode offset.
   // This will normally correspond to the main function entry (for
@@ -181,7 +187,7 @@ static void sortRegion(RegionVec&                  regions,
       auto r = regions[i];
       auto tids = getRegionTransIDVec(regionToTransIds, r);
       std::string transIds = folly::join(", ", tids);
-      FTRACE(6, "sortRegion: region[{}]: {}\n", i, transIds);
+      FTRACE(6, "sortRegions: region[{}]: {}\n", i, transIds);
     }
   }
 }
@@ -213,13 +219,13 @@ static bool allArcsCovered(const TransCFG::ArcPtrVec& arcs,
  *      2.2) select a region starting at this node and mark nodes/arcs as
  *           covered appropriately
  */
-void regionizeFunc(const Func*       func,
-                   JIT::MCGenerator* mcg,
-                   RegionVec&        regions) {
-  Timer _t(Timer::regionizeFunc);
+void regionizeFunc(const Func* func,
+                   MCGenerator* mcg,
+                   RegionVec& regions) {
+  const Timer rf_timer(Timer::regionizeFunc);
   assert(RuntimeOption::EvalJitPGO);
-  FuncId funcId = func->getFuncId();
-  ProfData* profData = mcg->tx().profData();
+  auto const funcId = func->getFuncId();
+  auto const profData = mcg->tx().profData();
   TransCFG cfg(funcId, profData, mcg->tx().getSrcDB(),
                mcg->getJmpToTransIDMap());
 
@@ -231,8 +237,8 @@ void regionizeFunc(const Func*       func,
            funcId, dotFileName);
   }
 
-  TransCFG::ArcPtrVec arcs = cfg.arcs();
-  std::vector<TransID>    nodes = cfg.nodes();
+  TransCFG::ArcPtrVec   arcs = cfg.arcs();
+  std::vector<TransID> nodes = cfg.nodes();
 
   std::sort(nodes.begin(), nodes.end(),
             [&](TransID tid1, TransID tid2) -> bool {
@@ -258,13 +264,19 @@ void regionizeFunc(const Func*       func,
       FTRACE(6, "regionizeFunc: selecting trace to cover node {}\n", newHead);
       TransIDSet selectedSet;
       TransIDVec selectedVec;
-      RegionDescPtr region = selectHotTrace(newHead, profData, cfg,
-                                            selectedSet, &selectedVec);
+      RegionDescPtr region;
+      if (RuntimeOption::EvalJitPGORegionSelector == "hottrace") {
+        region = selectHotTrace(newHead, profData, cfg,
+                                selectedSet, &selectedVec);
+      } else if (RuntimeOption::EvalJitPGORegionSelector == "wholecfg") {
+        region = selectWholeCFG(newHead, profData, cfg, selectedSet,
+                                &selectedVec);
+      }
       profData->setOptimized(profData->transSrcKey(newHead));
       assert(selectedVec.size() > 0 && selectedVec[0] == newHead);
       regions.push_back(region);
       heads.insert(newHead);
-      markCovered(cfg, selectedVec, heads, coveredNodes, coveredArcs);
+      markCovered(cfg, region, selectedVec, heads, coveredNodes, coveredArcs);
       regionToTransIds[region] = selectedVec;
       headToRegion[newHead] = region;
 
@@ -276,7 +288,7 @@ void regionizeFunc(const Func*       func,
   assert(coveredNodes.size() == cfg.nodes().size());
   assert(coveredArcs.size() == arcs.size());
 
-  sortRegion(regions, func, cfg, profData, headToRegion, regionToTransIds);
+  sortRegions(regions, func, cfg, profData, headToRegion, regionToTransIds);
 
   if (debug && Trace::moduleEnabled(HPHP::Trace::pgo, 5)) {
     FTRACE(5, "\n--------------------------------------------\n"

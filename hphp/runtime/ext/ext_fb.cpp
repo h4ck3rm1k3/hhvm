@@ -123,7 +123,8 @@ Variant f_fb_serialize(const Variant& thing) {
     String s(len, ReserveString);
     HPHP::serialize::FBSerializer<VariantController>::serialize(
       thing, s.bufferSlice().ptr);
-    return s.setSize(len);
+    s.setSize(len);
+    return s;
   } catch (const HPHP::serialize::SerializeError&) {
     return null_variant;
   }
@@ -455,7 +456,8 @@ Variant f_fb_compact_serialize(const Variant& thing) {
     if (val >= 0 && (uint64_t)val <= kInt7Mask) {
       String s(2, ReserveString);
       *(uint16_t*)(s.bufferSlice().ptr) = (uint16_t)htons(kInt13Prefix | val);
-      return s.setSize(2);
+      s.setSize(2);
+      return s;
     }
   }
 
@@ -702,125 +704,6 @@ Variant f_fb_compact_unserialize(const Variant& thing, VRefParam success,
 
 ///////////////////////////////////////////////////////////////////////////////
 
-const StaticString
-  s_affected("affected"),
-  s_result("result"),
-  s_error("error"),
-  s_errno("errno");
-
-static void output_dataset(Array &ret, int affected, DBDataSet &ds,
-                           const DBConn::ErrorInfoMap &errors) {
-  ret.set(s_affected, affected);
-
-  Array rows;
-  MYSQL_FIELD *fields = ds.getFields();
-  for (ds.moveFirst(); ds.getRow(); ds.moveNext()) {
-    Array row;
-    for (int i = 0; i < ds.getColCount(); i++) {
-      const char *field = ds.getField(i);
-      int len = ds.getFieldLength(i);
-      row.set(String(fields[i].name, CopyString),
-              mysql_makevalue(String(field, len, CopyString), fields + i));
-    }
-    rows.append(row);
-  }
-  ret.set(s_result, rows);
-
-  if (!errors.empty()) {
-    Array error, codes;
-    for (DBConn::ErrorInfoMap::const_iterator iter = errors.begin();
-         iter != errors.end(); ++iter) {
-      error.set(iter->first, String(iter->second.msg));
-      codes.set(iter->first, iter->second.code);
-    }
-    ret.set(s_error, error);
-    ret.set(s_errno, codes);
-  }
-}
-
-const StaticString
-  s_session_variable("session_variable"),
-  s_ip("ip"),
-  s_db("db"),
-  s_port("port"),
-  s_username("username"),
-  s_password("password"),
-  s_sql("sql"),
-  s_host("host"),
-  s_auth("auth"),
-  s_timeout("timeout");
-
-Array f_fb_parallel_query(const Array& sql_map, int max_thread /* = 50 */,
-                          bool combine_result /* = true */,
-                          bool retry_query_on_fail /* = true */,
-                          int connect_timeout /* = -1 */,
-                          int read_timeout /* = -1 */,
-                          bool timeout_in_ms /* = false */) {
-  if (!timeout_in_ms) {
-    if (connect_timeout > 0) connect_timeout *= 1000;
-    if (read_timeout > 0) read_timeout *= 1000;
-  }
-
-  ServerQueryVec queries;
-  for (ArrayIter iter(sql_map); iter; ++iter) {
-    Array data = iter.second().toArray();
-    if (!data.empty()) {
-      std::vector< std::pair<std::string, std::string> > sessionVariables;
-      if (data.exists(s_session_variable)) {
-        Array sv = data[s_session_variable].toArray();
-        for (ArrayIter svIter(sv); svIter; ++svIter) {
-          sessionVariables.push_back(std::pair<std::string,std::string>(
-            svIter.first().toString().data(),
-            svIter.second().toString().data()));
-        }
-      }
-      auto server = std::make_shared<ServerData>(
-                        data[s_ip].toString().data(),
-                        data[s_db].toString().data(),
-                        data[s_port].toInt32(),
-                        data[s_username].toString().data(),
-                        data[s_password].toString().data(),
-                        sessionVariables);
-      queries.push_back(ServerQuery(server, data[s_sql].toString().data()));
-    } else {
-      // so we can report errors according to array index
-      queries.push_back(ServerQuery(std::shared_ptr<ServerData>(), ""));
-    }
-  }
-
-  Array ret;
-  if (combine_result) {
-    DBDataSet ds;
-    DBConn::ErrorInfoMap errors;
-    int affected = DBConn::parallelExecute(queries, ds, errors, max_thread,
-                     retry_query_on_fail,
-                     connect_timeout, read_timeout,
-                     mysqlExtension::MaxRetryOpenOnFail,
-                     mysqlExtension::MaxRetryQueryOnFail);
-    output_dataset(ret, affected, ds, errors);
-  } else {
-    std::vector<std::shared_ptr<DBDataSet>> dss(queries.size());
-    for (unsigned int i = 0; i < dss.size(); i++) {
-      dss[i] = std::make_shared<DBDataSet>();
-    }
-
-    DBConn::ErrorInfoMap errors;
-    int affected = DBConn::parallelExecute(queries, dss, errors, max_thread,
-                     retry_query_on_fail,
-                     connect_timeout, read_timeout,
-                     mysqlExtension::MaxRetryOpenOnFail,
-                     mysqlExtension::MaxRetryQueryOnFail);
-    for (unsigned int i = 0; i < dss.size(); i++) {
-      Array dsRet;
-      output_dataset(dsRet, affected, *dss[i], errors);
-      ret.append(dsRet);
-    }
-  }
-  return ret;
-}
-
-///////////////////////////////////////////////////////////////////////////////
-
 bool f_fb_utf8ize(VRefParam input) {
   String s = input.toString();
   const char* const srcBuf = s.data();
@@ -893,7 +776,8 @@ bool f_fb_utf8ize(VRefParam input) {
     // We know that resultBuffer > total possible length.
     U8_APPEND_UNSAFE(dstBuf, dstPosBytes, curCodePoint);
   }
-  input = dstStr.setSize(dstPosBytes);
+  assert(dstPosBytes <= dstMaxLenBytes);
+  input = dstStr.shrink(dstPosBytes);
   return true;
 }
 
@@ -945,7 +829,7 @@ static String fb_utf8_substr_simple(const String& str, int32_t firstCodePoint,
   if (str.size() <= 0 ||
       str.size() > INT_MAX ||
       firstCodePoint >= srcLenBytes) {
-    return String("");
+    return empty_string;
   }
 
   // Cannot be more code points than bytes in input.  This typically reduces
@@ -966,7 +850,7 @@ static String fb_utf8_substr_simple(const String& str, int32_t firstCodePoint,
                             (uint64_t)numDesiredCodePoints *
                             U8_LENGTH(SUBSTITUTION_CHARACTER));
   if (dstMaxLenBytes > INT_MAX) {
-    return String(""); // Too long.
+    return empty_string; // Too long.
   }
   String dstStr(dstMaxLenBytes, ReserveString);
   char* dstBuf = dstStr.bufferSlice().ptr;
@@ -993,10 +877,12 @@ static String fb_utf8_substr_simple(const String& str, int32_t firstCodePoint,
     }
   }
 
+  assert(dstPosBytes <= dstMaxLenBytes);
   if (dstPosBytes > 0) {
-    return dstStr.setSize(dstPosBytes);
+    dstStr.shrink(dstPosBytes);
+    return dstStr;
   }
-  return String("");
+  return empty_string;
 }
 
 String f_fb_utf8_substr(const String& str, int start,
@@ -1020,18 +906,13 @@ String f_fb_utf8_substr(const String& str, int start,
   }
 
   if (start < 0 || length <= 0) {
-    return String(""); // Empty result
+    return empty_string; // Empty result
   }
 
   return fb_utf8_substr_simple(str, start, length);
 }
 
 ///////////////////////////////////////////////////////////////////////////////
-
-bool f_fb_could_include(const String& file) {
-  struct stat s;
-  return !Eval::resolveVmInclude(file.get(), "", &s).isNull();
-}
 
 bool f_fb_intercept(const String& name, const Variant& handler,
                     const Variant& data /* = null_variant */) {

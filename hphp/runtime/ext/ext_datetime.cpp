@@ -18,9 +18,25 @@
 #include "hphp/runtime/ext/ext_datetime.h"
 #include "hphp/runtime/base/ini-setting.h"
 
+#include "hphp/system/constants.h"
 #include "hphp/system/systemlib.h"
 
 namespace HPHP {
+
+static int check_id_allowed(const String& id, long bf) {
+  if (bf & q_DateTimeZone$$AFRICA && id.find("Africa/") == 0) return 1;
+  if (bf & q_DateTimeZone$$AMERICA && id.find("America/") == 0) return 1;
+  if (bf & q_DateTimeZone$$ANTARCTICA && id.find("Antarctica/") == 0) return 1;
+  if (bf & q_DateTimeZone$$ARCTIC && id.find("Arctic/") == 0) return 1;
+  if (bf & q_DateTimeZone$$ASIA && id.find("Asia/") == 0) return 1;
+  if (bf & q_DateTimeZone$$ATLANTIC && id.find("Atlantic/") == 0) return 1;
+  if (bf & q_DateTimeZone$$AUSTRALIA && id.find("Australia/") == 0) return 1;
+  if (bf & q_DateTimeZone$$EUROPE && id.find("Europe/") == 0) return 1;
+  if (bf & q_DateTimeZone$$INDIAN && id.find("Indian/") == 0) return 1;
+  if (bf & q_DateTimeZone$$PACIFIC && id.find("Pacific/") == 0) return 1;
+  if (bf & q_DateTimeZone$$UTC && id.find("UTC") == 0) return 1;
+  return 0;
+}
 
 struct DateGlobals {
   double default_latitude;
@@ -296,11 +312,11 @@ const StaticString
   s_ISOformat("Y-m-d H:i:s");
 
 Array c_DateTime::t___debuginfo() {
-  ArrayInit ret(3);
-  ret.set(s_date, t_format(s_ISOformat));
-  ret.set(s_timezone_type, m_dt->zoneType());
-  ret.set(s_timezone, m_dt->timezone()->name());
-  return ret.create();
+  return make_map_array(
+    s_date, t_format(s_ISOformat),
+    s_timezone_type, m_dt->zoneType(),
+    s_timezone, m_dt->timezone()->name()
+  );
 }
 
 c_DateTime* c_DateTime::Clone(ObjectData* obj) {
@@ -341,8 +357,31 @@ Array c_DateTimeZone::ti_listabbreviations() {
   return TimeZone::GetAbbreviations();
 }
 
-Array c_DateTimeZone::ti_listidentifiers() {
-  return TimeZone::GetNames();
+Variant c_DateTimeZone::ti_listidentifiers(int64_t what,
+                                           const String& country) {
+  Array all = TimeZone::GetNamesToCountryCodes();
+
+  // This is the same check that PHP5 performs, no validation needed.
+  // See ext/date/php_date.c lines 4496-4499
+  if (what == q_DateTimeZone$$PER_COUNTRY && country.length() != 2) {
+    raise_notice("A two-letter ISO 3166-1 compatible country code is expected");
+    return false;
+  }
+
+  Array result = Array::Create();
+  for (ArrayIter iter(all); iter; ++iter) {
+    const Variant& tzid = iter.first();
+    const Variant& tzcountry = iter.second();
+
+    if (what == q_DateTimeZone$$PER_COUNTRY && equal(country, tzcountry)) {
+      result.append(tzid);
+    } else if (what == q_DateTimeZone$$ALL_WITH_BC ||
+               check_id_allowed(tzid.toStrNR(), what)) {
+      result.append(tzid);
+    }
+  }
+
+  return result;
 }
 
 c_DateTimeZone* c_DateTimeZone::Clone(ObjectData* obj) {
@@ -578,8 +617,8 @@ bool f_date_default_timezone_set(const String& name) {
   return TimeZone::SetCurrent(name);
 }
 
-Array f_timezone_identifiers_list() {
-  return c_DateTimeZone::ti_listidentifiers();
+Variant f_timezone_identifiers_list(int64_t what, const String& country) {
+  return c_DateTimeZone::ti_listidentifiers(what, country);
 }
 
 Array f_timezone_abbreviations_list() {
@@ -682,7 +721,8 @@ void f_date_isodate_set(const Object& object, int year, int week,
 }
 
 String f_date_format(const Object& object, const String& format) {
-  return object.getTyped<c_DateTime>()->t_format(format);
+  return c_DateTime::unwrap(object.getTyped<c_DateTime>())->
+                            toString(format, false);
 }
 
 Array f_date_get_last_errors() {

@@ -70,6 +70,16 @@ public:
 #endif
   }
 
+  static const APCTypedValue* fromHandle(const APCHandle* handle) {
+#if PACKED_TV
+    assert(offsetof(APCTypedValue, m_handle) == 0);
+    return reinterpret_cast<const APCTypedValue*>(handle);
+#else
+    assert(offsetof(APCTypedValue, m_handle) == sizeof(SharedData));
+    return reinterpret_cast<const APCTypedValue*>(handle - 1);
+#endif
+  }
+
   APCHandle* getHandle() {
     return &m_handle;
   }
@@ -89,13 +99,13 @@ public:
     return m_data.dbl;
   }
 
-  StringData *getStringData() const {
+  StringData* getStringData() const {
     assert(m_handle.is(KindOfStaticString) ||
            (m_handle.getUncounted() && m_handle.is(KindOfString)));
     return m_data.str;
   }
 
-  ArrayData *getArrayData() const {
+  ArrayData* getArrayData() const {
     assert(m_handle.getUncounted() && m_handle.is(KindOfArray));
     return m_data.arr;
   }
@@ -103,8 +113,8 @@ public:
   const Variant& asCVarRef() const {
     // Must be non-refcounted types
     assert(m_handle.m_shouldCache == false);
-    assert(m_handle.m_flags == 0);
-    assert(!IS_REFCOUNTED_TYPE(m_handle.m_type));
+    assert(m_handle.m_flags == 0 || m_handle.getUncounted());
+    assert(!m_handle.isRefCountedHandle());
     return tvAsCVarRef(reinterpret_cast<const TypedValue*>(this));
   }
 

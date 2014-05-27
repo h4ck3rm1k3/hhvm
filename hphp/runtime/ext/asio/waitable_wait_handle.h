@@ -41,7 +41,6 @@ class c_WaitableWaitHandle : public c_WaitHandle {
   explicit c_WaitableWaitHandle(Class* cls = c_WaitableWaitHandle::classof());
   ~c_WaitableWaitHandle();
 
-  void t___construct();
   int t_getcontextidx();
   Object t_getcreator();
   Array t_getparents();
@@ -58,11 +57,10 @@ class c_WaitableWaitHandle : public c_WaitHandle {
 
   void enterContext(context_idx_t ctx_idx);
   void join();
-  virtual String getName() = 0;
+  String getName();
 
  protected:
-  void setResult(const Cell& result);
-  void setException(ObjectData* exception);
+  void done();
 
   void setContextIdx(context_idx_t ctx_idx) { o_subclassData.u8[1] = ctx_idx; }
 
@@ -70,14 +68,11 @@ class c_WaitableWaitHandle : public c_WaitHandle {
 
   c_BlockableWaitHandle* getFirstParent() { return m_firstParent; }
 
-  virtual c_WaitableWaitHandle* getChild();
-  virtual void enterContextImpl(context_idx_t ctx_idx) = 0;
+  c_WaitableWaitHandle* getChild();
   bool isDescendantOf(c_WaitableWaitHandle* wait_handle) const;
-
-  static const int8_t STATE_NEW       = 2;
+  void enterContextImpl(context_idx_t ctx_idx);
 
  private:
-  c_AsyncFunctionWaitHandle* m_creator;
   c_BlockableWaitHandle* m_firstParent;
 };
 

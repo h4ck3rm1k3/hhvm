@@ -18,8 +18,8 @@
 #include "hphp/runtime/ext/ext_file.h"
 #include "hphp/runtime/ext/ext_string.h"
 #include "hphp/runtime/ext/stream/ext_stream.h"
-#include "hphp/runtime/ext/ext_options.h"
 #include "hphp/runtime/ext/ext_hash.h"
+#include "hphp/runtime/ext/std/ext_std_options.h"
 #include "hphp/runtime/base/runtime-option.h"
 #include "hphp/runtime/base/runtime-error.h"
 #include "hphp/runtime/base/ini-setting.h"
@@ -34,10 +34,12 @@
 #include "hphp/runtime/base/file-stream-wrapper.h"
 #include "hphp/runtime/base/directory.h"
 #include "hphp/runtime/base/thread-info.h"
+#include "hphp/runtime/base/stat-cache.h"
+#include "hphp/system/constants.h"
 #include "hphp/system/systemlib.h"
 #include "hphp/util/logger.h"
 #include "hphp/util/process.h"
-#include "hphp/util/file-util.h"
+#include "hphp/runtime/base/file-util.h"
 #include "folly/String.h"
 #include <dirent.h>
 #include <glob.h>
@@ -52,6 +54,7 @@
 #include <grp.h>
 #include <pwd.h>
 #include <fnmatch.h>
+#include <boost/algorithm/string/predicate.hpp>
 #include <vector>
 
 #define CHECK_HANDLE_BASE(handle, f, ret)               \
@@ -108,25 +111,50 @@ static bool check_error(const char *function, int line, bool ret) {
 }
 
 static int accessSyscall(
-    const String& path,
+    const String& uri_or_path,
     int mode,
     bool useFileCache = false) {
-  Stream::Wrapper* w = Stream::getWrapperFromURI(path);
+  Stream::Wrapper* w = Stream::getWrapperFromURI(uri_or_path);
+  if (!w) return -1;
+
   if (useFileCache && dynamic_cast<FileStreamWrapper*>(w)) {
+    String path(uri_or_path);
+    if (UNLIKELY(boost::istarts_with(uri_or_path.data(), "file://"))) {
+      path = uri_or_path.substr(sizeof("file://") - 1);
+    }
     return ::access(File::TranslatePathWithFileCache(path).data(), mode);
   }
-  return w->access(path, mode);
+  return w->access(uri_or_path, mode);
 }
 
 static int statSyscall(
     const String& path,
     struct stat* buf,
     bool useFileCache = false) {
-  Stream::Wrapper* w = Stream::getWrapperFromURI(path);
-  if (useFileCache && dynamic_cast<FileStreamWrapper*>(w)) {
-    return ::stat(File::TranslatePathWithFileCache(path).data(), buf);
+  bool isRelative = path.charAt(0) != '/';
+  int pathIndex = 0;
+  Stream::Wrapper* w = Stream::getWrapperFromURI(path, &pathIndex);
+  if (!w) return -1;
+  bool isFileStream = dynamic_cast<FileStreamWrapper*>(w);
+  auto canUseFileCache = useFileCache && isFileStream;
+  if (isRelative && !pathIndex) {
+    auto fullpath = g_context->getCwd() + String::FromChar('/') + path;
+    std::string realpath = StatCache::realpath(fullpath.data());
+    // realpath will return an empty string for nonexistent files
+    if (realpath.empty()) {
+      return ENOENT;
+    }
+    auto translatedPath = canUseFileCache ?
+      File::TranslatePathWithFileCache(realpath) :
+      File::TranslatePath(realpath);
+    return ::stat(translatedPath.data(), buf);
   }
-  return w->stat(path, buf);
+
+  auto properPath = isFileStream ? path.substr(pathIndex) : path;
+  if (canUseFileCache) {
+    return ::stat(File::TranslatePathWithFileCache(properPath).data(), buf);
+  }
+  return w->stat(properPath, buf);
 }
 
 static int lstatSyscall(
@@ -134,6 +162,7 @@ static int lstatSyscall(
     struct stat* buf,
     bool useFileCache = false) {
   Stream::Wrapper* w = Stream::getWrapperFromURI(path);
+  if (!w) return -1;
   if (useFileCache && dynamic_cast<FileStreamWrapper*>(w)) {
     return ::lstat(File::TranslatePathWithFileCache(path).data(), buf);
   }
@@ -156,20 +185,20 @@ const StaticString
   s_blocks("blocks");
 
 Array stat_impl(struct stat *stat_sb) {
-  ArrayInit ret(26);
-  ret.set((int64_t)stat_sb->st_dev);
-  ret.set((int64_t)stat_sb->st_ino);
-  ret.set((int64_t)stat_sb->st_mode);
-  ret.set((int64_t)stat_sb->st_nlink);
-  ret.set((int64_t)stat_sb->st_uid);
-  ret.set((int64_t)stat_sb->st_gid);
-  ret.set((int64_t)stat_sb->st_rdev);
-  ret.set((int64_t)stat_sb->st_size);
-  ret.set((int64_t)stat_sb->st_atime);
-  ret.set((int64_t)stat_sb->st_mtime);
-  ret.set((int64_t)stat_sb->st_ctime);
-  ret.set((int64_t)stat_sb->st_blksize);
-  ret.set((int64_t)stat_sb->st_blocks);
+  ArrayInit ret(26, ArrayInit::Mixed{});
+  ret.append((int64_t)stat_sb->st_dev);
+  ret.append((int64_t)stat_sb->st_ino);
+  ret.append((int64_t)stat_sb->st_mode);
+  ret.append((int64_t)stat_sb->st_nlink);
+  ret.append((int64_t)stat_sb->st_uid);
+  ret.append((int64_t)stat_sb->st_gid);
+  ret.append((int64_t)stat_sb->st_rdev);
+  ret.append((int64_t)stat_sb->st_size);
+  ret.append((int64_t)stat_sb->st_atime);
+  ret.append((int64_t)stat_sb->st_mtime);
+  ret.append((int64_t)stat_sb->st_ctime);
+  ret.append((int64_t)stat_sb->st_blksize);
+  ret.append((int64_t)stat_sb->st_blocks);
   ret.set(s_dev,     (int64_t)stat_sb->st_dev);
   ret.set(s_ino,     (int64_t)stat_sb->st_ino);
   ret.set(s_mode,    (int64_t)stat_sb->st_mode);
@@ -183,7 +212,7 @@ Array stat_impl(struct stat *stat_sb) {
   ret.set(s_ctime,   (int64_t)stat_sb->st_ctime);
   ret.set(s_blksize, (int64_t)stat_sb->st_blksize);
   ret.set(s_blocks,  (int64_t)stat_sb->st_blocks);
-  return ret.create();
+  return ret.toArray();
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -205,9 +234,13 @@ Variant f_fopen(const String& filename, const String& mode,
     return false;
   }
 
-  return File::Open(filename, mode,
-                    use_include_path ? File::USE_INCLUDE_PATH : 0,
-                    context);
+  Resource resource = File::Open(filename, mode,
+                                 use_include_path ? File::USE_INCLUDE_PATH : 0,
+                                 context);
+  if (resource.isNull()) {
+    return false;
+  }
+  return resource;
 }
 
 Variant f_popen(const String& command, const String& mode) {
@@ -316,7 +349,11 @@ Variant f_fpassthru(const Resource& handle) {
 Variant f_fwrite(const Resource& handle, const String& data, int64_t length /* = 0 */) {
   CHECK_HANDLE(handle, f);
   int64_t ret = f->write(data, length);
-  if (ret < 0) ret = 0;
+  if (ret < 0) {
+    raise_notice("fwrite(): send of %d bytes failed with errno=%d %s",
+                 data.size(), errno, folly::errnoStr(errno).c_str());
+    ret = 0;
+  }
   return ret;
 }
 
@@ -366,7 +403,7 @@ bool f_flock(const Resource& handle, int operation, VRefParam wouldblock /* = nu
   return ret;
 }
 
-// match the behavior of Zend PHP
+// match the behavior of PHP5
 #define FCSV_CHECK_ARG(NAME)                            \
   if (NAME.size() == 0) {                               \
     throw_invalid_argument(#NAME ": %s", NAME.data());  \
@@ -422,25 +459,19 @@ Variant f_file_get_contents(const String& filename,
 Variant f_file_put_contents(const String& filename, const Variant& data,
                             int flags /* = 0 */,
                             const Variant& context /* = null */) {
-  Variant fvar = File::Open(filename, (flags & PHP_FILE_APPEND) ? "ab" : "wb",
-                            flags, context);
-  if (!fvar.toBoolean()) {
+  Resource resource = File::Open(
+    filename, (flags & PHP_FILE_APPEND) ? "ab" : "wb", flags, context);
+  File *f = resource.getTyped<File>(true);
+  if (!f) {
     return false;
   }
-  File *f = fvar.asResRef().getTyped<File>();
 
-  if ((flags & LOCK_EX) && flock(f->fd(), LOCK_EX)) {
+  if ((flags & LOCK_EX) && !f->lock(LOCK_EX)) {
     return false;
   }
 
   int numbytes = 0;
   switch (data.getType()) {
-  case KindOfObject:
-    {
-      raise_warning("Not a valid stream resource");
-      return false;
-    }
-    break;
   case KindOfResource:
     {
       File *fsrc = data.toResource().getTyped<File>(true, true);
@@ -477,6 +508,12 @@ Variant f_file_put_contents(const String& filename, const Variant& data,
       }
     }
     break;
+  case KindOfObject:
+    if (!data.getObjectData()->hasToString()) {
+      raise_warning("Not a valid stream resource");
+      return false;
+    }
+    // Fallthrough
   default:
     {
       String value = data.toString();
@@ -848,12 +885,20 @@ bool f_file_exists(const String& filename) {
 }
 
 Variant f_stat(const String& filename) {
+  if (filename.empty()) {
+    return false;
+  }
+
   struct stat sb;
   CHECK_SYSTEM(statSyscall(filename, &sb, true));
   return stat_impl(&sb);
 }
 
 Variant f_lstat(const String& filename) {
+  if (filename.empty()) {
+    return false;
+  }
+
   struct stat sb;
   CHECK_SYSTEM(lstatSyscall(filename, &sb, true));
   return stat_impl(&sb);
@@ -894,7 +939,7 @@ Variant f_realpath(const String& path) {
   }
   // Zend doesn't support streams in realpath
   Stream::Wrapper* w = Stream::getWrapperFromURI(path);
-  if (!dynamic_cast<FileStreamWrapper*>(w)) {
+  if (!w || !dynamic_cast<FileStreamWrapper*>(w)) {
     return false;
   }
   char resolved_path[PATH_MAX];
@@ -916,7 +961,7 @@ const StaticString
   s_filename("filename");
 
 Variant f_pathinfo(const String& path, int opt /* = 15 */) {
-  ArrayInit ret(4);
+  ArrayInit ret(4, ArrayInit::Map{});
 
   if (opt == 0) {
     return empty_string;
@@ -1120,6 +1165,7 @@ bool f_copy(const String& source, const String& dest,
 bool f_rename(const String& oldname, const String& newname,
               const Variant& context /* = null */) {
   Stream::Wrapper* w = Stream::getWrapperFromURI(oldname);
+  if (!w) return false;
   if (w != Stream::getWrapperFromURI(newname)) {
     raise_warning("Can't rename a file on different streams");
     return false;
@@ -1140,6 +1186,7 @@ int64_t f_umask(const Variant& mask /* = null_variant */) {
 
 bool f_unlink(const String& filename, const Variant& context /* = null */) {
   Stream::Wrapper* w = Stream::getWrapperFromURI(filename);
+  if (!w) return false;
   CHECK_SYSTEM(w->unlink(filename));
   return true;
 }
@@ -1151,7 +1198,7 @@ bool f_link(const String& target, const String& link) {
 }
 
 bool f_symlink(const String& target, const String& link) {
-  CHECK_SYSTEM(symlink(File::TranslatePath(target).data(),
+  CHECK_SYSTEM(symlink(File::TranslatePathKeepRelative(target).data(),
                        File::TranslatePath(link).data()));
   return true;
 }
@@ -1228,14 +1275,19 @@ Variant f_glob(const String& pattern, int flags /* = 0 */) {
     }
   }
   int nret = glob(work_pattern.data(), flags & GLOB_FLAGMASK, NULL, &globbuf);
-  if (nret == GLOB_NOMATCH || !globbuf.gl_pathc || !globbuf.gl_pathv) {
+  if (nret == GLOB_NOMATCH) {
+    return empty_array;
+  }
+
+  if (!globbuf.gl_pathc || !globbuf.gl_pathv) {
     if (ThreadInfo::s_threadInfo->m_reqInjectionData.hasSafeFileAccess()) {
       if (!f_is_dir(work_pattern)) {
         return false;
       }
     }
-    return Array::Create();
+    return empty_array;
   }
+
   if (nret) {
     return false;
   }
@@ -1270,7 +1322,7 @@ Variant f_glob(const String& pattern, int flags /* = 0 */) {
   // php's glob always produces an array, but Variant::Variant(CArrRef)
   // will produce KindOfNull if given a SmartPtr wrapped around null.
   if (ret.isNull()) {
-    return Array::Create();
+    return empty_array;
   }
   return ret;
 }
@@ -1278,7 +1330,7 @@ Variant f_glob(const String& pattern, int flags /* = 0 */) {
 Variant f_tempnam(const String& dir, const String& prefix) {
   String tmpdir = dir;
   if (tmpdir.empty() || !f_is_dir(tmpdir) || !f_is_writable(tmpdir)) {
-    tmpdir = f_sys_get_temp_dir();
+    tmpdir = HHVM_FN(sys_get_temp_dir)();
   }
   tmpdir = File::TranslatePath(tmpdir);
   String pbase = f_basename(prefix);
@@ -1311,6 +1363,7 @@ Variant f_tmpfile() {
 bool f_mkdir(const String& pathname, int64_t mode /* = 0777 */,
              bool recursive /* = false */, const Variant& context /* = null */) {
   Stream::Wrapper* w = Stream::getWrapperFromURI(pathname);
+  if (!w) return false;
   int options = recursive ? k_STREAM_MKDIR_RECURSIVE : 0;
   CHECK_SYSTEM(w->mkdir(pathname, mode, options));
   return true;
@@ -1318,6 +1371,7 @@ bool f_mkdir(const String& pathname, int64_t mode /* = 0777 */,
 
 bool f_rmdir(const String& dirname, const Variant& context /* = null */) {
   Stream::Wrapper* w = Stream::getWrapperFromURI(dirname);
+  if (!w) return false;
   int options = 0;
   CHECK_SYSTEM(w->rmdir(dirname, options));
   return true;
@@ -1399,6 +1453,7 @@ Variant f_dir(const String& directory) {
 
 Variant f_opendir(const String& path, const Variant& context /* = null */) {
   Stream::Wrapper* w = Stream::getWrapperFromURI(path);
+  if (!w) return false;
   Directory *p = w->opendir(path);
   if (!p) {
     return false;
@@ -1434,6 +1489,7 @@ static bool StringAscending(const String& s1, const String& s2) {
 Variant f_scandir(const String& directory, bool descending /* = false */,
                   const Variant& context /* = null */) {
   Stream::Wrapper* w = Stream::getWrapperFromURI(directory);
+  if (!w) return false;
   Directory *dir = w->opendir(directory);
   if (!dir) {
     return false;

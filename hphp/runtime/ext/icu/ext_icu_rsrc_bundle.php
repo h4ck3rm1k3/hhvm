@@ -58,10 +58,10 @@ class ResourceBundle implements \Iterator, \ArrayAccess, \Countable {
    */
   public static function create(mixed $locale,
                                 mixed $bundlename,
-                                bool $fallback = false) {
+                                bool $fallback = false): ResourceBundle {
     try {
       return new ResourceBundle($locale, $bundlename, $fallback);
-    } catch (Expception $e) {
+    } catch (Exception $e) {
       return null;
     }
   }
@@ -109,19 +109,19 @@ class ResourceBundle implements \Iterator, \ArrayAccess, \Countable {
 
   /* Array Access */
 
-  public function offsetExists(mixed $index) {
+  public function offsetExists(mixed $index): mixed {
     return null !== $this->get($index, true);
   }
 
-  public function offsetGet(mixed $index) {
+  public function offsetGet(mixed $index): mixed {
     return $this->get($index, true);
   }
 
-  public function offsetSet(mixed $index, mixed $value) {
+  public function offsetSet(mixed $index, mixed $value): bool {
     return false;
   }
 
-  public function offsetUnset(mixed $index) {
+  public function offsetUnset(mixed $index): bool {
     return false;
   }
 
@@ -141,7 +141,7 @@ class ResourceBundle implements \Iterator, \ArrayAccess, \Countable {
  *
  * @return int - Returns number of elements in the bundle.
  */
-function resourcebundle_count(ResourceBundle $r) {
+function resourcebundle_count(ResourceBundle $r): int {
   return $r->count();
 }
 
@@ -160,7 +160,7 @@ function resourcebundle_count(ResourceBundle $r) {
  */
 function resourcebundle_create(mixed $locale,
                                mixed $bundlename,
-                               bool $fallback = false) {
+                               bool $fallback = false): ResourceBundle {
   return ResourceBundle::create($locale, $bundlename, $fallback);
 }
 
@@ -171,7 +171,7 @@ function resourcebundle_create(mixed $locale,
  *
  * @return int - Returns error code from last bundle object call.
  */
-function resourcebundle_get_error_code(ResourceBundle $r) {
+function resourcebundle_get_error_code(ResourceBundle $r): int {
   return $r->getErrorCode();
 }
 
@@ -182,7 +182,7 @@ function resourcebundle_get_error_code(ResourceBundle $r) {
  *
  * @return string - Returns error message from last bundle object's call.
  */
-function resourcebundle_get_error_message(ResourceBundle $r) {
+function resourcebundle_get_error_message(ResourceBundle $r): string {
   return $r->getErrorMessage();
 }
 
@@ -198,7 +198,7 @@ function resourcebundle_get_error_message(ResourceBundle $r) {
  *   Complex types are returned as ResourceBundle object.
  */
 function resourcebundle_get(ResourceBundle $r,
-                            mixed $index) {
+                            mixed $index): mixed {
   return $r->get($index);
 }
 
@@ -210,7 +210,6 @@ function resourcebundle_get(ResourceBundle $r,
  *
  * @return array - Returns the list of locales supported by the bundle.
  */
-function resourcebundle_locales(string $bundlename) {
+function resourcebundle_locales(string $bundlename): array {
   return ResourceBundle::getLocales($bundlename);
 }
-

@@ -103,7 +103,6 @@ namespace Trace {
       TM(bcinterp)    \
       TM(interpOne)   \
       TM(dispatchBB)  \
-      TM(dispatchN)   \
       TM(refcount)    \
       TM(asmx64)      \
       TM(runtime)     \
@@ -137,6 +136,11 @@ namespace Trace {
       TM(atomicvector)\
       TM(datablock)   \
       TM(jittime)     \
+      TM(xenon)       \
+      TM(xls)         \
+      TM(rat)         \
+      TM(hhir_dce)    \
+      TM(hhir_refcount) \
       /* Stress categories, to exercise rare paths */ \
       TM(stress_txInterpPct)    \
       TM(stress_txInterpSeed)   \
@@ -302,7 +306,7 @@ const bool enabled = true;
   ONTRACE_MOD(mod, level, HPHP::Trace::trace("%s",      \
              folly::format(__VA_ARGS__).str().c_str()))
 #define TRACE_SET_MOD(name)  \
-  static const HPHP::Trace::Module TRACEMOD = HPHP::Trace::name;
+  UNUSED static const HPHP::Trace::Module TRACEMOD = HPHP::Trace::name;
 
 /*
  * The Indent struct and ITRACE are used for tracing with nested
@@ -433,4 +437,3 @@ struct FormatValue<Val,
 }
 
 #endif /* incl_HPHP_TRACE_H_ */
-

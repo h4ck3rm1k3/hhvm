@@ -25,7 +25,6 @@
 #include <set>
 #include <vector>
 
-#include "hphp/runtime/ext/ext_variable.h"
 #include "hphp/runtime/ext/ext_fb.h"
 #include "hphp/runtime/base/runtime-option.h"
 #include "hphp/util/async-job.h"
@@ -36,6 +35,7 @@
 #include "hphp/util/alloc.h"
 #include "hphp/util/hdf.h"
 #include "hphp/runtime/base/ini-setting.h"
+#include "hphp/runtime/base/config.h"
 
 using HPHP::ScopedMem;
 
@@ -45,48 +45,57 @@ namespace HPHP {
 extern void const_load();
 
 typedef ConcurrentTableSharedStore::KeyValuePair KeyValuePair;
+typedef ConcurrentTableSharedStore::DumpMode DumpMode;
 
-void apcExtension::moduleLoad(Hdf config) {
+void apcExtension::moduleLoad(const IniSetting::Map& ini, Hdf config) {
   Hdf apc = config["Server"]["APC"];
 
-  Enable = apc["EnableApc"].getBool(true);
-  EnableConstLoad = apc["EnableConstLoad"].getBool(false);
-  ForceConstLoadToAPC = apc["ForceConstLoadToAPC"].getBool(true);
-  PrimeLibrary = apc["PrimeLibrary"].getString();
-  LoadThread = apc["LoadThread"].getInt16(2);
-  apc["CompletionKeys"].get(CompletionKeys);
-  std::string tblType = apc["TableType"].getString("concurrent");
+  Enable = Config::GetBool(ini, apc["EnableApc"], true);
+  EnableConstLoad = Config::GetBool(ini, apc["EnableConstLoad"], false);
+  ForceConstLoadToAPC = Config::GetBool(ini, apc["ForceConstLoadToAPC"], true);
+  PrimeLibrary = Config::GetString(ini, apc["PrimeLibrary"]);
+  LoadThread = Config::GetInt16(ini, apc["LoadThread"], 2);
+  Config::Get(ini, apc["CompletionKeys"], CompletionKeys);
+  std::string tblType = Config::GetString(ini, apc["TableType"], "concurrent");
   if (strcasecmp(tblType.c_str(), "concurrent") == 0) {
     TableType = TableTypes::ConcurrentTable;
   } else {
     throw InvalidArgumentException("apc table type", "Invalid table type");
   }
-  EnableApcSerialize = apc["EnableApcSerialize"].getBool(true);
-  ExpireOnSets = apc["ExpireOnSets"].getBool();
-  PurgeFrequency = apc["PurgeFrequency"].getInt32(4096);
-  PurgeRate = apc["PurgeRate"].getInt32(-1);
+  EnableApcSerialize = Config::GetBool(ini, apc["EnableApcSerialize"], true);
+  ExpireOnSets = Config::GetBool(ini, apc["ExpireOnSets"]);
+  PurgeFrequency = Config::GetInt32(ini, apc["PurgeFrequency"], 4096);
+  PurgeRate = Config::GetInt32(ini, apc["PurgeRate"], -1);
 
-  AllowObj = apc["AllowObject"].getBool();
-  TTLLimit = apc["TTLLimit"].getInt32(-1);
+  AllowObj = Config::GetBool(ini, apc["AllowObject"]);
+  TTLLimit = Config::GetInt32(ini, apc["TTLLimit"], -1);
 
   Hdf fileStorage = apc["FileStorage"];
-  UseFileStorage = fileStorage["Enable"].getBool();
-  FileStorageChunkSize = fileStorage["ChunkSize"].getInt64(1LL << 29);
-  FileStorageMaxSize = fileStorage["MaxSize"].getInt64(1LL << 32);
-  FileStoragePrefix = fileStorage["Prefix"].getString("/tmp/apc_store");
-  FileStorageFlagKey = fileStorage["FlagKey"].getString("_madvise_out");
-  FileStorageAdviseOutPeriod = fileStorage["AdviseOutPeriod"].getInt32(1800);
-  FileStorageKeepFileLinked = fileStorage["KeepFileLinked"].getBool();
+  UseFileStorage = Config::GetBool(ini, fileStorage["Enable"]);
+  FileStorageChunkSize = Config::GetInt64(ini, fileStorage["ChunkSize"],
+                                          1LL << 29);
+  FileStorageMaxSize = Config::GetInt64(ini, fileStorage["MaxSize"], 1LL << 32);
+  FileStoragePrefix = Config::GetString(ini, fileStorage["Prefix"],
+                                        "/tmp/apc_store");
+  FileStorageFlagKey = Config::GetString(ini, fileStorage["FlagKey"],
+                                         "_madvise_out");
+  FileStorageAdviseOutPeriod =
+    Config::GetInt32(ini, fileStorage["AdviseOutPeriod"], 1800);
+  FileStorageKeepFileLinked =
+    Config::GetBool(ini, fileStorage["KeepFileLinked"]);
 
-  ConcurrentTableLockFree = apc["ConcurrentTableLockFree"].getBool(false);
-  KeyMaturityThreshold = apc["KeyMaturityThreshold"].getInt32(20);
-  MaximumCapacity = apc["MaximumCapacity"].getInt64(0);
-  KeyFrequencyUpdatePeriod = apc["KeyFrequencyUpdatePeriod"].getInt32(1000);
+  ConcurrentTableLockFree =
+    Config::GetBool(ini, apc["ConcurrentTableLockFree"], false);
+  KeyMaturityThreshold = Config::GetInt32(ini, apc["KeyMaturityThreshold"], 20);
+  MaximumCapacity = Config::GetInt64(ini, apc["MaximumCapacity"], 0);
+  KeyFrequencyUpdatePeriod =
+    Config::GetInt32(ini, apc["KeyFrequencyUpdatePeriod"], 1000);
 
-  apc["NoTTLPrefix"].get(NoTTLPrefix);
+  Config::Get(ini, apc["NoTTLPrefix"], NoTTLPrefix);
 
-  UseUncounted = apc["MemModelTreadmill"].getBool(
-      RuntimeOption::ServerExecutionMode());
+  UseUncounted = Config::GetBool(ini, apc["MemModelTreadmill"],
+                                 RuntimeOption::ServerExecutionMode());
+  InnerUncounted = Config::GetBool(ini, apc["InnerUncounted"], false);
 
   IniSetting::Bind(this, IniSetting::PHP_INI_SYSTEM, "apc.enabled", &Enable);
   IniSetting::Bind(this, IniSetting::PHP_INI_SYSTEM, "apc.stat",
@@ -137,6 +146,7 @@ bool apcExtension::ConcurrentTableLockFree = false;
 bool apcExtension::FileStorageKeepFileLinked = false;
 std::vector<std::string> apcExtension::NoTTLPrefix;
 bool apcExtension::UseUncounted = false;
+bool apcExtension::InnerUncounted = false;
 bool apcExtension::Stat = true;
 // Different from zend default but matches what we've been returning for years
 bool apcExtension::EnableCLI = true;
@@ -144,7 +154,8 @@ bool apcExtension::EnableCLI = true;
 static apcExtension s_apc_extension;
 
 ///////////////////////////////////////////////////////////////////////////////
-Variant f_apc_store(const Variant& key_or_array, const Variant& var /* = null_variant */,
+Variant f_apc_store(const Variant& key_or_array,
+                    const Variant& var /* = null_variant */,
                     int64_t ttl /* = 0 */, int64_t cache_id /* = 0 */) {
   if (!apcExtension::Enable) return false;
 
@@ -157,7 +168,7 @@ Variant f_apc_store(const Variant& key_or_array, const Variant& var /* = null_va
     Array valuesArr = key_or_array.toArray();
 
     // errors stores all keys corresponding to entries that could not be cached
-    ArrayInit errors(valuesArr.size());
+    PackedArrayInit errors(valuesArr.size());
 
     for (ArrayIter iter(valuesArr); iter; ++iter) {
       Variant key = iter.first();
@@ -167,10 +178,10 @@ Variant f_apc_store(const Variant& key_or_array, const Variant& var /* = null_va
       }
       Variant v = iter.second();
       if (!(s_apc_store[cache_id].store(key.toString(), v, ttl))) {
-        errors.set(key);
+        errors.append(key);
       }
     }
-    return errors.create();
+    return errors.toVariant();
   }
 
   if (!key_or_array.isString()) {
@@ -197,7 +208,8 @@ bool f_apc_store_as_primed_do_not_use(const String& key, const Variant& var,
   return s_apc_store[cache_id].store(key, var, 0, true, false);
 }
 
-Variant f_apc_add(const Variant& key_or_array, const Variant& var /* = null_variant */,
+Variant f_apc_add(const Variant& key_or_array,
+                  const Variant& var /* = null_variant */,
                   int64_t ttl /* = 0 */, int64_t cache_id /* = 0 */) {
   if (!apcExtension::Enable) return false;
 
@@ -210,7 +222,7 @@ Variant f_apc_add(const Variant& key_or_array, const Variant& var /* = null_vari
     Array valuesArr = key_or_array.toArray();
 
     // errors stores all keys corresponding to entries that could not be cached
-    ArrayInit errors(valuesArr.size());
+    PackedArrayInit errors(valuesArr.size());
 
     for (ArrayIter iter(valuesArr); iter; ++iter) {
       Variant key = iter.first();
@@ -220,7 +232,7 @@ Variant f_apc_add(const Variant& key_or_array, const Variant& var /* = null_vari
       }
       Variant v = iter.second();
       if (!(s_apc_store[cache_id].store(key.toString(), v, ttl, false))) {
-        errors.set(key);
+        errors.append(key);
       }
     }
     return errors.create();
@@ -248,7 +260,7 @@ Variant f_apc_fetch(const Variant& key, VRefParam success /* = null */,
   if (key.is(KindOfArray)) {
     bool tmp = false;
     Array keys = key.toArray();
-    ArrayInit init(keys.size());
+    ArrayInit init(keys.size(), ArrayInit::Map{});
     for (ArrayIter iter(keys); iter; ++iter) {
       Variant k = iter.second();
       if (!k.isString()) {
@@ -258,7 +270,7 @@ Variant f_apc_fetch(const Variant& key, VRefParam success /* = null */,
       String strKey = k.toString();
       if (s_apc_store[cache_id].get(strKey, v)) {
         tmp = true;
-        init.set(strKey, v, true);
+        init.set(strKey, v);
       }
     }
     success = tmp;
@@ -284,14 +296,14 @@ Variant f_apc_delete(const Variant& key, int64_t cache_id /* = 0 */) {
 
   if (key.is(KindOfArray)) {
     Array keys = key.toArray();
-    ArrayInit init(keys.size());
+    PackedArrayInit init(keys.size());
     for (ArrayIter iter(keys); iter; ++iter) {
       Variant k = iter.second();
       if (!k.isString()) {
         raise_warning("apc key is not a string");
-        init.set(k);
+        init.append(k);
       } else if (!s_apc_store[cache_id].erase(k.toString())) {
-        init.set(k);
+        init.append(k);
       }
     }
     return init.create();
@@ -361,7 +373,7 @@ Variant f_apc_exists(const Variant& key, int64_t cache_id /* = 0 */) {
 
   if (key.is(KindOfArray)) {
     Array keys = key.toArray();
-    ArrayInit init(keys.size());
+    PackedArrayInit init(keys.size());
     for (ArrayIter iter(keys); iter; ++iter) {
       Variant k = iter.second();
       if (!k.isString()) {
@@ -370,7 +382,7 @@ Variant f_apc_exists(const Variant& key, int64_t cache_id /* = 0 */) {
       }
       String strKey = k.toString();
       if (s_apc_store[cache_id].exists(strKey)) {
-        init.set(strKey);
+        init.append(strKey);
       }
     }
     return init.create();
@@ -387,7 +399,7 @@ Variant f_apc_cache_info(int64_t cache_id /* = 0 */,
 }
 
 Array f_apc_sma_info(bool limited /* = false */) {
-  return Array::Create();
+  return empty_array;
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -1098,7 +1110,7 @@ int apc_rfc1867_progress(apc_rfc1867_data *rfc1867ApcData,
     rfc1867ApcData->tracking_key.clear();
     rfc1867ApcData->name.clear();
     rfc1867ApcData->cancel_upload = 0;
-    rfc1867ApcData->temp_filename = NULL;
+    rfc1867ApcData->temp_filename = "";
     rfc1867ApcData->start_time = my_time();
     rfc1867ApcData->bytes_processed = 0;
     rfc1867ApcData->prev_bytes_processed = 0;
@@ -1153,11 +1165,11 @@ int apc_rfc1867_progress(apc_rfc1867_data *rfc1867ApcData,
       int len = strlen(*data->filename);
       if (len > RFC1867_FILENAME_MAXLEN) len = RFC1867_FILENAME_MAXLEN;
       rfc1867ApcData->filename = std::string(*data->filename, len);
-      rfc1867ApcData->temp_filename = NULL;
+      rfc1867ApcData->temp_filename = "";
       len = strlen(data->name);
       if (len > RFC1867_NAME_MAXLEN) len = RFC1867_NAME_MAXLEN;
       rfc1867ApcData->name = std::string(data->name, len);
-      ArrayInit track(6);
+      ArrayInit track(6, ArrayInit::Map{});
       track.set(s_total, rfc1867ApcData->content_length);
       track.set(s_current, rfc1867ApcData->bytes_processed);
       track.set(s_filename, rfc1867ApcData->filename);
@@ -1179,7 +1191,7 @@ int apc_rfc1867_progress(apc_rfc1867_data *rfc1867ApcData,
         Variant v;
         if (s_apc_store[0].get(rfc1867ApcData->tracking_key, v)) {
           if (v.is(KindOfArray)) {
-            ArrayInit track(6);
+            ArrayInit track(6, ArrayInit::Map{});
             track.set(s_total, rfc1867ApcData->content_length);
             track.set(s_current, rfc1867ApcData->bytes_processed);
             track.set(s_filename, rfc1867ApcData->filename);
@@ -1202,12 +1214,12 @@ int apc_rfc1867_progress(apc_rfc1867_data *rfc1867ApcData,
       rfc1867ApcData->bytes_processed = data->post_bytes_processed;
       rfc1867ApcData->cancel_upload = data->cancel_upload;
       rfc1867ApcData->temp_filename = data->temp_filename;
-      ArrayInit track(8);
+      ArrayInit track(8, ArrayInit::Map{});
       track.set(s_total, rfc1867ApcData->content_length);
       track.set(s_current, rfc1867ApcData->bytes_processed);
       track.set(s_filename, rfc1867ApcData->filename);
       track.set(s_name, rfc1867ApcData->name);
-      track.set(s_temp_filename, rfc1867ApcData->temp_filename, CopyString);
+      track.set(s_temp_filename, rfc1867ApcData->temp_filename);
       track.set(s_cancel_upload, rfc1867ApcData->cancel_upload);
       track.set(s_done, 0);
       track.set(s_start_time, rfc1867ApcData->start_time);
@@ -1226,7 +1238,7 @@ int apc_rfc1867_progress(apc_rfc1867_data *rfc1867ApcData,
       } else {
         rfc1867ApcData->rate =
           8.0*rfc1867ApcData->bytes_processed;  /* Too quick */
-        ArrayInit track(8);
+        ArrayInit track(8, ArrayInit::Map{});
         track.set(s_total, rfc1867ApcData->content_length);
         track.set(s_current, rfc1867ApcData->bytes_processed);
         track.set(s_rate, rfc1867ApcData->rate);
@@ -1423,13 +1435,30 @@ String apc_reserialize(const String& str) {
 ///////////////////////////////////////////////////////////////////////////////
 // debugging support
 
-bool apc_dump(const char *filename, bool keyOnly, int waitSeconds) {
+bool apc_dump(const char *filename, bool keyOnly, bool metaDump,
+              int waitSeconds) {
   const int CACHE_ID = 0; /* 0 is used as default for apc */
+  DumpMode mode;
   std::ofstream out(filename);
+
+  // only one of these should ever be specified
+  if (keyOnly && metaDump) {
+    return false;
+  }
+
   if (out.fail()) {
     return false;
   }
-  s_apc_store[CACHE_ID].dump(out, keyOnly, waitSeconds);
+
+  if (keyOnly) {
+    mode = DumpMode::keyOnly;
+  } else if (metaDump) {
+    mode = DumpMode::keyAndMeta;
+  } else {
+    mode = DumpMode::keyAndValue;
+  }
+
+  s_apc_store[CACHE_ID].dump(out, mode, waitSeconds);
   out.close();
   return true;
 }

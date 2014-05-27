@@ -100,7 +100,7 @@ private:
   };
 
 public:
-  CLASSNAME_IS("cURL handle")
+  CLASSNAME_IS("curl")
   // overriding ResourceData
   virtual const String& o_getClassNameHook() const { return classnameof(); }
 
@@ -118,27 +118,7 @@ public:
     m_read.method  = PHP_CURL_DIRECT;
     m_write_header.method = PHP_CURL_IGNORE;
 
-    curl_easy_setopt(m_cp, CURLOPT_NOPROGRESS,        1);
-    curl_easy_setopt(m_cp, CURLOPT_VERBOSE,           0);
-    curl_easy_setopt(m_cp, CURLOPT_ERRORBUFFER,       m_error_str);
-    curl_easy_setopt(m_cp, CURLOPT_WRITEFUNCTION,     curl_write);
-    curl_easy_setopt(m_cp, CURLOPT_FILE,              (void*)this);
-    curl_easy_setopt(m_cp, CURLOPT_READFUNCTION,      curl_read);
-    curl_easy_setopt(m_cp, CURLOPT_INFILE,            (void*)this);
-    curl_easy_setopt(m_cp, CURLOPT_HEADERFUNCTION,    curl_write_header);
-    curl_easy_setopt(m_cp, CURLOPT_WRITEHEADER,       (void*)this);
-    curl_easy_setopt(m_cp, CURLOPT_DNS_USE_GLOBAL_CACHE, 0); // for thread-safe
-    curl_easy_setopt(m_cp, CURLOPT_DNS_CACHE_TIMEOUT, 120);
-    curl_easy_setopt(m_cp, CURLOPT_MAXREDIRS, 20); // no infinite redirects
-    curl_easy_setopt(m_cp, CURLOPT_NOSIGNAL, 1); // for multithreading mode
-    curl_easy_setopt(m_cp, CURLOPT_SSL_CTX_FUNCTION,
-                     CurlResource::ssl_ctx_callback);
-    curl_easy_setopt(m_cp, CURLOPT_SSL_CTX_DATA, (void*)this);
-
-    curl_easy_setopt(m_cp, CURLOPT_TIMEOUT,
-                     RuntimeOption::HttpDefaultTimeout);
-    curl_easy_setopt(m_cp, CURLOPT_CONNECTTIMEOUT,
-                     RuntimeOption::HttpDefaultTimeout);
+    reset();
 
     if (!url.empty()) {
 #if LIBCURL_VERSION_NUM >= 0x071100
@@ -177,10 +157,7 @@ public:
     m_read.callback = src->m_read.callback;
     m_write_header.callback = src->m_write_header.callback;
 
-    curl_easy_setopt(m_cp, CURLOPT_ERRORBUFFER,       m_error_str);
-    curl_easy_setopt(m_cp, CURLOPT_FILE,              (void*)this);
-    curl_easy_setopt(m_cp, CURLOPT_INFILE,            (void*)this);
-    curl_easy_setopt(m_cp, CURLOPT_WRITEHEADER,       (void*)this);
+    reset();
 
     m_to_free = src->m_to_free;
     m_emptyPost = src->m_emptyPost;
@@ -241,6 +218,32 @@ public:
     return nullptr;
   }
 
+  void reset() {
+    curl_easy_reset(m_cp);
+
+    curl_easy_setopt(m_cp, CURLOPT_NOPROGRESS,        1);
+    curl_easy_setopt(m_cp, CURLOPT_VERBOSE,           0);
+    curl_easy_setopt(m_cp, CURLOPT_ERRORBUFFER,       m_error_str);
+    curl_easy_setopt(m_cp, CURLOPT_WRITEFUNCTION,     curl_write);
+    curl_easy_setopt(m_cp, CURLOPT_FILE,              (void*)this);
+    curl_easy_setopt(m_cp, CURLOPT_READFUNCTION,      curl_read);
+    curl_easy_setopt(m_cp, CURLOPT_INFILE,            (void*)this);
+    curl_easy_setopt(m_cp, CURLOPT_HEADERFUNCTION,    curl_write_header);
+    curl_easy_setopt(m_cp, CURLOPT_WRITEHEADER,       (void*)this);
+    curl_easy_setopt(m_cp, CURLOPT_DNS_USE_GLOBAL_CACHE, 0); // for thread-safe
+    curl_easy_setopt(m_cp, CURLOPT_DNS_CACHE_TIMEOUT, 120);
+    curl_easy_setopt(m_cp, CURLOPT_MAXREDIRS, 20); // no infinite redirects
+    curl_easy_setopt(m_cp, CURLOPT_NOSIGNAL, 1); // for multithreading mode
+    curl_easy_setopt(m_cp, CURLOPT_SSL_CTX_FUNCTION,
+                     CurlResource::ssl_ctx_callback);
+    curl_easy_setopt(m_cp, CURLOPT_SSL_CTX_DATA, (void*)this);
+
+    curl_easy_setopt(m_cp, CURLOPT_TIMEOUT,
+                     RuntimeOption::HttpDefaultTimeout);
+    curl_easy_setopt(m_cp, CURLOPT_CONNECTTIMEOUT,
+                     RuntimeOption::HttpDefaultTimeout);
+  }
+
   Variant execute() {
     assert(!m_exception);
     if (m_cp == nullptr) {
@@ -280,7 +283,7 @@ public:
       }
     }
     if (m_write.method == PHP_CURL_RETURN) {
-      return String("");
+      return empty_string;
     }
     return true;
   }
@@ -489,60 +492,87 @@ public:
         curl_httppost *last  = nullptr;
         for (ArrayIter iter(arr); iter; ++iter) {
           String key = iter.first().toString();
-          String val = iter.second().toString();
-          const char *postval = val.data();
+          Variant var_val = iter.second();
+          if (UNLIKELY(var_val.isObject()
+              && var_val.toObject()->instanceof(SystemLib::s_CURLFileClass))) {
+            Object val = var_val.toObject();
 
-          if (*postval == '@') {
-            /* Given a string like:
-             *   "@/foo/bar;type=herp/derp;filename=ponies\0"
-             * - Temporarily convert to:
-             *   "@/foo/bar\0type=herp/derp\0filename=ponies\0"
-             * - Pass pointers to the relevant null-terminated substrings to
-             *   curl_formadd
-             * - Revert changes to postval at the end
-             */
-            char* mutablePostval = const_cast<char*>(postval);
-            char* type = strstr(mutablePostval, ";type=");
-            char* filename = strstr(mutablePostval, ";filename=");
+            static const StaticString s_name("name");
+            static const StaticString s_mime("mime");
+            static const StaticString s_postname("postname");
 
-            if (type) {
-              *type = '\0';
-            }
-            if (filename) {
-              *filename = '\0';
-            }
+            String name = val.o_get(s_name).toString();
+            String mime = val.o_get(s_mime).toString();
+            String postname = val.o_get(s_postname).toString();
 
-            /* The arguments after _NAMELENGTH and _CONTENTSLENGTH
-             * must be explicitly cast to long in curl_formadd
-             * use since curl needs a long not an int. */
-            ++postval;
             m_error_no = (CURLcode)curl_formadd
               (&first, &last,
                CURLFORM_COPYNAME, key.data(),
                CURLFORM_NAMELENGTH, (long)key.size(),
-               CURLFORM_FILENAME, filename
-                                  ? filename + sizeof(";filename=") - 1
-                                  : postval,
-               CURLFORM_CONTENTTYPE, type
-                                     ? type + sizeof(";type=") - 1
-                                     : "application/octet-stream",
-               CURLFORM_FILE, postval,
+               CURLFORM_FILENAME, s_postname.empty()
+                                  ? name.c_str()
+                                  : postname.c_str(),
+               CURLFORM_CONTENTTYPE, mime.empty()
+                                     ? "application/octet-stream"
+                                     : mime.c_str(),
+               CURLFORM_FILE, name.c_str(),
                CURLFORM_END);
-
-            if (type) {
-              *type = ';';
-            }
-            if (filename) {
-              *filename = ';';
-            }
           } else {
-            m_error_no = (CURLcode)curl_formadd
-              (&first, &last,
-               CURLFORM_COPYNAME, key.data(),
-               CURLFORM_NAMELENGTH, (long)key.size(),
-               CURLFORM_COPYCONTENTS, postval,
-               CURLFORM_CONTENTSLENGTH,(long)val.size(),
-               CURLFORM_END);
+            String val = var_val.toString();
+            const char *postval = val.data();
+
+            if (*postval == '@') {
+              /* Given a string like:
+               *   "@/foo/bar;type=herp/derp;filename=ponies\0"
+               * - Temporarily convert to:
+               *   "@/foo/bar\0type=herp/derp\0filename=ponies\0"
+               * - Pass pointers to the relevant null-terminated substrings to
+               *   curl_formadd
+               * - Revert changes to postval at the end
+               */
+              char* mutablePostval = const_cast<char*>(postval);
+              char* type = strstr(mutablePostval, ";type=");
+              char* filename = strstr(mutablePostval, ";filename=");
+
+              if (type) {
+                *type = '\0';
+              }
+              if (filename) {
+                *filename = '\0';
+              }
+
+              /* The arguments after _NAMELENGTH and _CONTENTSLENGTH
+               * must be explicitly cast to long in curl_formadd
+               * use since curl needs a long not an int. */
+              ++postval;
+              m_error_no = (CURLcode)curl_formadd
+                (&first, &last,
+                 CURLFORM_COPYNAME, key.data(),
+                 CURLFORM_NAMELENGTH, (long)key.size(),
+                 CURLFORM_FILENAME, filename
+                                    ? filename + sizeof(";filename=") - 1
+                                    : postval,
+                 CURLFORM_CONTENTTYPE, type
+                                       ? type + sizeof(";type=") - 1
+                                       : "application/octet-stream",
+                 CURLFORM_FILE, postval,
+                 CURLFORM_END);
+
+              if (type) {
+                *type = ';';
+              }
+              if (filename) {
+                *filename = ';';
+              }
+            } else {
+              m_error_no = (CURLcode)curl_formadd
+                (&first, &last,
+                 CURLFORM_COPYNAME, key.data(),
+                 CURLFORM_NAMELENGTH, (long)key.size(),
+                 CURLFORM_COPYCONTENTS, postval,
+                 CURLFORM_CONTENTSLENGTH,(long)val.size(),
+                 CURLFORM_END);
+            }
           }
         }
 
@@ -692,16 +722,16 @@ public:
     assert(p);
     CurlResource* curl = static_cast<CurlResource*>(p);
 
-    ArrayInit ai(5);
-    ai.set(Resource(curl));
-    ai.set(dltotal);
-    ai.set(dlnow);
-    ai.set(ultotal);
-    ai.set(ulnow);
+    PackedArrayInit pai(5);
+    pai.append(Resource(curl));
+    pai.append(dltotal);
+    pai.append(dlnow);
+    pai.append(ultotal);
+    pai.append(ulnow);
 
     Variant result = vm_call_user_func(
       curl->m_progress_callback,
-      ai.toArray()
+      pai.toArray()
     );
     // Both PHP and libcurl are documented as return 0 to continue, non-zero
     // to abort, however this is what Zend actually implements
@@ -928,6 +958,13 @@ CURLcode CurlResource::ssl_ctx_callback(CURL *curl, void *sslctx, void *parm) {
     return false;                                                           \
   }                                                                         \
 
+#define CHECK_RESOURCE_RETURN_VOID(curl)                                    \
+  CurlResource *curl = ch.getTyped<CurlResource>(true, true);               \
+  if (curl == nullptr) {                                                    \
+    raise_warning("supplied argument is not a valid cURL handle resource"); \
+    return;                                                                 \
+  }                                                                         \
+
 Variant HHVM_FUNCTION(curl_init, const Variant& url /* = null_string */) {
   if (url.isNull()) {
     return NEWOBJ(CurlResource)(null_string);
@@ -958,7 +995,7 @@ Variant HHVM_FUNCTION(curl_version, int uversion /* = k_CURLVERSION_NOW */) {
     return false;
   }
 
-  ArrayInit ret(9);
+  ArrayInit ret(9, ArrayInit::Map{});
   ret.set(s_version_number,     (int)d->version_num);
   ret.set(s_age,                d->age);
   ret.set(s_features,           d->features);
@@ -1191,13 +1228,18 @@ Variant HHVM_FUNCTION(curl_close, const Resource& ch) {
   return uninit_null();
 }
 
+void HHVM_FUNCTION(curl_reset, const Resource& ch) {
+  CHECK_RESOURCE_RETURN_VOID(curl);
+  curl->reset();
+}
+
 ///////////////////////////////////////////////////////////////////////////////
 
 class CurlMultiResource : public SweepableResourceData {
 public:
   DECLARE_RESOURCE_ALLOCATION(CurlMultiResource)
 
-  CLASSNAME_IS("cURL Multi Handle")
+  CLASSNAME_IS("curl_multi")
   // overriding ResourceData
   const String& o_getClassNameHook() const { return classnameof(); }
 
@@ -1215,6 +1257,10 @@ public:
       m_easyh.clear();
       m_multi = nullptr;
     }
+  }
+
+  virtual bool isInvalid() const {
+    return !m_multi;
   }
 
   void add(const Resource& ch) {
@@ -2714,6 +2760,7 @@ class CurlExtension : public Extension {
     HHVM_FE(curl_errno);
     HHVM_FE(curl_error);
     HHVM_FE(curl_close);
+    HHVM_FE(curl_reset);
     HHVM_FE(curl_multi_init);
     HHVM_FE(curl_multi_add_handle);
     HHVM_FE(curl_multi_remove_handle);

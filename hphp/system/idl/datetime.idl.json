@@ -235,6 +235,24 @@
             ]
         },
         {
+            "name": "date_format",
+            "flags": [
+            ],
+            "return": {
+                "type": "String"
+            },
+            "args": [
+                {
+                    "name": "datetime",
+                    "type": "Object"
+                },
+                {
+                    "name": "format",
+                    "type": "String"
+                }
+            ]
+        },
+        {
             "name": "date_modify",
             "flags": [
             ],
@@ -316,7 +334,7 @@
             "name": "date_sunrise",
             "desc": "date_sunrise() returns the sunrise time for a given day (specified as a timestamp) and location.",
             "flags": [
-              "ZendParamModeFalse"
+              "ParamCoerceModeFalse"
             ],
             "return": {
                 "type": "Variant",
@@ -364,7 +382,7 @@
             "name": "date_sunset",
             "desc": "date_sunset() returns the sunset time for a given day (specified as a timestamp) and location.",
             "flags": [
-              "ZendParamModeFalse"
+              "ParamCoerceModeFalse"
             ],
             "return": {
                 "type": "Variant",
@@ -823,9 +841,21 @@
             "flags": [
             ],
             "return": {
-                "type": "StringVec"
+                "type": "Variant"
             },
             "args": [
+              {
+                  "name": "what",
+                  "type": "Int64",
+                  "value": "2047",
+                  "desc": "One of DateTimeZone class constants."
+              },
+              {
+                  "name": "country",
+                  "type": "String",
+                  "value": "null_string",
+                  "desc": "The timestamp which is used as a base for the calculation of relative dates."
+              }
             ]
         },
         {
@@ -1415,10 +1445,22 @@
                         "IsStatic"
                     ],
                     "return": {
-                        "type": "VariantMap",
+                        "type": "Variant",
                         "desc": "Returns array on success or FALSE on failure."
                     },
                     "args": [
+                      {
+                          "name": "what",
+                          "type": "Int64",
+                          "value": "2047",
+                          "desc": "One of DateTimeZone class constants."
+                      },
+                      {
+                          "name": "country",
+                          "type": "String",
+                          "value": "null_string",
+                          "desc": "The timestamp which is used as a base for the calculation of relative dates."
+                      }
                     ]
                 }
             ],

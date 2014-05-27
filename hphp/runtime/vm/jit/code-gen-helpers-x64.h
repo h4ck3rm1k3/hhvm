@@ -65,6 +65,18 @@ void emitLdClsCctx(Asm& as, PhysReg srcReg, PhysReg dstReg);
 void emitCall(Asm& as, TCA dest);
 void emitCall(Asm& as, CppCall call);
 
+// store imm to the 8-byte memory location at ref. Warning: don't use this
+// if you wanted an atomic store; large imms cause two stores.
+template<class Ref>
+void emitImmStoreq(Asm& as, Immed64 imm, Ref ref) {
+  if (imm.fits(sz::dword)) {
+    as.storeq(imm.l(), ref); // sign-extend to 64-bit then storeq
+  } else {
+    as.storel(int32_t(imm.q()), ref);
+    as.storel(int32_t(imm.q() >> 32), Ref(ref.r + 4));
+  }
+}
+
 void emitJmpOrJcc(Asm& as, ConditionCode cc, TCA dest);
 
 void emitRB(Asm& a, Trace::RingBufferType t, const char* msgm,
@@ -79,7 +91,6 @@ void emitTraceCall(CodeBlock& cb, int64_t pcOff);
 void emitTestSurpriseFlags(Asm& as);
 
 void emitCheckSurpriseFlagsEnter(CodeBlock& mainCode, CodeBlock& stubsCode,
-                                 bool inTracelet, FixupMap& fixupMap,
                                  Fixup fixup);
 
 #ifdef USE_GCC_FAST_TLS
@@ -119,7 +130,13 @@ emitTLSLoad(X64Assembler& a, const ThreadLocalNoCheck<T>& datum,
             RegNumber reg) {
   PhysRegSaver(a, kGPCallerSaved); // we don't know for sure what's alive
   a.    emitImmReg(&datum.m_key, argNumToRegName[0]);
-  a.    call((TCA)pthread_getspecific);
+  const TCA addr = (TCA)pthread_getspecific;
+  if (deltaFits((uintptr_t)addr, sz::dword)) {
+    a.    call(addr);
+  } else {
+    a.    movq(addr, reg::rax);
+    a.    call(reg::rax);
+  }
   if (reg != reg::rax) {
     a.    movq(reg::rax, r64(reg));
   }
@@ -147,6 +164,47 @@ void emitStoreReg(Asm& as, PhysReg reg, Mem mem) {
     as. movsd(reg, mem);
   }
 }
+
+/**
+ * Emit a load of a low pointer.
+ */
+template<class Mem>
+void emitLdLowPtr(Asm& as, Mem mem, PhysReg reg, size_t size) {
+  assert(reg != InvalidReg && reg.isGP());
+  if (size == 8) {
+    as.loadq(mem, reg);
+  } else if (size == 4) {
+    as.loadl(mem, r32(reg));
+  } else {
+    not_implemented();
+  }
+}
+
+template<class Mem>
+void emitCmpClass(Asm& as, const Class* c, Mem mem) {
+  auto size = sizeof(LowClassPtr);
+  auto imm = Immed64(c);
+
+  if (size == 8) {
+    if (imm.fits(sz::dword)) {
+      as.cmpq(imm.l(), mem);
+    } else {
+      // Use a scratch.  We could do this without rAsm using two immediate
+      // 32-bit compares (and two branches).
+      as.emitImmReg(imm, rAsm);
+      as.cmpq(rAsm, mem);
+    }
+  } else if (size == 4) {
+    as.cmpl(imm.l(), mem);
+  } else {
+    not_implemented();
+  }
+}
+
+template<class Mem>
+void emitCmpClass(Asm& as, Reg64 reg, Mem mem);
+
+void emitCmpClass(Asm& as, Reg64 reg1, PhysReg reg2);
 
 void shuffle2(Asm& as, PhysReg s0, PhysReg s1, PhysReg d0, PhysReg d1);
 

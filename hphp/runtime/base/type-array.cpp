@@ -15,7 +15,7 @@
 */
 
 #include "hphp/runtime/base/type-array.h"
-
+#include "hphp/runtime/base/base-includes.h"
 #include "hphp/runtime/base/complex-types.h"
 #include "hphp/runtime/base/types.h"
 #include "hphp/runtime/base/comparisons.h"
@@ -28,15 +28,14 @@
 #include "hphp/runtime/base/zend-printf.h"
 #include "hphp/runtime/base/array-util.h"
 #include "hphp/runtime/base/runtime-option.h"
-#include "hphp/runtime/ext/ext_iconv.h"
 #include <unicode/coll.h> // icu
 #include <vector>
 #include "hphp/parser/hphp.tab.hpp"
 
 namespace HPHP {
 
-const Array null_array = Array();
-const Array empty_array = HphpArray::GetStaticEmptyArray();
+const Array null_array{};
+const Array empty_array{staticEmptyArray()};
 
 void Array::setEvalScalar() const {
   Array* thisPtr = const_cast<Array*>(this);
@@ -60,7 +59,7 @@ void ArrNR::compileTimeAssertions() {
 // constructors
 
 Array Array::Create(const Variant& name, const Variant& var) {
-  return ArrayData::Create(name.isString() ? name.toKey() : name, var);
+  return Array(ArrayData::Create(name.isString() ? name.toKey() : name, var));
 }
 
 Array::~Array() {}
@@ -125,7 +124,7 @@ Array Array::diff(const Variant& array, bool by_key, bool by_value,
     throw_expected_array_exception();
     return Array();
   }
-  return diffImpl(array.getArrayData(), by_key, by_value, false,
+  return diffImpl(array.toArray(), by_key, by_value, false,
                   key_cmp_function, key_data,
                   value_cmp_function, value_data);
 }
@@ -139,7 +138,7 @@ Array Array::intersect(const Variant& array, bool by_key, bool by_value,
     throw_expected_array_exception();
     return Array();
   }
-  return diffImpl(array.getArrayData(), by_key, by_value, true,
+  return diffImpl(array.toArray(), by_key, by_value, true,
                   key_cmp_function, key_data,
                   value_cmp_function, value_data);
 }
@@ -517,7 +516,7 @@ Variant &Array::lvalAt(const Variant& key, ACCESSPARAMS_IMPL) {
   if (!k.isNull()) {
     return lvalAtImpl(k, flags);
   }
-  return Variant::lvalBlackHole();
+  return lvalBlackHole();
 }
 
 template<typename T>
@@ -534,7 +533,7 @@ void Array::setImpl(const T &key, const Variant& v) {
 
 template<typename T>
 ALWAYS_INLINE
-void Array::setRefImpl(const T &key, const Variant& v) {
+void Array::setRefImpl(const T &key, Variant& v) {
   if (!m_px) {
     ArrayData *data = ArrayData::CreateRef(key, v);
     ArrayBase::operator=(data);
@@ -573,16 +572,16 @@ void Array::set(const Variant& key, const Variant& v, bool isKey /* = false */) 
   if (!k.isNull()) setImpl(k, v);
 }
 
-void Array::setRef(int64_t key, const Variant& v) {
+void Array::setRef(int64_t key, Variant& v) {
   setRefImpl(key, v);
 }
 
-void Array::setRef(const String& key, const Variant& v, bool isKey /* = false */) {
+void Array::setRef(const String& key, Variant& v, bool isKey /* = false */) {
   if (isKey) return setRefImpl(key, v);
   setRefImpl(key.toKey(), v);
 }
 
-void Array::setRef(const Variant& key, const Variant& v, bool isKey /* = false */) {
+void Array::setRef(const Variant& key, Variant& v, bool isKey /* = false */) {
   if (key.getRawType() == KindOfInt64) return setRefImpl(key.getNumData(), v);
   if (isKey) return setRefImpl(key, v);
   VarNR k(key.toKey());
@@ -670,7 +669,7 @@ const Variant& Array::append(const Variant& v) {
   return v;
 }
 
-const Variant& Array::appendRef(const Variant& v) {
+const Variant& Array::appendRef(Variant& v) {
   if (!m_px) {
     ArrayBase::operator=(ArrayData::CreateRef(v));
   } else {
@@ -742,7 +741,7 @@ void Array::unserialize(VariableUnserializer *uns) {
   } else {
     // Pre-allocate an ArrayData of the given size, to avoid escalation in
     // the middle, which breaks references.
-    operator=(ArrayInit(size).create());
+    operator=(ArrayInit(size, ArrayInit::Mixed{}).create());
     for (int64_t i = 0; i < size; i++) {
       Variant key(uns->unserializeKey());
       if (!key.isString() && !key.isInteger()) {

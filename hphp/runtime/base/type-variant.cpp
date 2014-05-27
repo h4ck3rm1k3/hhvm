@@ -32,9 +32,10 @@
 #include "hphp/runtime/base/zend-string.h"
 
 #include "hphp/runtime/ext/ext_collections.h"
-#include "hphp/runtime/ext/ext_variable.h"
+#include "hphp/runtime/ext/std/ext_std_variable.h"
 #include "hphp/runtime/vm/runtime.h"
 #include "hphp/runtime/vm/repo.h"
+#include "hphp/runtime/vm/repo-global-data.h"
 #include "hphp/system/systemlib.h"
 
 #include "hphp/util/abi-cxx.h"
@@ -73,8 +74,7 @@ const StaticString
   s_1("1"),
   s_unserialize("unserialize"),
   s_PHP_Incomplete_Class("__PHP_Incomplete_Class"),
-  s_PHP_Incomplete_Class_Name("__PHP_Incomplete_Class_Name"),
-  s_PHP_Unserializable_Class_Name("__PHP_Unserializable_Class_Name");
+  s_PHP_Incomplete_Class_Name("__PHP_Incomplete_Class_Name");
 
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -154,7 +154,7 @@ Variant::Variant(StringData *v) {
   }
 }
 
-Variant::Variant(const StringData *v) {
+Variant::Variant(const StringData* v, StaticStrInit) {
   if (v) {
     assert(v->isStatic());
     m_data.pstr = const_cast<StringData*>(v);
@@ -210,7 +210,7 @@ Variant::Variant(const Variant& v) {
 }
 
 Variant::Variant(CVarStrongBind v) {
-  constructRefHelper(variant(v));
+  constructRefHelper(const_cast<Variant&>(variant(v))); // XXX
 }
 
 Variant::Variant(CVarWithRefBind v) {
@@ -265,35 +265,33 @@ Variant &Variant::assign(const Variant& v) {
   return *this;
 }
 
-Variant &Variant::assignRef(const Variant& v) {
+Variant& Variant::assignRef(Variant& v) {
   assignRefHelper(v);
   return *this;
 }
 
-Variant &Variant::setWithRef(const Variant& v) {
+Variant& Variant::setWithRef(const Variant& v) {
   setWithRefHelper(v, IS_REFCOUNTED_TYPE(m_type));
   return *this;
 }
 
-#define IMPLEMENT_SET_IMPL(name, argType, argName, setOp, returnStmt)   \
-  Variant::name(argType argName) {                                      \
-    if (isPrimitive()) {                                                \
-      setOp;                                                            \
-    } else if (m_type == KindOfRef) {                                   \
-      m_data.pref->var()->name(argName);                                \
-      returnStmt;                                                       \
-    } else {                                                            \
-      auto const d = m_data.num;                                        \
-      auto const t = m_type;                                            \
-      setOp;                                                            \
-      tvDecRefHelper(t, d);                                             \
-    }                                                                   \
-    returnStmt;                                                         \
+#define IMPLEMENT_SET_IMPL(name, argType, argName, setOp) \
+  void Variant::name(argType argName) {                   \
+    if (isPrimitive()) {                                  \
+      setOp;                                              \
+    } else if (m_type == KindOfRef) {                     \
+      m_data.pref->var()->name(argName);                  \
+    } else {                                              \
+      auto const d = m_data.num;                          \
+      auto const t = m_type;                              \
+      setOp;                                              \
+      tvDecRefHelper(t, d);                               \
+    }                                                     \
   }
 #define IMPLEMENT_VOID_SET(name, setOp) \
-  void IMPLEMENT_SET_IMPL(name, , , setOp, return)
+  IMPLEMENT_SET_IMPL(name, , , setOp)
 #define IMPLEMENT_SET(argType, setOp) \
-  const Variant& IMPLEMENT_SET_IMPL(set, argType, v, setOp, return *this)
+  IMPLEMENT_SET_IMPL(set, argType, v, setOp)
 
 IMPLEMENT_VOID_SET(setNull, m_type = KindOfNull)
 IMPLEMENT_SET(bool, m_type = KindOfBoolean; m_data.num = v)
@@ -306,12 +304,13 @@ IMPLEMENT_SET(const StaticString&,
               m_type = KindOfStaticString;
               m_data.pstr = s)
 
+
 #undef IMPLEMENT_SET_IMPL
 #undef IMPLEMENT_VOID_SET
 #undef IMPLEMENT_SET
 
 #define IMPLEMENT_PTR_SET(ptr, member, dtype)                           \
-  const Variant& Variant::set(ptr *v) {                                        \
+  void Variant::set(ptr *v) {                                           \
     Variant *self = m_type == KindOfRef ? m_data.pref->var() : this;    \
     if (UNLIKELY(!v)) {                                                 \
       self->setNull();                                                  \
@@ -323,7 +322,6 @@ IMPLEMENT_SET(const StaticString&,
       self->m_data.member = v;                                          \
       tvRefcountedDecRefHelper(t, d);                                   \
     }                                                                   \
-    return *this;                                                       \
   }
 
 IMPLEMENT_PTR_SET(StringData, pstr,
@@ -349,18 +347,6 @@ int Variant::getRefCount() const {
 
 ///////////////////////////////////////////////////////////////////////////////
 // informational
-
-bool Variant::isInteger() const {
-  switch (m_type) {
-    case KindOfInt64:
-      return true;
-    case KindOfRef:
-      return m_data.pref->var()->isInteger();
-    default:
-      break;
-  }
-  return false;
-}
 
 bool Variant::isNumeric(bool checkString /* = false */) const {
   int64_t ival;
@@ -404,11 +390,6 @@ bool Variant::isScalar() const {
     break;
   }
   return true;
-}
-
-bool Variant::isResource() const {
-  auto const cell = asCell();
-  return (cell->m_type == KindOfResource);
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -498,11 +479,11 @@ String Variant::toStringHelper() const {
 Array Variant::toArrayHelper() const {
   switch (m_type) {
   case KindOfUninit:
-  case KindOfNull:    return Array::Create();
+  case KindOfNull:    return empty_array;
   case KindOfInt64:   return Array::Create(m_data.num);
   case KindOfStaticString:
   case KindOfString:  return Array::Create(m_data.pstr);
-  case KindOfArray:   return m_data.parr;
+  case KindOfArray:   return Array(m_data.parr);
   case KindOfObject:  return m_data.pobj->o_toArray();
   case KindOfResource: return m_data.pres->o_toArray();
   case KindOfRef: return m_data.pref->var()->toArray();
@@ -577,15 +558,9 @@ VarNR Variant::toKey() const {
   case KindOfBoolean:
   case KindOfInt64:
     return VarNR(m_data.num);
-  case KindOfDouble:
-    {
-      auto val = m_data.dbl > std::numeric_limits<uint64_t>::max()
-        ? 0u
-        : uint64_t(m_data.dbl);
-      return VarNR(val);
-    }
   case KindOfObject:
     break;
+  case KindOfDouble:
   case KindOfResource:
     return VarNR(toInt64());
   case KindOfRef:
@@ -643,14 +618,9 @@ public:
   static const bool CheckParams = true;
 };
 
-Variant &Variant::lvalInvalid() {
-  throw_bad_type_exception("not array objects");
-  return lvalBlackHole();
-}
-
-Variant &Variant::lvalBlackHole() {
-  Variant &bh = get_env_constants()->__lvalProxy;
-  bh.unset();
+Variant& lvalBlackHole() {
+  auto& bh = get_env_constants()->lvalProxy;
+  bh = uninit_null();
   return bh;
 }
 
@@ -694,7 +664,8 @@ void Variant::setEvalScalar() {
 
 void Variant::serialize(VariableSerializer *serializer,
                         bool isArrayKey /* = false */,
-                        bool skipNestCheck /* = false */) const {
+                        bool skipNestCheck /* = false */,
+                        bool noQuotes /* = false */) const {
   if (m_type == KindOfRef) {
     // Ugly, but behavior is different for serialize
     if (serializer->getType() == VariableSerializer::Type::Serialize ||
@@ -728,7 +699,7 @@ void Variant::serialize(VariableSerializer *serializer,
   case KindOfStaticString:
   case KindOfString:
     serializer->write(m_data.pstr->data(),
-                      m_data.pstr->size(), isArrayKey);
+                      m_data.pstr->size(), isArrayKey, noQuotes);
     break;
   case KindOfArray:
     assert(!isArrayKey);
@@ -756,7 +727,7 @@ static void unserializeProp(VariableUnserializer *uns,
                                      visible, accessible, unset));
   assert(!unset);
   if (!t || !accessible) {
-    // Dynamic property. If this is the first, and we're using HphpArray,
+    // Dynamic property. If this is the first, and we're using MixedArray,
     // we need to pre-allocate space in the array to ensure the elements
     // dont move during unserialization.
     //
@@ -1037,9 +1008,7 @@ void Variant::unserialize(VariableUnserializer *uns,
         // support it. Otherwise, we risk creating a CPP object
         // without having it initialized completely.
         if (cls->instanceCtor() && !cls->isCppSerializable()) {
-          obj = ObjectData::newInstance(
-            SystemLib::s___PHP_Unserializable_ClassClass);
-          obj->o_set(s_PHP_Unserializable_Class_Name, clsName);
+          assert(obj.isNull());
         } else {
           obj = ObjectData::newInstance(cls);
           if (UNLIKELY(cls == c_Pair::classof() && size != 2)) {

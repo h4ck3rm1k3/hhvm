@@ -16,16 +16,15 @@
 #include "hphp/runtime/vm/jit/print.h"
 #include <vector>
 
-#include "hphp/util/disasm.h"
 #include "hphp/util/text-color.h"
 #include "hphp/util/abi-cxx.h"
-#include "hphp/vixl/a64/disasm-a64.h"
 #include "hphp/runtime/base/smart-containers.h"
 #include "hphp/runtime/base/stats.h"
 #include "hphp/runtime/vm/jit/ir.h"
 #include "hphp/runtime/vm/jit/layout.h"
 #include "hphp/runtime/vm/jit/block.h"
 #include "hphp/runtime/vm/jit/code-gen.h"
+#include "hphp/runtime/vm/jit/mc-generator.h"
 #include "hphp/util/text-util.h"
 
 namespace HPHP {  namespace JIT {
@@ -77,6 +76,7 @@ void printLabel(std::ostream& os, const Block* block) {
     os << "<Catch>";
   } else {
     switch (block->hint()) {
+      case Block::Hint::Unused:        os << "<Unused>"; break;
       case Block::Hint::Unlikely:    os << "<Unlikely>"; break;
       case Block::Hint::Likely:      os << "<Likely>"; break;
       default:
@@ -93,7 +93,7 @@ void printLabel(std::ostream& os, const Block* block) {
  * IRInstruction
  */
 void printOpcode(std::ostream& os, const IRInstruction* inst,
-                 const GuardConstraints* guards) {
+                 const GuardConstraints* constraints) {
   os << color(ANSI_COLOR_CYAN)
      << opcodeName(inst->op())
      << color(ANSI_COLOR_END)
@@ -101,7 +101,8 @@ void printOpcode(std::ostream& os, const IRInstruction* inst,
 
   auto const hasTypeParam = inst->hasTypeParam();
   auto const hasExtra = inst->hasExtra();
-  auto const isGuard = guards && !inst->isTransient() && isGuardOp(inst->op());
+  auto const isGuard =
+    constraints && !inst->isTransient() && isGuardOp(inst->op());
 
   if (!hasTypeParam && !hasExtra && !isGuard) return;
   os << color(ANSI_COLOR_LIGHT_BLUE) << '<' << color(ANSI_COLOR_END);
@@ -122,8 +123,8 @@ void printOpcode(std::ostream& os, const IRInstruction* inst,
   }
 
   if (isGuard) {
-    auto it = guards->find(inst);
-    os << (it == guards->end() ? "unused" : it->second.toString());
+    auto it = constraints->guards.find(inst);
+    os << (it == constraints->guards.end() ? "unused" : it->second.toString());
   }
 
   os << color(ANSI_COLOR_LIGHT_BLUE)
@@ -198,27 +199,12 @@ std::ostream& operator<<(std::ostream& os, const PhysLoc& loc) {
   os << '(';
   auto delim = "";
   for (int i = 0; i < sz; ++i) {
+    os << delim;
     if (!loc.spilled()) {
       PhysReg reg = loc.reg(i);
-      switch (arch()) {
-        case Arch::X64: {
-          auto name = reg.type() == PhysReg::GP ? reg::regname(Reg64(reg)) :
-            reg::regname(RegXMM(reg));
-          os << delim << name;
-          break;
-        }
-        case Arch::ARM: {
-          auto prefix =
-            reg.isGP() ? (vixl::Register(reg).size() == vixl::kXRegSize
-                          ? 'x' : 'w')
-            : (vixl::FPRegister(reg).size() == vixl::kSRegSize
-               ? 's' : 'd');
-          os << delim << prefix << int(RegNumber(reg));
-          break;
-        }
-      }
+      mcg->backEnd().streamPhysReg(os, reg);
     } else {
-      os << delim << "spill[" << loc.slot(i) << "]";
+      os << "spill[" << loc.slot(i) << "]";
     }
     delim = ",";
   }
@@ -275,27 +261,8 @@ void print(const SSATmp* tmp) {
 static constexpr auto kIndent = 4;
 
 static void disasmRange(std::ostream& os, TCA begin, TCA end) {
-  switch (arch()) {
-    case Arch::X64: {
-      Disasm disasm(Disasm::Options().indent(kIndent + 4)
-                    .printEncoding(dumpIREnabled(kExtraLevel))
-                    .color(color(ANSI_COLOR_BROWN)));
-      disasm.disasm(os, begin, end);
-      break;
-    }
-    case Arch::ARM: {
-      using namespace vixl;
-      Decoder dec;
-      PrintDisassembler disasm(os, kIndent + 4, dumpIREnabled(kExtraLevel),
-                               color(ANSI_COLOR_BROWN));
-      dec.AppendVisitor(&disasm);
-      assert(begin <= end);
-      for (; begin < end; begin += kInstructionSize) {
-        dec.Decode(Instruction::Cast(begin));
-      }
-      break;
-    }
-  }
+  mcg->backEnd().disasmRange(os, kIndent, dumpIREnabled(kExtraLevel),
+                             begin, end);
 }
 
 void print(std::ostream& os, const Block* block,
@@ -332,22 +299,22 @@ void print(std::ostream& os, const Block* block,
     if (inst.marker() != curMarker) {
       std::ostringstream mStr;
       auto const& newMarker = inst.marker();
-      auto func = newMarker.func;
-      if (!func) {
+      if (!newMarker.hasFunc()) {
         os << color(ANSI_COLOR_BLUE)
            << std::string(kIndent, ' ')
            << "--- invalid marker"
            << color(ANSI_COLOR_END)
            << '\n';
       } else {
-        if (func != curMarker.func) {
+        auto func = newMarker.func();
+        if (!curMarker.hasFunc() || func != curMarker.func()) {
           func->prettyPrint(mStr, Func::PrintOpts().noFpi());
         }
         mStr << std::string(kIndent, ' ')
              << newMarker.show()
              << '\n';
 
-        auto bcOffset = newMarker.bcOff;
+        auto bcOffset = newMarker.bcOff();
         func->unit()->prettyPrint(
           mStr, Unit::PrintOpts()
           .range(bcOffset, bcOffset+1)
@@ -452,13 +419,33 @@ std::string Block::toString() const {
  */
 void print(std::ostream& os, const IRUnit& unit,
            const RegAllocInfo* regs, const AsmInfo* asmInfo,
-           const GuardConstraints* guards) {
+           const GuardConstraints* guards, bool dotBodies) {
+  // For nice-looking dumps, we want to remember curMarker between blocks.
+  BCMarker curMarker;
+
   auto const layout = layoutBlocks(unit);
   auto const& blocks = layout.blocks;
   // Print the block CFG above the actual code.
   os << "digraph G {\n";
   for (Block* block : blocks) {
     if (block->empty()) continue;
+    if (dotBodies && block->hint() != Block::Hint::Unlikely &&
+        block->hint() != Block::Hint::Unused) {
+      // Include the IR in the body of the node
+      std::ostringstream out;
+      print(out, block, regs, asmInfo, guards, &curMarker);
+      auto bodyRaw = out.str();
+      std::string body;
+      body.reserve(bodyRaw.size() * 1.25);
+      for (auto c : bodyRaw) {
+        if (c == '\n')      body += "\\n";
+        else if (c == '"')  body += "\\\"";
+        else if (c == '\\') body += "\\\\";
+        else                body += c;
+      }
+      os << folly::format("B{} [shape=\"box\" label=\"{}\"]\n",
+                          block->id(), body);
+    }
 
     auto* next = block->next();
     auto* taken = block->taken();
@@ -471,8 +458,8 @@ void print(std::ostream& os, const IRUnit& unit,
     os << "\n";
   }
   os << "}\n";
-  // For nice-looking dumps, we want to remember curMarker between blocks.
-  BCMarker curMarker;
+
+  curMarker = BCMarker();
   for (auto it = blocks.begin(); it != blocks.end(); ++it) {
     if (it == layout.astubsIt) {
       os << folly::format("\n{:-^60}", "unlikely blocks");
@@ -494,7 +481,7 @@ std::string IRUnit::toString() const {
 
 // Suggested captions: "before jiffy removal", "after goat saturation",
 // etc.
-void dumpTrace(int level, const IRUnit& unit, const char* caption,
+void printUnit(int level, const IRUnit& unit, const char* caption,
                const RegAllocInfo* regs, AsmInfo* ai,
                const GuardConstraints* guards) {
   if (dumpIREnabled(level)) {

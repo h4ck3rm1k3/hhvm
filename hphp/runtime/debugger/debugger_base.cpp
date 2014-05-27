@@ -15,12 +15,16 @@
 */
 
 #include "hphp/runtime/debugger/debugger_base.h"
+
 #include <utility>
 #include <vector>
+#include <boost/algorithm/string/replace.hpp>
+
 #include "hphp/runtime/debugger/debugger_client.h"
 #include "hphp/runtime/debugger/break_point.h"
 #include "hphp/parser/scanner.h"
 #include "hphp/util/text-util.h"
+#include "hphp/runtime/base/config.h"
 
 namespace HPHP { namespace Eval {
 ///////////////////////////////////////////////////////////////////////////////
@@ -202,18 +206,19 @@ std::string Macro::desc(const char *indent) {
   return ret;
 }
 
-void Macro::load(Hdf node) {
+void Macro::load(const IniSetting::Map& ini, Hdf node) {
   TRACE(2, "Macro::load\n");
-  m_name = node["name"].getString();
-  node["cmds"].get(m_cmds);
+  m_name = Config::GetString(ini, node["name"]);
+  Config::Get(ini, node["cmds"], m_cmds);
 }
 
 void Macro::save(std::ostream &stream, int key) {
   TRACE(2, "Macro::save\n");
-  stream << "hhvm.macro.visited." << key << ".name = " << m_name;
+  stream << "hhvm.macros[" << key << "][name] = " << m_name << std::endl;
   for (unsigned int i = 0; i < m_cmds.size(); i++) {
-    stream << "hhvm.macro.visited." << key << ".cmds[" << i << "] = "
-           << m_cmds[i];
+    stream << "hhvm.macros[" << key << "][cmds][" << i << "] = "
+           << '"' << boost::replace_all_copy(m_cmds[i], "\"", "\\\"") << '"'
+           << std::endl;
   }
 }
 
@@ -322,6 +327,7 @@ static void get_color(int tokid, int prev, int next,
     COLOR_ENTRY(T_AND_EQUAL,                None        );
     COLOR_ENTRY(T_MOD_EQUAL,                None        );
     COLOR_ENTRY(T_CONCAT_EQUAL,             None        );
+    COLOR_ENTRY(T_POW_EQUAL,                None        );
     COLOR_ENTRY(T_DIV_EQUAL,                None        );
     COLOR_ENTRY(T_MUL_EQUAL,                None        );
     COLOR_ENTRY(T_MINUS_EQUAL,              None        );

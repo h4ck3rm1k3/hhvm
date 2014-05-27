@@ -13,7 +13,7 @@
    | license@php.net so we can mail you a copy immediately.               |
    +----------------------------------------------------------------------+
 */
-#include "hphp/runtime/vm/jit/abi-arm.h"
+
 #include "hphp/runtime/vm/jit/translator-inline.h"
 #include "hphp/runtime/vm/jit/mc-generator.h"
 #include "hphp/runtime/vm/event-hook.h"
@@ -28,7 +28,7 @@ static void setupAfterPrologue(ActRec* fp, void* sp) {
   g_context->m_fp = fp;
   g_context->m_stack.top() = (Cell*)sp;
   int nargs = fp->numArgs();
-  int nparams = fp->m_func->numParams();
+  int nparams = fp->m_func->numNonVariadicParams();
   Offset firstDVInitializer = InvalidAbsoluteOffset;
   if (nargs < nparams) {
     const Func::ParamInfoVec& paramInfo = fp->m_func->params();
@@ -49,6 +49,7 @@ static void setupAfterPrologue(ActRec* fp, void* sp) {
 
 TCA fcallHelper(ActRec* ar, void* sp) {
   try {
+    assert(!ar->resumed());
     TCA tca =
       mcg->getFuncPrologue((Func*)ar->m_func, ar->numArgs(), ar);
     if (tca) {
@@ -62,16 +63,14 @@ TCA fcallHelper(ActRec* ar, void* sp) {
        * dv funclets. Dont run the prologue again.
        */
       VMRegAnchor _(ar);
-      uint64_t rip = ar->m_savedRip;
       if (g_context->doFCall(ar, g_context->m_pc)) {
-        ar->m_savedRip = rip;
         return tx->uniqueStubs.resumeHelperRet;
       }
       // We've been asked to skip the function body
       // (fb_intercept). frame, stack and pc have
       // already been fixed - flag that with a negative
       // return address.
-      return (TCA)-rip;
+      return (TCA)-ar->m_savedRip;
     }
     setupAfterPrologue(ar, sp);
     assert(ar == g_context->m_fp);
@@ -120,7 +119,7 @@ int64_t decodeCufIterHelper(Iter* it, TypedValue func) {
   HPHP::Class* cls = nullptr;
   StringData* invName = nullptr;
 
-  auto ar = (ActRec*)framePtr->m_savedRbp;
+  auto ar = framePtr->m_sfp;
   if (LIKELY(ar->m_func->isBuiltin())) {
     ar = g_context->getOuterVMFrame(ar);
   }

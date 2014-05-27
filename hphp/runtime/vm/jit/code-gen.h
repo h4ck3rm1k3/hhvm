@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -20,6 +20,7 @@
 #include "hphp/runtime/vm/jit/types.h"
 #include "hphp/runtime/vm/jit/state-vector.h"
 #include "hphp/runtime/vm/jit/translator.h"
+#include "hphp/util/code-cache.h"
 
 namespace HPHP { namespace JIT {
 
@@ -95,14 +96,17 @@ struct CodegenState {
 
 const Func* loadClassCtor(Class* cls);
 
-ObjectData* createClHelper(Class*, int, ActRec*, TypedValue*);
+LiveRegs computeLiveRegs(const IRUnit& unit, const RegAllocInfo& regs);
 
-void genCode(CodeBlock&              mainCode,
-             CodeBlock&              stubsCode,
-             IRUnit&                 unit,
+void genCode(IRUnit&                 unit,
              std::vector<TransBCMapping>* bcMap,
              MCGenerator*            mcg,
              const RegAllocInfo&     regs);
+
+struct CodeGenerator {
+  virtual ~CodeGenerator() {}
+  virtual Address cgInst(IRInstruction* inst) = 0;
+};
 
 }}
 

@@ -16,24 +16,26 @@
  * BUT ... YOU WERE GOING TO SAY BUT? BUT ...
  * THERE IS NO BUT! DONNY YOU'RE OUT OF YOUR ELEMENT!
  *
- * The lock-free data structures implemented here only work because of how 
- * the Hack phases are synchronized. 
+ * The lock-free data structures implemented here only work because of how
+ * the Hack phases are synchronized.
  *
  * There are 3 kinds of storage implemented in this file.
  * I) The global storage. Used by the master to efficiently transfer a blob
- *    of data to the workers. This is used to share an environment in 
+ *    of data to the workers. This is used to share an environment in
  *    read-only mode with all the workers.
  *    The master stores, the workers read.
  *
  * II) The dependency table. It's a hashtable that contains all the
  *    dependencies between Hack objects. It is filled concurrently by
- *    the workers.
+ *    the workers. The dependency table is made of 2 hashtables, one that
+ *    can is used to quickly answer if a dependency exists. The other one
+ *    to retrieve the list of dependencies associated with an object.
  *
- * II) The Hashtable.
+ * III) The Hashtable.
  *     The operations implemented, and their limitations:
- * 
+ *
  *    -) Concurrent writes: SUPPORTED
- *       As long as its not interleaved with any other operation 
+ *       As long as its not interleaved with any other operation
  *       (other than mem)!
  *
  *    -) Concurrent reads: SUPPORTED
@@ -69,7 +71,7 @@
 #define GLOBAL_SIZE_B   GIG
 
 /* Used for the dependency hashtable */
-#define DEP_POW         23
+#define DEP_POW         24
 #define DEP_SIZE        (1 << DEP_POW)
 #define DEP_SIZE_B      (DEP_SIZE * sizeof(value))
 
@@ -79,7 +81,7 @@
 #define HASHTBL_SIZE_B  (HASHTBL_SIZE * sizeof(helt_t))
 
 /* Size of where we allocate shared objects. */
-#define HEAP_SIZE       (8 * GIG)
+#define HEAP_SIZE       (16 * GIG)
 #define Get_size(x)     (((size_t*)(x))[-1])
 #define Get_buf_size(x) (((size_t*)(x))[-1] + sizeof(size_t))
 #define Get_buf(x)      (x - sizeof(size_t))
@@ -87,8 +89,8 @@
 /* The total size of the shared memory.
  * Most of it is going to remain virtual.
  */
-#define SHARED_MEM_SIZE (GLOBAL_SIZE_B + DEP_SIZE_B + HASHTBL_SIZE_B +\
-                         HEAP_SIZE)
+#define SHARED_MEM_SIZE (GLOBAL_SIZE_B + 2 * DEP_SIZE_B + \
+                         HASHTBL_SIZE_B + HEAP_SIZE)
 
 /* Too lazy to use getconf */
 #define CACHE_LINE_SIZE (1 << 6)
@@ -112,16 +114,17 @@ typedef struct {
 /* The location of the shared memory */
 static char* shared_mem;
 
-/* ENCODING: The first element is the size stored in bytes, the rest is 
+/* ENCODING: The first element is the size stored in bytes, the rest is
  * the data. The size is set to zero when the storage is empty.
  */
 static value* global_storage;
 
-/* ENCODING: 
+/* ENCODING:
  * The highest 2 bits are unused.
  * The next 31 bits encode the key the lower 31 bits the value.
  */
 static uint64_t* deptbl;
+static uint64_t* deptbl_bindings;
 
 /* The hashtable containing the shared values. */
 static helt_t* hashtbl;
@@ -189,6 +192,9 @@ static void init_shared_globals(char* mem) {
   deptbl = (uint64_t*)mem;
   mem += DEP_SIZE_B;
 
+  deptbl_bindings = (uint64_t*)mem;
+  mem += DEP_SIZE_B;
+
   /* Hashtable */
   hashtbl = (helt_t*)mem;
   mem += HASHTBL_SIZE_B;
@@ -223,12 +229,14 @@ static void set_priorities() {
   // at all!)
   //
   // No need to check the return value, if we failed then whatever.
+  #ifdef __linux__
   syscall(
     SYS_ioprio_set,
     IOPRIO_WHO_PROCESS,
     my_pid,
     IOPRIO_PRIO_VALUE(IOPRIO_CLASS_IDLE, 7)
   );
+  #endif
 
   // Don't slam the CPU either, though this has much less tendency to make the
   // system totally unresponsive so we don't need to lower all the way.
@@ -242,12 +250,12 @@ void hh_shared_init() {
   /* MAP_NORESERVE is because we want a lot more virtual memory than what
    * we are actually going to use.
    */
-  int flags = MAP_SHARED | MAP_ANONYMOUS | MAP_NORESERVE;
+  int flags = MAP_SHARED | MAP_ANON | MAP_NORESERVE;
   int prot  = PROT_READ  | PROT_WRITE;
 
   page_size = getpagesize();
 
-  shared_mem = 
+  shared_mem =
     (char*)mmap(NULL, page_size + SHARED_MEM_SIZE, prot, flags, 0, 0);
 
   if(shared_mem == MAP_FAILED) {
@@ -353,7 +361,7 @@ void hh_shared_clear() {
  * modifying.
  * The table contains key/value bindings encoded in a word.
  * The higher bits represent the key, the lower ones the value.
- * Each key/value binding is unique, but a key can have multiple value 
+ * Each key/value binding is unique, but a key can have multiple value
  * bound to it.
  * Concretely, if you try to add a key/value pair that is already in the table
  * the data structure is left unmodified.
@@ -362,35 +370,44 @@ void hh_shared_clear() {
  */
 /*****************************************************************************/
 
-void hh_add_dep(value ocaml_dep) {
-  unsigned long dep  = Long_val(ocaml_dep);
-  unsigned long hash = dep >> 31;
+static int htable_add(int64_t* table, unsigned long hash, int64_t value) {
   unsigned long slot = hash & (DEP_SIZE - 1);
-  
+
   while(1) {
     /* It considerably speeds things up to do a normal load before trying using
      * an atomic operation.
      */
-    uint64_t slot_val = deptbl[slot];
+    uint64_t slot_val = table[slot];
 
     // The binding exists, done!
-    if(slot_val == dep)
-      return;
-    
+    if(slot_val == value)
+      return 0;
+
     // The slot is free, let's try to take it.
     if(slot_val == 0) {
       // See comments in hh_add about its similar construction here.
-      if(__sync_bool_compare_and_swap(&deptbl[slot], 0, dep)) {
-        return;
+      if(__sync_bool_compare_and_swap(&table[slot], 0, value)) {
+        return 1;
       }
 
-      if(deptbl[slot] == dep) {
-        return;
+      if(table[slot] == value) {
+        return 0;
       }
     }
 
     slot = (slot + 1) & (DEP_SIZE - 1);
   }
+}
+
+void hh_add_dep(value ocaml_dep) {
+  unsigned long dep  = Long_val(ocaml_dep);
+  unsigned long hash = (dep >> 31) * (dep & ((1l << 31) - 1));
+
+  if(!htable_add(deptbl_bindings, hash, hash)) {
+    return;
+  }
+
+  htable_add(deptbl, dep >> 31, dep);
 }
 
 /* Given a key, returns the list of values bound to it. */
@@ -400,7 +417,7 @@ value hh_get_dep(value dep) {
 
   unsigned long hash = Long_val(dep);
   unsigned long slot = hash & (DEP_SIZE - 1);
-  
+
   result = Val_int(0); // The empty list
 
   while(1) {
@@ -443,7 +460,7 @@ void hh_call_after_init() {
  */
 /*****************************************************************************/
 void hh_collect() {
-  int flags       = MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE;
+  int flags       = MAP_PRIVATE | MAP_ANON | MAP_NORESERVE;
   int prot        = PROT_READ | PROT_WRITE;
   char* dest;
   size_t mem_size = 0;
@@ -488,7 +505,7 @@ void hh_collect() {
 
   if(munmap(tmp_heap, HEAP_SIZE) == -1) {
     printf("Error while collecting: %s\n", strerror(errno));
-    exit(2);    
+    exit(2);
   }
 }
 
@@ -509,8 +526,8 @@ static char* hh_alloc(size_t size) {
 }
 
 /*****************************************************************************/
-/* Allocates an ocaml value in the shared heap. 
- * The values can only be ocaml strings. It returns the address of the 
+/* Allocates an ocaml value in the shared heap.
+ * The values can only be ocaml strings. It returns the address of the
  * allocated chunk.
  */
 /*****************************************************************************/
@@ -676,7 +693,7 @@ void hh_move(value key1, value key2) {
 /*****************************************************************************/
 void hh_remove(value key) {
   unsigned int slot = find_slot(key);
-  
+
   assert(my_pid == master_pid);
   assert(hashtbl[slot].hash == get_hash(key));
   hashtbl[slot].addr = NULL;
@@ -685,7 +702,7 @@ void hh_remove(value key) {
 /*****************************************************************************/
 /* Returns a copy of the content of a file in an ocaml string.
  * This code should be very tolerant to failure. At any given time, the
- * file could be modified, when that happens, we don't want to fail, we 
+ * file could be modified, when that happens, we don't want to fail, we
  * return the empty string instead.
  */
 /*****************************************************************************/
@@ -697,7 +714,7 @@ value hh_read_file(value filename) {
   int fd;
   struct stat sb;
   char* memblock;
-    
+
   fd = open(String_val(filename), O_RDONLY);
   if(fd == -1) {
     result = caml_alloc_string(0);
@@ -706,7 +723,7 @@ value hh_read_file(value filename) {
     result = caml_alloc_string(0);
     close(fd);
   }
-  else if((memblock = 
+  else if((memblock =
            (char*)mmap(NULL, sb.st_size, PROT_READ, MAP_PRIVATE, fd, 0))
           == MAP_FAILED) {
     result = caml_alloc_string(0);
@@ -718,6 +735,6 @@ value hh_read_file(value filename) {
     munmap(memblock, sb.st_size);
     close(fd);
   }
-    
+
   CAMLreturn(result);
 }

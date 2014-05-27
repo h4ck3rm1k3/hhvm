@@ -47,7 +47,7 @@ array(5) {
   int(5)
 }
 int(4)
-string(32) "Continuation is already finished"
+string(29) "Generator is already finished"
 array(12) {
   ["b"]=>
   int(2)
@@ -115,7 +115,7 @@ array(12) {
   ["e"]=>
   int(3126047761)
   ["c"]=>
-  object(Continuation)#5 (0) {
+  object(Generator)#5 (0) {
   }
   ["j"]=>
   int(10)

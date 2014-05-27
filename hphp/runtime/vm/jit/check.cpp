@@ -19,7 +19,6 @@
 #include <unordered_set>
 #include <bitset>
 
-#include "hphp/runtime/vm/jit/abi-arm.h"
 #include "hphp/runtime/vm/jit/ir.h"
 #include "hphp/runtime/vm/jit/ir-unit.h"
 #include "hphp/runtime/vm/jit/phys-reg.h"
@@ -27,6 +26,7 @@
 #include "hphp/runtime/vm/jit/cfg.h"
 #include "hphp/runtime/vm/jit/id-set.h"
 #include "hphp/runtime/vm/jit/reg-alloc.h"
+#include "hphp/runtime/vm/jit/mc-generator.h"
 
 namespace HPHP {  namespace JIT {
 
@@ -212,7 +212,7 @@ bool checkTmpsSpanningCalls(const IRUnit& unit) {
 
   auto ignoreSrc = [&](IRInstruction& inst, SSATmp* src) {
     /*
-     * ReDefSP, ReDefGeneratorSP, and TakeStack, and FramePtr/StKptr-typed
+     * ReDefSP, ReDefResumableSP, and TakeStack, and FramePtr/StKptr-typed
      * tmps are used only for stack analysis in the simplifier and therefore
      * may live across calls.  In particular, ReDef[Generator]SP are used to
      * bridge the logical stack of the caller when a callee is inlined so that
@@ -223,10 +223,11 @@ bool checkTmpsSpanningCalls(const IRUnit& unit) {
      * registers if needed by the instructions using the const.
      */
     return (inst.is(ReDefSP) && src->isA(Type::StkPtr)) ||
-           (inst.is(ReDefGeneratorSP) && src->isA(Type::StkPtr)) ||
+           (inst.is(ReDefResumableSP) && src->isA(Type::StkPtr)) ||
+           inst.is(TakeStack) ||
            src->isA(Type::StkPtr) ||
-           src->inst()->is(DefConst) ||
-           src->isA(Type::FramePtr);
+           src->isA(Type::FramePtr) ||
+           src->inst()->is(DefConst);
   };
 
   StateVector<Block,IdSet<SSATmp>> livein(unit, IdSet<SSATmp>());
@@ -319,19 +320,10 @@ bool checkRegisters(const IRUnit& unit, const RegAllocInfo& regs) {
         auto const &rs = inst_regs.src(i);
         if (!rs.spilled()) {
           // hack - ignore rbx and rbp
-          bool ignore_frame_regs;
-
-          switch (arch()) {
-            case Arch::X64:
-              ignore_frame_regs = (rs.reg(0) == X64::rVmSp ||
-                                  rs.reg(0) == X64::rVmFp);
-              break;
-            case Arch::ARM:
-               ignore_frame_regs = (rs.reg(0) == ARM::rVmSp ||
-                                   rs.reg(0) == ARM::rVmFp);
-              break;
+          if (rs.reg(0) == mcg->backEnd().rVmSp() ||
+              rs.reg(0) == mcg->backEnd().rVmFp()) {
+            continue;
           }
-          if (ignore_frame_regs) continue;
         }
         DEBUG_ONLY auto src = inst.src(i);
         assert(rs.numWords() == src->numWords() ||

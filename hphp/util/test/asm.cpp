@@ -687,7 +687,8 @@ TEST(Asm, SimpleLabelTest) {
 
 asm_label(a, loop);
   a.    movq   (r15, rdi);
-  a.    call   (CodeAddress(static_cast<void (*)(int*)>(loopCallee)));
+  a.    movq   (CodeAddress(static_cast<void (*)(int*)>(loopCallee)), r10);
+  a.    call   (r10);
   a.    incl   (ebx);
   a.    cmpl   (ebx, r12d);
   a.    jne    (loop);
@@ -796,6 +797,48 @@ cvttsd2si %xmm1, %rbx
 cvttsd2si %xmm2, %rcx
 cvttsd2si %xmm15, %rdx
 cvttsd2si %xmm12, %r12
+)");
+}
+
+TEST(Asm, Baseless) {
+  TestDataBlock db(10 << 24);
+  Asm a { db };
+
+  a.   call  (baseless(rax*8 + 0x400));
+  a.   call  (baseless(rax*8 + 0x40));
+  a.   call  (baseless(rsi*4 + 0x42));
+  a.   call  (baseless(rbx*2 + 0x700));
+  expect_asm(a, R"(
+callq 0x400(,%rax,8)
+callq 0x40(,%rax,8)
+callq 0x42(,%rsi,4)
+callq 0x700(,%rbx,2)
+)");
+}
+
+TEST(Asm, IncDecIndexedMemoryRef) {
+  TestDataBlock db(10 << 24);
+  Asm a { db };
+
+  a.   incw  (rax[rdi*2 + 0x10]);
+  a.   incw  (rax[rsi*4 + 0x15]);
+  a.   decw  (rbp[r15*2 + 0x12]);
+  a.   incl  (rax[rdi*2 + 0x10]);
+  a.   incl  (rax[rsi*4 + 0x15]);
+  a.   decl  (rbp[r15*2 + 0x12]);
+  a.   incq  (rax[rdi*2 + 0x10]);
+  a.   incq  (rax[rsi*4 + 0x15]);
+  a.   decq  (rbp[r15*2 + 0x12]);
+  expect_asm(a, R"(
+incw 0x10(%rax,%rdi,2)
+incw 0x15(%rax,%rsi,4)
+decw 0x12(%rbp,%r15,2)
+incl 0x10(%rax,%rdi,2)
+incl 0x15(%rax,%rsi,4)
+decl 0x12(%rbp,%r15,2)
+incq 0x10(%rax,%rdi,2)
+incq 0x15(%rax,%rsi,4)
+decq 0x12(%rbp,%r15,2)
 )");
 }
 

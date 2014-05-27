@@ -35,33 +35,12 @@
 #include <tbb/concurrent_hash_map.h>
 #include <utility>
 
-#define PREG_PATTERN_ORDER          1
-#define PREG_SET_ORDER              2
-#define PREG_OFFSET_CAPTURE         (1<<8)
-
-#define PREG_SPLIT_NO_EMPTY         (1<<0)
-#define PREG_SPLIT_DELIM_CAPTURE    (1<<1)
-#define PREG_SPLIT_OFFSET_CAPTURE   (1<<2)
-
-#define PREG_REPLACE_EVAL           (1<<0)
-
-#define PREG_GREP_INVERT            (1<<0)
-
 #define PCRE_CACHE_SIZE 4096
 
 /* Only defined in pcre >= 8.32 */
 #ifndef PCRE_STUDY_JIT_COMPILE
 # define PCRE_STUDY_JIT_COMPILE 0
 #endif
-
-enum {
-  PHP_PCRE_NO_ERROR = 0,
-  PHP_PCRE_INTERNAL_ERROR,
-  PHP_PCRE_BACKTRACK_LIMIT_ERROR,
-  PHP_PCRE_RECURSION_LIMIT_ERROR,
-  PHP_PCRE_BAD_UTF8_ERROR,
-  PHP_PCRE_BAD_UTF8_OFFSET_ERROR
-};
 
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
@@ -274,7 +253,14 @@ pcre_get_compiled_regex_cache(const String& regex) {
     case 'S':  do_study = true;                 break;
     case 'U':  coptions |= PCRE_UNGREEDY;       break;
     case 'X':  coptions |= PCRE_EXTRA;          break;
-    case 'u':  coptions |= PCRE_UTF8;           break;
+    case 'u':  coptions |= PCRE_UTF8;
+  /* In  PCRE,  by  default, \d, \D, \s, \S, \w, and \W recognize only ASCII
+       characters, even in UTF-8 mode. However, this can be changed by setting
+       the PCRE_UCP option. */
+#ifdef PCRE_UCP
+            coptions |= PCRE_UCP;
+#endif
+      break;
 
       /* Custom preg options */
     case 'e':  poptions |= PREG_REPLACE_EVAL;   break;
@@ -861,10 +847,10 @@ static Variant php_pcre_replace(const String& pattern, const String& subject,
       raise_warning(
         "Modifier /e cannot be used with replacement callback."
       );
-      return null_string;
+      return String();
     }
-    raise_notice(
-      "Deprecated: preg_replace(): The /e modifier is deprecated, use "
+    raise_deprecated(
+      "preg_replace(): The /e modifier is deprecated, use "
       "preg_replace_callback instead"
     );
   }
@@ -895,8 +881,7 @@ static Variant php_pcre_replace(const String& pattern, const String& subject,
     replace_end = replace + replace_len;
   }
 
-  int alloc_len = 2 * subject.size() + 1;
-  char *result = (char *)malloc(alloc_len);
+  StringBuffer result(2 * subject.size());
 
   try {
 
@@ -907,11 +892,8 @@ static Variant php_pcre_replace(const String& pattern, const String& subject,
     pcre_extra *extra = pce->extra;
     set_extra_limits(extra);
 
-    int result_len = 0;
-    int new_len;          // Length of needed storage
     const char *walk;     // Used to walk the replacement string
     char walk_last;       // Last walked character
-    char *walkbuf;        // Location of current replacement in the result
     int match_len;        // Length of the current match
     int backref;          // Backreference number
     int g_notempty = 0;   // If the match should not be empty
@@ -939,7 +921,6 @@ static Variant php_pcre_replace(const String& pattern, const String& subject,
         }
         /* Set the match location in subject */
         match = subject.data() + offsets[0];
-        new_len = result_len + offsets[0] - start_offset; //part before the match
 
         /* If evaluating, do it and add the return string's length */
         String eval_result;
@@ -947,7 +928,6 @@ static Variant php_pcre_replace(const String& pattern, const String& subject,
           /* Use custom function to get replacement string and its length. */
           eval_result = preg_do_repl_func(replace_var, subject, offsets,
                                           subpat_names, count);
-          new_len += eval_result.size();
         } else { /* do regular substitution */
           walk = replace;
           walk_last = 0;
@@ -971,51 +951,43 @@ static Variant php_pcre_replace(const String& pattern, const String& subject,
                     );
                     match_len = esc_match.length();
                   }
-                  new_len += match_len;
                 }
                 continue;
               }
             }
-            new_len++;
             walk++;
             walk_last = walk[-1];
           }
         }
 
-        if (new_len + 1 > alloc_len) {
-          // Allocate needed memory plus some extra so we don't have to realloc
-          // too often
-          alloc_len = 1 + alloc_len + 2 * new_len;
-          result = (char *)realloc(result, alloc_len);
-        }
         /* copy the part of the string before the match */
-        memcpy(&result[result_len], piece, match-piece);
-        result_len += match-piece;
+        result.append(piece, match-piece);
 
         /* copy replacement and backrefs */
-        walkbuf = result + result_len;
+        int result_len = result.size();
 
         /* If evaluating or using custom function, copy result to the buffer
          * and clean up. */
         if (callable) {
-          memcpy(walkbuf, eval_result.data(), eval_result.size());
+          result.append(eval_result.data(), eval_result.size());
           result_len += eval_result.size();
         } else { /* do regular backreference copying */
           walk = replace;
           walk_last = 0;
           Array params;
-          const char* lastStart = nullptr;
+          int lastStart = result.size();
           while (walk < replace_end) {
             bool handleQuote = eval && '"' == *walk && walk_last != '\\';
-            if (handleQuote && lastStart != nullptr) {
-              String str(lastStart, walkbuf - lastStart, CopyString);
+            if (handleQuote && lastStart != result.size()) {
+              String str(result.data() + lastStart, result.size() - lastStart,
+                         CopyString);
               params.append(str);
-              lastStart = nullptr;
+              lastStart = result.size();
               handleQuote = false;
             }
             if ('\\' == *walk || '$' == *walk) {
               if (walk_last == '\\') {
-                *(walkbuf-1) = *walk++;
+                result.set(result.size() - 1, *walk++);
                 walk_last = 0;
                 continue;
               }
@@ -1031,30 +1003,32 @@ static Variant php_pcre_replace(const String& pattern, const String& subject,
                       )
                     );
                     match_len = esc_match.length();
-                    memcpy(walkbuf, esc_match.data(), match_len);
+                    result.append(esc_match.data(), match_len);
                   } else {
-                    memcpy(
-                      walkbuf,
+                    result.append(
                       subject.data() + offsets[backref<<1],
                       match_len
                     );
                   }
-                  walkbuf += match_len;
                 }
                 continue;
               }
             }
-            *walkbuf++ = *walk++;
+            result.append(*walk++);
             walk_last = walk[-1];
-            if (handleQuote && lastStart == nullptr) {
-              lastStart = walkbuf;
+            if (handleQuote && lastStart != result.size()) {
+              lastStart = result.size();
             }
           }
-          *walkbuf = '\0';
+          int full_len = result.size();
+          const char* data = result.data() + result_len;
           if (eval) {
             JIT::VMRegAnchor _;
-            String prefixedCode = concat(concat(
-                "<?php return ", result + result_len), ";");
+            // reserve space for "<?php return " + code + ";"
+            String prefixedCode(full_len - result_len + 14, ReserveString);
+            prefixedCode += "<?php return ";
+            prefixedCode += StringSlice(data, full_len - result_len);
+            prefixedCode += ";";
             Unit* unit = g_context->compileEvalString(prefixedCode.get());
             Variant v;
             Func* func = unit->getMain();
@@ -1065,21 +1039,8 @@ static Variant php_pcre_replace(const String& pattern, const String& subject,
                                     ExecutionContext::InvokePseudoMain);
             eval_result = v;
 
-            // Make sure that we have enough space in result
-            new_len = result_len + eval_result.size();
-            if (new_len + 1 > alloc_len) {
-              // Allocate needed memory plus some extra so we don't have to
-              // realloc too often
-              alloc_len = 1 + alloc_len + 2 * new_len;
-              result = (char *)realloc(result, alloc_len);
-            }
-
-            memcpy(result + result_len, eval_result.data(), eval_result.size());
-            result_len += eval_result.size();
-          } else {
-            // increment the result length by how much we've added to the
-            // string
-            result_len += walkbuf - (result + result_len);
+            result.resize(result_len);
+            result.append(eval_result.data(), eval_result.size());
           }
         }
 
@@ -1095,18 +1056,10 @@ static Variant php_pcre_replace(const String& pattern, const String& subject,
         if (g_notempty != 0 && start_offset < subject.size()) {
           offsets[0] = start_offset;
           offsets[1] = start_offset + 1;
-          memcpy(&result[result_len], piece, 1);
-          (result_len)++;
+          result.append(piece, 1);
         } else {
-          new_len = result_len + subject.size() - start_offset;
-          if (new_len + 1 > alloc_len) {
-            alloc_len = new_len + 1; /* now we know exactly how long it is */
-            result = (char *)realloc(result, alloc_len);
-          }
           /* stick that last bit of string on our output */
-          memcpy(&result[result_len], piece, subject.size() - start_offset);
-          result_len += subject.size() - start_offset;
-          result[result_len] = '\0';
+          result.append(piece, subject.size() - start_offset);
           break;
         }
       } else {
@@ -1116,7 +1069,8 @@ static Variant php_pcre_replace(const String& pattern, const String& subject,
           String stemp;
           if (callable) {
             if (replace_var.isObject()) {
-              stemp = replace_var.asCObjRef()->o_getClassName() + "::__invoke";
+              stemp = replace_var.asCObjRef()->o_getClassName().asString()
+                    + "::__invoke";
             } else {
               stemp = replace_var.toString();
             }
@@ -1133,9 +1087,7 @@ static Variant php_pcre_replace(const String& pattern, const String& subject,
                          callable, limit, start_offset, g_notempty);
         }
         pcre_handle_exec_error(count);
-        free(result);
-        result = nullptr;
-        break;
+        return String();
       }
 
       /* If we have matched an empty string, mimic what Perl's /g options does.
@@ -1148,12 +1100,8 @@ static Variant php_pcre_replace(const String& pattern, const String& subject,
       start_offset = offsets[1];
     }
 
-    if (result) {
-      return String(result, result_len, AttachString);
-    }
-    return String();
+    return result.detach();
   } catch (...) {
-    free(result);
     throw;
   }
 }

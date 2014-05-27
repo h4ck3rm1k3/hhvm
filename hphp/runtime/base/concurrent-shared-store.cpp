@@ -18,6 +18,7 @@
 #include "hphp/runtime/base/variable-serializer.h"
 #include "hphp/runtime/base/apc-handle-defs.h"
 #include "hphp/runtime/base/apc-object.h"
+#include "hphp/runtime/base/apc-stats.h"
 #include "hphp/runtime/ext/ext_apc.h"
 #include "hphp/util/logger.h"
 #include "hphp/util/timer.h"
@@ -106,6 +107,8 @@ bool ConcurrentTableSharedStore::eraseImpl(const String& key,
       return false;
     }
     if (acc->second.inMem()) {
+      m_apcStats.removeAPCValue(acc->second.size,
+          acc->second.var, acc->second.expiry == 0, expired);
       if (expired && acc->second.expiry < oldestLive &&
           acc->second.var->getUncounted()) {
         APCTypedValue::fromHandle(acc->second.var)->deleteUncounted();
@@ -200,6 +203,8 @@ bool ConcurrentTableSharedStore::handlePromoteObj(const String& key,
     // updated it already, check before updating
     if (sv == svar && !sv->getIsObj()) {
       sval->var = converted;
+      sval->size = m_apcStats.updateAPCValue(converted, sv,
+          sval->size, sval->expiry == 0, false);
       sv->unreferenceRoot();
       return true;
     }
@@ -219,7 +224,13 @@ APCHandle* ConcurrentTableSharedStore::unserialize(const String& key,
     VariableUnserializer vu(sval->sAddr, sval->getSerializedSize(), sType);
     Variant v;
     v.unserialize(&vu);
-    sval->var = APCHandle::Create(v, sval->isSerializedObj());
+    if (sval->isSerializedObj()) {
+      assert(v.isString());
+      sval->var = APCHandle::CreateObjectFromSerializedString(v.asCStrRef());
+    } else {
+      sval->var = APCHandle::Create(v);
+    }
+    sval->size = m_apcStats.addAPCValue(sval->var, true);
     return sval->var;
   } catch (Exception &e) {
     raise_notice("APC Primed fetch failed: key %s (%s).",
@@ -308,8 +319,11 @@ int64_t ConcurrentTableSharedStore::inc(const String& key, int64_t step,
       if (!sval->expired()) {
         ret = get_int64_value(sval) + step;
         APCHandle *svar = construct(Variant(ret));
+        auto size = m_apcStats.updateAPCValue(svar, sval->var,
+            sval->size, sval->expiry == 0, false);
         sval->var->unreferenceRoot();
         sval->var = svar;
+        sval->size = size;
         found = true;
       }
     }
@@ -329,8 +343,11 @@ bool ConcurrentTableSharedStore::cas(const String& key, int64_t old,
       sval = &acc->second;
       if (!sval->expired() && get_int64_value(sval) == old) {
         APCHandle *var = construct(Variant(val));
+        auto size = m_apcStats.updateAPCValue(var, sval->var,
+            sval->size, sval->expiry == 0, false);
         sval->var->unreferenceRoot();
         sval->var = var;
+        sval->size = size;
         success = true;
       }
     }
@@ -387,17 +404,18 @@ bool ConcurrentTableSharedStore::store(const String& key, const Variant& value,
   bool overwritePrime = false;
   {
     Map::accessor acc;
+    APCHandle* current = nullptr;
     present = !m_vars.insert(acc, kcp);
     sval = &acc->second;
     if (present) {
-      free((void *)kcp);
+      free((void*)kcp);
       if (overwrite || sval->expired()) {
         // if ApcTTLLimit is set, then only primed keys can have expiry == 0
         overwritePrime = (sval->expiry == 0);
         if (sval->inMem()) {
-          sval->var->unreferenceRoot();
+          current = sval->var;
         } else {
-          // mark the inFile copy invalid since we are updating the key
+          m_apcStats.removeInFileValue(std::abs(sval->sSize));
           sval->sAddr = nullptr;
           sval->sSize = 0;
         }
@@ -405,10 +423,24 @@ bool ConcurrentTableSharedStore::store(const String& key, const Variant& value,
         svar->unreferenceRoot();
         return false;
       }
+    } else {
+      m_apcStats.addKey(kcp);
     }
     int64_t adjustedTtl = adjust_ttl(ttl, overwritePrime || !limit_ttl);
     if (check_noTTL(key.data(), key.size())) {
       adjustedTtl = 0;
+    }
+    if (current) {
+      if (sval->expiry == 0 && adjustedTtl != 0) {
+        m_apcStats.removeAPCValue(sval->size, current, true, sval->expired());
+        m_apcStats.addAPCValue(svar, false);
+      } else {
+        sval->size = m_apcStats.updateAPCValue(svar, current, sval->size,
+            sval->expiry == 0, sval->expired());
+      }
+      current->unreferenceRoot();
+    } else {
+      sval->size = m_apcStats.addAPCValue(svar, present);
     }
     sval->set(svar, adjustedTtl);
     expiry = sval->expiry;
@@ -430,23 +462,27 @@ void ConcurrentTableSharedStore::prime(const std::vector<KeyValuePair> &vars) {
     const KeyValuePair &item = vars[i];
     Map::accessor acc;
     const char *copy = strdup(item.key);
-    m_vars.insert(acc, copy);
+    if (m_vars.insert(acc, copy)) {
+      m_apcStats.addPrimedKey(copy);
+    }
     if (item.inMem()) {
+      auto size = m_apcStats.addAPCValue(item.value, true);
+      acc->second.size = size;
       acc->second.set(item.value, 0);
     } else {
       acc->second.sAddr = item.sAddr;
       acc->second.sSize = item.sSize;
-      continue;
+      m_apcStats.addInFileValue(std::abs(acc->second.sSize));
     }
   }
 }
 
 bool ConcurrentTableSharedStore::constructPrime(const String& v,
                                                 KeyValuePair& item,
-                                                bool serialized) {
+                                                bool serObj) {
   if (s_apc_file_storage.getState() !=
-      SharedStoreFileStorage::StorageState::Invalid &&
-      (!v.get()->isStatic() || serialized)) {
+        SharedStoreFileStorage::StorageState::Invalid &&
+      (!v.get()->isStatic() || serObj)) {
     // StaticString for non-object should consume limited amount of space,
     // not worth going through the file storage
 
@@ -457,18 +493,22 @@ bool ConcurrentTableSharedStore::constructPrime(const String& v,
     char *sAddr = s_apc_file_storage.put(s.data(), s.size());
     if (sAddr) {
       item.sAddr = sAddr;
-      item.sSize = serialized ? 0 - s.size() : s.size();
+      item.sSize = serObj ? 0 - s.size() : s.size();
       return false;
     }
   }
-  item.value = APCHandle::Create(v, serialized);
+  if (serObj) {
+    item.value = APCHandle::CreateObjectFromSerializedString(v);
+  } else {
+    item.value = APCHandle::Create(v);
+  }
   return true;
 }
 
 bool ConcurrentTableSharedStore::constructPrime(const Variant& v,
                                                 KeyValuePair& item) {
   if (s_apc_file_storage.getState() !=
-      SharedStoreFileStorage::StorageState::Invalid &&
+        SharedStoreFileStorage::StorageState::Invalid &&
       (IS_REFCOUNTED_TYPE(v.getType()))) {
     // Only do the storage for ref-counted type
     String s = apc_serialize(v);
@@ -479,7 +519,7 @@ bool ConcurrentTableSharedStore::constructPrime(const Variant& v,
       return false;
     }
   }
-  item.value = APCHandle::Create(v, false);
+  item.value = APCHandle::Create(v);
   return true;
 }
 
@@ -510,7 +550,70 @@ void ConcurrentTableSharedStore::primeDone() {
 ///////////////////////////////////////////////////////////////////////////////
 // debugging support
 
-void ConcurrentTableSharedStore::dump(std::ostream & out, bool keyOnly,
+void ConcurrentTableSharedStore::dumpKeyAndValue(std::ostream & out) {
+  for (Map::iterator iter = m_vars.begin(); iter != m_vars.end(); ++iter) {
+    const char *key = iter->first;
+    out << key;
+    out << " #### ";
+    const StoreValue *sval = &iter->second;
+    if (!sval->expired()) {
+      VariableSerializer vs(VariableSerializer::Type::Serialize);
+      Variant value;
+      if (sval->inMem()) {
+        value = sval->var->toLocal();
+      } else {
+        assert(sval->inFile());
+        // we need unserialize and serialize again because the format was
+        // APCSerialize
+        value = apc_unserialize(sval->sAddr, sval->getSerializedSize());
+      }
+      try {
+        String valS(vs.serialize(value, true));
+        out << valS.toCppString();
+      } catch (const Exception &e) {
+        out << "Exception: " << e.what();
+      }
+    }
+    out << std::endl;
+  }
+}
+
+void ConcurrentTableSharedStore::dumpKeyOnly(std::ostream & out) {
+  for (Map::iterator iter = m_vars.begin(); iter != m_vars.end(); ++iter) {
+    out << (const char*) iter->first << std::endl;
+  }
+}
+
+void ConcurrentTableSharedStore::dumpKeyAndMeta(std::ostream & out) {
+  out << "key inmem size ttl" << std::endl;
+  int64_t curr_time = time(nullptr);
+  for (Map::iterator iter = m_vars.begin(); iter != m_vars.end(); ++iter) {
+    const char *key = iter->first;
+    const StoreValue *sval = &iter->second;
+    size_t size;
+    int64_t ttl;
+    if (sval->inMem()) {
+      VariableSerializer vs(VariableSerializer::Type::Serialize);
+      Variant value = sval->var->toLocal();
+      String valS(vs.serialize(value, true));
+      size = valS.size();
+    } else {
+      size = sval->getSerializedSize();
+    }
+    if (sval->expiry) {
+      ttl = sval->expiry - curr_time;
+    } else {
+      ttl = 0;
+    }
+    out << key << " "
+        << (int) sval->inMem() << " "
+        << size << " "
+        << ttl << std::endl;
+  }
+}
+
+void ConcurrentTableSharedStore::dump(std::ostream & out,
+                                      enum DumpMode dumpMode,
                                       int waitSeconds) {
   // Use write lock here to prevent concurrent ops running in parallel from
   // invalidatint the iterator.
@@ -526,32 +629,18 @@ void ConcurrentTableSharedStore::dump(std::ostream & out, bool keyOnly,
   WriteLock l(m_lock);
   Logger::Info("dumping apc");
   out << "Total " << m_vars.size() << std::endl;
-  for (Map::iterator iter = m_vars.begin(); iter != m_vars.end(); ++iter) {
-    const char *key = iter->first;
-    out << key;
-    if (!keyOnly) {
-      out << " #### ";
-      const StoreValue *sval = &iter->second;
-      if (!sval->expired()) {
-        VariableSerializer vs(VariableSerializer::Type::Serialize);
-        Variant value;
-        if (sval->inMem()) {
-          value = sval->var->toLocal();
-        } else {
-          assert(sval->inFile());
-          // we need unserialize and serialize again because the format was
-          // APCSerialize
-          value = apc_unserialize(sval->sAddr, sval->getSerializedSize());
-        }
-        try {
-          String valS(vs.serialize(value, true));
-          out << valS.toCppString();
-        } catch (const Exception &e) {
-          out << "Exception: " << e.what();
-        }
-      }
-    }
-    out << std::endl;
+  switch (dumpMode) {
+    case DumpMode::keyOnly:
+      dumpKeyOnly(out);
+      break;
+    case DumpMode::keyAndValue:
+      dumpKeyAndValue(out);
+      break;
+    case DumpMode::keyAndMeta:
+      dumpKeyAndMeta(out);
+      break;
+    default:
+      Logger::Info("unknown dumper style");
   }
   Logger::Info("dumping apc done");
   if (apcExtension::ConcurrentTableLockFree) {

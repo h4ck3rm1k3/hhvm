@@ -67,7 +67,8 @@ void print(const Block* block);
 void print(std::ostream& ostream, const IRUnit&,
            const RegAllocInfo* regs = nullptr,
            const AsmInfo* asmInfo = nullptr,
-           const GuardConstraints* guards = nullptr);
+           const GuardConstraints* guards = nullptr,
+           bool dotBodies = false);
 void print(const IRUnit& unit);
 
 /*
@@ -78,18 +79,21 @@ static inline bool dumpIREnabled(int level = 1) {
   return HPHP::Trace::moduleEnabledRelease(HPHP::Trace::printir, level);
 }
 
-static const int kIRLevel = 1;
-static const int kCodeGenLevel = 2;
-static const int kRegAllocLevel = 3;
-static const int kOptLevel = 4;
-static const int kExtraLevel = 6;
+const int kIRLevel = 1;
+const int kCodeGenLevel = 2;
+const int kOptLevel = 3;
+const int kRegAllocLevel = 4;
+const int kExtraLevel = 6;
 
-void dumpTrace(int level, const IRUnit&, const char* caption,
+void printUnit(int level, const IRUnit&, const char* caption,
                const RegAllocInfo* regs = nullptr, AsmInfo* ai = nullptr,
                const GuardConstraints* guards = nullptr);
 
 inline std::ostream& operator<<(std::ostream& os, Type t) {
   return os << t.toString();
+}
+inline std::ostream& operator<<(std::ostream& os, TypeConstraint tc) {
+  return os << tc.toString();
 }
 
 }}

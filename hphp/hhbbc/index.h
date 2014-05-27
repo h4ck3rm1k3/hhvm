@@ -26,7 +26,9 @@
 
 #include "folly/Optional.h"
 
+#include "hphp/util/either.h"
 #include "hphp/runtime/base/complex-types.h"
+#include "hphp/runtime/base/repo-auth-type-array.h"
 #include "hphp/runtime/vm/type-constraint.h"
 
 #include "hphp/hhbbc/hhbbc.h"
@@ -38,12 +40,14 @@ namespace HPHP { namespace HHBBC {
 
 struct Type;
 struct Index;
+enum class ClsTag : uint8_t;
 
 namespace php {
 struct Class;
 struct Func;
 struct Unit;
 struct Program;
+struct Const;
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -136,8 +140,9 @@ struct Class {
    * Returns true if this class could be a subtype of `o' at runtime.
    * When true is returned the two classes may still be unrelated but it is
    * not possible to tell. A typical example is with "non unique" classes.
+   * 'tag' and 'otherTag' specify the precision of type of the class.
    */
-  bool couldBe(const Class& o) const;
+  bool couldBe(const Class& o, ClsTag tag, ClsTag otherTag) const;
 
   /*
    * Returns the name of this class.  Non-null guarantee.
@@ -154,19 +159,26 @@ struct Class {
   bool couldBeOverriden() const;
 
   /*
+   * Returns true if this class could be an interface.
+   */
+  bool couldBeInterface() const;
+
+  /*
    * Returns the Class that is the first common ancestor between 'this' and 'o'.
    * If there is no common ancestor folly::none is returned
    */
   folly::Optional<Class> commonAncestor(const Class& o) const;
 
 private:
-  Class(borrowed_ptr<const Index>, SStringOr<ClassInfo>);
+  Class(Either<SString, borrowed_ptr<ClassInfo>>);
+  Class(Either<SString, borrowed_ptr<ClassInfo>>,
+        std::set<borrowed_ptr<ClassInfo>>&& ifaces);
 
 private:
   friend std::string show(const Class&);
   friend struct ::HPHP::HHBBC::Index;
-  borrowed_ptr<const Index> index;
-  SStringOr<ClassInfo> val;
+  Either<SString,borrowed_ptr<ClassInfo>> val;
+  std::shared_ptr<std::set<borrowed_ptr<ClassInfo>>> ifaces;
 };
 
 /*
@@ -194,6 +206,13 @@ struct Func {
    */
   SString name() const;
 
+  /*
+   * Returns interface class associated with this function, if any.
+   * This field is present only when the function is resolved through
+   * an interface.
+   */
+  folly::Optional<res::Class> interfaceCls() const { return rcls; }
+
 private:
   friend struct ::HPHP::HHBBC::Index;
   using Rep = boost::variant< SString
@@ -203,11 +222,13 @@ private:
 
 private:
   Func(borrowed_ptr<const Index>, Rep);
+  Func(borrowed_ptr<const Index>, Rep, res::Class);
   friend std::string show(const Func&);
 
 private:
   borrowed_ptr<const Index> index;
   Rep val;
+  folly::Optional<res::Class> rcls;
 };
 
 /*
@@ -221,11 +242,8 @@ std::string show(const Class&);
 //////////////////////////////////////////////////////////////////////
 
 /*
- * This class encapsulates the known facts about the program, possibly
- * with a whole-program view.  If the Index is created from a
- * php::Program instead of a php::Unit, it is considered a
- * "comprehensive" Index, which means it will assume it can see the
- * whole program, and may return more aggressive answers.
+ * This class encapsulates the known facts about the program, with a
+ * whole-program view.
  *
  * This structure contains unowned pointers into the php::Program it
  * was created for.  It should not out-live the Program.
@@ -237,20 +255,25 @@ std::string show(const Class&);
  */
 struct Index {
   /*
-   * Create a comprehensive, whole-program-aware index.
+   * Create an Index for a php::Program.  Performs some initial
+   * analysis of the program.
    */
   explicit Index(borrowed_ptr<php::Program>);
-
-  /*
-   * Create a non-comprehensive index for a single php::Unit.
-   */
-  explicit Index(borrowed_ptr<php::Unit>);
 
   /*
    * This class must not be destructed after its associated
    * php::Program.
    */
   ~Index();
+
+  /*
+   * The Index contains a Builder for an ArrayTypeTable.
+   *
+   * If we're creating assert types with options.InsertAssertions, we
+   * need to keep track of which array types exist in the whole
+   * program in order to include it in the repo.
+   */
+  std::unique_ptr<ArrayTypeTable::Builder>& array_table_builder() const;
 
   /*
    * Find all the closures created inside the context of a given
@@ -273,6 +296,23 @@ struct Index {
   folly::Optional<res::Class> resolve_class(Context, SString name) const;
 
   /*
+   * Resolve a closure class.
+   *
+   * Returns both a resolved Class, and the actual php::Class for the
+   * closure.  This function should only be used with class names are
+   * guaranteed to be closures (for example, the name supplied to a
+   * CreateCl opcode).
+   *
+   * TODO(#3363851): logically this function should never fail to
+   * resolve, but there's a bug somewhere upstream where a closure
+   * class appears more than once but still has AttrUnique.  For now
+   * we handle this case by just returning a vector of all the
+   * possible closures.
+   */
+  std::pair<res::Class,std::vector<borrowed_ptr<php::Class>>>
+    resolve_closure_class(Context ctx, SString name) const;
+
+  /*
    * Return a resolved class for a builtin class.
    *
    * Pre: `name' must be the name of a class defined in a systemlib.
@@ -287,6 +327,22 @@ struct Index {
    * fail).
    */
   res::Func resolve_func(Context, SString name) const;
+
+  /*
+   * Try to resolve a function using namespace-style fallback lookup.
+   *
+   * The name `name' is tried first, and `fallback' is used if this
+   * isn't found.  Both names must already be namespace-normalized.
+   * Resolution can fail because there are possible situations where
+   * we don't know which will be called at runtime.
+   *
+   * Note: the returned function may or may not be defined at the
+   * program point (it could require a function autoload that might
+   * fail).
+   */
+  folly::Optional<res::Func> resolve_func_fallback(Context,
+                                                   SString name,
+                                                   SString fallback) const;
 
   /*
    * Try to resolve a class method named `name' with a given Context
@@ -343,8 +399,16 @@ struct Index {
   Type lookup_return_type_raw(borrowed_ptr<const php::Func>) const;
 
   /*
+   * Return the best known types of a closure's used variables (on
+   * entry to the closure).  The function is the closure body.
+   */
+  std::vector<Type>
+    lookup_closure_use_vars(borrowed_ptr<const php::Func>) const;
+
+  /*
    * Return the availability of $this on entry to the provided method.
-   * If the Func provided is not a method of a class false is returned.
+   * If the Func provided is not a method of a class false is
+   * returned.
    */
   bool lookup_this_available(borrowed_ptr<const php::Func>) const;
 
@@ -388,6 +452,18 @@ struct Index {
   std::vector<Context> refine_return_type(borrowed_ptr<const php::Func>, Type);
 
   /*
+   * Refine the used var types for a closure, based on a round of
+   * analysis.
+   *
+   * No other threads should be calling functions on this Index when
+   * this function is called.
+   *
+   * Returns: true if the types have changed.
+   */
+  bool refine_closure_use_vars(borrowed_ptr<const php::Class>,
+                               const std::vector<Type>&);
+
+  /*
    * Refine the private property types for a class, based on a round
    * of analysis.
    *
@@ -412,7 +488,17 @@ private:
   Index& operator=(Index&&) = delete;
 
 private:
+  template<class FuncRange>
+  res::Func resolve_func_helper(const FuncRange&, SString) const;
+
+  folly::Optional<res::Func> resolve_iface_method(Context,
+                                                  res::Class cls,
+                                                  SString name) const;
   res::Func do_resolve(borrowed_ptr<const php::Func>) const;
+  bool must_be_derived_from(borrowed_ptr<const php::Class>,
+                            borrowed_ptr<const php::Class>) const;
+  bool could_be_related(borrowed_ptr<const php::Class>,
+                        borrowed_ptr<const php::Class>) const;
 
 private:
   std::unique_ptr<IndexData> const m_data;

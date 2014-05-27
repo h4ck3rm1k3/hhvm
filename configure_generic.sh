@@ -5,7 +5,7 @@
 #########################################
 
 # Current Script details
-SCRIPT="$(readlink -f ${BASH_SOURCE[0]})"
+SCRIPT="$(readlink -f $0)"
 SCRIPT_DIR="$(dirname $SCRIPT)"
 PWD=$(readlink -f `pwd`)
 
@@ -78,7 +78,7 @@ case $DISTRO in
             libxml++-devel libXpm-devel mysql-devel ncurses-devel oniguruma-devel openldap-devel \
             openssl-devel pam-devel pcre-devel readline-devel tbb-devel unixODBC-devel \
             uw-imap-devel zlib zlib-devel \
-            ImageMagick-devel libxslt-devel
+            ImageMagick-devel libxslt-devel &
 
         # For patched stuff.
         git clone git://github.com/libevent/libevent.git --quiet &
@@ -110,7 +110,7 @@ case $DISTRO in
         git clone git://github.com/libevent/libevent.git --quiet &
         git clone git://github.com/bagder/curl.git --quiet &
         svn checkout http://google-glog.googlecode.com/svn/trunk/ google-glog --quiet &
-        wget http://www.canonware.com/download/jemalloc/jemalloc-3.0.0.tar.bz2 --quiet &
+        wget http://www.canonware.com/download/jemalloc/jemalloc-3.5.1.tar.bz2 --quiet &
         ;;
     *)
         echo "Unknown distribution. Please update packages in this section."
@@ -119,7 +119,7 @@ case $DISTRO in
 esac
 
 # init submodules
-git submodule update --init
+git submodule update --init --recursive
 
 # wait until all background processes finished
 FAIL=0
@@ -159,7 +159,7 @@ fi
 # libevent
 cd libevent
 git checkout release-1.4.14b-stable
-cat ../hphp/third_party/libevent-1.4.14.fb-changes.diff | patch -p1
+cat ../third-party/libevent-1.4.14.fb-changes.diff | patch -p1
 ./autogen.sh
 ./configure --prefix=$CMAKE_PREFIX_PATH
 make -j $CPUS
@@ -183,15 +183,15 @@ if [[ "x$DISTRO" == "xubuntu" ]];then
     cd ..
 
     # jemaloc
-    tar xjvf jemalloc-3.0.0.tar.bz2
-    cd jemalloc-3.0.0
+    tar xjvf jemalloc-3.5.1.tar.bz2
+    cd jemalloc-3.5.1
     ./configure --prefix=$CMAKE_PREFIX_PATH
     make -j $CPUS
     make install
     cd ..
 
     # cleanup
-    rm -rf google-glog jemalloc-3.0.0.tar.bz2 jemalloc-3.0.0
+    rm -rf google-glog jemalloc-3.5.1.tar.bz2 jemalloc-3.5.1
 fi
 
 # cleanup

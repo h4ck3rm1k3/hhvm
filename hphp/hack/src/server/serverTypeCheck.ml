@@ -71,7 +71,7 @@ let set_of_idl l =
 let add_old_decls old_files_info fast =
   SMap.fold begin fun filename info_names acc ->
     match SMap.get filename old_files_info with
-    | Some {FileInfo.consider_names_just_for_autoload = true}
+    | Some {FileInfo.consider_names_just_for_autoload = true; _}
     | None -> acc
     | Some old_info ->
       let old_info_names = FileInfo.simplify old_info in
@@ -129,13 +129,15 @@ let remove_decls env fast_parsed =
   let nenv =
     SMap.fold begin fun fn _ nenv ->
       match SMap.get fn env.files_info with
-      | Some {FileInfo.consider_names_just_for_autoload = true}
+      | Some {FileInfo.consider_names_just_for_autoload = true; _}
       | None -> nenv
       | Some {FileInfo.
               funs = funl;
               classes = classel;
               types = typel;
-              consts = constl} ->
+              consts = constl;
+              comments;
+              consider_names_just_for_autoload} ->
         let funs = set_of_idl funl in
         let classes = set_of_idl classel in
         let typedefs = set_of_idl typel in
@@ -158,11 +160,13 @@ let remove_failed fast failed =
 (* Parses the set of modified files *)
 (*****************************************************************************)
 
-let rec parsing genv env =
+let parsing genv env =
   Parser_heap.ParserHeap.remove_batch env.failed_parsing;
+  SearchService.SearchUpdates.remove_batch env.failed_parsing;
+  SearchService.SearchKeys.remove_batch env.failed_parsing;
   SharedMem.collect();
   let get_next = Bucket.make (SSet.elements env.failed_parsing) in
-  Parsing_service.go genv.workers env.files_info ~get_next
+  Parsing_service.go genv.workers false env.files_info ~get_next
 
 (*****************************************************************************)
 (* At any given point in time, we want to know what each file defines.

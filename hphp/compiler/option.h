@@ -18,9 +18,13 @@
 #define incl_HPHP_OPTION_H_
 
 #include "hphp/util/hdf.h"
+
+#include "folly/dynamic.h"
+
 #include <map>
 #include <set>
 #include <vector>
+#include "hphp/runtime/base/runtime-option.h"
 #include "hphp/util/string-bag.h"
 #include "hphp/util/deprecated/base.h"
 #include "hphp/util/deprecated/declare-boost-types.h"
@@ -30,13 +34,16 @@ namespace HPHP {
 DECLARE_BOOST_TYPES(BlockScope);
 DECLARE_BOOST_TYPES(FileScope);
 
+// Can we make sure this equals IniSettingMap?
+typedef folly::dynamic IniSettingMap;
+
 class Option {
 public:
 
   /**
    * Load options from different sources.
    */
-  static void Load(Hdf &config);
+  static void Load(const IniSettingMap& ini, Hdf &config);
   static void Load(); // load default options
 
   /**
@@ -227,6 +234,8 @@ public:
   static bool EnableAspTags;
   static bool EnableXHP;
   static bool IntsOverflowToInts;
+  static HackStrictOption StrictArrayFillKeys;
+  static HackStrictOption DisallowDynamicVarEnvFuncs;
   static int ParserThreadCount;
 
   static int GetScannerType();
@@ -266,9 +275,10 @@ public:
 private:
   static StringBag OptionStrings;
 
-  static void LoadRootHdf(const Hdf &roots, std::map<std::string,
-                          std::string> &map);
-  static void LoadRootHdf(const Hdf &roots, std::vector<std::string> &vec);
+  static void LoadRootHdf(const IniSettingMap& ini, const Hdf &roots,
+                          std::map<std::string, std::string> &map);
+  static void LoadRootHdf(const IniSettingMap& ini, const Hdf &roots,
+                          std::vector<std::string> &vec);
   static void OnLoad();
 
   static bool IsDynamic(const std::string &name,

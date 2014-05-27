@@ -20,8 +20,11 @@
 #include <memory>
 #include <string>
 #include <set>
+#include <utility>
 
 #include "hphp/util/functional.h"
+
+#include "hphp/runtime/base/repo-auth-type-array.h"
 
 namespace HPHP { struct UnitEmitter; }
 namespace HPHP { namespace HHBBC {
@@ -43,7 +46,7 @@ struct Options {
    * Functions that aren't named in this list may be optimized with
    * the assumption they aren't intercepted, in whole_program mode.
    */
-  std::set<std::string, stdltistr> InterceptableFunctions;
+  std::set<std::string,stdltistr> InterceptableFunctions;
 
   //////////////////////////////////////////////////////////////////////
 
@@ -51,7 +54,7 @@ struct Options {
    * Flags for various limits on when to perform widening operations.
    * See analyze.cpp for details.
    */
-  uint32_t analyzeFuncWideningLimit = 20;
+  uint32_t analyzeFuncWideningLimit = 50;
   uint32_t analyzeClassWideningLimit = 20;
 
   /*
@@ -108,10 +111,10 @@ struct Options {
    * removes unnecessary instructions within a single block, or across
    * blocks, respectively.
    *
-   * Note: this is off for now because it is a bit of a work in
+   * Note: GlobalDCE is off for now because it is a bit of a work in
    * progress (needs more testing).
    */
-  bool LocalDCE = false;
+  bool LocalDCE = true;
   bool GlobalDCE = false;
 
   /*
@@ -135,6 +138,12 @@ struct Options {
    * can.  E.g. InstanceOf -> InstanceOfD or FPushFunc -> FPushFuncD.
    */
   bool StrengthReduce = true;
+
+  /*
+   * Whether to turn on peephole optimizations (e.g., Concat, ..., Concat ->
+   * ..., ConcatN).
+   */
+  bool Peephole = true;
 
   /*
    * Whether to enable 'FuncFamily' method resolution.
@@ -181,6 +190,13 @@ struct Options {
    * inferred, we'll raise a notice and unserialize() returns false.
    */
   bool HardPrivatePropInference = true;
+
+  /**
+   * If true, we'll assume that dynamic function calls (like '$f()') do not
+   * have effects on unknown locals (i.e. are not extract / compact /...).
+   * See, e.g. __SystemLib\\extract vs extract.
+   */
+  bool DisallowDynamicVarEnvFuncs = true;
 };
 extern Options options;
 
@@ -195,13 +211,11 @@ extern Options options;
  * expects traits are already flattened (it might be wrong if they
  * aren't).
  */
-std::vector<std::unique_ptr<UnitEmitter>>
+std::pair<
+  std::vector<std::unique_ptr<UnitEmitter>>,
+  std::unique_ptr<ArrayTypeTable::Builder>
+>
 whole_program(std::vector<std::unique_ptr<UnitEmitter>>);
-
-/*
- * Perform single-unit optimizations.
- */
-std::unique_ptr<UnitEmitter> single_unit(std::unique_ptr<UnitEmitter>);
 
 //////////////////////////////////////////////////////////////////////
 

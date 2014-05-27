@@ -389,6 +389,12 @@
                     "name": "array1",
                     "type": "Variant",
                     "desc": "Initial array to merge."
+                },
+                {
+                    "name": "array2",
+                    "type": "Variant",
+                    "value": "null_variant",
+                    "desc": "Second array to merge."
                 }
             ]
         },
@@ -408,6 +414,12 @@
                     "name": "array1",
                     "type": "Variant",
                     "desc": "Initial array to merge."
+                },
+                {
+                    "name": "array2",
+                    "type": "Variant",
+                    "value": "null_variant",
+                    "desc": "Second array to merge."
                 }
             ]
         },
@@ -427,6 +439,12 @@
                     "name": "array1",
                     "type": "Variant",
                     "desc": "The array in which elements are replaced."
+                },
+                {
+                    "name": "array2",
+                    "type": "Variant",
+                    "value": "null_variant",
+                    "desc": "The first array from which to replace values."
                 }
             ]
         },
@@ -446,6 +464,12 @@
                     "name": "array1",
                     "type": "Variant",
                     "desc": "The array in which elements are replaced."
+                },
+                {
+                    "name": "array2",
+                    "type": "Variant",
+                    "value": "null_variant",
+                    "desc": "The first array from which to replace values."
                 }
             ]
         },
@@ -461,7 +485,7 @@
             },
             "args": [
                 {
-                    "name": "ar1",
+                    "name": "arr1",
                     "type": "Variant",
                     "desc": "An array being sorted.",
                     "ref": true
@@ -891,6 +915,24 @@
         },
         {
             "name": "compact",
+            "desc": "Creates an array containing variables and their values.\n\nFor each of these, compact() looks for a variable with that name in the current symbol table and adds it to the output array such that the variable name becomes the key and the contents of the variable become the value for that key. In short, it does the opposite of extract().\n\nAny strings that are not set will simply be skipped.",
+            "flags": [
+                "VariableArguments"
+            ],
+            "return": {
+                "type": "VariantMap",
+                "desc": "Returns the output array with all the variables added to it."
+            },
+            "args": [
+                {
+                    "name": "varname",
+                    "type": "Variant",
+                    "desc": "compact() takes a variable number of parameters. Each parameter can be either a string containing the name of the variable, or an array of variable names. The array can contain other arrays of variable names inside it; compact() handles it recursively."
+                }
+            ]
+        },
+        {
+            "name": "__SystemLib\\compact_sl",
             "desc": "Creates an array containing variables and their values.\n\nFor each of these, compact() looks for a variable with that name in the current symbol table and adds it to the output array such that the variable name becomes the key and the contents of the variable become the value for that key. In short, it does the opposite of extract().\n\nAny strings that are not set will simply be skipped.",
             "flags": [
                 "VariableArguments"

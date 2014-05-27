@@ -15,6 +15,11 @@ class UConverter {
   public function __construct(string $destination_encoding = 'utf-8',
                               string $source_encoding = 'utf-8'): void;
 
+  // TODO(4017519) PHP5 doesn't have this destructor, we have it to prevent a
+  // nasty issue with destructing IntlUConverter.
+  <<__Native>>
+  public function __destruct(): void;
+
   /**
    * Convert string from one charset to another
    *
@@ -40,7 +45,7 @@ class UConverter {
   public function fromUCallback(int $reason,
                                 array $source,
                                 int $codePoint,
-                                int &$error) {
+                                int &$error): mixed {
     switch ($reason) {
       case self::REASON_UNASSIGNED:
       case self::REASON_ILLEGAL:
@@ -131,7 +136,7 @@ class UConverter {
    *
    * @return string
    */
-  public static function getMimeName(string $name) {
+  public static function getMimeName(string $name): mixed {
     return self::getStandardName($name, "MIME");
   }
 
@@ -164,7 +169,7 @@ class UConverter {
    *
    * @return string -
    */
-  public function getSubstChars() {
+  public function getSubstChars(): mixed {
     // Ambiguous, but mostly PHP compat
     // since PHP version lacks distinct setters
     return $this->getSourceSubstChars();
@@ -227,7 +232,7 @@ class UConverter {
    *
    * @return void -
    */
-  public function setSubstChars(string $chars) {
+  public function setSubstChars(string $chars): bool {
     return $this->setSourceSubstChars($chars) &&
            $this->setDestinationSubstChars($chars);
   }
@@ -245,7 +250,7 @@ class UConverter {
   public function toUCallback(int $reason,
                               ?string $source,
                               ?string $codeUnits,
-                              int &$error) {
+                              int &$error): mixed {
     switch ($reason) {
       case self::REASON_UNASSIGNED:
       case self::REASON_ILLEGAL:
@@ -269,7 +274,7 @@ class UConverter {
   public static function transcode(string $str,
                                    string $toEncoding,
                                    string $fromEncoding,
-                                   array $options = null) {
+                                   array $options = null): ?string {
     $cnv = new UConverter($toEncoding, $fromEncoding);
     if ((isset($options['from_subst']) &&
          !$cnv->setSourceSubstChars($options['from_subst'])) ||

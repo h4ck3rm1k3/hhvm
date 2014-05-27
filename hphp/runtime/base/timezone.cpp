@@ -15,13 +15,14 @@
 */
 
 #include "hphp/runtime/base/timezone.h"
-#include "hphp/runtime/base/complex-types.h"
+
+#include "hphp/runtime/base/array-init.h"
+#include "hphp/runtime/base/builtin-functions.h"
 #include "hphp/runtime/base/datetime.h"
 #include "hphp/runtime/base/execution-context.h"
-#include "hphp/runtime/base/type-conversions.h"
-#include "hphp/runtime/base/builtin-functions.h"
 #include "hphp/runtime/base/runtime-error.h"
-#include "hphp/runtime/base/array-init.h"
+#include "hphp/runtime/base/type-conversions.h"
+
 #include "hphp/util/logger.h"
 #include "hphp/util/text-util.h"
 
@@ -94,6 +95,13 @@ TimeZoneInfo TimeZone::GetTimeZoneInfo(char* name, const timelib_tzdb* db) {
   }
 
   TimeZoneInfo tzi(timelib_parse_tzfile(name, db), tzinfo_deleter());
+  if (!tzi) {
+    char* tzid = timelib_timezone_id_from_abbr(name, -1, 0);
+    if (tzid) {
+      tzi = TimeZoneInfo(timelib_parse_tzfile(tzid, db), tzinfo_deleter());
+    }
+  }
+
   if (tzi) {
     Cache[name] = tzi;
   }
@@ -146,14 +154,21 @@ bool TimeZone::SetCurrent(const String& zone) {
   return true;
 }
 
-Array TimeZone::GetNames() {
+Array TimeZone::GetNamesToCountryCodes() {
   const timelib_tzdb *tzdb = timelib_builtin_db();
   int item_count = tzdb->index_size;
   const timelib_tzdb_index_entry *table = tzdb->index;
 
   Array ret;
   for (int i = 0; i < item_count; ++i) {
-    ret.append(String(table[i].id, CopyString));
+    // This string is what PHP considers as "data" or "info" which is basically
+    // the string of "PHP1xx" where xx is country code that uses this timezone.
+    // When country code is unknown or not in use anymore, ?? is used instead.
+    // There is no known better way to extract this information out.
+    const char* infoString = (const char*)&tzdb->data[table[i].pos];
+    const char* countryCode = &infoString[5];
+
+    ret.set(String(table[i].id, CopyString), String(countryCode, CopyString));
   }
   return ret;
 }
@@ -175,7 +190,7 @@ Array TimeZone::GetAbbreviations() {
   Array ret;
   for (const timelib_tz_lookup_table *entry =
          timelib_timezone_abbreviations_list(); entry->name; entry++) {
-    ArrayInit element(3);
+    ArrayInit element(3, ArrayInit::Map{});
     element.set(s_dst, (bool)entry->type);
     element.set(s_offset, entry->gmtoffset);
     if (entry->full_tz_name) {
@@ -256,13 +271,13 @@ Array TimeZone::transitions() const {
       ttinfo &offset = m_tzi->type[index];
       const char *abbr = m_tzi->timezone_abbr + offset.abbr_idx;
 
-      ArrayInit element(5);
-      element.set(s_ts, timestamp);
-      element.set(s_time, dt.toString(DateTime::DateFormat::ISO8601));
-      element.set(s_offset, offset.offset);
-      element.set(s_isdst, (bool)offset.isdst);
-      element.set(s_abbr, String(abbr, CopyString));
-      ret.append(element.create());
+      ret.append(make_map_array(
+        s_ts, timestamp,
+        s_time, dt.toString(DateTime::DateFormat::ISO8601),
+        s_offset, offset.offset,
+        s_isdst, (bool)offset.isdst,
+        s_abbr, String(abbr, CopyString)
+      ));
     }
   }
   return ret;

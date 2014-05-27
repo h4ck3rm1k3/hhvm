@@ -8,8 +8,7 @@ Class* Transliterator::c_Transliterator = nullptr;
 #define FETCH_TRANS(data, obj) \
   auto data = Transliterator::Get(obj); \
   if (!data) { \
-    s_intl_error->throwException("Uninitialized Message Formatter"); \
-    not_reached(); \
+    throw s_intl_error->getException("Uninitialized Message Formatter"); \
   }
 
 
@@ -62,7 +61,7 @@ static Variant HHVM_METHOD(Transliterator, __createInverse) {
   auto trans = data->trans()->createInverse(error);
   if (U_FAILURE(error)) {
     data->setError(error, "transliterator_create_inverse: could not create ");
-    return uninit_null;
+    return init_null();
   }
   data->clearError();
   return Transliterator::newInstance(trans);

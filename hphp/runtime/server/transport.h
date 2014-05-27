@@ -24,6 +24,7 @@
 #include "hphp/util/functional.h"
 #include "hphp/runtime/base/types.h"
 #include "hphp/runtime/base/complex-types.h"
+#include "hphp/runtime/base/string-holder.h"
 #include "hphp/runtime/base/debuggable.h"
 #include "hphp/runtime/base/runtime-option.h"
 
@@ -121,6 +122,7 @@ public:
   // The transport can override the virtualhosts' docroot
   virtual const std::string getDocumentRoot() { return ""; }
   // The transport can say exactly what script to use
+  virtual const std::string getScriptFilename() { return ""; }
   virtual const std::string getPathTranslated() { return ""; }
 
   /**
@@ -134,6 +136,9 @@ public:
   };
   virtual uint16_t getServerPort() {
     return RuntimeOption::ServerPort;
+  };
+  virtual const char *getServerSoftware() {
+    return "HPHP";
   };
 
   /**
@@ -418,7 +423,7 @@ protected:
   // output
   bool m_chunkedEncoding;
   bool m_headerSent;
-  Variant m_headerCallback;
+  Cell m_headerCallback;
   bool m_headerCallbackDone;  // used to prevent infinite loops
   int m_responseCode;
   std::string m_responseCodeInfo;
@@ -458,12 +463,12 @@ protected:
   static void urlUnescape(char *value);
   bool splitHeader(const String& header, String &name, const char *&value);
 
-  String prepareResponse(const void *data, int size, bool &compressed,
-                         bool last);
+  StringHolder prepareResponse(const void *data, int size, bool &compressed,
+                               bool last);
 
 private:
-  void prepareHeaders(bool compressed, bool chunked, const String &response,
-    const String& orig_response);
+  void prepareHeaders(bool compressed, bool chunked,
+    const StringHolder &response, const StringHolder& orig_response);
 };
 
 ///////////////////////////////////////////////////////////////////////////////

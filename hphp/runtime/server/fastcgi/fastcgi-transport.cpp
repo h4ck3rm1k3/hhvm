@@ -16,13 +16,14 @@
 
 #include "hphp/runtime/server/fastcgi/fastcgi-transport.h"
 #include "hphp/runtime/server/fastcgi/fastcgi-server.h"
+#include "hphp/runtime/server/http-protocol.h"
 #include "hphp/runtime/server/transport.h"
 #include "hphp/runtime/base/runtime-error.h"
 #include "folly/io/IOBuf.h"
 #include "folly/io/IOBufQueue.h"
-#include "thrift/lib/cpp/async/TAsyncTransport.h"
-#include "thrift/lib/cpp/async/TAsyncTimeout.h"
-#include "thrift/lib/cpp/transport/TSocketAddress.h"
+#include "thrift/lib/cpp/async/TAsyncTransport.h" // @nolint
+#include "thrift/lib/cpp/async/TAsyncTimeout.h" // @nolint
+#include "thrift/lib/cpp/transport/TSocketAddress.h" // @nolint
 #include "hphp/util/logger.h"
 #include "hphp/util/timer.h"
 #include "folly/MoveWrapper.h"
@@ -53,6 +54,10 @@ FastCGITransport::FastCGITransport(FastCGIConnection* connection, int id)
 
 const char *FastCGITransport::getUrl() {
   return m_requestURI.c_str();
+}
+
+const std::string FastCGITransport::getScriptFilename() {
+  return m_scriptFilename;
 }
 
 const std::string FastCGITransport::getPathTranslated() {
@@ -86,6 +91,11 @@ const char *FastCGITransport::getServerAddr() {
 
 uint16_t FastCGITransport::getServerPort() {
   return (m_serverPort != 0) ? m_serverPort : Transport::getServerPort();
+}
+
+const char *FastCGITransport::getServerSoftware() {
+  return (!m_serverSoftware.empty()) ? m_serverSoftware.c_str() :
+                                       Transport::getServerSoftware();
 }
 
 const void *FastCGITransport::getPostData(int &size) {
@@ -270,6 +280,7 @@ void FastCGITransport::removeHeaderImpl(const char* name) {
 
 static const std::string
   s_status("Status: "),
+  s_space(" "),
   s_colon(": "),
   s_newline("\r\n");
 
@@ -280,6 +291,12 @@ void FastCGITransport::sendResponseHeaders(IOBufQueue& queue, int code) {
   if (code != 200) {
     queue.append(s_status);
     queue.append(std::to_string(code));
+    auto reasonStr = getResponseInfo();
+    if (reasonStr.empty()) {
+      reasonStr = HttpProtocol::GetReasonString(code);
+    }
+    queue.append(s_space);
+    queue.append(reasonStr);
     queue.append(s_newline);
   }
 
@@ -358,6 +375,7 @@ static const std::string
   s_remoteAddr("REMOTE_ADDR"),
   s_serverName("SERVER_NAME"),
   s_serverAddr("SERVER_ADDR"),
+  s_serverSoftware("SERVER_SOFTWARE"),
   s_extendedMethod("REQUEST_METHOD"),
   s_httpVersion("HTTP_VERSION"),
   s_documentRoot("DOCUMENT_ROOT"),
@@ -375,11 +393,17 @@ void FastCGITransport::onHeadersComplete() {
   m_remoteAddr = getRawHeader(s_remoteAddr);
   m_serverName = getRawHeader(s_serverName);
   m_serverAddr = getRawHeader(s_serverAddr);
+  m_serverSoftware = getRawHeader(s_serverSoftware);
   m_extendedMethod = getRawHeader(s_extendedMethod);
   m_httpVersion = getRawHeader(s_httpVersion);
   m_serverObject = getRawHeader(s_scriptName);
+  m_scriptFilename = getRawHeader(s_scriptFilename);
   m_pathTranslated = getRawHeader(s_pathTranslated);
-  m_documentRoot = getRawHeader(s_documentRoot) + "/";
+  m_documentRoot = getRawHeader(s_documentRoot);
+  if (!m_documentRoot.empty() &&
+      m_documentRoot[m_documentRoot.length() - 1] != '/') {
+    m_documentRoot += '/';
+  }
 
   m_serverPort = getIntHeader(s_serverPort);
   m_requestSize = getIntHeader(s_contentLength);
@@ -411,27 +435,41 @@ void FastCGITransport::onHeadersComplete() {
     m_method = Method::POST;
   }
 
-  if (m_pathTranslated.empty()) {
-    // If someone follows http://wiki.nginx.org/HttpFastcgiModule they won't
-    // pass in PATH_TRANSLATED and instead will just send SCRIPT_FILENAME
-    m_pathTranslated = getRawHeader(s_scriptFilename);
+  if (m_httpVersion.empty()) {
+    // If we didn't receive a version, assume default transport version.
+    // Flushing the request early requires HTTP_VERSION to be 1.1.
+    m_httpVersion = Transport::getHTTPVersion();
+  }
+
+  if (m_scriptFilename.empty() || RuntimeOption::ServerFixPathInfo) {
+    // According to php-fpm, some servers don't set SCRIPT_FILENAME. In
+    // this case, it uses PATH_TRANSLATED.
+    // Added runtime option to change m_scriptFilename to s_pathTranslated
+    // which will allow mod_fastcgi and mod_action to work correctly.
+    m_scriptFilename = getRawHeader(s_pathTranslated);
   }
 
   // do a check for mod_proxy_cgi and remove the start portion of the string
   const std::string modProxy = "proxy:fcgi://";
-  if (m_pathTranslated.find(modProxy) == 0) {
-    m_pathTranslated = m_pathTranslated.substr(modProxy.length());
+  if (m_scriptFilename.find(modProxy) == 0) {
+    m_scriptFilename = m_scriptFilename.substr(modProxy.length());
     // remove everything before the first / which is host:port
-    int slashPos = m_pathTranslated.find('/');
+    int slashPos = m_scriptFilename.find('/');
     if (slashPos != String::npos) {
-      m_pathTranslated = m_pathTranslated.substr(slashPos);
+      m_scriptFilename = m_scriptFilename.substr(slashPos);
     }
   }
 
-  // RequestURI needs path_translated to not include the document root
+  // RequestURI needs script_filename and path_translated to not include
+  // the document root
   if (!m_pathTranslated.empty()) {
     if (m_pathTranslated.find(m_documentRoot) == 0) {
       m_pathTranslated = m_pathTranslated.substr(m_documentRoot.length());
+    }
+  }
+  if (!m_scriptFilename.empty()) {
+    if (m_scriptFilename.find(m_documentRoot) == 0) {
+      m_scriptFilename = m_scriptFilename.substr(m_documentRoot.length());
     } else {
       // if the document root isn't in the url set document root to /
       m_documentRoot = "/";

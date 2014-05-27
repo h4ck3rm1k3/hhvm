@@ -42,8 +42,6 @@ class c_BlockableWaitHandle : public c_WaitableWaitHandle {
   {}
   ~c_BlockableWaitHandle() {}
 
-  void t___construct();
-
  public:
   c_BlockableWaitHandle* getNextParent() { return m_nextParent; }
   c_BlockableWaitHandle* unblock();
@@ -52,12 +50,10 @@ class c_BlockableWaitHandle : public c_WaitableWaitHandle {
 
  protected:
   void blockOn(c_WaitableWaitHandle* child);
-  virtual void onUnblocked() = 0;
-  c_WaitableWaitHandle* getChild() = 0;
   void detectCycle(c_WaitableWaitHandle* child) const;
   ObjectData* createCycleException(c_WaitableWaitHandle* child) const;
 
-  static const int8_t STATE_BLOCKED = 3;
+  static const int8_t STATE_BLOCKED = 2;
 
  private:
   c_BlockableWaitHandle* m_nextParent;

@@ -129,18 +129,32 @@ int MethodStatement::getRecursiveCount() const {
 
 FunctionScopePtr MethodStatement::onInitialParse(AnalysisResultConstPtr ar,
                                                  FileScopePtr fs) {
-  int minParam, maxParam;
   ConstructPtr self = shared_from_this();
-  minParam = maxParam = 0;
+  int minParam = 0, numDeclParam = 0;
   bool hasRef = false;
+  bool hasVariadicParam = false;
   if (m_params) {
     std::set<string> names, allDeclNames;
     int i = 0;
-    maxParam = m_params->getCount();
-    for (i = maxParam; i--; ) {
+    numDeclParam = m_params->getCount();
+    ParameterExpressionPtr lastParam =
+      dynamic_pointer_cast<ParameterExpression>(
+        (*m_params)[numDeclParam - 1]);
+    hasVariadicParam = lastParam->isVariadic();
+    if (hasVariadicParam) {
+      allDeclNames.insert(lastParam->getName());
+      // prevent the next loop from visiting the variadic param and testing
+      // its optionality. parsing ensures that the variadic capture param
+      // can *only* be the last param.
+      i = numDeclParam - 2;
+    } else {
+      i = numDeclParam - 1;
+    }
+    for (; i >= 0; --i) {
       ParameterExpressionPtr param =
         dynamic_pointer_cast<ParameterExpression>((*m_params)[i]);
-      if (param->isRef()) hasRef = true;
+      assert(!param->isVariadic());
+      if (param->isRef()) { hasRef = true; }
       if (!param->isOptional()) {
         if (!minParam) minParam = i + 1;
       } else if (minParam && !param->hasTypeHint()) {
@@ -149,7 +163,9 @@ FunctionScopePtr MethodStatement::onInitialParse(AnalysisResultConstPtr ar,
       allDeclNames.insert(param->getName());
     }
 
-    for (i = maxParam-1; i >= 0; i--) {
+    // For the purpose of naming (having entered the the function body), a
+    // variadic capture param acts as any other variable.
+    for (i = (numDeclParam - 1); i >= 0; --i) {
       ParameterExpressionPtr param =
         dynamic_pointer_cast<ParameterExpression>((*m_params)[i]);
       if (names.find(param->getName()) != names.end()) {
@@ -170,6 +186,9 @@ FunctionScopePtr MethodStatement::onInitialParse(AnalysisResultConstPtr ar,
   if (hasRef || m_ref) {
     m_attribute |= FileScope::ContainsReference;
   }
+  if (hasVariadicParam) {
+    m_attribute |= FileScope::VariadicArgumentParam;
+  }
 
   vector<UserAttributePtr> attrs;
   if (m_attrList) {
@@ -181,9 +200,10 @@ FunctionScopePtr MethodStatement::onInitialParse(AnalysisResultConstPtr ar,
   }
 
   StatementPtr stmt = dynamic_pointer_cast<Statement>(shared_from_this());
-  FunctionScopePtr funcScope
-    (new FunctionScope(ar, m_method, m_name, stmt, m_ref, minParam, maxParam,
-                       m_modifiers, m_attribute, m_docComment, fs, attrs));
+  FunctionScopePtr funcScope(
+    new FunctionScope(ar, m_method, m_name, stmt, m_ref, minParam,
+                      numDeclParam, m_modifiers, m_attribute, m_docComment,
+                      fs, attrs));
   if (!m_stmt) {
     funcScope->setVirtual();
   }
@@ -192,8 +212,12 @@ FunctionScopePtr MethodStatement::onInitialParse(AnalysisResultConstPtr ar,
   funcScope->setParamCounts(ar, -1, -1);
 
   if (funcScope->isNative()) {
-    funcScope->setReturnType(ar, Type::FromDataType(
-                                   m_retTypeAnnotation->dataType()));
+    if (m_retTypeAnnotation) {
+      funcScope->setReturnType(
+        ar, Type::FromDataType(m_retTypeAnnotation->dataType(), Type::Variant));
+    } else {
+      funcScope->setReturnType(ar, Type::Variant);
+    }
   }
 
   return funcScope;
@@ -343,9 +367,6 @@ void MethodStatement::setSpecialMethod(ClassScopePtr classScope) {
     classScope->setAttribute(ClassScope::HasConstructor);
   } else if (m_name == "__destruct") {
     classScope->setAttribute(ClassScope::HasDestructor);
-  } else if (m_name == "__call") {
-    classScope->setAttribute(ClassScope::HasUnknownMethodHandler);
-    numArgs = 2;
   } else if (m_name == "__get") {
     classScope->setAttribute(ClassScope::HasUnknownPropGetter);
     numArgs = 1;
@@ -385,6 +406,12 @@ void MethodStatement::setSpecialMethod(ClassScopePtr classScope) {
         "Method %s::%s() cannot take arguments by reference",
         m_originalClassName.c_str(), m_originalName.c_str());
     }
+    // Fatal if any arguments are variadic
+    if (m_params && hasRefParam()) {
+      parseTimeFatal(Compiler::InvalidMagicMethod,
+                     "Method %s::%s() cannot take a variadic argument",
+                     m_originalClassName.c_str(), m_originalName.c_str());
+    }
     // Fatal if protected/private or if the staticness is wrong
     if (m_modifiers->isProtected() || m_modifiers->isPrivate() ||
         m_modifiers->isStatic() != isStatic) {
@@ -420,7 +447,6 @@ void MethodStatement::analyzeProgram(AnalysisResultPtr ar) {
     m_params->analyzeProgram(ar);
   }
 
-  funcScope->resetYieldLabelCount();
   if (m_stmt) m_stmt->analyzeProgram(ar);
 
   if (ar->getPhase() == AnalysisResult::AnalyzeAll) {
@@ -694,13 +720,4 @@ void MethodStatement::checkParameters() {
       }
     }
   }
-}
-
-///////////////////////////////////////////////////////////////////////////////
-// generator helper
-
-std::string MethodStatement::getGeneratorName() const {
-  // generators in traits must use full name, see test traits/2067.php
-  return ((getClassScope() && getClassScope()->isTrait()) ?
-          getFullName() : getOriginalName()) + "$continuation";
 }

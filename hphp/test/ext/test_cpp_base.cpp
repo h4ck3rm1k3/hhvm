@@ -19,7 +19,7 @@
 #include "hphp/util/logger.h"
 #include "hphp/runtime/base/memory-manager.h"
 #include "hphp/runtime/base/builtin-functions.h"
-#include "hphp/runtime/ext/ext_variable.h"
+#include "hphp/runtime/ext/std/ext_std_variable.h"
 #include "hphp/runtime/ext/ext_apc.h"
 #include "hphp/runtime/ext/mysql/ext_mysql.h"
 #include "hphp/runtime/base/shared-store-base.h"
@@ -167,13 +167,11 @@ bool TestCppBase::TestArray() {
     VERIFY(!arr.empty()); VERIFY(arr.size() == 1); VERIFY(arr.length() == 1);
     VERIFY(!arr.isNull());
     VERIFY(arr[0].toInt32() == 0);
-    VS(arr, Array(ArrayInit(1).set(0).create()));
 
     arr = Array::Create("test");
     VERIFY(!arr.empty()); VERIFY(arr.size() == 1); VERIFY(arr.length() == 1);
     VERIFY(!arr.isNull());
     VERIFY(equal(arr[0], String("test")));
-    VS(arr, Array(ArrayInit(1).set("test").create()));
 
     Array arrCopy = arr;
     arr = Array::Create(arr);
@@ -181,19 +179,16 @@ bool TestCppBase::TestArray() {
     VERIFY(!arr.isNull());
     VERIFY(arr[0].toArray().size() == 1);
     VS(arr[0], arrCopy);
-    VS(arr, Array(ArrayInit(1).set(arrCopy).create()));
 
     arr = Array::Create("name", 1);
     VERIFY(!arr.empty()); VERIFY(arr.size() == 1); VERIFY(arr.length() == 1);
     VERIFY(!arr.isNull());
     VERIFY(arr[s_name].toInt32() == 1);
-    VS(arr, Array(ArrayInit(1).set(s_name, 1).create()));
 
     arr = Array::Create(s_name, "test");
     VERIFY(!arr.empty()); VERIFY(arr.size() == 1); VERIFY(arr.length() == 1);
     VERIFY(!arr.isNull());
     VERIFY(equal(arr[s_name], String("test")));
-    VS(arr, Array(ArrayInit(1).set(s_name, "test").create()));
 
     arrCopy = arr;
     arr = Array::Create(s_name, arr);
@@ -201,7 +196,6 @@ bool TestCppBase::TestArray() {
     VERIFY(!arr.isNull());
     VS(arr[s_name], arrCopy);
     VERIFY(arr[s_name].toArray().size() == 1);
-    VS(arr, Array(ArrayInit(1).set(s_name, arrCopy).create()));
   }
 
   // iteration
@@ -219,16 +213,6 @@ bool TestCppBase::TestArray() {
     }
     VERIFY(i == 2);
   }
-  /* TODO: fix this
-  {
-    Variant arr = make_map_array("n1", "v1", "n2", "v2");
-    arr.escalate();
-    for (ArrayIter iter = arr.begin(arr, true); !iter->end(); iter->next()) {
-      arr.lvalAt(iter->first()).reset();
-    }
-    VS(arr, Array::Create());
-  }
-  */
 
   static const StaticString s_Array("Array");
 
@@ -478,8 +462,8 @@ bool TestCppBase::TestObject() {
     Variant v = unserialize_from_string(s);
     VERIFY(v.isObject());
     auto o = v.toObject();
-    VS(o->o_getClassName(), "__PHP_Incomplete_Class");
-    auto os = f_serialize(o);
+    VS(o->o_getClassName().asString(), "__PHP_Incomplete_Class");
+    auto os = HHVM_FN(serialize)(o);
     VS(os, "O:1:\"B\":1:{s:3:\"obj\";O:1:\"A\":1:{s:1:\"a\";i:10;}}");
   }
   return Count(true);
@@ -591,6 +575,7 @@ bool TestCppBase::TestIpBlockMap() {
   IpBlockMap::BinaryPrefixTrie::InsertNewPrefix(&root, value, 128, true);
   VERIFY(root.isAllowed(value));
 
+  IniSetting::Map ini = IniSetting::Map::object;
   Hdf hdf;
   hdf.fromString(
     "  0 {\n"
@@ -608,7 +593,7 @@ bool TestCppBase::TestIpBlockMap() {
     "  }\n"
   );
 
-  IpBlockMap ibm(hdf);
+  IpBlockMap ibm(ini, hdf);
   VERIFY(!ibm.isBlocking("test/blah.php", "127.0.0.1"));
   VERIFY(ibm.isBlocking("test/blah.php", "8.32.0.104"));
   VERIFY(ibm.isBlocking("test/blah.php",

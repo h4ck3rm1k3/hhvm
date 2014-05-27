@@ -18,7 +18,7 @@
 #include "hphp/runtime/base/array-iterator.h"
 #include "hphp/runtime/base/comparisons.h"
 #include "hphp/runtime/ext/ext_asio.h"
-#include "hphp/runtime/ext/ext_continuation.h"
+#include "hphp/runtime/ext/ext_generator.h"
 #include "hphp/runtime/ext/asio/async_function_wait_handle.h"
 #include "hphp/runtime/ext/asio/waitable_wait_handle.h"
 
@@ -190,14 +190,14 @@ const StaticString
   s_ancestors("ancestors");
 
 // Add location information for the given continuation to the given frame.
-void addContinuationLocation(Array& frameData,
-                             c_AsyncFunctionWaitHandle& contWh) {
-  // A running continuation is active on the normal stack, and we
-  // cannot compute the location just by inspecting the continuation
-  // alone.
-  if (contWh.isRunning()) return;
-  frameData.set(s_file, contWh.getFileName(), true);
-  frameData.set(s_line, contWh.getLineNumber(), true);
+void addAsyncFunctionLocation(Array& frameData,
+                              c_AsyncFunctionWaitHandle& wh) {
+  // A running async function is active on the normal stack, and we
+  // cannot compute the location just by inspecting the async function
+  // wait handle alone.
+  if (wh.isRunning()) return;
+  frameData.set(s_file, wh.getFileName(), true);
+  frameData.set(s_line, wh.getLineNumber(), true);
 }
 
 // Form a trace of the async stack starting with the currently running
@@ -213,7 +213,7 @@ static Array createAsyncStacktrace() {
     objToWaitableWaitHandle(currentWaitHandle)->t_getdependencystack();
   for (ArrayIter iter(depStack); iter; ++iter) {
     if (iter.secondRef().isNull()) {
-      trace.append(ArrayInit(0).toVariant());
+      trace.append(Array(staticEmptyArray()));
     } else {
       auto wh = objToWaitableWaitHandle(iter.secondRef().toObject());
       auto parents = wh->t_getparents();
@@ -227,9 +227,11 @@ static Array createAsyncStacktrace() {
       frameData.set(s_function, wh->t_getname(), true);
       frameData.set(s_id, wh->t_getid(), true);
       frameData.set(s_ancestors, ancestors, true);
-      // Continuation wait handles may have a source location to add.
-      auto contWh = dynamic_cast<c_AsyncFunctionWaitHandle*>(wh);
-      if (contWh != nullptr) addContinuationLocation(frameData, *contWh);
+      // Async function wait handles may have a source location to add.
+      if (wh->getKind() == c_WaitHandle::Kind::AsyncFunction) {
+        auto afwh = static_cast<c_AsyncFunctionWaitHandle*>(wh);
+        addAsyncFunctionLocation(frameData, *afwh);
+      }
       trace.append(frameData);
     }
   }

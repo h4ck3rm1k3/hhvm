@@ -34,6 +34,7 @@
 #include "hphp/runtime/vm/jit/trans-cfg.h"
 #include "hphp/runtime/vm/jit/translator-inline.h"
 #include "hphp/runtime/vm/jit/region-hot-trace.h"
+#include "hphp/runtime/vm/jit/region-whole-cfg.h"
 
 namespace HPHP { namespace JIT {
 
@@ -76,12 +77,14 @@ RegionMode regionMode() {
 enum class PGORegionMode {
   Hottrace, // Select a long region, using profile counters to guide the trace
   Hotblock, // Select a single block
+  WholeCFG, // Select the entire CFG that has been profiled
 };
 
 PGORegionMode pgoRegionMode() {
   auto& s = RuntimeOption::EvalJitPGORegionSelector;
   if (s == "hottrace") return PGORegionMode::Hottrace;
   if (s == "hotblock") return PGORegionMode::Hotblock;
+  if (s == "wholecfg") return PGORegionMode::WholeCFG;
   FTRACE(1, "unknown pgo region mode {}: using hottrace\n", s);
   assert(false);
   return PGORegionMode::Hottrace;
@@ -95,9 +98,35 @@ void truncateMap(Container& c, SrcKey final) {
 
 //////////////////////////////////////////////////////////////////////
 
-RegionDesc::Block::Block(const Func* func, Offset start, int length,
-                         Offset initSpOff)
-  : m_func(func)
+void RegionDesc::addArc(BlockId src, BlockId dst) {
+  arcs.push_back({src, dst});
+}
+
+void RegionDesc::setSideExitingBlock(BlockId bid) {
+  sideExitingBlocks.insert(bid);
+}
+
+bool RegionDesc::isSideExitingBlock(BlockId bid) const {
+  return sideExitingBlocks.count(bid);
+}
+
+//////////////////////////////////////////////////////////////////////
+
+RegionDesc::BlockId RegionDesc::Block::s_nextId = -1;
+
+TransID getTransId(RegionDesc::BlockId blockId) {
+  return blockId >= 0 ? blockId : kInvalidTransID;
+}
+
+bool hasTransId(RegionDesc::BlockId blockId) {
+  return blockId >= 0;
+}
+
+RegionDesc::Block::Block(const Func* func, bool resumed, Offset start,
+                         int length, Offset initSpOff)
+  : m_id(s_nextId--)
+  , m_func(func)
+  , m_resumed(resumed)
   , m_start(start)
   , m_last(kInvalidOffset)
   , m_length(length)
@@ -106,7 +135,7 @@ RegionDesc::Block::Block(const Func* func, Offset start, int length,
 {
   assert(length >= 0);
   if (length > 0) {
-    SrcKey sk(func, start);
+    SrcKey sk(func, start, resumed);
     for (unsigned i = 1; i < length; ++i) sk.advance();
     m_last = sk.offset();
   }
@@ -277,19 +306,24 @@ RegionDescPtr selectTraceletLegacy(Offset initSpOffset,
                                    const Tracelet& tlet) {
   typedef RegionDesc::Block Block;
 
-  auto region = std::make_shared<RegionDesc>();
+  auto const region = std::make_shared<RegionDesc>();
   SrcKey sk(tlet.m_sk);
-  auto unit = tlet.func()->unit();
+  auto const unit = tlet.func()->unit();
 
   const Func* topFunc = nullptr;
   Block* curBlock = nullptr;
-  auto newBlock = [&](const Func* func, SrcKey start, Offset spOff) {
+  auto newBlock = [&](SrcKey start, Offset spOff) {
     assert(curBlock == nullptr || curBlock->length() > 0);
     region->blocks.push_back(
-      std::make_shared<Block>(func, start.offset(), 0, spOff));
-    curBlock = region->blocks.back().get();
+      std::make_shared<Block>(
+        start.func(), start.resumed(), start.offset(), 0, spOff));
+    Block* newCurBlock = region->blocks.back().get();
+    if (curBlock) {
+      region->addArc(curBlock->id(), newCurBlock->id());
+    }
+    curBlock = newCurBlock;
   };
-  newBlock(tlet.func(), sk, initSpOffset);
+  newBlock(sk, initSpOffset);
 
   for (auto ni = tlet.m_instrStream.first; ni; ni = ni->next) {
     assert(sk == ni->source);
@@ -312,15 +346,31 @@ RegionDescPtr selectTraceletLegacy(Offset initSpOffset,
       auto const& callee = *ni->calleeTrace;
       curBlock->setInlinedCallee(ni->funcd);
       SrcKey cSk = callee.m_sk;
-      Unit* cUnit = callee.func()->unit();
+      auto const cUnit = callee.func()->unit();
 
-      newBlock(callee.func(), cSk, curSpOffset);
+      // Note: the offsets of the inlined blocks aren't currently read
+      // for anything, so it's unclear whether they should be relative
+      // to the main function entry or the inlined function.  We're
+      // just doing this for now.
+      auto const initInliningSpOffset = curSpOffset;
+      newBlock(cSk,
+               initInliningSpOffset + callee.m_instrStream.first->stackOffset);
 
       for (auto cni = callee.m_instrStream.first; cni; cni = cni->next) {
+        // Sometimes inlined callees trace through jumps that have a
+        // known taken/non-taken state based on the calling context:
+        if (cni->nextOffset != kInvalidOffset) {
+          curBlock->addInstruction();
+          cSk.setOffset(cni->nextOffset);
+          newBlock(cSk, initInliningSpOffset + ni->stackOffset);
+          continue;
+        }
+
         assert(cSk == cni->source);
         assert(cni->op() == OpRetC ||
                cni->op() == OpRetV ||
-               cni->op() == OpContRetC ||
+               cni->op() == OpCreateCont ||
+               cni->op() == OpAwait ||
                cni->op() == OpNativeImpl ||
                !instrIsNonCallControlFlow(cni->op()));
 
@@ -330,7 +380,7 @@ RegionDescPtr selectTraceletLegacy(Offset initSpOffset,
 
       if (ni->next) {
         sk.advance(unit);
-        newBlock(tlet.func(), sk, curSpOffset);
+        newBlock(sk, curSpOffset);
       }
       continue;
     }
@@ -339,16 +389,25 @@ RegionDescPtr selectTraceletLegacy(Offset initSpOffset,
       curBlock->setParamByRef(sk, ni->preppedByRef);
     }
 
-    if (ni->next && isUnconditionalJmp(ni->op())) {
-      // A Jmp that isn't the final instruction in a Tracelet means we traced
-      // through a forward jump in analyze. Update sk to point to the next NI
-      // in the stream.
-      auto dest = ni->offset() + ni->imm[0].u_BA;
-      assert(dest > sk.offset()); // We only trace for forward Jmps for now.
-      sk.setOffset(dest);
+    if (ni->next && isJmp(ni->op())) {
+      Offset dest;
+      if (isUnconditionalJmp(ni->op())) {
+        // A Jmp that isn't the final instruction in a Tracelet means we traced
+        // through a forward jump in analyze. Update sk to point to the next NI
+        // in the stream.
+        dest = ni->offset() + ni->imm[0].u_BA;
+        assert(dest > sk.offset()); // We only trace for forward Jmps for now.
+      } else if (isConditionalJmp(ni->op())) {
+        // When tracing through a conditional jump, the next SrcKey offset
+        // is given by ni->nextOffset.
+        dest = ni->nextOffset;
+      } else {
+        not_reached();
+      }
 
+      sk.setOffset(dest);
       // The Jmp terminates this block.
-      newBlock(tlet.func(), sk, curSpOffset);
+      newBlock(sk, curSpOffset);
     } else {
       sk.advance(unit);
     }
@@ -410,13 +469,15 @@ RegionDescPtr selectRegion(const RegionContext& context,
   auto region = [&]{
     try {
       switch (mode) {
-        case RegionMode::None:     return RegionDescPtr{nullptr};
-        case RegionMode::Method:   return selectMethod(context);
-        case RegionMode::Tracelet: return selectTracelet(context, 0,
-                                                         kind == TransProfile);
+        case RegionMode::None:
+          return RegionDescPtr{nullptr};
+        case RegionMode::Method:
+          return selectMethod(context);
+        case RegionMode::Tracelet:
+          return selectTracelet(context, 0, kind == TransKind::Profile);
         case RegionMode::Legacy:
-                 always_assert(t); return selectTraceletLegacy(context.spOffset,
-                                                               *t);
+          always_assert(t);
+          return selectTraceletLegacy(context.spOffset, *t);
       }
       not_reached();
     } catch (const std::exception& e) {
@@ -453,6 +514,10 @@ RegionDescPtr selectHotRegion(TransID transId,
 
     case PGORegionMode::Hotblock:
       region = selectHotBlock(transId, profData, cfg);
+      break;
+
+    case PGORegionMode::WholeCFG:
+      region = selectWholeCFG(transId, profData, cfg, selectedTIDs);
       break;
   }
   assert(region);
@@ -525,6 +590,13 @@ struct IgnoreTypePred {
 
  private:
   const bool m_aLonger;
+};
+
+struct IgnoreKnownFunc {
+  // It's ok for a to have known funcs that b doesn't but not the other way
+  // around.
+  bool a(const Func*) const { return true; }
+  bool b(const Func*) const { return false; }
 };
 
 template<typename M, typename Cmp = std::equal_to<typename M::mapped_type>,
@@ -610,7 +682,8 @@ void diffRegions(const RegionDesc& a, const RegionDesc& b) {
     if (false && !mapsEqual(ab.reffinessPreds(), bb.reffinessPreds(), endSk)) {
       return fail("reffiness preds");
     }
-    if (!mapsEqual(ab.knownFuncs(), bb.knownFuncs(), endSk)) {
+    if (!mapsEqual(ab.knownFuncs(), bb.knownFuncs(), endSk,
+                   std::equal_to<const Func*>(), IgnoreKnownFunc())) {
       return fail("known funcs");
     }
   }
@@ -663,7 +736,8 @@ std::string show(RegionContext::PreLiveAR ar) {
 
 std::string show(const RegionContext& ctx) {
   std::string ret;
-  folly::toAppend(ctx.func->fullName()->data(), "@", ctx.bcOffset, "\n", &ret);
+  folly::toAppend(ctx.func->fullName()->data(), "@", ctx.bcOffset,
+                  ctx.resumed ? "r" : "", "\n", &ret);
   for (auto& t : ctx.liveTypes) folly::toAppend(" ", show(t), "\n", &ret);
   for (auto& ar : ctx.preLiveARs) folly::toAppend(" ", show(ar), "\n", &ret);
 
@@ -672,11 +746,13 @@ std::string show(const RegionContext& ctx) {
 
 std::string show(const RegionDesc::Block& b) {
   std::string ret{"Block "};
-  folly::toAppend(
-    b.func()->fullName()->data(), '@', b.start().offset(),
-    " length ", b.length(), " initSpOff ", b.initialSpOffset(), '\n',
-    &ret
-  );
+  folly::toAppend(b.id(), ' ',
+                  b.func()->fullName()->data(), '@', b.start().offset(),
+                  b.start().resumed() ? "r" : "",
+                  " length ", b.length(),
+                  " initSpOff ", b.initialSpOffset(), '\n',
+                  &ret
+                 );
 
   auto typePreds = makeMapWalker(b.typePreds());
   auto byRefs    = makeMapWalker(b.paramByRefs());
@@ -743,6 +819,10 @@ std::string show(const RegionDesc::Block& b) {
   return ret;
 }
 
+std::string show(const RegionDesc::Arc& arc) {
+  return folly::format("{} -> {}\n", arc.src, arc.dst).str();
+}
+
 std::string show(const RegionDesc& region) {
   return folly::format(
     "Region ({} blocks):\n{}",
@@ -751,6 +831,14 @@ std::string show(const RegionDesc& region) {
       std::string ret;
       for (auto& b : region.blocks) {
         folly::toAppend(show(*b), &ret);
+      }
+      folly::toAppend("Arcs:\n", &ret);
+      for (auto& arc : region.arcs) {
+        folly::toAppend(show(arc), &ret);
+      }
+      folly::toAppend("Side-exiting Blocks: ", &ret);
+      for (auto b : region.sideExitingBlocks) {
+        folly::toAppend(b, &ret);
       }
       return ret;
     }()

@@ -34,10 +34,21 @@ namespace HPHP {
 
 //////////////////////////////////////////////////////////////////////
 
+namespace {
+
+Either<const Class*,const StringData*> make_class(const Class* c) {
+  if (classHasPersistentRDS(c)) return c;
+  return c->preClass()->name();
+}
+
+}
+
+//////////////////////////////////////////////////////////////////////
+
 ALWAYS_INLINE
 APCObject::APCObject(ObjectData* obj, uint32_t propCount)
   : m_handle(KindOfObject)
-  , m_cls{obj->getVMClass()}
+  , m_cls{make_class(obj->getVMClass())}
   , m_propCount{propCount}
 {
   m_handle.setIsObj();
@@ -66,7 +77,7 @@ APCHandle* APCObject::Construct(ObjectData* objectData) {
     const Variant& value = it.secondRef();
     APCHandle *val = nullptr;
     if (!value.isNull()) {
-      val = APCHandle::Create(value, false, true, true);
+      val = APCHandle::Create(value, true, true);
     }
 
     const String& keySD = key.asCStrRef();
@@ -76,15 +87,15 @@ APCHandle* APCObject::Construct(ObjectData* objectData) {
       String cls = keySD.substr(1, subLen - 2);
       if (cls.size() == 1 && cls[0] == '*') {
         // Protected.
-        prop->ctx = ClassOrString{nullptr};
+        prop->ctx = nullptr;
       } else {
         // Private.
-        prop->ctx = ClassOrString{Unit::lookupClass(cls.get())};
+        prop->ctx = Unit::lookupClass(cls.get());
       }
 
       prop->name = makeStaticString(keySD.substr(subLen));
     } else {
-      prop->ctx = ClassOrString{nullptr};
+      prop->ctx = nullptr;
       prop->name = makeStaticString(keySD.get());
     }
 
@@ -100,7 +111,7 @@ APCHandle* APCObject::Construct(ObjectData* objectData) {
 ALWAYS_INLINE
 APCObject::~APCObject() {
   for (auto i = uint32_t{0}; i < m_propCount; ++i) {
-    if (props()[i].val) props()[i].val->unreference();
+    if (props()[i].val) props()[i].val->unreferenceRoot();
     assert(props()[i].name->isStatic());
   }
 }
@@ -132,7 +143,7 @@ APCHandle* APCObject::MakeAPCObject(APCHandle* obj, const Variant& value) {
       features.hasSerializableReference()) {
     return nullptr;
   }
-  APCHandle* tmp = APCHandle::Create(value, false, true, true);
+  APCHandle* tmp = APCHandle::Create(value, true, true);
   tmp->setObjAttempted();
   return tmp;
 }
@@ -149,13 +160,13 @@ Object APCObject::createObject() const {
   Object obj;
 
   const Class* klass;
-  if (auto const c = m_cls.cls()) {
+  if (auto const c = m_cls.left()) {
     klass = c;
   } else {
-    klass = Unit::loadClass(m_cls.name());
+    klass = Unit::loadClass(m_cls.right());
     if (!klass) {
       Logger::Error("APCObject::getObject(): Cannot find class %s",
-                    m_cls.name()->data());
+                    m_cls.right()->data());
       return obj;
     }
   }
@@ -171,10 +182,10 @@ Object APCObject::createObject() const {
     if (prop->ctx.isNull()) {
       ctx = klass;
     } else {
-      if (auto const cls = prop->ctx.cls()) {
+      if (auto const cls = prop->ctx.left()) {
         ctx = cls;
       } else {
-        ctx = Unit::lookupClass(prop->ctx.name());
+        ctx = Unit::lookupClass(prop->ctx.right());
         if (!ctx) continue;
       }
     }

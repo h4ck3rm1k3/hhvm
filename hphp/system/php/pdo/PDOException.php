@@ -9,8 +9,6 @@
  * in PHP.
  *
  */
-class PDOException extends Exception {
+class PDOException extends RuntimeException {
   public $errorInfo;
-  public function __construct() {
-  }
 }

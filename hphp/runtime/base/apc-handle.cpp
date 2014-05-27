@@ -21,42 +21,15 @@
 #include "hphp/runtime/base/apc-object.h"
 #include "hphp/runtime/ext/ext_apc.h"
 #include "hphp/runtime/base/array-iterator.h"
-#include "hphp/runtime/base/hphp-array.h"
+#include "hphp/runtime/base/mixed-array.h"
 
 namespace HPHP {
+
 ///////////////////////////////////////////////////////////////////////////////
 
-static APCHandle* getAPCHandle(const Variant& source) {
-  auto const cell = source.asCell();
-  if (cell->m_type == KindOfString) {
-    return cell->m_data.pstr->getAPCHandle();
-  }
-  if (cell->m_type == KindOfArray) {
-    return cell->m_data.parr->getAPCHandle();
-  }
-  return nullptr;
-}
-
 APCHandle* APCHandle::Create(const Variant& source,
-                             bool serialized,
-                             bool inner /* = false */,
-                             bool unserializeObj /* = false*/) {
-  // if a wrapper of an existing APC object is provided then just use
-  // the wrapped APC object.
-  // getAPCHandle() is responsible to check the conditions under which
-  // a wrapped object can be returned
-  auto wrapped = getAPCHandle(source);
-  if (UNLIKELY(wrapped && !unserializeObj && !wrapped->getUncounted())) {
-    wrapped->reference();
-    return wrapped;
-  }
-  return CreateSharedType(source, serialized, inner, unserializeObj);
-}
-
-APCHandle* APCHandle::CreateSharedType(const Variant& source,
-                                       bool serialized,
-                                       bool inner,
-                                       bool unserializeObj) {
+                             bool inner,
+                             bool forceAPCObj) {
   auto type = source.getType(); // this gets rid of the ref, if it was one
   switch (type) {
     case KindOfBoolean: {
@@ -79,20 +52,12 @@ APCHandle* APCHandle::CreateSharedType(const Variant& source,
     }
 
     case KindOfStaticString: {
-      if (serialized) goto StringCase;
-
       auto value = new APCTypedValue(type, source.getStringData());
       return value->getHandle();
     }
-StringCase:
+
     case KindOfString: {
       StringData* s = source.getStringData();
-      if (serialized) {
-        // It is priming, and there might not be the right class definitions
-        // for unserialization.
-        return APCObject::MakeShared(apc_reserialize(s));
-      }
-
       auto const st = lookupStaticString(s);
       if (st) {
         APCTypedValue* value = new APCTypedValue(KindOfStaticString, st);
@@ -100,7 +65,7 @@ StringCase:
       }
 
       assert(!s->isStatic()); // would've been handled above
-      if (!inner && apcExtension::UseUncounted) {
+      if (apcExtension::UseUncounted) {
         StringData* st = StringData::MakeUncounted(s->slice());
         APCTypedValue* value = new APCTypedValue(st);
         return value->getHandle();
@@ -111,7 +76,7 @@ StringCase:
     case KindOfArray:
       return APCArray::MakeShared(source.getArrayData(),
                                   inner,
-                                  unserializeObj);
+                                  forceAPCObj);
 
     case KindOfResource:
       // TODO Task #2661075: Here and elsewhere in the runtime, we convert
@@ -120,12 +85,18 @@ StringCase:
       return APCArray::MakeShared();
 
     case KindOfObject:
-      return unserializeObj ? APCObject::Construct(source.getObjectData())
-                            : APCObject::MakeShared(apc_serialize(source));
+      return forceAPCObj ? APCObject::Construct(source.getObjectData())
+                         : APCObject::MakeShared(apc_serialize(source));
 
     default:
       return nullptr;
   }
+}
+
+APCHandle* APCHandle::CreateObjectFromSerializedString(const String& source) {
+  // It is priming, and there might not be the right class definitions
+  // for unserialization.
+  return APCObject::MakeShared(apc_reserialize(source.get()));
 }
 
 Variant APCHandle::toLocal() {
@@ -190,7 +161,9 @@ void APCHandle::deleteShared() {
 
 APCHandle* APCTypedValue::MakeSharedArray(ArrayData* array) {
   assert(apcExtension::UseUncounted);
-  auto value = new APCTypedValue(HphpArray::MakeUncounted(array));
+  auto value = new APCTypedValue(
+    array->isPacked() ? MixedArray::MakeUncountedPacked(array)
+                      : MixedArray::MakeUncounted(array));
   return value->getHandle();
 }
 
@@ -201,7 +174,11 @@ void APCTypedValue::deleteUncounted() {
   if (type == KindOfString) {
     m_data.str->destructStatic();
   } else if (type == KindOfArray) {
-    HphpArray::ReleaseUncounted(m_data.arr);
+    if (m_data.arr->isPacked()) {
+      MixedArray::ReleaseUncountedPacked(m_data.arr);
+    } else {
+      MixedArray::ReleaseUncounted(m_data.arr);
+    }
   }
   delete this;
 }

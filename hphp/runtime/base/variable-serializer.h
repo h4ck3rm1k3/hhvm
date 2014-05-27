@@ -60,7 +60,7 @@ public:
   /**
    * Top level entry function called by f_ functions.
    */
-  String serialize(const Variant& v, bool ret);
+  String serialize(const Variant& v, bool ret, bool keepCount = false);
   String serializeValue(const Variant& v, bool limit);
 
   // Serialize with limit size of output, always return the serialized string.
@@ -76,7 +76,10 @@ public:
   void write(int     v) { write((int64_t)v);}
   void write(int64_t   v);
   void write(double  v);
-  void write(const char *v, int len = -1, bool isArrayKey = false);
+
+  void write(const char *v, int len = -1, bool isArrayKey = false,
+             bool noQuotes = false);
+
   void write(const String& v);
   void write(const Object& v);
   void write(const Variant& v, bool isArrayKey = false);

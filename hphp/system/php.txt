@@ -9,6 +9,7 @@ hphp/system/php/lang/resource.php
 hphp/system/php/lang/Traversable.ns.php
 hphp/system/php/lang/Iterator.ns.php
 hphp/system/php/lang/IteratorAggregate.ns.php
+hphp/system/php/lang/AsyncIterator.ns.php
 hphp/system/php/lang/KeyedIterator.ns.php
 hphp/system/php/lang/KeyedIterable.ns.php
 hphp/system/php/lang/Exception.php
@@ -37,6 +38,7 @@ hphp/system/php/spl/interfaces/OuterIterator.php
 hphp/system/php/spl/iterators/IteratorIterator.php
 hphp/system/php/spl/iterators/AppendIterator.php
 hphp/system/php/spl/iterators/FilterIterator.php
+hphp/system/php/spl/iterators/CallbackFilterIterator.php
 hphp/system/php/spl/iterators/RecursiveFilterIterator.php
 hphp/system/php/spl/iterators/RegexIterator.php
 hphp/system/php/spl/iterators/RecursiveRegexIterator.php
@@ -56,9 +58,12 @@ hphp/system/php/filter/filter_var_array.php
 hphp/system/php/filter/filter_input_array.php
 
 hphp/system/php/sessions/SessionHandlerInterface.php
-hphp/system/php/sessions/session_set_save_handler.ns.php
 
 hphp/system/php/redis/RedisException.php
+
+hphp/system/php/archive_handler/ArchiveHandler.ns.php
+hphp/system/php/archive_handler/TarArchiveHandler.ns.php
+hphp/system/php/archive_handler/ZipArchiveHandler.ns.php
 
 hphp/system/php/phar/PharException.php
 hphp/system/php/phar/Phar.php
@@ -75,6 +80,7 @@ hphp/system/php/array_map.hhas
 hphp/system/php/asio/Awaitable.php
 hphp/system/php/asio/InvalidOperationException.php
 hphp/system/php/collections/collections.ns.php
+hphp/system/php/curl/CURLFile.php
 hphp/system/php/date/dateperiod.php
 hphp/system/php/date/datetime_funcs.php
 hphp/system/php/dom/DOMException.php
@@ -85,7 +91,6 @@ hphp/system/php/hash/hphp_murmurhash.php
 hphp/system/php/lang/ErrorException.php
 hphp/system/php/lang/fun.ns.php
 hphp/system/php/lang/invariant.ns.php
-hphp/system/php/lang/tuple.ns.php
 hphp/system/php/misc/fb_autoload_map.php
 hphp/system/php/misc/highlight.php
 hphp/system/php/misc/php_strip_whitespace.php
@@ -93,7 +98,6 @@ hphp/system/php/password/password.php
 hphp/system/php/pdo/PDOException.php
 hphp/system/php/redis/Redis.php
 hphp/system/php/redis/RedisSessionModule.php
-hphp/system/php/sessions/session_register_shutdown.php
 hphp/system/php/soap/SoapFault.php
 hphp/system/php/spl/datastructures/SplFixedArray.php
 hphp/system/php/spl/datastructures/SplObjectStorage.php
@@ -106,5 +110,5 @@ hphp/system/php/spl/iterators/LimitIterator.php
 hphp/system/php/spl/iterators/NoRewindIterator.php
 hphp/system/php/spl/iterators/RecursiveIteratorIterator.php
 hphp/system/php/spl/miscellaneous/ArrayObject.php
+hphp/system/php/spl/miscellaneous/autoload.php
 hphp/system/php/string/wordwrap.php
-hphp/system/php/zlib/zlib_funcs.php

@@ -25,8 +25,10 @@
 #include "hphp/runtime/server/source-root-info.h"
 #include "hphp/runtime/server/request-uri.h"
 #include "hphp/runtime/ext/json/ext_json.h"
+#include "hphp/runtime/base/php-globals.h"
 #include "hphp/util/process.h"
 #include "hphp/runtime/server/satellite-server.h"
+#include "hphp/system/constants.h"
 
 #include "folly/ScopeGuard.h"
 
@@ -205,9 +207,9 @@ bool RPCRequestHandler::executePHPFunction(Transport *transport,
     ServerStatsHelper ssh("input");
     RequestURI reqURI(rpcFunc);
     HttpProtocol::PrepareSystemVariables(transport, reqURI, sourceRootInfo);
-
-    GlobalVariables *g = get_global_variables();
-    g->getRef(s__ENV).toArrRef().set(s_HPHP_RPC, 1);
+    auto env = php_global(s__ENV);
+    env.toArrRef().set(s_HPHP_RPC, 1);
+    php_global_set(s__ENV, std::move(env));
   }
 
   bool isFile = rpcFunc.rfind('.') != std::string::npos;
@@ -325,7 +327,7 @@ bool RPCRequestHandler::executePHPFunction(Transport *transport,
           response =
             HHVM_FN(json_encode)(
               make_map_array(s_output, m_context->obDetachContents(),
-                                      s_return, HHVM_FN(json_encode)(funcRet)));
+                             s_return, HHVM_FN(json_encode)(funcRet)));
           break;
         case 3: response = f_serialize(funcRet); break;
       }
@@ -358,7 +360,11 @@ bool RPCRequestHandler::executePHPFunction(Transport *transport,
   ServerStats::LogPage(isFile ? rpcFile : rpcFunc, code);
 
   m_context->onShutdownPostSend();
-  m_context->obClean(); // in case postsend/cleanup output something
+  // in case postsend/cleanup output something
+  // PHP5 always provides _START.
+  m_context->obClean(k_PHP_OUTPUT_HANDLER_START |
+                     k_PHP_OUTPUT_HANDLER_CLEAN |
+                     k_PHP_OUTPUT_HANDLER_END);
   m_context->restoreSession();
   return !error;
 }

@@ -17,31 +17,33 @@
 #ifndef incl_HPHP_VM_UNIT_H_
 #define incl_HPHP_VM_UNIT_H_
 
-#include <memory>
+#include "hphp/parser/location.h"
 
 #include "hphp/runtime/base/runtime-option.h"
+#include "hphp/runtime/base/type-array.h"
+#include "hphp/runtime/base/type-string.h"
+
+#include "hphp/runtime/vm/class.h"
 #include "hphp/runtime/vm/hhbc.h"
-#include "hphp/runtime/base/complex-types.h"
-#include "hphp/runtime/vm/repo-helpers.h"
 #include "hphp/runtime/vm/named-entity.h"
-#include "hphp/runtime/base/hphp-array.h"
-#include "hphp/util/range.h"
-#include "hphp/parser/location.h"
-#include "hphp/util/md5.h"
-#include "hphp/util/tiny-vector.h"
+#include "hphp/runtime/vm/repo-helpers.h"
 #include "hphp/runtime/vm/type-alias.h"
 
-namespace HPHP {
-// Forward declarations.
-namespace Compiler { class Peephole; }
-struct ActRec;
+#include "hphp/util/md5.h"
+#include "hphp/util/range.h"
+#include "hphp/util/tiny-vector.h"
 
-class Func;
-class FuncEmitter;
-class Repo;
-class FuncDict;
-class Unit;
-class PreClassEmitter;
+#include <memory>
+
+namespace HPHP {
+
+struct ActRec;
+struct Func;
+struct FuncEmitter;
+struct Repo;
+struct FuncDict;
+struct Unit;
+struct PreClassEmitter;
 
 enum class UnitOrigin {
   File = 0,
@@ -313,100 +315,6 @@ struct Unit {
   typedef hphp_hash_map<const Class*, Func*,
                         pointer_hash<Class> > PseudoMainCacheMap;
 
-  class MetaInfo {
-   public:
-    enum class Kind {
-      None,
-      Class,
-
-      /*
-       * Marks types that are proven to be a particular type by static
-       * analysis.  Guards are not needed in these cases.
-       */
-      DataTypeInferred,
-
-      /*
-       * Marks types that are predicted by static analysis.  Guards
-       * will still be needed in case the prediction is wrong.
-       */
-      DataTypePredicted,
-
-      GuardedThis,
-      GuardedCls,
-
-      /*
-       * Information about the known class of a property base in the
-       * middle of a vector instruction.
-       *
-       * In this case, m_arg is the index of the member code for the
-       * relevant property dim.  (Unlike other cases, m_arg is not an
-       * index into the instruction inputs in NormalizedInstruction.)
-       *
-       * Whatever the base is when processing that member code will be
-       * an object of the supplied class type (or a null).
-       */
-      MVecPropClass,
-    };
-
-    /*
-     * This flag is used to mark that m_arg is an index into an
-     * MVector input list.  (We need to know this so we can bump the
-     * indexes different amounts depending on the instruction type;
-     * see applyInputMetaData.)
-     */
-    static const int VectorArg = 1 << 7;
-
-    MetaInfo(Kind k, int a, Id d) : m_kind(k), m_arg(a), m_data(d) {
-      assert((int)m_arg == a);
-    }
-    MetaInfo() : m_kind(Kind::None), m_arg(-1), m_data(0) {}
-
-    /*
-     * m_arg indicates which input the MetaInfo applies to.
-     *
-     * For instructions taking vector immediates, it is an index into
-     * the immediate elements, excluding any MW members (and including
-     * the base).  (This is currently even if the instruction takes
-     * other stack arguments.)
-     */
-    Kind  m_kind;
-    uint8_t m_arg;
-    Id    m_data;
-  };
-
-  class MetaHandle {
-    /*
-      The meta-data in Unit::m_bc_meta is stored as:
-
-      Offset     <num entries>
-      Offset     byte-code-offset-1
-      Offset     byte-code-offset-2
-      ...
-      Offset     byte-code_offset-n
-      Offset     INT_MAX # sentinel
-      Offset     data-offset-1
-      Offset     data-offset-2
-      ...
-      Offset     data-offset-n
-      Offset     m_bc_meta_len # sentinel
-      uint8      m_kind1
-      uint8      m_arg1
-      VSI        m_data1
-      ...
-      uint8      m_kind-n
-      uint8      m_arg-n
-      VSI        m_data-n
-    */
-   public:
-    MetaHandle() : index(nullptr), cur(0) {}
-    bool findMeta(const Unit* unit, Offset offset);
-    bool nextArg(MetaInfo& info);
-   private:
-    const Offset* index;
-    unsigned cur;
-    const uint8_t *ptr;
-  };
-
   Unit();
   ~Unit();
   void* operator new(size_t sz);
@@ -452,12 +360,17 @@ struct Unit {
                                      String* normStr = nullptr) FLATTEN;
 
   static size_t GetNamedEntityTableSize();
-  static Array getUserFunctions();
   static Array getClassesInfo();
   static Array getInterfacesInfo();
   static Array getTraitsInfo();
   static Array getClassesWithAttrInfo(HPHP::Attr attrs, bool inverse = false);
+  static Array getUserFunctions() { return getFunctions(false); }
+  static Array getSystemFunctions() { return getFunctions(true); }
 
+ private:
+  static Array getFunctions(bool system);
+
+ public:
   size_t numLitstrs() const {
     return m_namedInfo.size();
   }
@@ -502,19 +415,19 @@ struct Unit {
     return const_cast<ArrayData*>(m_arrays.at(id));
   }
 
-  static Func *lookupFunc(const NamedEntity *ne);
-  static Func *lookupFunc(const StringData *funcName);
-  static Func *loadFunc(const NamedEntity *ne, const StringData* name);
-  static Func *loadFunc(const StringData* name);
+  static Func* lookupFunc(const NamedEntity *ne);
+  static Func* lookupFunc(const StringData *funcName);
+  static Func* loadFunc(const NamedEntity *ne, const StringData* name);
+  static Func* loadFunc(const StringData* name);
 
   static Class* defClass(const HPHP::PreClass* preClass,
                          bool failIsFatal = true);
   static bool aliasClass(Class* original, const StringData* alias);
   void defTypeAlias(Id id);
 
-  static Cell* lookupCns(const StringData* cnsName);
-  static Cell* lookupPersistentCns(const StringData* cnsName);
-  static Cell* loadCns(const StringData* cnsName);
+  static const Cell* lookupCns(const StringData* cnsName);
+  static const Cell* lookupPersistentCns(const StringData* cnsName);
+  static const Cell* loadCns(const StringData* cnsName);
   static bool defCns(const StringData* cnsName, const TypedValue* value,
                      bool persistent = false);
   static uint64_t defCnsHelper(uint64_t ch,
@@ -600,7 +513,7 @@ struct Unit {
   static Class* getClass(const NamedEntity *ne, const StringData *name,
                          bool tryAutoload);
   static bool classExists(const StringData* name, bool autoload,
-                          Attr typeAttrs);
+                          ClassKind kind);
 
   bool compileTimeFatal(const StringData*& msg, int& line) const;
   bool parseFatal(const StringData*& msg, int& line) const;
@@ -764,8 +677,6 @@ private:
   */
 
   int64_t m_sn{-1};
-  unsigned char const* m_bc_meta{nullptr};
-  size_t m_bc_meta_len{0};
   const StringData* m_dirpath{nullptr};
   MD5 m_md5;
   std::vector<NamedEntityPair> m_namedInfo;
@@ -779,18 +690,17 @@ private:
 int getLineNumber(const LineTable& table, Offset pc);
 bool getSourceLoc(const SourceLocTable& table, Offset pc, SourceLoc& sLoc);
 
-class UnitEmitter {
+struct UnitEmitter {
   friend class UnitRepoProxy;
-  friend class ::HPHP::Compiler::Peephole;
- public:
+
   explicit UnitEmitter(const MD5& md5);
   ~UnitEmitter();
 
   bool isASystemLib() const {
     static const char systemlib_prefix[] = "/:systemlib";
-    return !*getFilepath()->data() ||
-      !strncmp(getFilepath()->data(),
-        systemlib_prefix, sizeof systemlib_prefix - 1);
+    return !strncmp(getFilepath()->data(),
+                    systemlib_prefix,
+                    sizeof systemlib_prefix - 1);
   }
 
   void addTrivialPseudoMain();
@@ -801,7 +711,6 @@ class UnitEmitter {
   const unsigned char* bc() const { return m_bc; }
   Offset bcPos() const { return (Offset)m_bclen; }
   void setBc(const unsigned char* bc, size_t bclen);
-  void setBcMeta(const unsigned char* bc_meta, size_t bc_meta_len);
   const StringData* getFilepath() const { return m_filepath; }
   void setFilepath(const StringData* filepath) { m_filepath = filepath; }
   void setMainReturn(const TypedValue* v) { m_mainReturn = *v; }
@@ -864,7 +773,7 @@ class UnitEmitter {
    */
   void recordFunction(FuncEmitter *fe);
 
- private:
+private:
   template<class T>
   void emitImpl(T n, int64_t pos) {
     auto *c = (unsigned char*)&n;
@@ -883,7 +792,8 @@ class UnitEmitter {
       }
     }
   }
- public:
+
+public:
   void emitOp(Op op, int64_t pos = -1) {
     emitByte((unsigned char)op, pos);
   }
@@ -905,7 +815,6 @@ class UnitEmitter {
                 int line1, int line2, Offset base, Offset past,
                 const StringData* name, Attr attrs, bool top,
                 const StringData* docComment, int numParams,
-                bool needsGeneratorOrigFunc,
                 bool needsNextClonedClosure);
   Unit* create();
   void returnSeen() { m_returnSeen = true; }
@@ -916,18 +825,17 @@ class UnitEmitter {
                         const StringData* name, const TypedValue& tv);
   void insertMergeableDef(int ix, UnitMergeKind kind,
                           Id id, const TypedValue& tv);
- private:
+
+private:
   void setLines(const LineTable& lines);
 
- private:
+private:
   int m_repoId;
   int64_t m_sn;
   static const size_t BCMaxInit = 4096; // Initial bytecode size.
   size_t m_bcmax;
   unsigned char* m_bc;
   size_t m_bclen;
-  unsigned char* m_bc_meta;
-  size_t m_bc_meta_len;
   TypedValue m_mainReturn;
   const StringData* m_filepath;
   MD5 m_md5;
@@ -1046,11 +954,13 @@ class UnitRepoProxy : public RepoProxy {
   class InsertUnitStmt : public RepoProxy::Stmt {
    public:
     InsertUnitStmt(Repo& repo, int repoId) : Stmt(repo, repoId) {}
-    void insert(RepoTxn& txn, int64_t& unitSn, const MD5& md5,
+    void insert(RepoTxn& txn,
+                int64_t& unitSn,
+                const MD5& md5,
                 const unsigned char* bc,
-                size_t bclen, const unsigned char* bc_meta,
-                size_t bc_meta_len,
-                const TypedValue* mainReturn, bool mergeOnly,
+                size_t bclen,
+                const TypedValue* mainReturn,
+                bool mergeOnly,
                 const LineTable& lines,
                 const std::vector<TypeAlias>&);
   };

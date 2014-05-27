@@ -13,15 +13,18 @@
    | license@php.net so we can mail you a copy immediately.               |
    +----------------------------------------------------------------------+
 */
-
 #include "hphp/runtime/vm/name-value-table-wrapper.h"
-#include "hphp/runtime/base/runtime-error.h"
-#include "hphp/runtime/base/array-iterator.h"
+
 #include "hphp/runtime/base/array-init.h"
+#include "hphp/runtime/base/mixed-array-defs.h"
+#include "hphp/runtime/base/array-iterator.h"
+#include "hphp/runtime/base/runtime-error.h"
 
 namespace HPHP {
 
 //////////////////////////////////////////////////////////////////////
+
+NameValueTableWrapper::~NameValueTableWrapper() {}
 
 inline NameValueTableWrapper* NameValueTableWrapper::asNVTW(ArrayData* ad) {
   assert(ad->kind() == kNvtwKind);
@@ -36,7 +39,7 @@ NameValueTableWrapper::asNVTW(const ArrayData* ad) {
 
 size_t NameValueTableWrapper::Vsize(const ArrayData* ad) {
   // We need to iterate to find out the actual size, since
-  // KindOfIndirect elements in the array may have been set to
+  // KindOfNamedLocal elements in the array may have been set to
   // KindOfUninit.
   auto a = asNVTW(ad);
   size_t count = 0;
@@ -78,12 +81,13 @@ NameValueTableWrapper::ExistsStr(const ArrayData* ad, const StringData* k) {
   return asNVTW(ad)->m_tab->lookup(k) != nullptr;
 }
 
-TypedValue*
+const TypedValue*
 NameValueTableWrapper::NvGetStr(const ArrayData* ad, const StringData* k) {
   return asNVTW(ad)->m_tab->lookup(k);
 }
 
-TypedValue* NameValueTableWrapper::NvGetInt(const ArrayData* ad, int64_t k) {
+const TypedValue*
+NameValueTableWrapper::NvGetInt(const ArrayData* ad, int64_t k) {
   return asNVTW(ad)->m_tab->lookup(String(k).get());
 }
 
@@ -109,29 +113,37 @@ NameValueTableWrapper::LvalStr(ArrayData* ad, StringData* k, Variant*& ret,
 
 ArrayData*
 NameValueTableWrapper::LvalNew(ArrayData* ad, Variant*& ret, bool copy) {
-  ret = &Variant::lvalBlackHole();
+  ret = &lvalBlackHole();
   return ad;
 }
 
-ArrayData* NameValueTableWrapper::SetInt(ArrayData* ad, int64_t k,
-                                         const Variant& v, bool copy) {
+ArrayData* NameValueTableWrapper::SetInt(ArrayData* ad,
+                                         int64_t k,
+                                         Cell v,
+                                         bool copy) {
   return SetStr(ad, String(k).get(), v, copy);
 }
 
-ArrayData* NameValueTableWrapper::SetStr(ArrayData* ad, StringData* k,
-                                         const Variant& v, bool copy) {
+ArrayData* NameValueTableWrapper::SetStr(ArrayData* ad,
+                                         StringData* k,
+                                         Cell v,
+                                         bool copy) {
   auto a = asNVTW(ad);
-  tvAsVariant(a->m_tab->lookupAdd(k)).assignVal(v);
+  cellSet(v, *tvToCell(a->m_tab->lookupAdd(k)));
   return a;
 }
 
-ArrayData* NameValueTableWrapper::SetRefInt(ArrayData* ad, int64_t k,
-                                            const Variant& v, bool copy) {
+ArrayData* NameValueTableWrapper::SetRefInt(ArrayData* ad,
+                                            int64_t k,
+                                            Variant& v,
+                                            bool copy) {
   return asNVTW(ad)->setRef(String(k).get(), v, copy);
 }
 
-ArrayData* NameValueTableWrapper::SetRefStr(ArrayData* ad, StringData* k,
-                                            const Variant& v, bool copy) {
+ArrayData* NameValueTableWrapper::SetRefStr(ArrayData* ad,
+                                            StringData* k,
+                                            Variant& v,
+                                            bool copy) {
   auto a = asNVTW(ad);
   tvAsVariant(a->m_tab->lookupAdd(k)).assignRef(v);
   return a;
@@ -162,7 +174,7 @@ NameValueTableWrapper::Append(ArrayData*, const Variant& v, bool copy) {
 }
 
 ArrayData*
-NameValueTableWrapper::AppendRef(ArrayData*, const Variant& v, bool copy) {
+NameValueTableWrapper::AppendRef(ArrayData*, Variant& v, bool copy) {
   throw NotImplementedException("appendRef on $GLOBALS");
 }
 
@@ -212,7 +224,8 @@ ssize_t NameValueTableWrapper::IterRewind(const ArrayData* ad, ssize_t prev) {
 }
 
 bool
-NameValueTableWrapper::ValidFullPos(const ArrayData* ad, const FullPos & fp) {
+NameValueTableWrapper::ValidMArrayIter(const ArrayData* ad,
+                                       const MArrayIter & fp) {
   assert(fp.getContainer() == ad);
   auto a = asNVTW(ad);
   if (fp.getResetFlag()) return false;
@@ -221,7 +234,7 @@ NameValueTableWrapper::ValidFullPos(const ArrayData* ad, const FullPos & fp) {
   return iter.valid();
 }
 
-bool NameValueTableWrapper::AdvanceFullPos(ArrayData* ad, FullPos& fp) {
+bool NameValueTableWrapper::AdvanceMArrayIter(ArrayData* ad, MArrayIter& fp) {
   auto a = asNVTW(ad);
   bool reset = fp.getResetFlag();
   NameValueTable::Iterator iter = reset ?
@@ -263,6 +276,23 @@ bool NameValueTableWrapper::Uasort(ArrayData*, const Variant& cmp_function) {
 
 bool NameValueTableWrapper::IsVectorData(const ArrayData*) {
   return false;
+}
+
+ArrayData*
+NameValueTableWrapper::CopyWithStrongIterators(const ArrayData* ad) {
+  throw FatalErrorException(
+    "Unimplemented ArrayData::copyWithStrongIterators");
+}
+
+ArrayData* NameValueTableWrapper::NonSmartCopy(const ArrayData*) {
+  throw FatalErrorException("NameValueTableWrapper::nonSmartCopy "
+    "not implemented.");
+}
+
+void NameValueTableWrapper::Renumber(ArrayData*) {}
+
+void NameValueTableWrapper::OnSetEvalScalar(ArrayData*) {
+  not_reached();
 }
 
 //////////////////////////////////////////////////////////////////////

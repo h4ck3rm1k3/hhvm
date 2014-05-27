@@ -67,6 +67,8 @@ namespace HPHP {
 struct Variant : private TypedValue {
   enum class NullInit {};
   enum class NoInit {};
+  enum class CellCopy {};
+  enum class CellDup {};
   enum class ArrayInitCtor {};
 
   Variant() { m_type = KindOfUninit; }
@@ -115,11 +117,13 @@ struct Variant : private TypedValue {
   }
 
   // for static strings only
-  explicit Variant(const StringData *v);
+  enum class StaticStrInit {};
+  explicit Variant(const StringData *v, StaticStrInit);
 
   // These are prohibited, but declared just to prevent accidentally
   // calling the bool constructor just because we had a pointer to
   // const.
+  /* implicit */ Variant(const StringData* v) = delete;
   /* implicit */ Variant(const ArrayData *v) = delete;
   /* implicit */ Variant(const ObjectData *v) = delete;
   /* implicit */ Variant(const ResourceData *v) = delete;
@@ -128,6 +132,8 @@ struct Variant : private TypedValue {
   /* implicit */ Variant(TypedValue *v) = delete;
   /* implicit */ Variant(const /* implicit */ Variant *v) = delete;
   /* implicit */ Variant(/* implicit */ Variant *v) = delete;
+  template<typename Ret, typename... Args>
+  /* implicit */ Variant(Ret (*)(Args...)) = delete;
 
   //////////////////////////////////////////////////////////////////////
 
@@ -137,6 +143,19 @@ struct Variant : private TypedValue {
    */
 
   Variant(const Variant& v);
+
+  Variant(const Variant& v, CellCopy) {
+    m_type = v.m_type;
+    m_data = v.m_data;
+  }
+
+  Variant(const Variant& v, CellDup) {
+    m_type = v.m_type;
+    m_data = v.m_data;
+    if (IS_REFCOUNTED_TYPE(m_type)) {
+      m_data.pstr->incRefCount();
+    }
+  }
 
   Variant& operator=(const Variant& v) {
     return assign(v);
@@ -237,7 +256,7 @@ struct Variant : private TypedValue {
     return *this;
   }
 
-  // D462768 showed no gain from inlining, even just into hphp-array.o
+  // D462768 showed no gain from inlining, even just into mixed-array.o
   ~Variant();
 
   //////////////////////////////////////////////////////////////////////
@@ -440,7 +459,13 @@ struct Variant : private TypedValue {
   bool isString() const {
     return IS_STRING_TYPE(getType());
   }
-  bool isInteger() const;
+  bool isInteger() const {
+    return getType() == KindOfInt64;
+  }
+  bool isResource() const {
+    return getType() == KindOfResource;
+  }
+
   bool isNumeric(bool checkString = false) const;
   DataType toNumeric(int64_t &ival, double &dval, bool checkString = false)
     const;
@@ -471,7 +496,6 @@ struct Variant : private TypedValue {
   bool isAllowedAsConstantValue() const {
     return (m_type & kNotConstantValueTypeMask) == 0;
   }
-  bool isResource() const;
 
   /**
    * Whether or not there are at least two variables that are strongly bound.
@@ -502,17 +526,15 @@ struct Variant : private TypedValue {
    * Operators
    */
   Variant &assign(const Variant& v);
-  Variant &assignVal(const Variant& v) { return assign(v); }
-  Variant &assignRef(const Variant& v);
+  Variant &assignRef(Variant& v);
 
-  Variant &operator=(RefResult v) { return assignRef(variant(v)); }
-  Variant &operator=(CVarStrongBind v) { return assignRef(variant(v)); }
   Variant &operator=(CVarWithRefBind v) { return setWithRef(variant(v)); }
 
   Variant &operator=(const StaticString &v) {
     set(v);
     return *this;
   }
+
   template<typename T> Variant &operator=(const T &v) {
     set(v);
     return *this;
@@ -615,7 +637,7 @@ struct Variant : private TypedValue {
     return toStringHelper();
   }
   Array  toArray  () const {
-    if (m_type == KindOfArray) return m_data.parr;
+    if (m_type == KindOfArray) return Array(m_data.parr);
     return toArrayHelper();
   }
   Object toObject () const {
@@ -655,14 +677,16 @@ struct Variant : private TypedValue {
   /**
    * Output functions
    */
+  /* The last param noQuotes indicates to serializer to not put the output in
+   * double quotes (used when printing the output of a __toDebugDisplay() of
+   * an object when it is a string.
+   */
   void serialize(VariableSerializer *serializer,
                  bool isArrayKey = false,
-                 bool skipNestCheck = false) const;
+                 bool skipNestCheck = false,
+                 bool noQuotes = false) const;
   void unserialize(VariableUnserializer *unserializer,
                    Uns::Mode mode = Uns::Mode::Value);
-
-  static Variant &lvalInvalid();
-  static Variant &lvalBlackHole();
 
   /**
    * Low level access that should be restricted to internal use.
@@ -743,11 +767,25 @@ struct Variant : private TypedValue {
         Cell* asCell()       { return tvToCell(asTypedValue()); }
 
   /*
-   * Access this Variant as a Ref. Promotes this Variant to a ref
-   * if it is not already a ref.
+   * Read this Variant as an InitCell, without incrementing the
+   * reference count.  I.e. unbox if it is boxed, and turn
+   * KindOfUninit into KindOfNull.
    */
-  const Ref* asRef() const { PromoteToRef(*this); return this; }
-        Ref* asRef()       { PromoteToRef(*this); return this; }
+  Cell asInitCellTmp() const {
+    TypedValue tv = *this;
+    if (UNLIKELY(tv.m_type == KindOfRef)) {
+      tv.m_data = tv.m_data.pref->tv()->m_data;
+      return tv;
+    }
+    if (tv.m_type == KindOfUninit) tv.m_type = KindOfNull;
+    return tv;
+  }
+
+  /*
+   * Access this Variant as a Ref, converting it to a Ref it isn't
+   * one.
+   */
+  Ref* asRef() { PromoteToRef(*this); return this; }
 
  private:
   bool isPrimitive() const { return !IS_REFCOUNTED_TYPE(m_type); }
@@ -758,36 +796,36 @@ struct Variant : private TypedValue {
       (IS_STRING_TYPE(m_type) && m_data.pstr->empty());
   }
 
-  const Variant& set(bool    v);
-  const Variant& set(int     v);
-  const Variant& set(int64_t   v);
-  const Variant& set(double  v);
-  const Variant& set(litstr  v) = delete;
-  const Variant& set(const std::string & v) {
+  void set(bool    v);
+  void set(int     v);
+  void set(int64_t   v);
+  void set(double  v);
+  void set(litstr  v) = delete;
+  void set(const std::string & v) {
     return set(String(v));
   }
-  const Variant& set(StringData  *v);
-  const Variant& set(ArrayData   *v);
-  const Variant& set(ObjectData  *v);
-  const Variant& set(ResourceData  *v);
-  const Variant& set(const StringData  *v) = delete;
-  const Variant& set(const ArrayData   *v) = delete;
-  const Variant& set(const ObjectData  *v) = delete;
-  const Variant& set(const ResourceData  *v) = delete;
+  void set(StringData  *v);
+  void set(ArrayData   *v);
+  void set(ObjectData  *v);
+  void set(ResourceData  *v);
+  void set(const StringData  *v) = delete;
+  void set(const ArrayData   *v) = delete;
+  void set(const ObjectData  *v) = delete;
+  void set(const ResourceData  *v) = delete;
 
-  const Variant& set(const String& v) { return set(v.get()); }
-  const Variant& set(const StaticString & v);
-  const Variant& set(const Array& v) { return set(v.get()); }
-  const Variant& set(const Object& v) { return set(v.get()); }
-  const Variant& set(const Resource& v) { return set(v.get()); }
+  void set(const String& v) { return set(v.get()); }
+  void set(const StaticString & v);
+  void set(const Array& v) { return set(v.get()); }
+  void set(const Object& v) { return set(v.get()); }
+  void set(const Resource& v) { return set(v.get()); }
 
   template<typename T>
-  const Variant& set(const SmartObject<T> &v) {
+  void set(const SmartObject<T> &v) {
     return set(v.get());
   }
 
   template<typename T>
-  const Variant& set(const SmartResource<T> &v) {
+  void set(const SmartResource<T> &v) {
     return set(v.get());
   }
 
@@ -816,12 +854,12 @@ struct Variant : private TypedValue {
     tvRefcountedDecRefHelper(stype, sdata.num);
   }
 
-  static ALWAYS_INLINE void PromoteToRef(const Variant& v) {
+  static ALWAYS_INLINE void PromoteToRef(Variant& v) {
     assert(&v != &null_variant);
     if (v.m_type != KindOfRef) {
       auto const ref = RefData::Make(*v.asTypedValue());
-      const_cast<Variant&>(v).m_type = KindOfRef;
-      const_cast<Variant&>(v).m_data.pref = ref;
+      v.m_type = KindOfRef;
+      v.m_data.pref = ref;
     }
   }
 
@@ -829,7 +867,7 @@ struct Variant : private TypedValue {
     AssignValHelper(this, &v);
   }
 
-  ALWAYS_INLINE void assignRefHelper(const Variant& v) {
+  ALWAYS_INLINE void assignRefHelper(Variant& v) {
     assert(tvIsPlausible(*this) && tvIsPlausible(v));
 
     PromoteToRef(v);
@@ -843,7 +881,7 @@ struct Variant : private TypedValue {
   }
 
 public:
-  ALWAYS_INLINE void constructRefHelper(const Variant& v) {
+  ALWAYS_INLINE void constructRefHelper(Variant& v) {
     assert(tvIsPlausible(v));
     PromoteToRef(v);
     v.m_data.pref->incRefCount();
@@ -978,10 +1016,6 @@ private:
   mutable Variant m_var;
 };
 
-inline VRefParamValue vref(const Variant& v) {
-  return VRefParamValue(strongBind(v));
-}
-
 inline VRefParam directRef(const Variant& v) {
   return *(VRefParamValue*)&v;
 }
@@ -1075,6 +1109,15 @@ private:
     assert(false);
   }
 };
+
+//////////////////////////////////////////////////////////////////////
+
+/*
+ * The lvalBlackHole is used in array operations when a NewElem can't
+ * create a new slot.  (Basically if the next integer key in an array
+ * is already at the maximum integer.)
+ */
+Variant& lvalBlackHole();
 
 ///////////////////////////////////////////////////////////////////////////////
 // breaking circular dependencies

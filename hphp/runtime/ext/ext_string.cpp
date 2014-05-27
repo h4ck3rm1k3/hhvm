@@ -28,7 +28,8 @@
 #include "hphp/runtime/server/http-request-handler.h"
 #include "hphp/runtime/server/http-protocol.h"
 #include "hphp/runtime/ext/ext_math.h"
-#include "hphp/runtime/ext/ext_variable.h"
+#include "hphp/runtime/ext/std/ext_std_classobj.h"
+#include "hphp/runtime/ext/std/ext_std_variable.h"
 #include "folly/Unicode.h"
 #include "hphp/runtime/base/request-event-handler.h"
 #include "hphp/zend/html-table.h"
@@ -69,7 +70,7 @@ String stringForEach(uint32_t len, const String& str, Op action) {
     *dst = action(*src);
   }
 
-  if (!mutate) ret.get()->setSize(len);
+  if (!mutate) ret.setSize(len);
   return ret;
 }
 
@@ -402,7 +403,7 @@ String f_strip_tags(const String& str, const String& allowable_tags /* = "" */) 
 }
 
 template <bool left, bool right> ALWAYS_INLINE
-String stringTrim(const String& str, const String& charlist) {
+String stringTrim(String& str, const String& charlist) {
   char flags[256];
   string_charmask(charlist.c_str(), charlist.size(), flags);
 
@@ -421,10 +422,10 @@ String stringTrim(const String& str, const String& charlist) {
   if (str.get()->hasExactlyOneRef()) {
     int slen = end - start + 1;
     if (start) {
-      char* sdata = str.get()->mutableData();
+      char* sdata = str.bufferSlice().ptr;
       for (int idx = 0; start < len;) sdata[idx++] = sdata[start++];
     }
-    str.get()->setSize(slen);
+    str.shrink(slen);
     return str;
   }
 
@@ -471,7 +472,7 @@ String f_join(const Variant& glue, const Variant& pieces /* = null_variant */) {
   return f_implode(glue, pieces);
 }
 
-Variant f_str_split(const String& str, int split_length /* = 1 */) {
+Variant f_str_split(const String& str, int64_t split_length /* = 1 */) {
   return StringUtil::Split(str, split_length);
 }
 
@@ -712,14 +713,14 @@ String f_str_repeat(const String& input, int multiplier) {
   }
 
   if (multiplier == 0) {
-    return String("", CopyString);
+    return empty_string;
   }
 
   if (input.size() == 1) {
-    String ret(input.size() * multiplier, ReserveString);
+    String ret(multiplier, ReserveString);
 
-    memset(ret.get()->mutableData(), *input.data(), multiplier);
-    ret.get()->setSize(multiplier);
+    memset(ret.bufferSlice().ptr, *input.data(), multiplier);
+    ret.setSize(multiplier);
     return ret;
   }
 
@@ -735,33 +736,29 @@ String f_str_repeat(const String& input, int multiplier) {
 ///////////////////////////////////////////////////////////////////////////////
 
 Variant f_printf(int _argc, const String& format, const Array& _argv /* = null_array */) {
-  int len = 0; char *output = string_printf(format.data(), format.size(),
-                                            _argv, &len);
-  if (output == NULL) return false;
-  echo(output, len); free(output);
-  return len;
+  String output = string_printf(format.data(), format.size(), _argv);
+  if (output.isNull()) return false;
+  echo(output.data(), output.size());
+  return output.size();
 }
 
 Variant f_vprintf(const String& format, const Array& args) {
-  int len = 0; char *output = string_printf(format.data(), format.size(),
-                                            args, &len);
-  if (output == NULL) return false;
-  echo(output, len); free(output);
-  return len;
+  String output = string_printf(format.data(), format.size(), args);
+  if (output.isNull()) return false;
+  echo(output.data(), output.size());
+  return output.size();
 }
 
 Variant f_sprintf(int _argc, const String& format, const Array& _argv /* = null_array */) {
-  int len = 0;
-  char *output = string_printf(format.data(), format.size(), _argv, &len);
-  if (output == NULL) return false;
-  return String(output, len, AttachString);
+  String output = string_printf(format.data(), format.size(), _argv);
+  if (output.isNull()) return false;
+  return output;
 }
 
 Variant f_vsprintf(const String& format, const Array& args) {
-  int len = 0;
-  char *output = string_printf(format.data(), format.size(), args, &len);
-  if (output == NULL) return false;
-  return String(output, len, AttachString);
+  String output = string_printf(format.data(), format.size(), args);
+  if (output.isNull()) return false;
+  return output;
 }
 
 Variant f_sscanf(int _argc,
@@ -801,29 +798,19 @@ Variant f_money_format(const String& format, double number) {
 }
 
 String f_number_format(double number, int decimals /* = 0 */,
-                       const Variant& dec_point /* = "." */,
-                       const Variant& thousands_sep /* = "," */) {
-  char ch_dec_point = '.';
-  if (!dec_point.isNull()) {
-    const String& s = dec_point.toString();
-    if (s.size() >= 1) {
-      ch_dec_point = s[0];
-    } else {
-      ch_dec_point = 0;
-    }
+                       const Variant& dec_point_in /* = "." */,
+                       const Variant& thousands_sep_in /* = "," */) {
+
+  String dec_point(".");
+  if (!dec_point_in.isNull()) {
+    dec_point = dec_point_in.toString();
   }
-  char ch_thousands_sep = ',';
-  if (!thousands_sep.isNull()) {
-    const String& s = thousands_sep.toString();
-    if (s.size() >= 1) {
-      ch_thousands_sep = s[0];
-    } else {
-      ch_thousands_sep = 0;
-    }
+  String thousands_sep(",");
+  if (!thousands_sep_in.isNull()) {
+    thousands_sep = thousands_sep_in.toString();
   }
-  char *ret = string_number_format(number, decimals, ch_dec_point,
-                                   ch_thousands_sep);
-  return String(ret, AttachString);
+
+  return string_number_format(number, decimals, dec_point, thousands_sep);
 }
 
 int64_t f_strcmp(const String& str1, const String& str2) {
@@ -919,14 +906,46 @@ Variant f_stristr(const String& haystack, const Variant& needle) {
   return haystack.substr(ret.toInt32());
 }
 
+static NEVER_INLINE
+Variant strpbrk_slow(const String& haystack, const String& char_list) {
+  auto const hd = haystack.get()->data();
+  auto const cd = char_list.get()->data();
+  for (size_t i = 0; i < haystack.length(); ++i) {
+    for (size_t j = 0; j < char_list.length(); ++j) {
+      if (hd[i] == cd[j]) {
+        return String(hd + i, haystack.length() - i, CopyString);
+      }
+    }
+  }
+  return false;
+}
+
 Variant f_strpbrk(const String& haystack, const String& char_list) {
   if (char_list.empty()) {
     throw_invalid_argument("char_list: (empty)");
     return false;
   }
-  const char *p = strpbrk(haystack.c_str(), char_list.c_str());
-  if (p) {
-    return String(p, CopyString);
+
+  auto const charListData = char_list.c_str();
+  auto const charListStop = charListData + char_list.size();
+  for (auto ptr = charListData; ptr != charListStop;) {
+    if (UNLIKELY(*ptr++ == '\0')) return strpbrk_slow(haystack, char_list);
+  }
+
+  // Use strcspn instead of strpbrk because the latter doesn't report
+  // when its terminated due to a null byte in haystack in any
+  // manageable way.
+  auto haySize = haystack.size();
+  auto hayData = haystack.c_str();
+retry:
+  size_t idx = strcspn(hayData, charListData);
+  if (idx < haySize) {
+    if (UNLIKELY(hayData[idx] == '\0')) {
+      hayData += idx + 1;
+      haySize -= idx + 1;
+      goto retry;
+    }
+    return String(hayData + idx, haySize - idx, CopyString);
   }
   return false;
 }
@@ -1110,7 +1129,7 @@ Variant f_strlen(const Variant& vstr) {
     raise_warning("strlen() expects parameter 1 to be string, resource given");
     return uninit_null();
   case KindOfObject:
-    if (!f_method_exists(vstr, "__toString")) {
+    if (!HHVM_FN(method_exists)(vstr, "__toString")) {
       raise_warning("strlen() expects parameter 1 to be string, object given");
       return uninit_null();
     } //else fallback to default
@@ -1210,7 +1229,7 @@ Variant f_str_word_count(const String& str, int64_t format /* = 0 */,
   case 1:
   case 2:
     if (!str_len) {
-      return Array::Create();
+      return empty_array;
     }
     break;
   case 0:
@@ -1294,15 +1313,11 @@ int64_t f_similar_text(const String& first, const String& second,
 
 Variant f_soundex(const String& str) {
   if (str.empty()) return false;
-  return String(string_soundex(str.c_str()), AttachString);
+  return string_soundex(str);
 }
 
 Variant f_metaphone(const String& str, int phones /* = 0 */) {
-  char *ret = string_metaphone(str.data(), str.size(), 0, 1);
-  if (ret) {
-    return String(ret, AttachString);
-  }
-  return false;
+  return string_metaphone(str.data(), str.size(), 0, 1);
 }
 
 String f_html_entity_decode(const String& str, int flags /* = k_ENT_COMPAT */,
@@ -1341,7 +1356,7 @@ String f_htmlspecialchars(const String& str, int flags /* = k_ENT_COMPAT */,
 
 String f_fb_htmlspecialchars(const String& str, int flags /* = k_ENT_COMPAT */,
                              const String& charset /* = "ISO-8859-1" */,
-                             const Array& extra /* = Array() */) {
+                             const Array& extra /* = null_array */) {
   return StringUtil::HtmlEncodeExtra(str, StringUtil::toQuoteStyle(flags),
                                      charset.data(), false, extra);
 }
@@ -1452,7 +1467,7 @@ void f_parse_str(const String& str, VRefParam arr /* = null */) {
   Array result = Array::Create();
   HttpProtocol::DecodeParameters(result, str.data(), str.size());
   if (!arr.isReferenced()) {
-    f_extract(result);
+    HHVM_FN(__SystemLib_extract)(result);
     return;
   }
   arr = result;
@@ -1565,11 +1580,7 @@ String f_nl_langinfo(int item) {
 }
 
 String f_convert_cyr_string(const String& str, const String& from, const String& to) {
-  char ch_from = from[0];
-  char ch_to = to[0];
-  char *ret = string_convert_cyrillic_string(str.data(), str.size(),
-                                             ch_from, ch_to);
-  return String(ret, str.size(), AttachString);
+  return string_convert_cyrillic_string(str, from[0], to[0]);
 }
 
 

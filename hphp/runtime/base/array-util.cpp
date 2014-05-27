@@ -13,18 +13,22 @@
    | license@php.net so we can mail you a copy immediately.               |
    +----------------------------------------------------------------------+
 */
+
 #include "hphp/runtime/base/array-util.h"
 
-#include <vector>
-#include <set>
-#include <utility>
-
 #include "hphp/runtime/base/array-iterator.h"
-#include "hphp/runtime/base/string-util.h"
 #include "hphp/runtime/base/builtin-functions.h"
 #include "hphp/runtime/base/runtime-error.h"
+#include "hphp/runtime/base/string-util.h"
+
 #include "hphp/runtime/ext/ext_math.h"
 #include "hphp/runtime/ext/ext_string.h"
+
+#include "folly/Optional.h"
+
+#include <set>
+#include <utility>
+#include <vector>
 
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
@@ -382,12 +386,12 @@ Variant ArrayUtil::Shuffle(const Array& input) {
   }
   php_array_data_shuffle(indices);
 
-  Array ret = Array::Create();
+  PackedArrayInit ret(count);
   for (int i = 0; i < count; i++) {
     ssize_t pos = indices[i];
     ret.appendWithRef(input->getValueRef(pos));
   }
-  return ret;
+  return ret.toVariant();
 }
 
 Variant ArrayUtil::RandomKeys(const Array& input, int num_req /* = 1 */) {
@@ -420,12 +424,12 @@ Variant ArrayUtil::RandomKeys(const Array& input, int num_req /* = 1 */) {
   }
   php_array_data_shuffle(indices);
 
-  Array ret = Array::Create();
+  PackedArrayInit ret(num_req);
   for (int i = 0; i < num_req; i++) {
     ssize_t pos = indices[i];
     ret.append(input->getKey(pos));
   }
-  return ret;
+  return ret.toVariant();
 }
 
 Variant ArrayUtil::StringUnique(const Array& input) {
@@ -499,15 +503,25 @@ Variant ArrayUtil::RegularSortUnique(const Array& input) {
 ///////////////////////////////////////////////////////////////////////////////
 // iterations
 
-namespace {
-
-MutableArrayIter iter_begin(Variant& var, Variant* key, Variant& val) {
-  if (var.is(KindOfObject)) {
-    return var.getObjectData()->begin(key, val, null_string);
+static void create_miter_for_walk(folly::Optional<MArrayIter>& miter,
+                                  Variant& var) {
+  if (!var.is(KindOfObject)) {
+    miter.emplace(var.asRef()->m_data.pref);
+    return;
   }
-  return MutableArrayIter(&var, key, val);
-}
 
+  auto const odata = var.getObjectData();
+  if (odata->isCollection()) {
+    raise_error("Collection elements cannot be taken by reference");
+  }
+  bool isIterable;
+  Object iterable = odata->iterableObject(isIterable);
+  if (isIterable) {
+    throw FatalErrorException("An iterator cannot be used with "
+                              "foreach by reference");
+  }
+  Array properties = iterable->o_toIterArray(null_string, true);
+  miter.emplace(properties.detach());
 }
 
 void ArrayUtil::Walk(VRefParam input, PFUNC_WALK walk_function,
@@ -516,9 +530,16 @@ void ArrayUtil::Walk(VRefParam input, PFUNC_WALK walk_function,
                      const Variant& userdata /* = null_variant */) {
   assert(walk_function);
 
+  // The Optional is just to avoid copy constructing MArrayIter.
+  folly::Optional<MArrayIter> miter;
+  create_miter_for_walk(miter, input);
+  assert(miter.hasValue());
+
   Variant k;
   Variant v;
-  for (MutableArrayIter iter = iter_begin(input, &k, v); iter.advance(); ) {
+  while (miter->advance()) {
+    k = miter->key();
+    v.assignRef(miter->val());
     if (recursive && v.is(KindOfArray)) {
       assert(seen);
       ArrayData *arr = v.getArrayData();

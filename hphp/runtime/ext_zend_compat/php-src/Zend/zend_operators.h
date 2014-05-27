@@ -40,6 +40,11 @@
 #include "hphp/runtime/base/zend-strtod.h"
 #include "hphp/runtime/base/proxy-array.h"
 
+#ifdef __clang__
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wconstant-logical-operand"
+#endif
+
 #define LONG_SIGN_MASK (1L << (8*sizeof(long)-1))
 
 BEGIN_EXTERN_C()
@@ -440,21 +445,24 @@ END_EXTERN_C()
   }
 
 #ifdef HHVM
-inline HPHP::TypedValue& zval_follow_ref(zval &z) {
+
+namespace HPHP {
+
+inline TypedValue& zval_follow_ref(zval &z) {
   return *z.tv();
 }
 
-inline const HPHP::TypedValue& zval_follow_ref(const zval &z) {
+inline const TypedValue& zval_follow_ref(const zval &z) {
   return *z.tv();
 }
 
 /**
- * Zend PHP extensions assume that a zval owns its array exclusively.
+ * PHP5 extensions assume that a zval owns its array exclusively.
  * However, HHVM allows arrays to be shared by multiple things (and it
  * uses refcounting to keep track of how many things own a reference to
  * the array). The purpose of ZArrVal is to give us a way to intercept
  * certain uses Z_ARRVAL so that we can make a copy of the array when
- * appropriate so that Zend PHP extensions work correctly.
+ * appropriate so that PHP5 extensions work correctly.
  */
 class ZArrVal {
 private:
@@ -501,19 +509,31 @@ private:
 inline ZArrVal zval_get_arrval(const zval &z) {
   return ZArrVal(const_cast<zval*>(&z)->tv());
 }
- 
-#define Z_LVAL(zval)        (zval_follow_ref(zval).m_data.num)
-#define Z_BVAL(zval)        ((zend_bool)zval_follow_ref(zval).m_data.num)
-#define Z_DVAL(zval)        (zval_follow_ref(zval).m_data.dbl)
-#define Z_STRVAL(zval)      ((char*)zval_follow_ref(zval).m_data.pstr->data())
-#define Z_STRLEN(zval)      (zval_follow_ref(zval).m_data.pstr->size())
-#define Z_ARRVAL(zval)      (zval_get_arrval(zval))
-#define Z_OBJVAL(zval)      (zval_follow_ref(zval).m_data.pobj)
+
+}
+
+#define Z_LVAL(zval)        (HPHP::zval_follow_ref(zval).m_data.num)
+#define Z_BVAL(zval)        ((zend_bool)HPHP::zval_follow_ref(zval).m_data.num)
+#define Z_DVAL(zval)        (HPHP::zval_follow_ref(zval).m_data.dbl)
+#define Z_STRVAL(zval)      ((char*)HPHP::zval_follow_ref(zval).m_data.pstr->data())
+#define Z_STRLEN(zval)      (HPHP::zval_follow_ref(zval).m_data.pstr->size())
+#define Z_ARRVAL(zval)      (HPHP::zval_get_arrval(zval))
+#define Z_OBJVAL(zval)      (HPHP::zval_follow_ref(zval).m_data.pobj)
 #define Z_OBJ_HANDLE(zval)  (Z_OBJVAL(zval)->o_getId())
 #define Z_OBJ_HT(zval)      (bad_value<zend_object_handlers*>())
 #define Z_OBJCE(zval)       (zend_get_class_entry(&(zval) TSRMLS_CC))
-// TODO the .detach is leaking here
-#define Z_OBJPROP(zval)     (Z_OBJVAL((zval))->o_toArray().detach())
+
+// TODO: this is a memory leak, since the caller doesn't know it owns the
+// ProxyArray. Perhaps we could register it in a request-local map, like we do
+// for zend_class_entry?
+//
+// Note: modifying Z_OBJPROP(z) with zend_hash_update() etc. will not actually
+// update the object's properties as it will in Zend. But zend_update_property()
+// etc. will work, and which is the preferred method for updating properties in
+// Zend anyway.
+#define Z_OBJPROP(zval) \
+  ((HashTable*)HPHP::ProxyArray::Make(Z_OBJVAL((zval))->o_toArray().detach()))
+
 #define Z_OBJ_HANDLER(zval, hf)  (Z_OBJ_HT((zval))->hf)
 #define Z_RESVAL(zval)      (zval_get_resource_id(zval))
 #define Z_OBJDEBUG(zval,is_tmp)  ((Z_OBJ_HANDLER((zval),get_debug_info)?Z_OBJ_HANDLER((zval),get_debug_info)(&(zval),&is_tmp TSRMLS_CC):(is_tmp=0,Z_OBJ_HANDLER((zval),get_properties)?Z_OBJPROP(zval):NULL)))
@@ -532,7 +552,7 @@ inline ZArrVal zval_get_arrval(const zval &z) {
 #define Z_OBJ_HANDLER(zval, hf) Z_OBJ_HT((zval))->hf
 #define Z_RESVAL(zval)      (zval).value.lval
 #define Z_OBJDEBUG(zval,is_tmp)  (Z_OBJ_HANDLER((zval),get_debug_info)?Z_OBJ_HANDLER((zval),get_debug_info)(&(zval),&is_tmp TSRMLS_CC):(is_tmp=0,Z_OBJ_HANDLER((zval),get_properties)?Z_OBJPROP(zval):NULL))
-#endif 
+#endif
 
 #define Z_LVAL_P(zval_p)    Z_LVAL(*zval_p)
 #define Z_BVAL_P(zval_p)    Z_BVAL(*zval_p)
@@ -684,7 +704,7 @@ static zend_always_inline int fast_add_function(zval *result, zval *op1, zval *o
     __asm__(
       "movl  (%1), %%eax\n\t"
       "addl   (%2), %%eax\n\t"
-      "jo     0f\n\t"     
+      "jo     0f\n\t"
       "movl   %%eax, (%0)\n\t"
       "movb   %3, %c5(%0)\n\t"
       "jmp    1f\n"
@@ -695,7 +715,7 @@ static zend_always_inline int fast_add_function(zval *result, zval *op1, zval *o
       "movb   %4, %c5(%0)\n\t"
       "fstpl  (%0)\n"
       "1:"
-      : 
+      :
       : "r"(&result->value),
         "r"(&op1->value),
         "r"(&op2->value),
@@ -707,7 +727,7 @@ static zend_always_inline int fast_add_function(zval *result, zval *op1, zval *o
     __asm__(
       "movq  (%1), %%rax\n\t"
       "addq   (%2), %%rax\n\t"
-      "jo     0f\n\t"     
+      "jo     0f\n\t"
       "movq   %%rax, (%0)\n\t"
       "movb   %3, %c5(%0)\n\t"
       "jmp    1f\n"
@@ -718,7 +738,7 @@ static zend_always_inline int fast_add_function(zval *result, zval *op1, zval *o
       "movb   %4, %c5(%0)\n\t"
       "fstpl  (%0)\n"
       "1:"
-      : 
+      :
       : "r"(&result->value),
         "r"(&op1->value),
         "r"(&op2->value),
@@ -765,7 +785,7 @@ static zend_always_inline int fast_sub_function(zval *result, zval *op1, zval *o
     __asm__(
       "movl  (%1), %%eax\n\t"
       "subl   (%2), %%eax\n\t"
-      "jo     0f\n\t"     
+      "jo     0f\n\t"
       "movl   %%eax, (%0)\n\t"
       "movb   %3, %c5(%0)\n\t"
       "jmp    1f\n"
@@ -780,7 +800,7 @@ static zend_always_inline int fast_sub_function(zval *result, zval *op1, zval *o
       "movb   %4, %c5(%0)\n\t"
       "fstpl  (%0)\n"
       "1:"
-      : 
+      :
       : "r"(&result->value),
         "r"(&op1->value),
         "r"(&op2->value),
@@ -792,7 +812,7 @@ static zend_always_inline int fast_sub_function(zval *result, zval *op1, zval *o
     __asm__(
       "movq  (%1), %%rax\n\t"
       "subq   (%2), %%rax\n\t"
-      "jo     0f\n\t"     
+      "jo     0f\n\t"
       "movq   %%rax, (%0)\n\t"
       "movb   %3, %c5(%0)\n\t"
       "jmp    1f\n"
@@ -807,7 +827,7 @@ static zend_always_inline int fast_sub_function(zval *result, zval *op1, zval *o
       "movb   %4, %c5(%0)\n\t"
       "fstpl  (%0)\n"
       "1:"
-      : 
+      :
       : "r"(&result->value),
         "r"(&op1->value),
         "r"(&op2->value),
@@ -1032,6 +1052,10 @@ static zend_always_inline int fast_is_smaller_or_equal_function(zval *result, zv
   compare_function(result, op1, op2 TSRMLS_CC);
   return Z_LVAL_P(result) <= 0;
 }
+
+#ifdef __clang__
+#pragma clang diagnostic pop
+#endif
 
 #endif
 

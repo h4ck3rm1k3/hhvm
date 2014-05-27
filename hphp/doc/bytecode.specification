@@ -208,75 +208,52 @@ opcode below lists the requirements for a closure subclass to be usable with
 it.
 
 
-Continuations
--------------
+Generators
+----------
 
-The basic compilation strategy for continuations is to create two bytecode
-functions. One is known as the "outer generator" function, and the other is
-known as the "inner generator function" or equivalently the "generator body".
-HHBC metadata contains a link from the outer function to the inner function.
-For the purposes of this spec, we will call functions in these configurations a
-"generator function pair".
+The basic compilation strategy for generators is to create bytecode functions
+consisting of two parts.
 
-The outer generator function for a continuation must consist of a CreateCont
-opcode, followed by a RetC. The CreateCont opcode uses the function metadata to
-determine which generator body to associate with the allocated continuation
-object.
+The first part, executed when the generator function is called, must consist
+of a CreateCont, which is responsible for suspending execution state into a new
+Generator object (includes resume offset pointing to the start of the second
+part of the function) and returning it back to the caller.
 
-The "generator body" function is where the real user-level code of the
-generator should be placed. It should operate by first using UnpackCont, and
-then doing a Switch to determine which portion of its code should run. See the
-description of the continuation instructions for more details.
+The second part is where the real user-level code of the generator should be
+placed. ContEnter and ContRaise opcodes used in Generator's next(), send()
+and raise() methods resume execution and transfer control to the resume offset
+stored in the Generator object. The user-level code yields values using
+Yield and YieldK opcodes and returns using RetC opcode.
 
 
 Async functions
 ---------------
 
-Async functions are currently implemented as generator function pairs, where
-the outer function represents "eager execution" of the async function, and the
-inner function is used when "suspended execution" is necessary (i.e. if it does
-an await on something that is not yet available).
+Async functions are special type of functions representing asynchronous
+execution. They can suspend while waiting for other asynchronous operation to
+finish. This is achieved using AsyncSuspend opcode, which suspends execution
+into an AsyncFunctionWaitHandle object. Once the given dependency is finished,
+the scheduler resumes async function at the next opcode.
 
-Both functions are required to 'have the same effects', except one works in a
-suspended mode. The inner body must start with UnpackCont, followed by a
-switch. Each switch target must exactly correspond to a section of the outer
-function that lies between two await points. Other than the bytecode used to
-compile await expressions, this switch, and returns, the bodies must consist of
-the same bytecode instructions.
+The async function body can be executed in 2 different modes. If the execution
+was never suspended, we are in "eager execution" mode. The code executed after
+the resume is executed in "resumed execution" mode.
 
-Async function closures are implemented the same way, but importantly the
-"eager execution" function will be the __invoke function on a closure subclass.
+The "eager execution" can end in 3 different ways. If a RetC opcode is reached,
+the result is wrapped into StaticResultWaitHandle and returned to the caller.
+If an exception is thrown, it is wrapped into StaticExceptionWaitHandle and
+returned to the caller. Otherwise, an AsyncSuspend opcode is reached, which
+suspends the current execution state into an AsyncFunctionWaitHandle object
+and returns it to the caller. This mechanism allows fast execution if no
+blocking asynchronous operation was reached.
 
-The async function implementation is still changing and may stop using
-generator function pairs soon, so this spec is staying light on details for
-now.
+The "resumed execution" mode is always entered from the scheduler. In this mode,
+the async function either gets blocked on another dependency, or gets finished.
+The scheduler is notified of these events using AsyncSuspend and RetC opcodes
+(or via unwinder if an exception was thrown) and the control is given back.
 
-
-Generator Function Pairs
-------------------------
-
-Whether they are being used to represent async functions or continuations, the
-following requirements apply to generator function pairs:
-
-   - All functions must either be part of only one generator function pair, or
-     must not be part of any generator function pair. Inner and outer generator
-     functions are in a 1:1 relationship.
-
-   - An outer generator function must either consist of the opcode sequence
-     CreateCont; RetC, or be designated as an async function.
-
-   - Generator function pairs must always be defined in the same unit as each
-     other.
-
-   - If the outer function of a generator function pair is a class member
-     function, and it is not the __invoke function on a subclass of closure,
-     then the inner generator function must be a member of the same class.
-
-   - If the outer function of a generator function pair is a closure __invoke
-     method, then the inner function must be a function that is not a member of
-     any class, and must have a unique name within its compilation unit. The
-     bytecode metadata must designate this inner function with the flag
-     isGeneratorFromClosure.
+The async function implementation is still changing and the implementation may
+change significantly, so this spec is staying light on details for now.
 
 
 Entry points
@@ -775,9 +752,9 @@ inputs' flavor descriptors.
 point.
 
 4) If a given instruction is not the target of a forward branch and it follows
-a Jmp, Switch, SSwitch, RetC, RetV, Unwind, Fatal, Throw, NativeImpl, or
-ContHandle instruction, the evaluation stack before executing the given
-instruction must be empty.
+a Jmp, Switch, SSwitch, RetC, RetV, Unwind, Fatal, Throw, or NativeImpl
+instruction, the evaluation stack before executing the given instruction
+must be empty.
 
 5) Before executing the RetC instruction, the evaluation stack must contain
 exactly one value and the flavor descriptor of the value must be cell.
@@ -796,7 +773,7 @@ another funclet.
 7) Any bytecode instruction inside the primary function body or a fault funclet
 that is immediately followed by an instruction not inside the same primary
 function body or fault funclet must be one of the following instructions: Jmp,
-Switch, SSwitch, RetC, RetV, Unwind, Fatal, Throw, NativeImpl, or ContHandle.
+Switch, SSwitch, RetC, RetV, Unwind, Fatal, Throw, or NativeImpl.
 
 8) The primary function body may not contain the Unwind instruction, and fault
 funclets may not contain the Ret* instructions. Also, each catch entry point
@@ -894,7 +871,8 @@ to the first immediate argument, and %2 is used to refer to the second
 immediate argument.
 
 Note that the relative offset immediate used by a Jmp*, Iter*, MIter*, Switch,
-or SSwitch instruction is relative the beginning of the instruction.
+SSwitch or AsyncSuspend instruction is relative the beginning
+of the instruction.
 
 There are numerous instructions that operate on different kinds of locations.
 Locations are specified using "location descriptors". The complete list of
@@ -971,7 +949,8 @@ The instruction set is organized into the following sections:
   11. Iterator instructions
   12. Include, eval, and define instructions
   13. Miscellaneous instructions
-  14. Continuation creation and execution
+  14. Generator creation and execution
+  15. Async functions
 
 
 1. Basic instructions
@@ -1118,29 +1097,29 @@ ColAddNewElemC    [C C]  ->  [C:Obj]
 
   If $2 is not a collection object, this instruction throws a fatal error.
 
-Cns <litstr id>    []  ->  [C:Null|Bool|Int|Dbl|Str]
+Cns <litstr id>    []  ->  [C:Null|Bool|Int|Dbl|Str|Resource]
 
   Get constant. Pushes the value of the global constant named %1 onto the stack
   as a cell. If there is no constant named %1, this instruction raises a notice
   and pushes the string %1 onto the stack as a cell.
 
-CnsE <litstr id>    []  ->  [C:Null|Bool|Int|Dbl|Str]
+CnsE <litstr id>    []  ->  [C:Null|Bool|Int|Dbl|Str|Resource]
 
   Get constant. Pushes the value of the global constant named %1 onto the stack
   as a cell. If there is no constant named %1, throws a fatal error.
 
-CnsU <litstr id> <litstr fallback>  []  ->  [C:Null|Bool|Int|Dbl|Str]
+CnsU <litstr id> <litstr fallback>  []  ->  [C:Null|Bool|Int|Dbl|Str|Resource]
 
   Get constant. Identical to Cns except returns constant named %2 if the
   constant named %1 is undefined.
 
-ClsCns <litstr id>    [A]  ->  [C:Null|Bool|Int|Dbl|Static Str]
+ClsCns <litstr id>    [A]  ->  [C:Null|Bool|Int|Dbl|Str|Resource]
 
   Get class constant. This instruction pushes the value of the class constant
   named %1 from class $1 onto the stack. If there is no class constant named %1
   in class $1, this instruction throws a fatal error.
 
-ClsCnsD <litstr id> <litstr id>    []  ->  [C:Null|Bool|Int|Dbl|Static Str]
+ClsCnsD <litstr id> <litstr id>    []  ->  [C:Null|Bool|Int|Dbl|Str|Resource]
 
   Get class constant (direct). This instruction first checks if %2 matches the
   name of a defined class. If %2 does not match the name of a defined class,
@@ -1170,6 +1149,10 @@ NameA   [A] ->  [C:Static Str]
 Concat    [C C]  ->  [C:Str]
 
   Concatenation (.). Pushes ((string)$2 . (string)$1) on the stack.
+
+ConcatN <n>   [C..C]  ->  [C:Str]
+
+  Concatenation (.). Pushes ((string)$n . ... . (string)$1) on the stack.
 
 Abs    [C] -> [C:Int|Dbl|Bool]
 
@@ -1231,6 +1214,11 @@ Div    [C C]  ->  [C:Bool|Int|Dbl]
 Mod    [C C]  ->  [C:Bool|Int]
 
   Modulus (%). Pushes ((int)$2 % (int)$1) onto the stack. This instruction
+  never throws a fatal error.
+
+Pow    [C C]  ->  [C:Int|Dbl]
+
+  Power. Pushes $2 raised to the power of $1 onto the stack. This instruction
   never throws a fatal error.
 
 Sqrt   [C]    ->  [C:Null|Dbl]
@@ -1458,10 +1446,23 @@ SSwitch <litstr id/offset vector>    [C]  ->  []
   in the vector, which must have a litstr id of -1.
 
 RetC    [C]  ->  []
+
+  Return a cell. Returns $1 to the caller. This instruction may not be used
+  inside fault funclets.
+
+  If this instruction is used inside an async function executed in an "eager
+  execution" mode, the $1 is wrapped into a StaticResultWaitHandle prior to
+  return. In a "resumed execution" mode, the control is given back to the
+  scheduler and it is informed that the async function has finished.
+
+  If used in a generator, the Generator object is marked as finished and
+  the control is given back to the next instruction after ContEnter or
+  ContRaise instruction in a previous frame. The $1 must be Null.
+
 RetV    [V]  ->  []
 
-  Return. Returns $1 to the caller. This instruction may not be used inside
-  default value funclets or fault funclets.
+  Return a ref. Returns $1 to the caller. This instruction may not be used
+  inside fault funclets, async functions and generators.
 
 Unwind    []  ->  []
 
@@ -2108,8 +2109,8 @@ FCallD <num params> <class name> <func name>   [F..F]  ->  [R]
   FPI call direct. This instruction has exactly the effects of FCall %1, but
   provides hints from static analysis to assist the region selector in
   determining the callee. The strings in %2 and %3 are statically known names
-  of the class (if any) and method being called. If the call is targeting a
-  non-method, %2 must be the empty string.
+  of the class or interface (if any) and method being called. If the call is
+  targeting a non-method, %2 must be the empty string.
 
 FCallArray    [F]  ->  [R]
 
@@ -3941,9 +3942,7 @@ Catch    []  ->  [C:Obj]
   The exception object must be a subclass of the builtin Exception class. This
   instruction may only be used at the beginning of a catch entry point.
 
-ClassExists        [C C]  ->  [C:Bool]
-InterfaceExists    [C C]  ->  [C:Bool]
-TraitExists        [C C]  ->  [C:Bool]
+OODeclExists <Class|Interface|Trait> [C C]  ->  [C:Bool]
 
   Check for class/interface/trait existence. If $1 cannot be cast to a bool or
   $2 cannot be cast to a string, this instruction will throw a fatal error.
@@ -4041,44 +4040,22 @@ ArrayIdx    [C C C] -> [C]
   if found. Otherwise, $1 is pushed onto the stack. A fatal error will be
   thrown if $3 is not an array.
 
-AssertTL   <local id>     <op>   []  ->  []
-AssertTStk <stack offset> <op>   []  ->  []
+AssertRATL    <local id>     <repo auth type>    []  ->  []
+AssertRATStk  <stack offset> <repo auth type>    []  ->  []
+
+  Assert known "repo authoritative type", for locals or stack offsets.
 
   These opcodes may be used to communicate the results of ahead of time static
-  analysis to the runtime. They indicate that the value in the specified local
-  or stack offset must be statically known to have a particular type. The sub
-  opcodes should be used to indicate the type, in an unspecified way.
+  analysis (hhbbc) to the runtime. They indicate that the value in the
+  specified local or stack offset is statically known to have a particular
+  type. The "repo auth type" immediate is an encoded RepoAuthType struct (for
+  details see runtime/base/repo-auth-type.h).
 
-AssertObjL    <local id>     <class name> <op>   []  ->  []
-AssertObjStk  <stack offset> <class name> <op>   []  ->  []
-
-  These opcodes may be used to communicate the results of ahead of time static
-  analysis to the runtime.
-
-  Depending on the value of %3, they indicate that the value in the specified
-  local or stack offset must be statically known to be an object of a
-  particular class or interface type, or an object that is a non-strict subtype
-  of a particular class or interface type, or either of those cases with
-  nullability.
-
-  %2 is a litstr id of a class or interface name. %3 has the following
-  semantics regarding what it asserts about the type of the local or stack
-  slot:
-
-        Subop                    Semantics
-      -----------------------+------------------------------------
-      AssertObjOp::Exact     |  exactly the type named in %2
-      AssertObjOp::Sub       |  non-strict subtype of %2
-      AssertObjOp::OptExact  |  null, or exactly the type in %2
-      AssertObjOp::OptSub    |  null, or non-strict subtype of %2
-
-
-PredictTL   <local id>     <op>   []  ->  []
-PredictTStk <stack offset> <op>   []  ->  []
-
-  These opcodes may be used to provide hints about the types of values at
-  runtime. Runtime behavior is implementation defined, although incorrect
-  predictions should not affect program correctness.
+  As suggested by the name, these opcodes are generally for use with
+  RepoAuthoritative mode. They may appear in non-RepoAuthoritative mode with
+  one restriction: "specialized" array type information may not be asserted,
+  because the global array type table may only be present in RepoAuthoritative
+  mode.
 
 BreakTraceHint   []  ->  []
 
@@ -4087,128 +4064,112 @@ BreakTraceHint   []  ->  []
   front of it. In HHVM, this is used to tell the JIT to break a Tracelet when
   it sees this opcode.
 
-14. Continuation creation and execution
+Silence  <local id> <Start|End>   []  ->  []
+
+  With %2 = Start, sets the error reporting level to 0 and stores the previous
+  one in the local variable %1. The local variable will be overwritten without
+  reference counting.
+
+  With %2 = End, if the error reporting level is 0, restores the error
+  reporting level to the previous value (stored in local variable %1); if the
+  error reporting level is not 0, does nothing.
+
+
+14. Generator creation and execution
 ---------------------------------------
 
-CreateCont    []  ->  [C]
+CreateCont   []  ->  [C:Null]
 
-  Creates a Continuation object and pushes it on the stack. The Continuation
-  will capture all defined local variables in the current function, and marks
-  them uninitialized on the current frame. The Continuation will wrap the
-  "generator body" function associated with the current function. If no
-  generator body is associated with this function, the behavior of the
-  CreateCont opcode is undefined.
+  This instruction may only appear in bodies of generators. Creates a new
+  Generator object, moves all local variables from the current frame into
+  the object, sets resume offset at the next opcode and suspends execution by
+  transferring control flow back to the caller, returning the Generator
+  object. Once the execution is resumed, the Null value sent by ContEnter
+  becomes available on the stack. It is illegal to resume newly constructed
+  Generator using ContEnter with a non-null value or ContRaise opcodes.
 
-ContEnter [C]  ->  []
+ContEnter   [C]  ->  []
 
-  This instruction may only appear in non-static methods of the Continuation
-  class. It transfers control flow to the beginning of the continuation body
-  associated with the $this object of the Continuation object. The value on the
-  stack is sent to the Continuation to be retrieved by UnpackCont.
+  This instruction may only appear in non-static methods of the Generator
+  class. It transfers control flow to the saved resume offset of a function
+  associated with $this Generator object. The $1 will remain available
+  on the stack after the control is transferred.
 
-ContSuspend  <label id>   [C]  ->  []
+ContRaise   [C:Obj]  ->  []
 
-  Suspend continuation. This instruction may only appear in continuation
-  bodies. Packs all defined local variables into the Continuation object in
-  local 0. Store $1 in the continuation as the result of the current iteration
-  and set the continuation's label to <label id>. Transfer control flow to the
-  caller of the continuation body, which must be a non-static method of the
-  Continuation class.
+  This instruction may only appear in non-static methods of the Generator
+  class. It transfers control flow to the saved resume offset of a function
+  associated with $this Generator object. The Exception stored at $1 is
+  raised instead of invoking code at the resume offset.
 
-ContSuspendK  <label id>    [C C]  ->  []
+Yield   [C]  ->  [C]
 
-  Suspend continuation. This instruction may only appear in continuation
-  bodies. Packs all defined local variables into the Continuation object in
-  local 0. Store $1 in the continuation as the result of the current iteration,
-  store $2 as the key of the current iteration, and set the continuation's
-  label to <label id>. Transfer control flow to the caller of the continuation
-  body, which must be a non-static method of the Continuation class.
+  This instruction may only appear in bodies of generators. Stores $1
+  in the generator as the result of the current iteration, sets resume
+  offset at the next opcode and suspends execution by transferring control
+  flow back to the ContEnter or ContRaise. Once the execution is resumed,
+  the value sent by ContEnter becomes available on the stack, or
+  an exception sent by ContRaise is thrown.
 
-UnpackCont    []  ->  [C C:Int]
+YieldK   [C C]  ->  [C]
 
-  Unpack continuation. Unpacks variables from the Continuation object in local
-  0 into the containing environment. The stack will contain the current label
-  of the continuation in $1 and the value sent to the continuation in $2. The
-  value will be no longer referenced by the Continuation object.
-
-ContRetC    [C]  ->  []
-
-  Return from continuation. Marks the continuation in local 0 as finished, sets
-  the result and transfers control flow to the caller of the continuation body,
-  which must be a non-static method of the Continuation class. Further attempts
-  to iterate it will fail.
+  This instruction may only appear in bodies of generators. Stores $1
+  in the generator as the result and $2 as the key of the current
+  iteration, sets resume offset at the next opcode and suspends execution
+  by transferring control flow back to the ContEnter or ContRaise. Once
+  the execution is resumed, the value sent by ContEnter becomes available
+  on the stack, or an exception sent by ContRaise is thrown.
 
 ContCheck <check started>    []  ->  []
 
-  Check whether continuation can be iterated. $this must be a Continuation
-  object. If the continuation is finished, already running, or not yet started
+  Check whether generator can be iterated. $this must be a Generator
+  object. If the generator is finished, already running, or not yet started
   and <check started> is enabled, an exception will be thrown.
-
-ContRaise    []  ->  []
-
-  Prepare continuation to receive a thrown exception. $this must be a
-  Continuation object that passed ContCheck<true> check.
 
 ContValid    []  ->  [C:Bool]
 
-  Check continuation validity. $this must be a Continuation object. Pushes true
-  onto the stack if the continuation can be iterated further, false otherwise.
+  Check generator validity. $this must be a Generator object. Pushes true
+  onto the stack if the generator can be iterated further, false otherwise.
 
 ContKey    []  ->  [C]
 
-  Get continuation key. $this must be a Continuation object. Pushes the most
-  recently yielded key from the continuation onto the stack.
+  Get generator key. $this must be a Generator object. Pushes the most
+  recently yielded key from the generator onto the stack.
 
 ContCurrent    []  ->  [C]
 
-  Get continuation value. $this must be a Continuation object. Pushes the most
-  recently yielded value from the continuation onto the stack.
-
-ContStopped    []  ->  []
-
-  Mark continuation as stopped. $this must be a Continuation object.
-
-ContHandle    [C]  ->  []
-
-  Handle exception from continuation body. $this must be a Continuation object.
-  Marks the continuation as no longer running and finished and rethrows the
-  exception on the top of the stack.
+  Get generator value. $this must be a Generator object. Pushes the most
+  recently yielded value from the generator onto the stack.
 
 15. Async functions
 -------------------
 
-AsyncAwait   [C]  ->  [C C:Bool]
+Await  <number of iterators>   [C:Obj]  ->  [C]
 
-  Perform an await operation on a wait handle. If $1 is not a subclass of
-  WaitHandle, raises a fatal error. If $1 is not finished, this instruction
-  pushes $1, and pushes False. Otherwise, if $1 succeeded, this instruction
-  pushes the result value from the WaitHandle, and then pushes true. If $1
-  failed, this instruction throws the exception from the WaitHandle.
+  This instruction may only appear in bodies of async functions. Awaits
+  a WaitHandle provided by $1, suspending the execution if the WaitHandle
+  was not yet ready.
 
-AsyncESuspend <label id> <number of iterators>   [C:Obj]  ->  [C:Obj]
+  If $1 is not a subclass of WaitHandle, raises a fatal error. If $1 succeeded,
+  this instruction pushes the result value from the WaitHandle. If $1 failed,
+  this instruction throws the exception from the WaitHandle. Otherwise the
+  execution needs to be suspended:
 
-  Suspends an eagerly executed async function into an AsyncFunctionWaitHandle
-  object. The AsyncFunctionWaitHandle object will capture all named local
-  variables and the first %2 iterators in the current eagerly executed async
-  function, and mark them uninitialized on the current frame. Unnamed locals
-  are not affected. The object will store a reference to the associated
-  resumable async function and a label %1 to be used to resume the execution
-  once the WaitHandle object given by $1 is finished.
+  If the async function is executed eagerly, creates an AsyncFunctionWaitHandle
+  object, moves all local variables and first %1 iterators from the current
+  frame into the object, sets resume offset at the next opcode, marks the
+  AsyncFunctionWaitHandle as blocked on the WaitHandle provided by $1 and
+  suspends execution by transferring control flow back to the caller,
+  returning the AsyncFunctionWaitHandle object.
 
-  If $1 is not a WaitHandle, or is a WaitHandle that is already finished, the
-  behavior is undefined. This opcode must only occur in the outer functions of
-  generator body pairs used to implement async functions. The value this opcode
-  pushes on the stack must be passed to a RetC opcode.
+  If the async function is executed in resumed mode, sets resume offset at
+  the next opcode, marks the AsyncFunctionWaitHandle as blocked on the
+  WaitHandle provided by $1 and suspends execution by transferring control
+  flow back to the scheduler.
 
-AsyncWrapResult   [C]  ->  [C:Obj]
+  Once the execution is resumed, the result of the WaitHandle provided by $1
+  becomes available on the stack.
 
-  Wraps $1 into a StaticResultWaitHandle object.
-
-AsyncWrapException   [C:Obj]  ->  [C:Obj]
-
-  Wraps $1 into a StaticExceptionWaitHandle object. If $1 is not an Exception,
-  the behavior is undefined. The value this opcode pushes on the stack must be
-  passed to a RetC opcode.
 
 Basic statement transformations
 -------------------------------

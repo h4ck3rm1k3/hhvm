@@ -70,7 +70,7 @@ void sync_regstate(_Unwind_Context* context) {
    * aren't allowed to throw, so this is ok.
    */
   ActRec fakeAr;
-  fakeAr.m_savedRbp = frameRbp;
+  fakeAr.m_sfp = reinterpret_cast<ActRec*>(frameRbp);
   fakeAr.m_savedRip = frameRip;
 
   Stats::inc(Stats::TC_SyncUnwind);
@@ -100,12 +100,12 @@ bool install_catch_trace(_Unwind_Context* ctx, _Unwind_Exception* exn,
       helperAddr = rip + *reinterpret_cast<int32_t*>(callAddr + 1);
     }
 
-    always_assert_log(false,
-      [&] {
-        return folly::format("Translated call to {} threw without catch block, "
-                             "return address: {}\n",
-                             getNativeFunctionName(helperAddr), rip).str();
-      });
+    always_assert_flog(false,
+                       "Translated call to {} threw '{}' without "
+                       "catch block, return address: {}\n",
+                       getNativeFunctionName(helperAddr),
+                       exceptionFromUnwindException(exn)->what(),
+                       rip);
     return false;
   }
 
@@ -142,7 +142,8 @@ tc_unwind_personality(int version,
   // packed into a 64-bit int. For now we shouldn't be seeing exceptions from
   // any other runtimes but this may change in the future.
   DEBUG_ONLY constexpr uint64_t kMagicClass = 0x474e5543432b2b00;
-  assert(exceptionClass == kMagicClass);
+  DEBUG_ONLY constexpr uint64_t kMagicDependentClass = 0x474e5543432b2b01;
+  assert(exceptionClass == kMagicClass || exceptionClass == kMagicDependentClass);
   assert(version == 1);
 
   auto const& ti = typeInfoFromUnwindException(exceptionObj);
@@ -151,7 +152,6 @@ tc_unwind_personality(int version,
     ism = static_cast<InvalidSetMException*>(
       exceptionFromUnwindException(exceptionObj));
   }
-
 
   if (Trace::moduleEnabled(TRACEMOD, 1)) {
     DEBUG_ONLY auto const* unwindType =

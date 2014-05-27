@@ -200,9 +200,9 @@ public:
   void setIntPragma(int repoId, const char* name, int val);
   void getTextPragma(int repoId, const char* name, std::string& val);
   void setTextPragma(int repoId, const char* name, const char* val);
-  bool initSchema(int repoId, bool& isWritable);
+  bool initSchema(int repoId, bool& isWritable, std::string& errorMsg);
   bool schemaExists(int repoId);
-  bool createSchema(int repoId);
+  bool createSchema(int repoId, std::string& errorMsg);
   bool writable(int repoId);
 
 private:
@@ -224,41 +224,6 @@ private:
   PreClassRepoProxy m_pcrp;
   FuncRepoProxy m_frp;
   LitstrRepoProxy m_lsrp;
-};
-
-//////////////////////////////////////////////////////////////////////
-
-/*
- * Global repo metadata.
- *
- * Only used in RepoAuthoritative mode.  See loadGlobalData().
- */
-struct Repo::GlobalData {
-  /*
-   * Indicates whether a repo was compiled using HHBBC.
-   */
-  bool UsedHHBBC = false;
-
-  /*
-   * Indicates whether a repo was compiled with HardTypeHints.
-   *
-   * If so, we disallow recovering from the E_RECOVERABLE_ERROR we
-   * raise if you violate a typehint, because doing so would allow
-   * violating assumptions from the optimizer.
-   */
-  bool HardTypeHints = false;
-
-  /*
-   * Indicates whether a repo was compiled with HardPrivatePropInference.
-   */
-  bool HardPrivatePropInference = false;
-
-  template<class SerDe> void serde(SerDe& sd) {
-    sd(UsedHHBBC)
-      (HardTypeHints)
-      (HardPrivatePropInference)
-      ;
-  }
 };
 
 //////////////////////////////////////////////////////////////////////

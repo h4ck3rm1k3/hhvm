@@ -30,7 +30,12 @@
 
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
-// global declarations that have generated implementations
+
+/*
+ * This file is included from inside an extern "C" block in some places, but
+ * these functions have return types that are incompatible with C linkage.
+ */
+extern "C++" {
 
 /**
  * Invoking an arbitrary user-defined function.
@@ -47,6 +52,8 @@ extern Variant get_static_property(const String& s, const char *prop);
  * Getting the init value of a class variable
  */
 extern Variant get_class_var_init(const String& s, const char *var);
+
+} // extern C++
 
 /**
  * Class/function meta info entirely encoded here as a const char * array.
@@ -72,9 +79,8 @@ extern void free_global_variables_after_sweep();
 struct EnvConstants {
   static void requestInit(EnvConstants* gt);
   static void requestExit();
-  Variant __lvalProxy;
+  Variant lvalProxy;
   Variant stgv_Variant[1];
-#define k_SID stgv_Variant[0]
 };
 extern EnvConstants* get_env_constants();
 extern String k_PHP_BINARY;

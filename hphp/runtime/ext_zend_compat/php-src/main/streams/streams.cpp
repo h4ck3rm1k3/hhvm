@@ -18,7 +18,7 @@
    |          Jim Winstead <jimw@php.net>                                 |
    +----------------------------------------------------------------------+
  */
-
+/* @nolint */
 /* $Id$ */
 
 #include "php.h"
@@ -29,6 +29,9 @@
 #include <stddef.h>
 #include <fcntl.h>
 #include "hphp/runtime/base/stream-wrapper-registry.h"
+#include "hphp/runtime/base/stream-wrapper.h"
+#include "hphp/runtime/base/url-file.h"
+#include "hphp/runtime/base/plain-file.h"
 
 /* {{{ resource and registration code */
 static int le_stream = FAILURE; /* true global */
@@ -90,57 +93,57 @@ PHPAPI php_stream_context *php_stream_context_alloc(TSRMLS_D)
 /* allocate a new stream for a particular ops */
 PHPAPI php_stream *_php_stream_alloc(php_stream_ops *ops, void *abstract, const char *persistent_id, const char *mode STREAMS_DC TSRMLS_DC) /* {{{ */
 {
-	php_stream *ret;
+  php_stream *ret;
 
-	ret = (php_stream*) pemalloc(sizeof(php_stream), persistent_id ? 1 : 0);
+  ret = (php_stream*) pemalloc(sizeof(php_stream), persistent_id ? 1 : 0);
 
-	memset(ret, 0, sizeof(php_stream));
+  memset(ret, 0, sizeof(php_stream));
 
-	ret->readfilters.stream = ret;
-	ret->writefilters.stream = ret;
+  ret->readfilters.stream = ret;
+  ret->writefilters.stream = ret;
 
 #if STREAM_DEBUG
-fprintf(stderr, "stream_alloc: %s:%p persistent=%s\n", ops->label, ret, persistent_id);
+  fprintf(stderr, "stream_alloc: %s:%p persistent=%s\n", ops->label, ret, persistent_id);
 #endif
 
-	ret->ops = ops;
-	ret->abstract = abstract;
-	ret->is_persistent = persistent_id ? 1 : 0;
-	ret->chunk_size = FG(def_chunk_size);
+  ret->ops = ops;
+  ret->abstract = abstract;
+  ret->is_persistent = persistent_id ? 1 : 0;
+  ret->chunk_size = FG(def_chunk_size);
 
-	if (FG(auto_detect_line_endings)) {
-		ret->flags |= PHP_STREAM_FLAG_DETECT_EOL;
-	}
+  if (FG(auto_detect_line_endings)) {
+    ret->flags |= PHP_STREAM_FLAG_DETECT_EOL;
+  }
 
-	if (persistent_id) {
-		zend_rsrc_list_entry le;
+  if (persistent_id) {
+    zend_rsrc_list_entry le;
 
-		le.type = le_pstream;
-		le.ptr = ret;
-		le.refcount = 0;
+    le.type = le_pstream;
+    le.ptr = ret;
+    le.refcount = 0;
 
-		if (FAILURE == zend_hash_update(&EG(persistent_list), (char *)persistent_id,
-					strlen(persistent_id) + 1,
-					(void *)&le, sizeof(le), NULL)) {
+    if (FAILURE == zend_hash_update(&EG(persistent_list), (char *)persistent_id,
+          strlen(persistent_id) + 1,
+          (void *)&le, sizeof(le), NULL)) {
 
-			pefree(ret, 1);
-			return NULL;
-		}
-	}
+      pefree(ret, 1);
+      return NULL;
+    }
+  }
 
-	ret->rsrc_id = ZEND_REGISTER_RESOURCE(NULL, ret, persistent_id ? le_pstream : le_stream);
-	strlcpy(ret->mode, mode, sizeof(ret->mode));
+  ret->rsrc_id = ZEND_REGISTER_RESOURCE(NULL, ret, persistent_id ? le_pstream : le_stream);
+  strlcpy(ret->mode, mode, sizeof(ret->mode));
 
-	ret->wrapper          = NULL;
-	ret->wrapperthis      = NULL;
-	ret->wrapperdata      = NULL;
-	ret->stdiocast        = NULL;
-	ret->orig_path        = NULL;
-	ret->context          = NULL;
-	ret->readbuf          = NULL;
-	ret->enclosing_stream = NULL;
+  ret->wrapper          = NULL;
+  ret->wrapperthis      = NULL;
+  ret->wrapperdata      = NULL;
+  ret->stdiocast        = NULL;
+  ret->orig_path        = NULL;
+  ret->context          = NULL;
+  ret->readbuf          = NULL;
+  ret->enclosing_stream = NULL;
 
-	return ret;
+  return ret;
 }
 /* }}} */
 
@@ -161,14 +164,14 @@ PHPAPI int _php_stream_stat(php_stream *stream, php_stream_statbuf *ssb TSRMLS_D
   // kinda weird this is on the wrapper not the file
   auto path = stream->hphp_file->getName();
   auto w = HPHP::Stream::getWrapperFromURI(path);
-  return w->stat(path, &ssb->sb);
+  return w ? w->stat(path, &ssb->sb) : -1;
 }
 
 /* If buf == NULL, the buffer will be allocated automatically and will be of an
  * appropriate length to hold the line, regardless of the line length, memory
  * permitting */
 PHPAPI char *_php_stream_get_line(php_stream *stream, char *buf, size_t maxlen,
-		size_t *returned_len TSRMLS_DC)
+    size_t *returned_len TSRMLS_DC)
 {
   auto s = stream->hphp_file->readLine(maxlen);
   if (s.empty()) {
@@ -216,4 +219,123 @@ PHPAPI php_stream_dirent *_php_stream_readdir(php_stream *dirstream, php_stream_
   }
   memcpy(ent, s.data(), s.size());
   return ent;
+}
+
+PHPAPI int _php_stream_set_option(php_stream *stream, int option, int value, void *ptrparam TSRMLS_DC)
+{
+  throw HPHP::FatalErrorException("unimplemented: _php_stream_set_option");
+}
+
+PHPAPI php_stream_context *php_stream_context_set(php_stream *stream, php_stream_context *context)
+{
+  throw HPHP::FatalErrorException("unimplemented: php_stream_context_set");
+}
+
+PHPAPI void php_stream_notification_notify(php_stream_context *context, int notifycode, int severity,
+    char *xmsg, int xcode, size_t bytes_sofar, size_t bytes_max, void * ptr TSRMLS_DC)
+{
+  throw HPHP::FatalErrorException("unimplemented: php_stream_notification_notify");
+}
+
+PHPAPI void php_stream_context_free(php_stream_context *context)
+{
+  throw HPHP::FatalErrorException("unimplemented: php_stream_context_free");
+}
+
+PHPAPI php_stream_notifier *php_stream_notification_alloc(void)
+{
+  throw HPHP::FatalErrorException("unimplemented: php_stream_notification_alloc");
+}
+
+PHPAPI void php_stream_notification_free(php_stream_notifier *notifier)
+{
+  throw HPHP::FatalErrorException("unimplemented: php_stream_notification_free");
+}
+
+PHPAPI int php_stream_context_get_option(php_stream_context *context,
+    const char *wrappername, const char *optionname, zval ***optionvalue)
+{
+  throw HPHP::FatalErrorException("unimplemented: php_stream_context_get_option");
+}
+
+PHPAPI size_t _php_stream_copy_to_mem(php_stream *src, char **buf, size_t maxlen, int persistent STREAMS_DC TSRMLS_DC) {
+    HPHP::String s;
+    if (maxlen == PHP_STREAM_COPY_ALL) {
+      HPHP::StringBuffer sb;
+      sb.read(src->hphp_file);
+      s = sb.detach();
+    } else {
+      s = src->hphp_file->read(maxlen);
+    }
+    *buf = (char*) emalloc(s.size());
+    memcpy(*buf, s.data(), s.size());
+    return s.size();
+}
+
+PHPAPI int _php_stream_cast(php_stream *stream, int castas, void **ret, int show_err TSRMLS_DC) {
+  switch (castas) {
+    case PHP_STREAM_AS_STDIO:
+      HPHP::PlainFile* pf = dynamic_cast<HPHP::PlainFile*>(stream->hphp_file);
+      *ret = pf->getStream();
+      return true;
+  }
+  return false;
+}
+
+PHPAPI php_stream *_php_stream_open_wrapper_ex(char *path, const char *mode, int options, char **opened_path, php_stream_context *context STREAMS_DC TSRMLS_DC) {
+  HPHP::Stream::Wrapper* w = HPHP::Stream::getWrapperFromURI(path);
+  if (!w) return nullptr;
+  HPHP::File* file = w->open(path, mode, options, context);
+  if (!file) {
+    return nullptr;
+  }
+  // TODO this leaks
+  php_stream *stream = HPHP::smart_new<php_stream>(file);
+  stream->hphp_file->incRefCount();
+
+  if (auto urlFile = dynamic_cast<HPHP::UrlFile*>(file)) {
+    // Why is there no ZVAL_ARRAY?
+    MAKE_STD_ZVAL(stream->wrapperdata);
+    Z_TYPE_P(stream->wrapperdata) = IS_ARRAY;
+    Z_ARRVAL_P(stream->wrapperdata) = HPHP::ProxyArray::Make(
+      urlFile->getWrapperMetaData().detach()
+    );
+  } else {
+    stream->wrapperdata = nullptr;
+  }
+
+  return stream;
+}
+
+PHPAPI int _php_stream_free(php_stream *stream, int close_options TSRMLS_DC) {
+  decRefRes(stream->hphp_file);
+  return 1;
+}
+
+PHPAPI int _php_stream_seek(php_stream *stream, off_t offset, int whence TSRMLS_DC) {
+  return stream->hphp_file->seek(offset, whence);
+}
+
+PHPAPI off_t _php_stream_tell(php_stream *stream TSRMLS_DC) {
+  return stream->hphp_file->tell();
+}
+
+PHPAPI size_t _php_stream_read(php_stream *stream, char *buf, size_t count TSRMLS_DC) {
+  return stream->hphp_file->readImpl(buf, count);
+}
+
+PHPAPI size_t _php_stream_write(php_stream *stream, const char *buf, size_t count TSRMLS_DC) {
+  return stream->hphp_file->writeImpl(buf, count);
+}
+
+PHPAPI int _php_stream_eof(php_stream *stream TSRMLS_DC) {
+  return stream->hphp_file->eof();
+}
+
+PHPAPI int _php_stream_getc(php_stream *stream TSRMLS_DC) {
+  return stream->hphp_file->getc();
+}
+
+PHPAPI int _php_stream_putc(php_stream *stream, int c TSRMLS_DC) {
+  return stream->hphp_file->putc(c);
 }

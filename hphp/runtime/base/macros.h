@@ -128,14 +128,10 @@ T InstantStatic<T, TInit, init>::value { init() };
   CLASSNAME_IS(#originalName)                                   \
   friend ObjectData* new_##originalName##_Instance(Class*);     \
   friend void delete_##originalName(ObjectData*, const Class*); \
-  static inline HPHP::Class*& classof() {                       \
-    static HPHP::Class* result;                                 \
+  static inline HPHP::LowClassPtr& classof() {                  \
+    static HPHP::LowClassPtr result;                            \
     return result;                                              \
   }
-
-#define DECLARE_CLASS_NO_ALLOCATION(originalName)   \
-  DECLARE_CLASS_NO_SWEEP(originalName)              \
-  static void *ObjAllocatorInitSetup;               \
 
 /**
  * By this declaration a class introduced with DECLARE_CLASS can only

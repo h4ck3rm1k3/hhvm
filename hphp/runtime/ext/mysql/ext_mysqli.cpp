@@ -47,7 +47,8 @@ const StaticString
   s_mysqli_stmt("mysqli_stmt"),
   s_mysqli_warning("mysqli_warning"),
   s_persistent_prefix("p:"),
-  s_def("def");
+  s_def("def"),
+  s_free("free");
 
 //////////////////////////////////////////////////////////////////////////////
 // helper
@@ -353,7 +354,8 @@ static DataType get_option_value_type(int64_t option) {
   not_reached();
 }
 
-static Variant HHVM_METHOD(mysqli, options, int64_t option, const Variant& value) {
+static Variant HHVM_METHOD(mysqli, options, int64_t option,
+                           const Variant& value) {
   auto conn = get_connection(this_);
   VALIDATE_CONN(conn, MySQLState::INITED)
 
@@ -388,7 +390,8 @@ static Variant HHVM_METHOD(mysqli, options, int64_t option, const Variant& value
     }
   }
 
-  return !mysql_options(conn->get(), (mysql_option)option, value_ptr);
+  return !mysql_options(conn->get(), (mysql_option)option,
+                        static_cast<const char*>(value_ptr));
 }
 
 //static int64_t HHVM_STATIC_METHOD(mysqli, poll, VRefParam read,
@@ -415,7 +418,8 @@ static Variant HHVM_METHOD(mysqli, refresh, int64_t options) {
 //  throw NotImplementedException(__FUNCTION__);
 //}
 //
-//static bool HHVM_METHOD(mysqli, set_local_infile_handler, const Object& read_func) {
+//static bool HHVM_METHOD(mysqli, set_local_infile_handler,
+//                        const Object& read_func) {
 //  throw NotImplementedException(__FUNCTION__);
 //}
 
@@ -607,11 +611,22 @@ static int64_t HHVM_FUNCTION(mysqli_get_client_version) {
   return mysql_get_client_version();
 }
 
+void HHVM_FUNCTION(mysqli_free_result, const Variant& result) {
+  if (!UNLIKELY(result.isObject()
+      && result.toObject().instanceof(s_mysqli_result))) {
+    raise_warning(
+        "mysqli_free_result() expects parameter 1 to be mysqli_result");
+  } else {
+    result.toObject()->o_invoke_few_args(s_free, 0);
+  }
+}
+
 //static Array HHVM_FUNCTION(mysqli_get_client_stats) {
 //  throw NotImplementedException(__FUNCTION__);
 //}
 //
-//static void HHVM_FUNCTION(mysqli_set_local_infile_default, const Object& link) {
+//static void HHVM_FUNCTION(mysqli_set_local_infile_default,
+//                          const Object& link) {
 //  throw NotImplementedException(__FUNCTION__);
 //}
 
@@ -692,6 +707,7 @@ class mysqliExtension : public Extension {
     HHVM_FE(mysqli_stmt_bind_param);
     HHVM_FE(mysqli_stmt_bind_result);
     HHVM_FE(mysqli_thread_safe);
+    HHVM_FE(mysqli_free_result);
 
 #define REGISTER_CONST_VALUE(option, value)                                    \
   Native::registerConstant<KindOfInt64>(makeStaticString("MYSQLI_" #option),   \

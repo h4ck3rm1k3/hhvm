@@ -34,6 +34,7 @@
 #include "hphp/runtime/base/execution-context.h"
 #include "hphp/runtime/base/smart-containers.h"
 #include "hphp/runtime/vm/bytecode.h"
+#include "hphp/runtime/vm/jit/block.h"
 #include "hphp/runtime/vm/jit/fixup.h"
 #include "hphp/runtime/vm/jit/runtime-type.h"
 #include "hphp/runtime/vm/jit/srcdb.h"
@@ -82,9 +83,7 @@ struct DynLocation {
 
   DynLocation() : location(), rtt() {}
 
-  bool operator==(const DynLocation& r) const {
-    return rtt == r.rtt && location == r.location;
-  }
+  bool operator==(const DynLocation& r) const = delete;
 
   // Hash function
   size_t operator()(const DynLocation &dl) const {
@@ -155,16 +154,6 @@ struct DynLocation {
   bool canBeAliased() const;
 };
 
-// Flags that summarize the plan for handling a given instruction.
-enum TXFlags {
-  Interp = 0,       // default; must be boolean false
-  Supported = 1,    // Not interpreted, though possibly with C++
-  NonReentrant = 2, // Supported with no possibility of reentry.
-  MachineCode  = 4, // Supported without C++ at all.
-  Simple = NonReentrant | Supported,
-  Native = MachineCode | Simple
-};
-
 struct Tracelet;
 struct TraceletContext;
 
@@ -188,6 +177,13 @@ struct UnknownInputExc : std::runtime_error {
 
   const char* m_file; // must be static
   const int m_line;
+};
+
+struct ControlFlowFailedExc : std::runtime_error {
+  ControlFlowFailedExc(const char* file, int line)
+    : std::runtime_error(folly::format("ControlFlowFailedExc @ {}:{}",
+                                       file, line).str())
+    {}
 };
 
 #define punt() do { \
@@ -236,10 +232,10 @@ struct GuardType {
 
 typedef hphp_hash_map<Location,RuntimeType,Location> TypeMap;
 typedef hphp_hash_set<Location, Location> LocationSet;
-typedef hphp_hash_map<DynLocation*, GuardType>  DynLocTypeMap;
-
-
-const char* getTransKindName(TransKind kind);
+typedef hphp_hash_map<DynLocation*, GuardType> DynLocTypeMap;
+typedef hphp_hash_map<RegionDesc::BlockId, Block*> BlockIdToIRBlockMap;
+typedef hphp_hash_map<RegionDesc::BlockId,
+                      RegionDesc::Block*> BlockIdToRegionBlockMap;
 
 /*
  * Used to maintain a mapping from the bytecode to its corresponding x86.
@@ -259,6 +255,7 @@ struct TransRec {
   TransKind              kind;
   SrcKey                 src;
   MD5                    md5;
+  std::string            funcName;
   Offset                 bcStopOffset;
   std::vector<DynLocation>
                          dependencies;
@@ -271,20 +268,29 @@ struct TransRec {
 
   TransRec() {}
 
-  TransRec(SrcKey    s,
-           MD5       _md5,
-           TransKind _kind,
-           TCA       _aStart = 0,
-           uint32_t  _aLen = 0,
-           TCA       _astubsStart = 0,
-           uint32_t  _astubsLen = 0) :
-      id(0), kind(_kind), src(s), md5(_md5), bcStopOffset(0),
-      aStart(_aStart), aLen(_aLen),
-      astubsStart(_astubsStart), astubsLen(_astubsLen)
+  TransRec(SrcKey      s,
+           MD5         _md5,
+           std::string _funcName,
+           TransKind   _kind,
+           TCA         _aStart = 0,
+           uint32_t    _aLen = 0,
+           TCA         _astubsStart = 0,
+           uint32_t    _astubsLen = 0)
+      : id(0)
+      , kind(_kind)
+      , src(s)
+      , md5(_md5)
+      , funcName(_funcName)
+      , bcStopOffset(0)
+      , aStart(_aStart)
+      , aLen(_aLen)
+      , astubsStart(_astubsStart)
+      , astubsLen(_astubsLen)
     { }
 
   TransRec(SrcKey                   s,
            MD5                      _md5,
+           std::string              _funcName,
            TransKind                _kind,
            const Tracelet*          t,
            TCA                      _aStart = 0,
@@ -298,15 +304,35 @@ struct TransRec {
   std::string print(uint64_t profCount) const;
 };
 
+/*
+ * The information about the context a translation is ocurring
+ * in---these fields are fixed for the whole translation.  Many
+ * objects in the JIT need access to this.
+ */
+struct TransContext {
+  TransID transID;     // may be kInvalidTransID if not for a real translation
+  Offset initBcOffset;
+  Offset initSpOffset;
+  bool resumed;
+  const Func* func;
+};
+
+/*
+ * Arguments for the translate() entry points in the translator.
+ * These include a variety of flags that help decide what to
+ * translate, or what to do after we're done, so it's distinct from
+ * the TransContext above.
+ */
 struct TranslArgs {
   TranslArgs(const SrcKey& sk, bool align)
-      : m_sk(sk)
-      , m_align(align)
-      , m_interp(false)
-      , m_setFuncBody(false)
-      , m_transId(InvalidID)
-      , m_region(nullptr)
-    {}
+    : m_sk(sk)
+    , m_align(align)
+    , m_interp(false)
+    , m_setFuncBody(false)
+    , m_transId(kInvalidTransID)
+    , m_region(nullptr)
+    , m_dryRun(false)
+  {}
 
   TranslArgs& sk(const SrcKey& sk) {
     m_sk = sk;
@@ -332,6 +358,10 @@ struct TranslArgs {
     m_region = region;
     return *this;
   }
+  TranslArgs& dryRun(bool dry) {
+    m_dryRun = dry;
+    return *this;
+  }
 
   SrcKey m_sk;
   bool m_align;
@@ -339,6 +369,7 @@ struct TranslArgs {
   bool m_setFuncBody;
   TransID m_transId;
   JIT::RegionDescPtr m_region;
+  bool m_dryRun;
 };
 
 class Translator;
@@ -362,10 +393,6 @@ private:
   void analyzeCallee(TraceletContext&,
                      Tracelet& parent,
                      NormalizedInstruction* fcall);
-  bool applyInputMetaData(Unit::MetaHandle&,
-                          NormalizedInstruction* ni,
-                          TraceletContext& tas,
-                          InputInfos& ii);
   void handleAssertionEffects(Tracelet&,
                               const NormalizedInstruction&,
                               TraceletContext&,
@@ -397,6 +424,19 @@ private:
                        const Location& l,
                        bool specialize = false);
 
+  void createBlockMaps(const RegionDesc&        region,
+                       BlockIdToIRBlockMap&     blockIdToIRBlock,
+                       BlockIdToRegionBlockMap& blockIdToRegionBlock);
+
+  void setSuccIRBlocks(const RegionDesc&              region,
+                       RegionDesc::BlockId            srcBlockId,
+                       const BlockIdToIRBlockMap&     blockIdToIRBlock,
+                       const BlockIdToRegionBlockMap& blockIdToRegionBlock);
+
+  void setIRBlock(RegionDesc::BlockId            blockId,
+                  const BlockIdToIRBlockMap&     blockIdToIRBlock,
+                  const BlockIdToRegionBlockMap& blockIdToRegionBlock);
+
 public:
   enum TranslateResult {
     Failure,
@@ -404,8 +444,7 @@ public:
     Success
   };
   static const char* translateResultName(TranslateResult r);
-  void traceStart(Offset initBcOffset, Offset initSpOffset, bool inGenerator,
-                  const Func* func);
+  void traceStart(TransContext);
   void traceEnd();
   void traceFree();
 
@@ -417,6 +456,7 @@ public:
    * blacklist so they're interpreted on the next attempt. */
   typedef hphp_hash_set<SrcKey, SrcKey::Hasher> RegionBlacklist;
   TranslateResult translateRegion(const RegionDesc& region,
+                                  bool bcControlFlow,
                                   RegionBlacklist& interp);
 
 private:
@@ -442,7 +482,7 @@ private:
 public:
 
   Translator();
-  virtual ~Translator();
+
   static Lease& WriteLease() {
     return s_writeLease;
   }
@@ -500,7 +540,9 @@ public:
    * XXX The analysis pass will inspect the live state of the VM stack
    * as needed to determine the current types of in-flight values.
    */
-  std::unique_ptr<Tracelet> analyze(SrcKey sk, const TypeMap& = TypeMap());
+  std::unique_ptr<Tracelet> analyze(SrcKey sk,
+                                    const TypeMap& = TypeMap(),
+                                    int32_t stackSlackUsedForInlining = 0);
 
   void postAnalyze(NormalizedInstruction* ni, SrcKey& sk,
                    Tracelet& t, TraceletContext& tas);
@@ -524,17 +566,18 @@ public:
 
 private:
   TransKind m_mode;
-  ProfData* m_profData;
+  std::unique_ptr<ProfData> m_profData;
 
 private:
   int m_analysisDepth;
+  bool m_useAHot;
 
 public:
   void clearDbgBL();
   bool addDbgBLPC(PC pc);
 
   ProfData* profData() const {
-    return m_profData;
+    return m_profData.get();
   }
 
   TransKind mode() const {
@@ -547,6 +590,14 @@ public:
   int analysisDepth() const {
     assert(m_analysisDepth >= 0);
     return m_analysisDepth;
+  }
+
+  bool useAHot() const {
+    return m_useAHot;
+  }
+
+  void setUseAHot(bool val) {
+    m_useAHot = val;
   }
 
   // Start a new translation space. Returns true IFF this thread created
@@ -573,9 +624,10 @@ opcodeControlFlowInfo(const Op instr) {
     case Op::JmpNZ:
     case Op::Switch:
     case Op::SSwitch:
-    case Op::ContSuspend:
-    case Op::ContSuspendK:
-    case Op::ContRetC:
+    case Op::CreateCont:
+    case Op::Yield:
+    case Op::YieldK:
+    case Op::Await:
     case Op::RetC:
     case Op::RetV:
     case Op::Exit:
@@ -598,13 +650,13 @@ opcodeControlFlowInfo(const Op instr) {
     case Op::Unwind:
     case Op::Eval:
     case Op::NativeImpl:
-    case Op::ContHandle:
     case Op::BreakTraceHint:
       return ControlFlowInfo::BreaksBB;
     case Op::FCall:
     case Op::FCallD:
     case Op::FCallArray:
     case Op::ContEnter:
+    case Op::ContRaise:
     case Op::Incl:
     case Op::InclOnce:
     case Op::Req:
@@ -644,7 +696,7 @@ opcodeBreaksBB(const Op instr) {
  *
  * Similar to opcodeBreaksBB but more strict. We break profiling blocks after
  * any instruction that can side exit, including instructions with predicted
- * output.
+ * output, and before any control flow merge point.
  */
 bool instrBreaksProfileBB(const NormalizedInstruction* instr);
 
@@ -683,7 +735,8 @@ const Func* lookupImmutableMethod(const Class* cls, const StringData* name,
 // can return Variants, and we use KindOfUnknown to denote these
 // return types.
 static inline bool isCppByRef(DataType t) {
-  return t != KindOfBoolean && t != KindOfInt64 && t != KindOfNull;
+  return t != KindOfBoolean && t != KindOfInt64 &&
+         t != KindOfNull && t != KindOfDouble;
 }
 
 // return true if type is passed in/out of C++ as String&/Array&/Object&
@@ -694,14 +747,8 @@ static inline bool isSmartPtrRef(DataType t) {
 }
 
 void populateImmediates(NormalizedInstruction&);
-void preInputApplyMetaData(Unit::MetaHandle, NormalizedInstruction*);
-enum class MetaMode {
-  Normal,
-  Legacy,
-};
-void readMetaData(Unit::MetaHandle&, NormalizedInstruction&, HhbcTranslator&,
-                  bool profiling, MetaMode m = MetaMode::Normal);
 bool instrMustInterp(const NormalizedInstruction&);
+bool isAlwaysNop(Op op);
 
 typedef std::function<Type(int)> LocalTypeFn;
 void getInputs(SrcKey startSk, NormalizedInstruction& inst, InputInfos& infos,
@@ -735,6 +782,7 @@ enum OutTypeConstraints {
 
   OutUnknown,           // Not known at tracelet compile-time
   OutPred,              // Unknown, but give prediction a whirl.
+  OutPredBool,          // Boolean value predicted to be True or False
   OutCns,               // Constant; may be known at compile-time
   OutVUnknown,          // type is V(unknown)
 
@@ -756,7 +804,8 @@ enum OutTypeConstraints {
   OutClassRef,          // KindOfClass
   OutFPushCufSafe,      // FPushCufSafe pushes two values of different
                         // types and an ActRec
-  OutAsyncAwait,        // AwaitHandle pushes its input and then a bool
+
+  OutIsTypeL,           // output for IsTypeL instructions
 
   OutNone,
 };

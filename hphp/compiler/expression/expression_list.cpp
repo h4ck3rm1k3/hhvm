@@ -195,7 +195,7 @@ ExpressionList::flattenLiteralStrings(vector<ExpressionPtr> &literals) const {
 bool ExpressionList::getScalarValue(Variant &value) {
   if (m_arrayElements) {
     if (isScalarArrayPairs()) {
-      ArrayInit init(m_exps.size());
+      ArrayInit init(m_exps.size(), ArrayInit::Mixed{});
       for (unsigned int i = 0; i < m_exps.size(); i++) {
         ArrayPairExpressionPtr exp =
           dynamic_pointer_cast<ArrayPairExpression>(m_exps[i]);
@@ -205,14 +205,14 @@ bool ExpressionList::getScalarValue(Variant &value) {
           Variant v;
           bool ret = val->getScalarValue(v);
           if (!ret) assert(false);
-          init.set(v);
+          init.append(v);
         } else {
           Variant n;
           Variant v;
           bool ret1 = name->getScalarValue(n);
           bool ret2 = val->getScalarValue(v);
           if (!(ret1 && ret2)) return false;
-          init.set(n, v);
+          init.setKeyUnconverted(n, v);
         }
       }
       value = Array(init.create());

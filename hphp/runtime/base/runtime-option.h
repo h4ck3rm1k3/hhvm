@@ -17,15 +17,17 @@
 #ifndef incl_HPHP_RUNTIME_OPTION_H_
 #define incl_HPHP_RUNTIME_OPTION_H_
 
+#include "folly/dynamic.h"
+
 #include <unordered_map>
 #include <vector>
 #include <string>
 #include <map>
 #include <set>
-
 #include <boost/container/flat_set.hpp>
 #include <memory>
 
+#include "hphp/runtime/base/config.h"
 #include "hphp/util/hash-map-typedefs.h"
 #include "hphp/util/functional.h"
 
@@ -38,6 +40,8 @@ struct IpBlockMap;
 struct SatelliteServerInfo;
 struct FilesMatch;
 struct Hdf;
+// Can we make sure this equals IniSetting::Map?
+typedef folly::dynamic IniSettingMap;
 
 constexpr int kDefaultInitialStaticStringTableSize = 500000;
 
@@ -47,7 +51,8 @@ constexpr int kDefaultInitialStaticStringTableSize = 500000;
  */
 class RuntimeOption {
 public:
-  static void Load(Hdf& config,
+  static void Load(const IniSettingMap &ini,
+                   Hdf& config,
                    std::vector<std::string>* overwrites = nullptr,
                    bool empty = false);
 
@@ -124,6 +129,7 @@ public:
   static bool ServerThreadDropStack;
   static bool ServerHttpSafeMode;
   static bool ServerStatCache;
+  static bool ServerFixPathInfo;
   static std::vector<std::string> ServerWarmupRequests;
   static boost::container::flat_set<std::string> ServerHighPriorityEndPoints;
   static bool ServerExitOnBindFail;
@@ -232,6 +238,8 @@ public:
   static std::string WarmupDocument;
   static std::string RequestInitFunction;
   static std::string RequestInitDocument;
+  static std::string AutoPrependFile;
+  static std::string AutoAppendFile;
   static std::vector<std::string> ThreadDocuments;
   static std::vector<std::string> ThreadLoopDocuments;
 
@@ -286,6 +294,7 @@ public:
   static bool MemcacheReadOnly;
 
   static bool EnableStats;
+  static bool EnableAPCStats;
   static bool EnableWebStats;
   static bool EnableMemoryStats;
   static bool EnableMemcacheStats;
@@ -338,7 +347,6 @@ public:
   static bool EnableObjDestructCall;
   static bool EnableEmitSwitch;
   static bool EnableEmitterStats;
-  static bool EnableInstructionCounts;
   static bool CheckSymLink;
   static int MaxUserFunctionId;
   static bool EnableArgsInBacktraces;
@@ -347,6 +355,8 @@ public:
   static bool CheckFlushOnUserClose;
   static bool EvalAuthoritativeMode;
   static bool IntsOverflowToInts;
+  static HackStrictOption StrictArrayFillKeys;
+  static HackStrictOption DisallowDynamicVarEnvFuncs;
 
   static int GetScannerType();
 
@@ -374,6 +384,8 @@ public:
   F(uint64_t, JitAMaxUsage,            maxUsageDef())                   \
   F(uint64_t, JitAProfSize,            64 << 20)                        \
   F(uint64_t, JitAStubsSize,           64 << 20)                        \
+  F(uint64_t, JitAColdSize,            24 << 20)                        \
+  F(uint64_t, JitAFrozenSize,          40 << 20)                       \
   F(uint64_t, JitGlobalDataSize,       kJitGlobalDataDef)               \
   F(bool, AllowHhas,                   false)                           \
   /* CheckReturnTypeHints:
@@ -387,6 +399,7 @@ public:
   F(bool, SpinOnCrash,                 false)                           \
   F(uint32_t, DumpRingBufferOnCrash,   0)                               \
   F(bool, PerfPidMap,                  true)                            \
+  F(bool, PerfDataMap,                 false)                           \
   F(bool, KeepPerfPidMap,              false)                           \
   F(bool, RuntimeTypeProfile,          false)                           \
   F(int32_t, RuntimeTypeProfileLoggingFreq,  0)                         \
@@ -409,17 +422,21 @@ public:
   F(uint32_t, GdbSyncChunks,           128)                             \
   F(bool, JitStressLease,              false)                           \
   F(bool, JitKeepDbgFiles,             false)                           \
+  /* despite the unfortunate name, this enables function renaming and
+   * interception in the interpreter as well as the jit, and also
+   * implies all functions may be used with fb_intercept */             \
   F(bool, JitEnableRenameFunction,     false)                           \
   F(bool, JitUseVtuneAPI,              false)                           \
                                                                         \
   F(bool, JitDisabledByHphpd,          false)                           \
   F(bool, JitTransCounters,            false)                           \
-  F(bool, HHIRBytecodeControlFlow,     false)                           \
+  F(bool, JitPseudomain,               jitPseudomainDefault())          \
+  F(bool, HHIRBytecodeControlFlow,     hhirBytecodeControlFlowDefault())\
   F(bool, HHIRCse,                     true)                            \
   F(bool, HHIRSimplification,          true)                            \
   F(bool, HHIRGenOpts,                 true)                            \
   F(bool, HHIRJumpOpts,                true)                            \
-  F(bool, HHIRRefcountOpts,            hhirRefcountOptsDefault())       \
+  F(bool, HHIRRefcountOpts,            true)                            \
   F(bool, HHIRRefcountOptsAlwaysSink,  false)                           \
   F(bool, HHIRExtraOptPass,            true)                            \
   F(uint32_t, HHIRNumFreeRegs,         64)                              \
@@ -428,7 +445,7 @@ public:
   F(uint32_t, HHIRAlwaysInlineMaxCost, 10)                              \
   F(uint32_t, HHIRInliningMaxDepth,    4)                               \
   F(uint32_t, HHIRInliningMaxReturnDecRefs, 3)                          \
-  F(bool, HHIRInlineFrameOpts,         false)                           \
+  F(bool, HHIRInlineFrameOpts,         true)                            \
   /* 1 (the default) gives most asserts. 2 adds less commonly           \
    * useful/more expensive asserts. */                                  \
   F(uint32_t, HHIRGenerateAsserts,     debug)                           \
@@ -443,16 +460,19 @@ public:
   F(bool, HHIRAllocSIMDRegs,           true)                            \
   /* Region compiler flags */                                           \
   F(string,   JitRegionSelector,       regionSelectorDefault())         \
+  F(bool,     JitDryRuns,              false)                           \
   F(bool,     JitCompareRegions,       false)                           \
   F(bool,     JitPGO,                  pgoDefault())                    \
   F(string,   JitPGORegionSelector,    "hottrace")                      \
   F(uint64_t, JitPGOThreshold,         kDefaultJitPGOThreshold)         \
   F(bool,     JitPGOHotOnly,           ServerExecutionMode())           \
   F(bool,     JitPGOUsePostConditions, true)                            \
-  F(uint32_t, HotFuncThreshold,        10)                              \
+  F(uint32_t, JitUnlikelyDecRefPercent,10)                              \
+  F(uint32_t, JitPGOReleaseVVMinPercent, 10)                            \
+  F(uint32_t, HotFuncThreshold,        40)                              \
   F(bool, HHIRValidateRefCount,        debug)                           \
-  F(bool, HHIRRelaxGuards,             hhirRelaxGuardsDefault())        \
-  F(bool, HHBCRelaxGuards,             hhbcRelaxGuardsDefault())        \
+  F(bool, HHIRRelaxGuards,             true)                            \
+  F(bool, HHBCRelaxGuards,             true)                            \
   /* DumpBytecode =1 dumps user php, =2 dumps systemlib & user php */   \
   F(int32_t, DumpBytecode,             0)                               \
   F(bool, DumpHhas,                    false)                           \
@@ -474,9 +494,6 @@ public:
   F(uint32_t, PCRETableSize, kPCREInitialTableSize)                     \
   F(bool, EnableNuma, ServerExecutionMode())                            \
   F(bool, EnableNumaLocal, ServerExecutionMode())                       \
-  F(bool, DecRefUsePlainDecl,          true)                            \
-  F(bool, DecRefUsePlainDeclWithDestroy,true)                           \
-  F(bool, DecRefUseScratch,            false)                           \
   /* */
 
 private:
@@ -550,6 +567,9 @@ public:
   // SimpleXML options
   static bool SimpleXMLEmptyNamespaceMatchesAll;
 
+  // Cookie options
+  static bool AllowDuplicateCookies;
+
 #ifdef FACEBOOK
   // fb303 server
   static bool EnableFb303Server;
@@ -558,6 +578,10 @@ public:
   static int Fb303ServerWorkerThreads;
   static int Fb303ServerPoolThreads;
 #endif
+
+  // Xenon options
+  static double XenonPeriodSeconds;
+  static bool XenonForceAlwaysOn;
 
   // Convenience switch to turn on/off code alternatives via command-line
   // Do not commit code guarded by this flag, for evaluation only.

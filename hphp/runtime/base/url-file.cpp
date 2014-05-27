@@ -17,16 +17,21 @@
 #include "hphp/runtime/base/url-file.h"
 #include <vector>
 #include "hphp/runtime/base/hphp-system.h"
-#include "hphp/runtime/base/http-client.h"
 #include "hphp/runtime/base/runtime-error.h"
 #include "hphp/runtime/ext/pcre/ext_pcre.h"
+#include "hphp/runtime/ext/stream/ext_stream.h"
 #include "hphp/runtime/ext/url/ext_url.h"
+#include "hphp/runtime/base/php-globals.h"
+#include "hphp/runtime/vm/runtime.h"
+#include "hphp/runtime/vm/jit/translator-inline.h"
 
 namespace HPHP {
 
 ///////////////////////////////////////////////////////////////////////////////
 
 const StaticString s_http_response_header("http_response_header");
+const StaticString s_http("http");
+const StaticString s_tcp_socket("tcp_socket");
 
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -34,12 +39,16 @@ UrlFile::UrlFile(const char *method /* = "GET" */,
                  const Array& headers /* = null_array */,
                  const String& postData /* = null_string */,
                  int maxRedirect /* = 20 */,
-                 int timeout /* = -1 */) {
+                 int timeout /* = -1 */,
+                 bool ignoreErrors /* = false */)
+                 : MemFile(s_http, s_tcp_socket) {
   m_get = (method == nullptr || strcasecmp(method, "GET") == 0);
+  m_method = method;
   m_headers = headers;
   m_postData = postData;
   m_maxRedirect = maxRedirect;
   m_timeout = timeout;
+  m_ignoreErrors = ignoreErrors;
   m_isLocal = false;
 }
 
@@ -91,18 +100,40 @@ bool UrlFile::open(const String& input_url, const String& mode) {
   if (m_get) {
     code = http.get(url.c_str(), m_response, pHeaders, &responseHeaders);
   } else {
-    code = http.post(url.c_str(), m_postData.data(), m_postData.size(),
-                     m_response, pHeaders, &responseHeaders);
+    code = http.request(m_method,
+                        url.c_str(), m_postData.data(), m_postData.size(),
+                        m_response, pHeaders, &responseHeaders);
   }
 
   m_responseHeaders = Array();
   for (unsigned int i = 0; i < responseHeaders.size(); i++) {
     m_responseHeaders.append(responseHeaders[i]);
   }
-  GlobalVariables *g = get_global_variables();
-  g->set(s_http_response_header, Variant(m_responseHeaders), /*copy=*/ true);
+  JIT::VMRegAnchor vra;
+  ActRec* fp = g_context->getFP();
+  while (fp->skipFrame()) {
+    fp = g_context->getPrevVMState(fp);
+  }
+  auto id = fp->func()->lookupVarId(s_http_response_header.get());
+  if (id != kInvalidId) {
+    auto tvTo = frame_local(fp, id);
+    Variant varFrom(m_responseHeaders);
+    const auto tvFrom(varFrom.asTypedValue());
+    if (tvTo->m_type == KindOfRef) {
+      tvTo = tvTo->m_data.pref->tv();
+    }
+    tvDup(*tvFrom, *tvTo);
+  } else if (fp->hasVarEnv()) {
+    g_context->setVar(s_http_response_header.get(),
+                      Variant(m_responseHeaders).asTypedValue());
+  }
 
-  if (code == 200) {
+  /*
+   * If code == 0, Curl failed to connect; per PHP5, ignore_errors just means
+   * to not worry if we get an http resonse code that isn't 200, but we
+   * shouldn't ignore other errors.
+   */
+  if (code == 200 || (m_ignoreErrors && code != 0)) {
     m_name = (std::string) url;
     m_data = const_cast<char*>(m_response.data());
     m_len = m_response.size();

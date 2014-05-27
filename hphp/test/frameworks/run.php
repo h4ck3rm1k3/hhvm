@@ -139,7 +139,7 @@ function prepare(Set $available_frameworks, Set $framework_class_overrides,
   return $frameworks;
 }
 
-function fork_buckets(Traversable $data, Callable $callback): int {
+function fork_buckets(Traversable $data, callable $callback): int {
   $num_threads = min(count($data), num_cpus() + 1);
   if (Options::$num_threads !== -1) {
     $num_threads = min(count($data), Options::$num_threads);
@@ -533,10 +533,14 @@ EXAMPLES;
 
 }
 
+function get_available_frameworks(): array<string> {
+  return array_keys(Spyc::YAMLLoad(__DIR__.'/frameworks.yaml'));
+}
+
 function usage(): string {
   $msg = "Specify frameworks to run, use --all or use --allexcept. ";
   $msg .= "Available frameworks are: ".PHP_EOL;
-  $msg .= implode(PHP_EOL, get_subclasses_of("Framework")->toArray());
+  $msg .= implode(PHP_EOL, get_available_frameworks());
   return $msg;
 }
 

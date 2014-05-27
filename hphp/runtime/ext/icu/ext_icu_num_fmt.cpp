@@ -139,7 +139,7 @@ void NumberFormatter::setNumberFormatter(const String& locale,
   if (U_FAILURE(error)) {
     s_intl_error->setError(error,
         "numfmt_create: error converting pattern to UTF-16");
-    throwException("%s", s_intl_error->getErrorMessage().c_str());
+    throw getException("%s", s_intl_error->getErrorMessage().c_str());
   }
 
   const String loc(localeOrDefault(locale));
@@ -152,7 +152,7 @@ void NumberFormatter::setNumberFormatter(const String& locale,
   if (U_FAILURE(error)) {
     s_intl_error->setError(error,
         "numfmt_create: number formatter creation failed");
-    throwException("%s", s_intl_error->getErrorMessage().c_str());
+    throw getException("%s", s_intl_error->getErrorMessage().c_str());
   }
 }
 
@@ -160,14 +160,14 @@ void NumberFormatter::setNumberFormatter(const NumberFormatter *orig) {
   if (!orig || !orig->formatter()) {
     s_intl_error->setError(U_ILLEGAL_ARGUMENT_ERROR,
                            "Cannot clone unconstructed NumberFormatter");
-    throwException("%s", s_intl_error->getErrorMessage(false).c_str());
+    throw getException("%s", s_intl_error->getErrorMessage(false).c_str());
   }
   UErrorCode error = U_ZERO_ERROR;
   m_formatter = unum_clone(orig->formatter(), &error);
   if (U_FAILURE(error)) {
     s_intl_error->setError(error, "numfmt_clone: "
                                   "number formatter clone failed");
-    throwException("%s", s_intl_error->getErrorMessage().c_str());
+    throw getException("%s", s_intl_error->getErrorMessage().c_str());
   }
 }
 
@@ -278,18 +278,16 @@ static Variant HHVM_METHOD(NumberFormatter, format, const Variant& value,
                           int64_t type) {
   NUMFMT_GET(obj, this_, false);
   Variant num(value); // De-const
-  if (!num.isDouble() && !num.isInteger()) {
-    int64_t ival = 0;
-    double dval = 0.0;
-    DataType dt = num.toNumeric(ival, dval, true);
-    if (dt == KindOfInt64) {
-      num = ival;
-    } else if (dt == KindOfDouble) {
-      num = dval;
-    } else {
-      obj->setError(U_ILLEGAL_ARGUMENT_ERROR);
-      return false;
-    }
+
+  int64_t ival = 0;
+  double dval = 0.0;
+  DataType dt = num.toNumeric(ival, dval, true);
+  if (dt == KindOfInt64) {
+    num = ival;
+  } else if (dt == KindOfDouble) {
+    num = dval;
+  } else {
+    num = value.toInt64();
   }
 
   if (type == UNUM(TYPE_DEFAULT)) {
@@ -300,14 +298,10 @@ static Variant HHVM_METHOD(NumberFormatter, format, const Variant& value,
     }
   }
 
-  if ((type == UNUM(TYPE_INT32)) ||
-      (type == UNUM(TYPE_INT64))) {
-    return doFormat(obj, num.toInt64());
-  } else if (type == UNUM(TYPE_DOUBLE)) {
+  if (type == UNUM(TYPE_DOUBLE)) {
     return doFormat(obj, num.toDouble());
   } else {
-    raise_warning("Unsupported format type %ld", (long)type);
-    return false;
+    return doFormat(obj, num.toInt64());
   }
 }
 

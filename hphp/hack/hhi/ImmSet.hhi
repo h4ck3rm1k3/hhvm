@@ -49,15 +49,9 @@ final class ImmSet<Tv> implements ConstSet<Tv> {
   public function toValuesArray(): array;
 
   /**
-   * Returns an iterator that points to beginning of this ImmSet.
+   * Returns an iterator that points to the beginning of this ImmSet.
    */
   public function getIterator(): SetIterator<Tv>;
-
-  /**
-   * Returns the index of the first element that matches the search value.
-   * If no element matches the search value, this function returns -1.
-   */
-  public function linearSearch(Tv $search_value): int;
 
   /**
    * Returns an ImmSet containing the values from the specified array.
@@ -69,15 +63,11 @@ final class ImmSet<Tv> implements ConstSet<Tv> {
   public static function fromArrays(...): ImmSet<Tv>;
 
   /**
-   * Slice an ImmSet. This function provides the functionality of
-   * array_slice() for ImmSets. Note that this function returns
-   * a new ImmSet and does not modify the original ImmSet.
+   * Returns a ImmSet built from the keys of the specified container.
    */
-  public static function slice(
-    ImmSet<Tv> $v,
-    int $offset,
-    ?int $len = null
-  ): ImmSet<Tv>;
+  public static function fromKeysOf<Tk, Tv2>(
+    ?KeyedContainer<Tk,Tv2> $container
+  ): ImmSet<Tk>;
 
   public function __toString(): string;
 
@@ -106,5 +96,13 @@ final class ImmSet<Tv> implements ConstSet<Tv> {
   public function lazy(): Iterable<Tv>;
   public function map<Tu>((function(Tv): Tu) $callback): ImmSet<Tu>;
   public function filter((function(Tv): bool) $callback): ImmSet<Tv>;
-  public function zip<Tu>(Traversable<Tu> $iterable): ImmSet<Pair<Tv, Tu>>;
+  public function zip<Tu>(Traversable<Tu> $traversable): ImmSet<Pair<Tv, Tu>>;
+  public function take(int $n): ImmSet<Tv>;
+  public function takeWhile((function(Tv): bool) $fn): ImmSet<Tv>;
+  public function skip(int $n): ImmSet<Tv>;
+  public function skipWhile((function(Tv): bool) $fn): ImmSet<Tv>;
+  public function slice(int $start, int $len): ImmSet<Tv>;
+  public function concat(Traversable<Tv> $traversable): ImmVector<Tv>;
+  public function firstValue(): ?Tv;
+  public function lastValue(): ?Tv;
 }

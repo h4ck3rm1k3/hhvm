@@ -22,6 +22,7 @@
 #include "hphp/util/repo-schema.h"
 #include "hphp/util/assertions.h"
 #include "hphp/runtime/vm/blob-helper.h"
+#include "hphp/runtime/vm/repo-global-data.h"
 
 namespace HPHP {
 
@@ -588,11 +589,12 @@ bool Repo::openCentral(const char* rawPath, std::string& errorMsg) {
   // attempt writing to the database.  Therefore, tell initSchema() to verify
   // that the database is writable.
   bool centralWritable = true;
-  if (initSchema(RepoIdCentral, centralWritable) || !centralWritable) {
+  if (initSchema(RepoIdCentral, centralWritable, errorMsg) ||
+      !centralWritable) {
     TRACE(1, "Repo::initSchema() failed for candidate central repo '%s'\n",
              repoPath.c_str());
-    errorMsg = folly::format("Failed to initialize schema in {}",
-                             repoPath).str();
+    errorMsg = folly::format("Failed to initialize schema in {}: {}",
+                             repoPath, errorMsg).str();
     return true;
   }
   m_centralRepo = repoPath;
@@ -646,7 +648,10 @@ void Repo::attachLocal(const char* path, bool isWritable) {
   } catch (RepoExc& re) {
     return;
   }
-  if (initSchema(RepoIdLocal, isWritable)) {
+
+  std::string error;
+  if (initSchema(RepoIdLocal, isWritable, error)) {
+    FTRACE(1, "Local repo {} failed to init schema: {}\n", repoPath, error);
     return;
   }
   m_localRepo = repoPath;
@@ -724,9 +729,9 @@ void Repo::setTextPragma(int repoId, const char* name, const char* val) {
   }
 }
 
-bool Repo::initSchema(int repoId, bool& isWritable) {
+bool Repo::initSchema(int repoId, bool& isWritable, std::string& errorMsg) {
   if (!schemaExists(repoId)) {
-    if (createSchema(repoId)) {
+    if (createSchema(repoId, errorMsg)) {
       // Check whether this failure is due to losing the schema
       // initialization race with another process.
       if (!schemaExists(repoId)) {
@@ -764,7 +769,7 @@ bool Repo::schemaExists(int repoId) {
   return true;
 }
 
-bool Repo::createSchema(int repoId) {
+bool Repo::createSchema(int repoId, std::string& errorMsg) {
   try {
     RepoTxn txn(*this);
     {
@@ -799,6 +804,7 @@ bool Repo::createSchema(int repoId) {
 
     txn.commit();
   } catch (RepoExc& re) {
+    errorMsg = re.what();
     return true;
   }
   return false;

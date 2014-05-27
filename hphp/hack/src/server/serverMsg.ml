@@ -23,15 +23,17 @@ type build_opts = {
   root: Path.path;
   steps: string list option; (* steps for hack build to run.
                                  None means 'all' *)
+  run_scripts: bool; (* when true, run remaining arc build steps
+                     that we haven't figured out how to port yet*)
   serial: bool; (* when true, don't use parallel workers *)
   test_dir: string option; (* test dir to generate into *)
   grade: bool; (* when true, diff test output against www and print
                   some stats *)
   list_classes: bool; (* when true, generate class list files for
                          traversed classes *)
-  clean: bool; (* when true, do a clean build *)
-  run_scripts: bool; (* when true, run remaining arc build steps
-                     that we haven't figured out how to port yet*)
+  check: bool; (* some sanity checking *)
+  clean_before_build: bool; (* when true, do a clean build *)
+  clean: bool; (* when true just clean all generated files *)
   verbose: bool;
 }
 
@@ -40,6 +42,21 @@ type find_refs_action =
 | Class of string
 | Method of string * string
 | Function of string
+
+type refactor_action =
+| ClassRename of string * string (* old_name * new_name *)
+| MethodRename of string * string * string (* class_name * old_name * new_name*)
+| FunctionRename of string * string (* old_name * new_name *)
+
+type insert_patch = {
+  pos: Pos.t;
+  text: string;
+}
+
+type patch =
+| Insert of insert_patch
+| Remove of Pos.t
+| Replace of insert_patch 
 
 type command =
 | ERROR_OUT_OF_DATE
@@ -58,6 +75,8 @@ type command =
 | IDENTIFY_FUNCTION of string * int * int
 | OUTLINE of string
 | INFER_TYPE of string * int * int (* filename, line, char *)
+| REFACTOR of refactor_action
+| SEARCH of string
 
 let cmd_to_channel (oc:out_channel) (cmd:command): unit =
   Printf.fprintf oc "%s\n" Build_id.build_id_ohai;

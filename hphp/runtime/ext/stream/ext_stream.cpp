@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    | Copyright (c) 1997-2010 The PHP Group                                |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
@@ -18,12 +18,12 @@
 #include "hphp/runtime/ext/stream/ext_stream.h"
 #include "hphp/runtime/ext/stream/ext_stream-user-filters.h"
 #include "hphp/runtime/ext/ext_socket.h"
-#include "hphp/runtime/ext/ext_network.h"
 #include "hphp/runtime/base/socket.h"
 #include "hphp/runtime/base/plain-file.h"
 #include "hphp/runtime/base/string-buffer.h"
 #include "hphp/runtime/base/zend-printf.h"
 #include "hphp/runtime/server/server-stats.h"
+#include "hphp/runtime/base/file.h"
 #include "hphp/runtime/base/stream-wrapper.h"
 #include "hphp/runtime/base/stream-wrapper-registry.h"
 #include "hphp/runtime/base/user-stream-wrapper.h"
@@ -168,25 +168,18 @@ Variant f_stream_copy_to_stream(const Resource& source, const Resource& dest,
     raise_warning("Failed to seek to position %d in the stream", offset);
     return false;
   }
-  if (destFile->seekable()) {
-    (void)destFile->seek(0, SEEK_END);
-  }
   int cbytes = 0;
   if (maxlength == 0) maxlength = INT_MAX;
   while (cbytes < maxlength) {
-    char buf[8193];
     int remaining = maxlength - cbytes;
-    int toread =
-      ((remaining >= (int)sizeof(buf)) ? sizeof(buf) - 1 : remaining);
-    int rbytes = srcFile->readImpl(buf, toread);
-    if (rbytes == 0) break;
-    if (rbytes < 0) return false;
-    buf[rbytes] = '\0';
-    if (destFile->write(String(buf, rbytes, CopyString)) != rbytes) {
+    String buf = srcFile->read(std::min(remaining, File::CHUNK_SIZE));
+    if (buf.size() == 0) break;
+    if (destFile->write(buf) != buf.size()) {
       return false;
     }
-    cbytes += rbytes;
+    cbytes += buf.size();
   }
+
   return cbytes;
 }
 
@@ -318,7 +311,7 @@ Array f_stream_get_wrappers() {
 bool f_stream_is_local(const Variant& stream_or_url) {
   if (stream_or_url.isString()) {
     auto wrapper = Stream::getWrapperFromURI(stream_or_url.asCStrRef());
-    return wrapper->m_isLocal;
+    return wrapper ? wrapper->m_isLocal : false;
 
   } else if (stream_or_url.isResource()) {
     File* file = dynamic_cast<File*>(stream_or_url.asCResRef().get());
@@ -620,7 +613,7 @@ void StreamContext::setOption(const String& wrapper,
 
 Array StreamContext::getOptions() const {
   if (m_options.isNull()) {
-    return Array::Create();
+    return empty_array;
   }
   return m_options;
 }
@@ -671,10 +664,22 @@ Array StreamContext::getParams() const {
 
 ///////////////////////////////////////////////////////////////////////////////
 
+const StaticString
+  s_STREAM_FILTER_READ("STREAM_FILTER_READ"),
+  s_STREAM_FILTER_WRITE("STREAM_FILTER_WRITE"),
+  s_STREAM_FILTER_ALL("STREAM_FILTER_ALL");
+
 class StreamExtension : public Extension {
  public:
   StreamExtension() : Extension("stream") {}
-  virtual void moduleInit() {
+  void moduleInit() override {
+#define SFCNS(v) Native::registerConstant<KindOfInt64> \
+                         (s_STREAM_FILTER_##v.get(), k_STREAM_FILTER_##v)
+    SFCNS(READ);
+    SFCNS(WRITE);
+    SFCNS(ALL);
+#undef SFCNS
+
     HHVM_FE(stream_get_filters);
     HHVM_FE(stream_filter_register);
     HHVM_FE(stream_filter_append);

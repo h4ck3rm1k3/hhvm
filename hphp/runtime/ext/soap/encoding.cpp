@@ -526,7 +526,7 @@ static bool soap_check_xml_ref(Variant &data, xmlNodePtr node) {
       return true;
     }
   } else {
-    ref_map.set((int64_t)node, ref(data));
+    ref_map.setRef((int64_t)node, data);
   }
   return false;
 }
@@ -573,8 +573,8 @@ static xmlNodePtr master_to_xml_int(encodePtr encode, const Variant& data, int s
     }
   } else {
     if (check_class_map && !SOAP_GLOBAL(classmap).empty() &&
-        data.isString() && !data.toString().empty()) {
-      String clsname = data.toString();
+        data.isObject()) {
+      const String& clsname = data.toObject()->o_getClassName();
       for (ArrayIter iter(SOAP_GLOBAL(classmap)); iter; ++iter) {
         if (same(iter.second(), clsname)) {
           /* TODO: namespace isn't stored */
@@ -763,7 +763,7 @@ static Variant to_zval_string(encodeTypePtr type, xmlNodePtr data) {
       throw SoapException("Encoding: Violation of encoding rules");
     }
   } else {
-    ret = String("");
+    ret = empty_string;
   }
   return ret;
 }
@@ -799,7 +799,7 @@ static Variant to_zval_stringr(encodeTypePtr type, xmlNodePtr data) {
       throw SoapException("Encoding: Violation of encoding rules");
     }
   } else {
-    ret = String("");
+    ret = empty_string;
   }
   return ret;
 }
@@ -835,7 +835,7 @@ static Variant to_zval_stringc(encodeTypePtr type, xmlNodePtr data) {
       throw SoapException("Encoding: Violation of encoding rules");
     }
   } else {
-    ret = String("");
+    ret = empty_string;
   }
   return ret;
 }
@@ -865,7 +865,7 @@ static Variant to_zval_base64(encodeTypePtr type, xmlNodePtr data) {
       throw SoapException("Encoding: Violation of encoding rules");
     }
   } else {
-    ret = String("");
+    ret = empty_string;
   }
   return ret;
 }
@@ -888,7 +888,7 @@ static Variant to_zval_hexbin(encodeTypePtr type, xmlNodePtr data) {
     }
     ret = str;
   } else {
-    ret = String("");
+    ret = empty_string;
   }
   return ret;
 }
@@ -1532,12 +1532,13 @@ static int model_to_xml_object(xmlNodePtr node, sdlContentModelPtr model,
     encodePtr enc;
 
     Variant data;
-    if (get_zval_property(object, model->u_element->name.c_str(), &data) &&
-        data.isNull() && !model->u_element->nillable &&
+    bool propExists =
+      get_zval_property(object, model->u_element->name.c_str(), &data);
+    if (propExists && data.isNull() && !model->u_element->nillable &&
         model->min_occurs > 0 && !strict) {
       return 0;
     }
-    if (!data.isNull()) {
+    if (propExists) {
       enc = model->u_element->encode;
       if ((model->max_occurs == -1 || model->max_occurs > 1) &&
           data.isArray() && data.toArray()->isVectorData()) {
@@ -2266,7 +2267,7 @@ static xmlNodePtr to_xml_array(encodeTypePtr type, const Variant& data_, int sty
           }
         }
         set_ns_prop(xmlParam, SOAP_1_2_ENC_NAMESPACE, "itemType",
-                    replaced.c_str());
+                    array_type.c_str());
         set_ns_prop(xmlParam, SOAP_1_2_ENC_NAMESPACE, "arraySize",
                     replaced.c_str());
       }
@@ -2667,11 +2668,11 @@ static xmlNodePtr to_xml_datetime_ex(encodeTypePtr type, const Variant& data,
     ta = localtime_r(&timestamp, &tmbuf);
     /*ta = php_gmtime_r(&timestamp, &tmbuf);*/
 
-    buf = (char *)malloc(buf_len);
+    buf = (char *)smart_malloc(buf_len);
     while ((real_len = strftime(buf, buf_len, format, ta)) == buf_len ||
            real_len == 0) {
       buf_len *= 2;
-      buf = (char *)realloc(buf, buf_len);
+      buf = (char *)smart_realloc(buf, buf_len);
       if (!--max_reallocs) break;
     }
 
@@ -2686,12 +2687,12 @@ static xmlNodePtr to_xml_datetime_ex(encodeTypePtr type, const Variant& data,
       real_len += 6;
     }
     if (real_len >= buf_len) {
-      buf = (char *)realloc(buf, real_len+1);
+      buf = (char *)smart_realloc(buf, real_len+1);
     }
     strcat(buf, tzbuf);
 
     xmlNodeSetContent(xmlParam, BAD_CAST(buf));
-    free(buf);
+    smart_free(buf);
   } else if (data.isString()) {
     String sdata = data.toString();
     xmlNodeSetContentLen(xmlParam, BAD_CAST(sdata.data()), sdata.size());

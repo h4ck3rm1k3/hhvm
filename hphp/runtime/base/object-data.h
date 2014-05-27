@@ -28,15 +28,14 @@
 
 #include "hphp/system/systemlib.h"
 
+#include "hphp/util/low-ptr.h"
+
 #include <vector>
 
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
 
-class ArrayIter;
-class MutableArrayIter;
-
-class HphpArray;
+class MixedArray;
 struct TypedValue;
 class PreClass;
 class Class;
@@ -209,6 +208,10 @@ class ObjectData {
     return Collection::isMutableType(getCollectionType());
   }
 
+  bool isImmutableCollection() const {
+    return Collection::isImmutableType(getCollectionType());
+  }
+
   Collection::Type getCollectionType() const {
     return isCollection() ? static_cast<Collection::Type>(o_subclassData.u16)
                           : Collection::Type::InvalidType;
@@ -228,9 +231,6 @@ class ObjectData {
   ObjectData* clearNoDestruct() { clearAttribute(NoDestructor); return this; }
 
   Object iterableObject(bool& isIterable, bool mayImplementIterator = true);
-  ArrayIter begin(const String& context = null_string);
-  MutableArrayIter begin(Variant* key, Variant& val,
-                         const String& context = null_string);
 
   /**
    * o_instanceof() can be used for both classes and interfaces.
@@ -238,7 +238,7 @@ class ObjectData {
   bool o_instanceof(const String& s) const;
 
   // class info
-  const String& o_getClassName() const;
+  StrNR o_getClassName() const;
   int o_getId() const { return o_id;}
 
   bool o_toBoolean() const {
@@ -280,12 +280,7 @@ class ObjectData {
                 const String& context = null_string);
 
   Variant o_set(const String& s, const Variant& v);
-  Variant o_set(const String& s, RefResult v);
-  Variant o_setRef(const String& s, const Variant& v);
-
   Variant o_set(const String& s, const Variant& v, const String& context);
-  Variant o_set(const String& s, RefResult v, const String& context);
-  Variant o_setRef(const String& s, const Variant& v, const String& context);
 
   void o_setArray(const Array& properties);
   void o_getArray(Array& props, bool pubOnly = false) const;
@@ -346,9 +341,6 @@ class ObjectData {
    */
   Array& reserveProperties(int nProp = 2);
 
-  // heap profiling helpers
-  void getChildren(std::vector<TypedValue*>& out);
-
  protected:
   TypedValue* propVec();
   const TypedValue* propVec() const;
@@ -401,6 +393,8 @@ class ObjectData {
                Array& props, std::vector<bool>& inserted) const;
   void getProps(const Class* klass, bool pubOnly, const PreClass* pc,
                 Array& props, std::vector<bool>& inserted) const;
+  void getTraitProps(const Class* klass, bool pubOnly, const Class* trait,
+                     Array& props, std::vector<bool>& inserted) const;
  public:
   void prop(TypedValue*& retval, TypedValue& tvRef, Class* ctx,
             const StringData* key);
@@ -440,7 +434,7 @@ private:
   static void compileTimeAssertions();
 
 private:
-  Class* m_cls;
+  LowClassPtr m_cls;
   mutable uint16_t o_attribute;
 
   // 16 bits of memory that can be reused by subclasses
@@ -451,10 +445,13 @@ protected:
   } o_subclassData;
 
 private:
+#ifdef USE_LOWPTR
+  int o_id; // Numeric identifier of this object (used for var_dump())
   mutable RefCount m_count;
-
-  // Numeric identifier of this object (used for var_dump())
-  int o_id;
+#else
+  mutable RefCount m_count;
+  int o_id; // Numeric identifier of this object (used for var_dump())
+#endif
 } __attribute__((aligned(16)));
 
 typedef GlobalNameValueTableWrapper GlobalVariables;

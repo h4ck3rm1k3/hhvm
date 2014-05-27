@@ -18,11 +18,15 @@
 #define incl_HPHP_UTIL_HARDWARE_COUNTER_H_
 
 #include "hphp/util/thread-local.h"
+
+#include <cstdint>
 #include <vector>
-#include "hphp/runtime/base/complex-types.h"
 
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
+
+class Array;
+class String;
 
 #ifndef NO_HARDWARE_COUNTERS
 
@@ -31,7 +35,7 @@ class LoadCounter;
 class StoreCounter;
 
 struct PerfTable {
-  const char *name;
+  const char* name;
   uint32_t type;
   uint64_t config;
 };
@@ -43,31 +47,31 @@ public:
   HardwareCounter();
   ~HardwareCounter();
 
-  static void  Reset(void);
-  static int64_t GetInstructionCount(void);
-  static int64_t GetLoadCount(void);
-  static int64_t GetStoreCount(void);
+  static void Reset();
+  static int64_t GetInstructionCount();
+  static int64_t GetLoadCount();
+  static int64_t GetStoreCount();
   static bool SetPerfEvents(const String& events);
   static void GetPerfEvents(Array& ret);
   static void ClearPerfEvents();
 
-  void  reset(void);
-  int64_t getInstructionCount(void);
-  int64_t getLoadCount(void);
-  int64_t getStoreCount(void);
-  bool eventExists(char *event);
-  bool addPerfEvent(char* event);
+  static DECLARE_THREAD_LOCAL_NO_CHECK(HardwareCounter, s_counter);
+  bool m_countersSet;
+private:
+  void reset();
+  int64_t getInstructionCount();
+  int64_t getLoadCount();
+  int64_t getStoreCount();
+  bool eventExists(const char* event);
+  bool addPerfEvent(const String& event);
   bool setPerfEvents(const String& events);
   void getPerfEvents(Array& ret);
   void clearPerfEvents();
 
-  static DECLARE_THREAD_LOCAL_NO_CHECK(HardwareCounter, s_counter);
-  bool m_countersSet;
-private:
-  InstructionCounter *m_instructionCounter;
-  LoadCounter *m_loadCounter;
-  StoreCounter *m_storeCounter;
-  std::vector<HardwareCounterImpl *> m_counters;
+  InstructionCounter* m_instructionCounter;
+  LoadCounter* m_loadCounter;
+  StoreCounter* m_storeCounter;
+  std::vector<HardwareCounterImpl*> m_counters;
 };
 
 #else // NO_HARDWARE_COUNTERS
@@ -82,36 +86,13 @@ public:
   HardwareCounter() : m_countersSet(false) { }
   ~HardwareCounter() { }
 
-  static void  Reset(void)
-         { s_counter.reset(); }
-  static int64_t GetInstructionCount(void)
-         { return s_counter.getInstructionCount(); }
-  static int64_t GetLoadCount(void)
-         { return s_counter.getLoadCount(); }
-  static int64_t GetStoreCount(void)
-         { return s_counter.getStoreCount(); }
-  static bool SetPerfEvents(const String& events)
-         { return s_counter.setPerfEvents(events); }
-  static void GetPerfEvents(Array& ret)
-         { s_counter.getPerfEvents(ret); }
-  static void ClearPerfEvents()
-         { s_counter.clearPerfEvents(); }
-
-  void  reset(void) { }
-  int64_t getInstructionCount(void)
-        { return 0; }
-  int64_t getLoadCount(void)
-        { return 0; }
-  int64_t getStoreCount(void)
-        { return 0; }
-  bool  eventExists(char *event)
-        { return false; }
-  bool  addPerfEvent(char* event)
-        { return false; }
-  bool  setPerfEvents(const String& events)
-        { return false; }
-  void  getPerfEvents(Array& ret) { }
-  void  clearPerfEvents() { }
+  static void Reset() { }
+  static int64_t GetInstructionCount() { return 0; }
+  static int64_t GetLoadCount() { return 0; }
+  static int64_t GetStoreCount() { return 0; }
+  static bool SetPerfEvents(const String& events) { return false; }
+  static void GetPerfEvents(Array& ret) { }
+  static void ClearPerfEvents() { }
 
   // Normally exposed by DECLARE_THREAD_LOCAL_NO_CHECK
   void getCheck() { }

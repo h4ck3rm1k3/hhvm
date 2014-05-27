@@ -22,8 +22,6 @@
 
 namespace HPHP { namespace JIT { namespace X64 {
 
-typedef JIT::X64Assembler Asm;
-
 /*
  * emitServiceReqWork --
  *
@@ -39,23 +37,24 @@ typedef JIT::X64Assembler Asm;
  *   emitted. This is gross, but is a partial workaround for the inability
  *   to capture argument packs in the version of gcc we're using.
  */
-TCA emitServiceReqWork(Asm& as, TCA start, bool persist, SRFlags flags,
+TCA emitServiceReqWork(CodeBlock& cb, TCA start, bool persist, SRFlags flags,
                        ServiceRequest req, const ServiceReqArgVec& argInfo);
 
 /*
- * "cb" may be either the main section or stubs section.
+ * "cb" may be either the main section or unused section.
  */
-void emitBindSideExit(CodeBlock& cb, CodeBlock& stubs, JIT::ConditionCode cc,
+void emitBindSideExit(CodeBlock& cb, CodeBlock& unused, JIT::ConditionCode cc,
                       SrcKey dest);
-void emitBindJcc(CodeBlock& cb, CodeBlock& stubs, JIT::ConditionCode cc,
+void emitBindJcc(CodeBlock& cb, CodeBlock& unused, JIT::ConditionCode cc,
                  SrcKey dest);
-void emitBindJmp(CodeBlock& cb, CodeBlock& stubs, SrcKey dest);
+void emitBindJmp(CodeBlock& cb, CodeBlock& unused, SrcKey dest);
 
 /*
  * Returns the amount by which rVmSp should be adjusted.
  */
 int32_t emitBindCall(CodeBlock& mainCode, CodeBlock& stubsCode,
-                     SrcKey srcKey, const Func* funcd, int numArgs);
+                     CodeBlock& unusedCode, SrcKey srcKey,
+                     const Func* funcd, int numArgs);
 
 }}}
 

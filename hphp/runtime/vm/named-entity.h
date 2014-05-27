@@ -17,15 +17,14 @@
 #ifndef incl_HPHP_VM_NAMED_ENTITY_H_
 #define incl_HPHP_VM_NAMED_ENTITY_H_
 
-#include <tbb/concurrent_unordered_map.h>
-#include <boost/operators.hpp>
+#include "hphp/runtime/base/rds.h"
+#include "hphp/runtime/base/string-data.h"
 
-#include "folly/AtomicHashMap.h"
+#include "hphp/runtime/vm/type-alias.h"
 
 #include "hphp/util/atomic.h"
-#include "hphp/runtime/base/complex-types.h"
-#include "hphp/runtime/base/rds.h"
-#include "hphp/runtime/vm/type-alias.h"
+
+#include "folly/AtomicHashMap.h"
 
 namespace HPHP {
 
@@ -53,6 +52,16 @@ struct NamedEntity {
     , m_cachedTypeAlias(RDS::kInvalidHandle)
     , m_clsList(nullptr)
   {}
+
+  NamedEntity(NamedEntity&& ne)
+    : m_cachedClass(ne.m_cachedClass)
+    , m_cachedFunc(ne.m_cachedFunc)
+    , m_cachedTypeAlias(ne.m_cachedTypeAlias)
+    , m_clsList(nullptr)
+  {
+    m_clsList.store(ne.m_clsList.load(std::memory_order_acquire),
+                    std::memory_order_release);
+  }
 
   mutable RDS::Link<Class*> m_cachedClass;
   mutable RDS::Link<Func*> m_cachedFunc;
@@ -84,9 +93,10 @@ struct NamedEntity {
 
   const TypeAliasReq* getCachedTypeAlias() const;
   void setCachedTypeAlias(const TypeAliasReq&);
+  bool isPersistentTypeAlias() const;
 
   Class* clsList() const {
-    return m_clsList;
+    return m_clsList.load(std::memory_order_acquire);
   }
 
   // Call while holding s_classesMutex.  Add or remove classes from
@@ -95,7 +105,7 @@ struct NamedEntity {
   void removeClass(Class* goner);
 
 private:
-  Class* m_clsList;
+  std::atomic<Class*> m_clsList;
 };
 
 //////////////////////////////////////////////////////////////////////

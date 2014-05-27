@@ -17,19 +17,29 @@
 #ifndef incl_HPHP_INI_SETTING_H_
 #define incl_HPHP_INI_SETTING_H_
 
-#include "hphp/runtime/base/complex-types.h"
+#include "hphp/runtime/base/type-variant.h"
+
 #include "folly/dynamic.h"
+
+#include <cstdint>
+#include <functional>
+#include <set>
+#include <string>
 
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
 
+class Array;
 class Extension;
+class String;
 
 bool ini_on_update(const folly::dynamic& value, bool& p);
 bool ini_on_update(const folly::dynamic& value, double& p);
+bool ini_on_update(const folly::dynamic& value, char& p);
 bool ini_on_update(const folly::dynamic& value, int16_t& p);
 bool ini_on_update(const folly::dynamic& value, int32_t& p);
 bool ini_on_update(const folly::dynamic& value, int64_t& p);
+bool ini_on_update(const folly::dynamic& value, unsigned char& p);
 bool ini_on_update(const folly::dynamic& value, uint16_t& p);
 bool ini_on_update(const folly::dynamic& value, uint32_t& p);
 bool ini_on_update(const folly::dynamic& value, uint64_t& p);
@@ -115,6 +125,10 @@ public:
 
     PHP_INI_ONLY   = (1u << 3),
     PHP_INI_ALL    = (1u << 4),
+
+    PHP_INI_SET_USER   = PHP_INI_USER | PHP_INI_ALL,
+    PHP_INI_SET_EVERY  = PHP_INI_ONLY | PHP_INI_SYSTEM | PHP_INI_PERDIR |
+                         PHP_INI_SET_USER,
   };
 
 public:
@@ -171,7 +185,7 @@ public:
    */
   template<class T>
   static void Bind(const Extension* extension, const Mode mode,
-                   const char *name, const char *defaultValue,
+                   const std::string& name, const char *defaultValue,
                    SetAndGet<T> callbacks, T* p = nullptr) {
     auto setter = [callbacks, p](const folly::dynamic &value) {
       T v;
@@ -200,13 +214,15 @@ public:
       return ini_get(v);
     };
     Bind(extension, mode, name, setter, getter);
-    if (defaultValue) {
+    auto hasSystemDefault = ResetSystemDefault(name);
+    if (!hasSystemDefault && defaultValue) {
       setter(defaultValue);
     }
   }
   template<class T>
   static void Bind(const Extension* extension, const Mode mode,
-                   const char *name, SetAndGet<T> callbacks, T* p = nullptr) {
+                   const std::string& name, SetAndGet<T> callbacks,
+                   T* p = nullptr) {
     Bind(extension, mode, name, nullptr, callbacks, p);
   }
   /**
@@ -215,16 +231,22 @@ public:
    */
   template<class T>
   static void Bind(const Extension* extension, const Mode mode,
-                   const char *name, const char *defaultValue, T *p) {
+                   const std::string& name, const char *defaultValue, T *p) {
     Bind(extension, mode, name, defaultValue, SetAndGet<T>(), p);
   }
   template<class T>
   static void Bind(const Extension* extension, const Mode mode,
-                   const char *name, T *p) {
+                   const std::string& name, T *p) {
     Bind(extension, mode, name, nullptr, p);
   }
 
-  static void Unbind(const char *name);
+  static void Unbind(const std::string& name);
+
+  /**
+   * Set an ini setting back to the value from the config file
+   * (or the hard-coded default)
+   */
+  static bool ResetSystemDefault(const std::string& name);
 
   // Used to allow you to Bind to PHP_INI_SYSTEM settings even after modules
   // have been initialized. This should only be used in rare cases that can't
@@ -233,7 +255,7 @@ public:
 
 private:
   static void Bind(const Extension* extension, const Mode mode,
-                   const char *name,
+                   const std::string& name,
                    std::function<bool(const folly::dynamic& value)>
                      updateCallback,
                    std::function<folly::dynamic()> getCallback);

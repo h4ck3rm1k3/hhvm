@@ -13,6 +13,32 @@
 function gzclose(resource $zp): bool;
 
 /**
+ * ( excerpt from http://php.net/manual/en/function.zlib-encode.php )
+ *
+ * Compress data with the specified encoding. Warning: This function is
+ * currently not documented; only its argument list is available.
+ *
+ * @data       mixed
+ * @encoding   mixed
+ * @level      mixed
+ */
+<<__Native>>
+function zlib_encode(string $data, int $encoding, int $level = -1): mixed;
+
+/**
+ * ( excerpt from http://php.net/manual/en/function.zlib-decode.php )
+ *
+ * Uncompress any raw/gzip/zlib encoded data. Warning: This function is
+ * currently not documented; only its argument list is available.
+ *
+ * @data       mixed
+ * @max_decoded_len
+ *             mixed
+ */
+<<__Native>>
+function zlib_decode(string $data, int $max_len = 0): mixed;
+
+/**
  * Compress a string
  *
  * @param string $data - The data to compress.
@@ -194,7 +220,7 @@ function gzpassthru(resource $zp): mixed;
 /**
  * Alias of gzwrite()
  */
-function gzputs(resource $zp, string $string, int $length = 0) {
+function gzputs(resource $zp, string $string, int $length = 0): mixed {
   return gzwrite($zp, $string, $length);
 }
 

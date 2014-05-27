@@ -17,6 +17,7 @@
 
 #include "hphp/runtime/base/types.h"
 #include "hphp/runtime/base/type-conversions.h"
+#include "hphp/runtime/base/php-globals.h"
 #include "hphp/runtime/base/builtin-functions.h"
 #include "hphp/runtime/base/execution-context.h"
 #include "hphp/runtime/base/thread-init-fini.h"
@@ -42,22 +43,25 @@
 #include "hphp/util/repo-schema.h"
 #include "hphp/util/current-executable.h"
 #include "hphp/util/service-data.h"
-#include "hphp/util/file-util.h"
+#include "hphp/runtime/base/file-util.h"
 #include "hphp/runtime/base/stat-cache.h"
 #include "hphp/runtime/ext/extension.h"
 #include "hphp/runtime/ext/ext_fb.h"
 #include "hphp/runtime/ext/json/ext_json.h"
-#include "hphp/runtime/ext/ext_variable.h"
+#include "hphp/runtime/ext/std/ext_std_variable.h"
 #include "hphp/runtime/ext/ext_apc.h"
 #include "hphp/runtime/ext/ext_function.h"
-#include "hphp/runtime/ext/ext_options.h"
+#include "hphp/runtime/ext/std/ext_std_options.h"
 #include "hphp/runtime/ext/ext_file.h"
+#include "hphp/runtime/ext/ext_xenon.h"
 #include "hphp/runtime/debugger/debugger.h"
 #include "hphp/runtime/debugger/debugger_client.h"
 #include "hphp/runtime/base/simple-counter.h"
 #include "hphp/runtime/base/extended-logger.h"
 #include "hphp/runtime/base/stream-wrapper-registry.h"
 #include "hphp/runtime/vm/debug/debug.h"
+#include "hphp/system/constants.h"
+#include "hphp/runtime/base/config.h"
 
 #include <boost/program_options/options_description.hpp>
 #include <boost/program_options/positional_options.hpp>
@@ -73,12 +77,12 @@
 #include <memory>
 #include <vector>
 
+#include "hphp/runtime/base/arch.h"
 #include "hphp/runtime/base/file-repository.h"
 
 #include "hphp/runtime/vm/runtime.h"
 #include "hphp/runtime/vm/runtime-type-profiler.h"
 #include "hphp/runtime/vm/repo.h"
-#include "hphp/runtime/vm/jit/arch.h"
 #include "hphp/runtime/vm/jit/translator.h"
 #include "hphp/compiler/builtin_symbols.h"
 
@@ -168,13 +172,12 @@ String k_PHP_OS;
 String k_PHP_SAPI;
 
 static void process_cmd_arguments(int argc, char **argv) {
-  GlobalVariables *g = get_global_variables();
-  g->set(s_argc, Variant(argc), false);
-  Array argvArray = HphpArray::GetStaticEmptyArray();
+  php_global_set(s_argc, Variant(argc));
+  Array argvArray(staticEmptyArray());
   for (int i = 0; i < argc; i++) {
     argvArray.append(String(argv[i]));
   }
-  g->set(s_argv, argvArray, false);
+  php_global_set(s_argv, argvArray);
 }
 
 void process_env_variables(Array& variables) {
@@ -285,9 +288,10 @@ void register_variable(Array& variables, char *name, const Variant& value,
       }
 
       if (!index) {
-        symtable->append(Array::Create());
+        auto& val = symtable->lvalAt();
+        val = Array::Create();
         gpc_elements.push_back(uninit_null());
-        gpc_elements.back().assignRef(symtable->lvalAt(symtable->size() - 1));
+        gpc_elements.back().assignRef(val);
       } else {
         String key(index, index_len, CopyString);
         Variant v = symtable->rvalAt(key);
@@ -540,10 +544,8 @@ void execute_command_line_begin(int argc, char **argv, int xhprof,
   StackTraceNoHeap::AddExtraLogging("Arguments", args.c_str());
 
   hphp_session_init();
-  ExecutionContext *context = g_context.getNoCheck();
+  auto const context = g_context.getNoCheck();
   context->obSetImplicitFlush(true);
-
-  GlobalVariables *g = get_global_variables();
 
   {
     Array envArr(Array::Create());
@@ -553,15 +555,15 @@ void execute_command_line_begin(int argc, char **argv, int xhprof,
     if (RuntimeOption::EvalJit) {
       envArr.set(s_HHVM_JIT, 1);
     }
-    switch (JIT::arch()) {
-    case JIT::Arch::X64:
+    switch (arch()) {
+    case Arch::X64:
       envArr.set(s_HHVM_ARCH, "x64");
       break;
-    case JIT::Arch::ARM:
+    case Arch::ARM:
       envArr.set(s_HHVM_ARCH, "arm");
       break;
     }
-    g->set(s__ENV.get(), envArr, false);
+    php_global_set(s__ENV, envArr);
   }
 
   process_cmd_arguments(argc, argv);
@@ -590,8 +592,8 @@ void execute_command_line_begin(int argc, char **argv, int xhprof,
     serverArr.set(s_SCRIPT_FILENAME, file);
     serverArr.set(s_SCRIPT_NAME, file);
     serverArr.set(s_PHP_SELF, file);
-    serverArr.set(s_argv, g->get(s_argv));
-    serverArr.set(s_argc, g->get(s_argc));
+    serverArr.set(s_argv, php_global(s_argv));
+    serverArr.set(s_argc, php_global(s_argc));
     serverArr.set(s_PWD, g_context->getCwd());
     char hostname[1024];
     if (!gethostname(hostname, 1024)) {
@@ -602,7 +604,7 @@ void execute_command_line_begin(int argc, char **argv, int xhprof,
       serverArr.set(String(kv.first.c_str()), String(kv.second.c_str()));
     }
 
-    g->set(s__SERVER.get(), serverArr, false);
+    php_global_set(s__SERVER, serverArr);
   }
 
   if (xhprof) {
@@ -614,7 +616,14 @@ void execute_command_line_begin(int argc, char **argv, int xhprof,
       RuntimeOption::RequestTimeoutSeconds);
   }
 
+  if (RuntimeOption::XenonForceAlwaysOn) {
+    Xenon::getInstance().surpriseAll();
+  }
+
   Extension::RequestInitModules();
+  // If extension constants were used in the in ini files, they would have come
+  // out as 0 in the previous pass. Lets re-import the ini files. We could be
+  // more clever, but that would be harder and this works.
   for (auto& c : config) {
     process_ini_settings(c);
   }
@@ -1031,6 +1040,7 @@ static int execute_program_impl(int argc, char** argv) {
     ("config-value,v", value<std::vector<std::string>>(&po.confStrings)->composing(),
      "individual configuration string in a format of name=value, where "
      "name can be any valid configuration for a config file")
+    ("no-config", "don't use the default php.ini")
     ("port,p", value<int>(&po.port)->default_value(-1),
      "start an HTTP server at specified port")
     ("port-fd", value<int>(&po.portfd)->default_value(-1),
@@ -1142,7 +1152,7 @@ static int execute_program_impl(int argc, char** argv) {
       cout << desc << "\n";
       return -1;
     }
-    if (po.config.empty()) {
+    if (po.config.empty() && !vm.count("no-config")) {
       auto default_config_file = "/etc/hhvm/php.ini";
       if (access(default_config_file, R_OK) != -1) {
         Logger::Verbose("Using default config file: %s", default_config_file);
@@ -1205,11 +1215,12 @@ static int execute_program_impl(int argc, char** argv) {
   // we need to initialize pcre cache table very early
   pcre_init();
 
+  IniSetting::Map ini = IniSetting::Map::object;
   Hdf config;
   for (auto& c : po.config) {
-    config.append(c);
+    Config::Parse(c, ini, config);
   }
-  RuntimeOption::Load(config, &po.confStrings);
+  RuntimeOption::Load(ini, config, &po.confStrings);
   for (auto& c : po.config) {
     process_ini_settings(c);
   }
@@ -1449,7 +1460,7 @@ static int execute_program_impl(int argc, char** argv) {
 }
 
 String canonicalize_path(const String& p, const char* root, int rootLen) {
-  String path(FileUtil::canonicalize(p.c_str(), p.size()), AttachString);
+  String path = FileUtil::canonicalize(p);
   if (path.charAt(0) == '/') {
     const string &sourceRoot = RuntimeOption::SourceRoot;
     int len = sourceRoot.size();
@@ -1513,7 +1524,11 @@ extern "C" void hphp_fatal_error(const char *s) {
 static void on_timeout(int sig, siginfo_t* info, void* context) {
   if (sig == SIGVTALRM && info && info->si_code == SI_TIMER) {
     auto data = (RequestInjectionData*)info->si_value.sival_ptr;
-    data->onTimeout();
+    if (data) {
+      data->onTimeout();
+    } else {
+      Xenon::getInstance().onTimer();
+    }
   }
 }
 
@@ -1531,13 +1546,15 @@ void hphp_process_init() {
   action.sa_sigaction = on_timeout;
   action.sa_flags = SA_SIGINFO | SA_NODEFER;
   sigaction(SIGVTALRM, &action, nullptr);
+  // start takes milliseconds, Period is a double in seconds
+  Xenon::getInstance().start(1000 * RuntimeOption::XenonPeriodSeconds);
 
   init_thread_locals();
 
   // Initialize per-process dynamic PHP-visible consts before ClassInfo::Load()
   k_PHP_BINARY = makeStaticString(current_executable_path());
   k_PHP_BINDIR = makeStaticString(current_executable_directory());
-  k_PHP_OS = makeStaticString(f_php_uname("s"));
+  k_PHP_OS = makeStaticString(HHVM_FN(php_uname)("s").toString());
   k_PHP_SAPI = makeStaticString(RuntimeOption::ExecutionMode);
 
   ClassInfo::Load();
@@ -1684,11 +1701,21 @@ bool hphp_invoke(ExecutionContext *context, const std::string &cmd,
   if (!warmupOnly) {
     try {
       ServerStatsHelper ssh("invoke");
+      if (!RuntimeOption::AutoPrependFile.empty() &&
+          RuntimeOption::AutoPrependFile != "none") {
+        require(RuntimeOption::AutoPrependFile, false,
+                context->getCwd().data(), true);
+      }
       if (func) {
-        funcRet->assignVal(invoke(cmd.c_str(), funcParams));
+        funcRet->assign(invoke(cmd.c_str(), funcParams));
       } else {
         if (isServer) hphp_chdir_file(cmd);
         include_impl_invoke(cmd.c_str(), once);
+      }
+      if (!RuntimeOption::AutoAppendFile.empty() &&
+          RuntimeOption::AutoAppendFile != "none") {
+        require(RuntimeOption::AutoAppendFile, false,
+                context->getCwd().data(), true);
       }
     } catch (...) {
       handle_invoke_exception(ret, context, errorMsg, error, richErrorMsg);
@@ -1771,6 +1798,7 @@ void hphp_session_exit() {
 }
 
 void hphp_process_exit() {
+  Xenon::getInstance().stop();
   PageletServer::Stop();
   XboxServer::Stop();
   Eval::Debugger::Stop();

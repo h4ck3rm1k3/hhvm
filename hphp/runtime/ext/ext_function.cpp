@@ -21,7 +21,6 @@
 #include <vector>
 
 #include "hphp/runtime/ext/json/ext_json.h"
-#include "hphp/runtime/ext/ext_class.h"
 #include "hphp/runtime/ext/ext_closure.h"
 #include "hphp/runtime/base/class-info.h"
 #include "hphp/runtime/base/libevent-http-client.h"
@@ -34,15 +33,6 @@
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
 
-static class FunctionExtension : public Extension {
- public:
-  FunctionExtension() : Extension("function", NO_EXTENSION_VERSION_YET) {}
-  virtual void moduleInit() {
-    HHVM_NAMED_FE(__SystemLib\\func_slice_args, HHVM_FN(func_slice_args));
-    loadSystemlib();
-  }
-} s_function_extension;
-
 using HPHP::JIT::CallerFrame;
 using HPHP::JIT::EagerCallerFrame;
 using std::string;
@@ -52,8 +42,8 @@ const StaticString
   s_user("user");
 
 Array f_get_defined_functions() {
-  return make_map_array(s_internal, ClassInfo::GetSystemFunctions(),
-                     s_user, ClassInfo::GetUserFunctions());
+  return make_map_array(s_internal, Unit::getSystemFunctions(),
+                        s_user, Unit::getUserFunctions());
 }
 
 bool f_function_exists(const String& function_name,
@@ -96,7 +86,7 @@ bool f_is_callable(const Variant& v, bool syntax /* = false */,
   }
 
   if (tv_func->m_type == KindOfArray) {
-    const Array& arr = tv_func->m_data.parr;
+    const Array& arr = Array(tv_func->m_data.parr);
     const Variant& clsname = arr.rvalAtRef(int64_t(0));
     const Variant& mthname = arr.rvalAtRef(int64_t(1));
     if (arr.size() != 2 ||
@@ -134,7 +124,7 @@ bool f_is_callable(const Variant& v, bool syntax /* = false */,
         // Hack to stop the mangled name from showing up
         name = s_Closure__invoke;
       } else {
-        name = d->o_getClassName() + "::__invoke";
+        name = d->o_getClassName().asString() + "::__invoke";
       }
     }
     return invoke != NULL;
@@ -175,23 +165,14 @@ Variant f_forward_static_call(int _argc, const Variant& function,
   return vm_call_user_func(function, _argv, true);
 }
 
-Variant f_get_called_class() {
-  EagerCallerFrame cf;
-  ActRec* ar = cf();
-  if (ar) {
-    if (ar->hasThis()) return Variant(ar->getThis()->o_getClassName());
-    if (ar->hasClass()) return Variant(ar->getClass()->preClass()->name());
-  }
-  return Variant(false);
-}
-
 String f_create_function(const String& args, const String& code) {
   return g_context->createFunction(args, code);
 }
 
 ///////////////////////////////////////////////////////////////////////////////
 
-Variant f_func_get_arg(int arg_num) {
+ALWAYS_INLINE
+static Variant func_get_arg_impl(int arg_num) {
   CallerFrame cf;
   ActRec* ar = cf.actRecForArgs();
 
@@ -217,7 +198,7 @@ Variant f_func_get_arg(int arg_num) {
     return false;
   }
 
-  const int numParams = ar->m_func->numParams();
+  const int numParams = ar->m_func->numNonVariadicParams();
 
   if (arg_num < numParams) {
     // Formal parameter. Value is on the stack.
@@ -239,11 +220,20 @@ Variant f_func_get_arg(int arg_num) {
   return false;
 }
 
+Variant f_func_get_arg(int arg_num) {
+  raise_disallowed_dynamic_call(
+    "func_get_arg should not be called dynamically");
+  return func_get_arg_impl(arg_num);
+}
+Variant f_func_get_arg_sl(int arg_num) {
+  return func_get_arg_impl(arg_num);
+}
+
 Array hhvm_get_frame_args(const ActRec* ar, int offset) {
   if (ar == NULL) {
     return Array();
   }
-  int numParams = ar->m_func->numParams();
+  int numParams = ar->m_func->numNonVariadicParams();
   int numArgs = ar->numArgs();
 
   PackedArrayInit retInit(std::max(numArgs - offset, 0));
@@ -279,17 +269,25 @@ Array hhvm_get_frame_args(const ActRec* ar, int offset) {
 } while(0)
 
 Variant f_func_get_args() {
+  raise_disallowed_dynamic_call(
+    "func_get_args should not be called dynamically");
+  FUNC_GET_ARGS_IMPL(0);
+}
+// __SystemLib\func_get_args
+Variant f_func_get_args_sl() {
   FUNC_GET_ARGS_IMPL(0);
 }
 
-Variant HHVM_FUNCTION(func_slice_args, int offset) {
+// __SystemLib\func_slice_args
+Variant f_func_slice_args(int offset) {
   if (offset < 0) {
     offset = 0;
   }
   FUNC_GET_ARGS_IMPL(offset);
 }
 
-int64_t f_func_num_args() {
+ALWAYS_INLINE
+static int64_t func_num_args_impl() {
   EagerCallerFrame cf;
   ActRec* ar = cf.actRecForArgs();
   if (ar == NULL) {
@@ -304,6 +302,15 @@ int64_t f_func_num_args() {
   return ar->numArgs();
 }
 
+int64_t f_func_num_args() {
+  raise_disallowed_dynamic_call(
+    "func_num_args should not be called dynamically");
+  return func_num_args_impl();
+}
+int64_t f_func_num_arg_() {
+  return func_num_args_impl();
+}
+
 ///////////////////////////////////////////////////////////////////////////////
 
 void f_register_postsend_function(int _argc, const Variant& function, const Array& _argv /* = null_array */) {
@@ -314,11 +321,6 @@ void f_register_postsend_function(int _argc, const Variant& function, const Arra
 void f_register_shutdown_function(int _argc, const Variant& function, const Array& _argv /* = null_array */) {
   g_context->registerShutdownFunction(function, _argv,
                                       ExecutionContext::ShutDown);
-}
-
-void f_register_cleanup_function(int _argc, const Variant& function, const Array& _argv /* = null_array */) {
-  g_context->registerShutdownFunction(function, _argv,
-                                      ExecutionContext::CleanUp);
 }
 
 ///////////////////////////////////////////////////////////////////////////////

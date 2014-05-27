@@ -83,7 +83,7 @@ and ty_ =
    * array operations (since a class might implement ArrayAccess), but not with
    * array type hints.
    *
-   * Tobject is currently used to type code like: ../test/more_tests/return_unknown_class.php
+   * Tobject is currently used to type code like: ../test/typecheck/return_unknown_class.php
    *)
   | Tobject
   | Tshape of ty SMap.t
@@ -153,35 +153,6 @@ and tparam = Ast.id * ty option
 
 (* The identifier for this *)
 let this = Ident.make "$this"
-
-(*****************************************************************************)
-(* Code filtering the private members (useful for inheritance) *)
-(*****************************************************************************)
-
-let filter_private x =
-  SMap.fold begin fun name class_elt acc ->
-    match class_elt.ce_visibility with
-    | Vprivate _ -> acc
-    | Vpublic | Vprotected _ -> SMap.add name class_elt acc
-  end x SMap.empty
-
-let chown_private owner =
-  SMap.map begin fun class_elt ->
-    match class_elt.ce_visibility with 
-      | Vprivate _ -> {class_elt with ce_visibility = Vprivate owner}
-      | _ -> class_elt end
-
-let apply_fn_to_class_elts fn class_type = {
-  class_type with
-  tc_consts = fn class_type.tc_consts;
-  tc_cvars = fn class_type.tc_cvars;
-  tc_scvars = fn class_type.tc_scvars;
-  tc_methods = fn class_type.tc_methods;
-  tc_smethods = fn class_type.tc_smethods;
-}
-
-let filter_privates = apply_fn_to_class_elts filter_private
-let chown_privates owner = apply_fn_to_class_elts (chown_private owner)
 
 (*****************************************************************************)
 (* Infer-type-at-point mode *)

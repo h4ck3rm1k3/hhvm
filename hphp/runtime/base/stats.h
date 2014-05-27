@@ -136,6 +136,13 @@ namespace Stats {
   STAT(TC_CatchSideExit) \
   STAT(TC_SetMStrGuess_Hit) \
   STAT(TC_SetMStrGuess_Miss) \
+  STAT(TC_DecRef_NZ) \
+  STAT(TC_DecRef_Normal_Decl) \
+  STAT(TC_DecRef_Normal_Destroy) \
+  STAT(TC_DecRef_Likely_Decl) \
+  STAT(TC_DecRef_Likely_Destroy) \
+  STAT(TC_DecRef_Profiled_100) \
+  STAT(TC_DecRef_Profiled_0) \
   /* Fixup */ \
   STAT(Fixup_Find) \
   STAT(Fixup_Probe) \
@@ -145,9 +152,6 @@ namespace Stats {
   STAT(PseudoMain_Skipped) \
   STAT(PseudoMain_SkipDeep) \
   STAT(PseudoMain_Guarded) \
-  STAT(Cont_CreateVerySlow) \
-  STAT(Cont_UnpackVerySlow) \
-  STAT(Cont_PackVerySlow) \
   STAT(VMEnter) \
   STAT(TraceletGuard_enter) \
   STAT(TraceletGuard_branch) \
@@ -182,6 +186,12 @@ namespace Stats {
   STAT(vixl_SimulatedInstr) \
   STAT(vixl_SimulatedLoad) \
   STAT(vixl_SimulatedStore) \
+  /* ArrayGet */ \
+  STAT(ArrayGet_Total) \
+  STAT(ArrayGet_Opt) \
+  STAT(ArrayGet_Mono) \
+  STAT(ArrayGet_Packed) \
+  STAT(ArrayGet_Mixed) \
 
 enum StatCounter {
 #define STAT(name) \
@@ -230,16 +240,6 @@ inline void incOp(Op opc) {
 
 inline StatCounter opcodeToTranslStatCounter(Op opc) {
   return StatCounter(Instr_TranslLowInvalid +
-                     STATS_PER_OPCODE * uint8_t(opc));
-}
-
-inline StatCounter opcodeToIRPreStatCounter(Op opc) {
-  return StatCounter(Instr_TranslIRPreLowInvalid +
-                     STATS_PER_OPCODE * uint8_t(opc));
-}
-
-inline StatCounter opcodeToIRPostStatCounter(Op opc) {
-  return StatCounter(Instr_TranslIRPostLowInvalid +
                      STATS_PER_OPCODE * uint8_t(opc));
 }
 

@@ -21,8 +21,7 @@
 #include "hphp/runtime/ext/ext_closure.h"
 #include "hphp/runtime/ext/asio/asio_context.h"
 #include "hphp/runtime/ext/asio/asio_session.h"
-#include <hphp/runtime/ext/asio/static_exception_wait_handle.h>
-#include <hphp/runtime/ext/asio/static_result_wait_handle.h>
+#include <hphp/runtime/ext/asio/static_wait_handle.h>
 #include "hphp/system/systemlib.h"
 
 namespace HPHP {
@@ -39,12 +38,6 @@ namespace {
       exception_field = new_exception;
     }
   }
-}
-
-void c_GenVectorWaitHandle::t___construct() {
-  Object e(SystemLib::AllocInvalidOperationExceptionObject(
-        "Use GenVectorWaitHandle::create() instead of constructor"));
-  throw e;
 }
 
 void c_GenVectorWaitHandle::ti_setoncreatecallback(const Variant& callback) {
@@ -105,13 +98,15 @@ Object c_GenVectorWaitHandle::ti_create(const Variant& dependencies) {
   }
 
   if (exception.isNull()) {
-    return c_StaticResultWaitHandle::Create(make_tv<KindOfObject>(deps.get()));
+    return c_StaticWaitHandle::CreateSucceeded(
+      make_tv<KindOfObject>(deps.get()));
   } else {
-    return c_StaticExceptionWaitHandle::Create(exception.get());
+    return c_StaticWaitHandle::CreateFailed(exception.get());
   }
 }
 
 void c_GenVectorWaitHandle::initialize(const Object& exception, c_Vector* deps, int64_t iter_pos, c_WaitableWaitHandle* child) {
+  setState(STATE_BLOCKED);
   m_exception = exception;
   m_deps = deps;
   m_iterPos = iter_pos;
@@ -131,6 +126,8 @@ void c_GenVectorWaitHandle::initialize(const Object& exception, c_Vector* deps, 
 }
 
 void c_GenVectorWaitHandle::onUnblocked() {
+  assert(getState() == STATE_BLOCKED);
+
   for (; m_iterPos < m_deps->size(); ++m_iterPos) {
 
     Cell* current = tvAssertCell(m_deps->at(m_iterPos));
@@ -160,13 +157,16 @@ void c_GenVectorWaitHandle::onUnblocked() {
   }
 
   if (m_exception.isNull()) {
-    setResult(make_tv<KindOfObject>(m_deps.get()));
-    m_deps = nullptr;
+    setState(STATE_SUCCEEDED);
+    tvWriteObject(m_deps.get(), &m_resultOrException);
   } else {
-    setException(m_exception.get());
+    setState(STATE_FAILED);
+    tvWriteObject(m_exception.get(), &m_resultOrException);
     m_exception = nullptr;
-    m_deps = nullptr;
   }
+
+  m_deps = nullptr;
+  done();
 }
 
 String c_GenVectorWaitHandle::getName() {

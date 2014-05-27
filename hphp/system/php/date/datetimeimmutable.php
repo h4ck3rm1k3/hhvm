@@ -8,19 +8,19 @@ class DateTimeImmutable implements DateTimeInterface {
     $this->data = new DateTime($time, $timezone);
   }
 
-  public function add(DateInterval $interval) {
+  public function add(DateInterval $interval): DateTimeImmutable {
     $out = clone $this;
     $out->data->add($interval);
     return $out;
   }
 
-  public function modify(string $modify) {
+  public function modify(string $modify): DateTimeImmutable {
     $out = clone $this;
     $out->data->modify($modify);
     return $out;
   }
 
-  public function setDate(int $year, int $month, int $day) {
+  public function setDate(int $year, int $month, int $day): DateTimeImmutable {
     $out = clone $this;
     $out->data->setDate($year, $month, $day);
     return $out;
@@ -30,7 +30,7 @@ class DateTimeImmutable implements DateTimeInterface {
     int $year,
     int $week,
     int $day = 1
-  ) {
+  ): DateTimeImmutable {
     $out = clone $this;
     $out->data->setISODate($year, $week, $day);
     return $out;
@@ -40,24 +40,24 @@ class DateTimeImmutable implements DateTimeInterface {
     int $hour,
     int $minute,
     int $second = 0
-  ) {
+  ): DateTimeImmutable {
     $out = clone $this;
     $out->data->setTime($hour, $minute, $second);
     return $out;
   }
-  public function setTimestamp(int $unixtimestamp) {
+  public function setTimestamp(int $unixtimestamp): DateTimeImmutable {
     $out = clone $this;
     $out->data->setTimestamp($unixtimestamp);
     return $out;
   }
 
-  public function setTimezone(DateTimeZone $timezone) {
+  public function setTimezone(DateTimeZone $timezone): DateTimeImmutable {
     $out = clone $this;
     $out->data->setTimezone($timezone);
     return $out;
   }
 
-  public function sub(DateInterval $interval) {
+  public function sub(DateInterval $interval): DateTimeImmutable {
     $out = clone $this;
     $out->data->sub($interval);
     return $out;
@@ -90,14 +90,14 @@ class DateTimeImmutable implements DateTimeInterface {
     string $format,
     string $time,
     DateTimeZone $timezone = null
-  ) {
+  ): DateTimeImmutable {
     $out = new DateTimeImmutable();
     $out->data = DateTime::createFromFormat($format, $time, $timezone);
     return $out;
   }
 
-  public static function getLastErrors() {
-    return $this->data->getLastErrors();
+  public static function getLastErrors(): array {
+    return DateTime::getLastErrors();
   }
 
   public function __clone() {

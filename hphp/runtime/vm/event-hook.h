@@ -71,14 +71,26 @@ class EventHook {
    * unwinder itself will call the function exit hooks and swallow
    * exceptions.
    */
-  static void onFunctionExit(const ActRec* ar);
-  static inline void FunctionExit(const ActRec* ar) {
+  static void onFunctionExitJit(ActRec* ar, TypedValue retval) {
+    try {
+      onFunctionExit(ar, retval.m_type == KindOfUninit ? nullptr : &retval);
+    } catch (...) {
+      ar->setLocalsDecRefd();
+      throw;
+    }
+  }
+  static inline void FunctionExit(ActRec* ar, TypedValue* retval) {
     if (Trace::moduleEnabled(Trace::ringbuffer, 1)) {
       auto name = ar->m_func->fullName();
       Trace::ringbufferMsg(name->data(), name->size(), Trace::RBTypeFuncExit);
     }
     if (UNLIKELY(checkConditionFlags())) {
-      onFunctionExit(ar);
+      try {
+        onFunctionExit(ar, retval);
+      } catch (...) {
+        ar->setLocalsDecRefd();
+        throw;
+      }
     }
   }
 
@@ -88,9 +100,10 @@ private:
     ProfileExit,
   };
 
-  static void RunUserProfiler(const ActRec* ar, int mode);
+  static void onFunctionExit(ActRec* ar, TypedValue* retval);
+
   static bool RunInterceptHandler(ActRec* ar);
-  static const char* GetFunctionNameForProfiler(const ActRec* ar,
+  static const char* GetFunctionNameForProfiler(const Func* func,
                                                 int funcType);
 };
 

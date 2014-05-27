@@ -68,7 +68,19 @@ static bool objOffsetExists(ObjectData* base, const Variant& offset) {
 
 bool objOffsetIsset(TypedValue& tvRef, ObjectData* base, const Variant& offset,
                     bool validate /* = true */) {
-  return objOffsetExists(base, offset);
+  auto exists = objOffsetExists(base, offset);
+
+  if (!exists) {
+    return false;
+  }
+
+  if (!base->getVMClass()->classof(SystemLib::s_ArrayObjectClass)) {
+    return exists;
+  }
+
+  TypedValue tvResult;
+  tvWriteUninit(&tvResult);
+  return is_not_null(tvAsVariant(objOffsetGet(tvResult, base, offset)));
 }
 
 bool objOffsetEmpty(TypedValue& tvRef, ObjectData* base, const Variant& offset,
@@ -117,6 +129,16 @@ void objOffsetUnset(ObjectData* base, const Variant& offset) {
   tvWriteUninit(&tv);
   g_context->invokeFuncFew(&tv, method, base, nullptr, 1, offset.asCell());
   tvRefcountedDecRef(&tv);
+}
+
+// Mutable collections support appending new elements using [] without a key
+// like so: "$vector[] = 123;". However, collections do not support using []
+// without a key to implicitly create a new element without supplying assigning
+// an initial value (ex "$vector[]['a'] = 73;").
+void throw_cannot_use_newelem_for_lval_read() {
+  Object e(SystemLib::AllocInvalidOperationExceptionObject(
+    "Cannot use [] with collections for reading in an lvalue context"));
+  throw e;
 }
 
 ///////////////////////////////////////////////////////////////////////////////

@@ -2,6 +2,10 @@
 #include "hphp/parser/scanner.h"
 #include <cassert>
 
+#ifdef __clang__
+#pragma clang diagnostic ignored "-Wnull-conversion"
+#endif
+
 // macros for flex
 #define YYSTYPE HPHP::ScannerToken
 #define YYLTYPE HPHP::Location
@@ -291,6 +295,7 @@ BACKQUOTE_CHARS     ("{"*([^$`\\{]|("\\"{ANY_CHAR}))|{BACKQUOTE_LITERAL_DOLLAR})
 <ST_IN_SCRIPTING>"class"                { RETTOKEN(T_CLASS);}
 <ST_IN_SCRIPTING>"interface"            { RETTOKEN(T_INTERFACE);}
 <ST_IN_SCRIPTING>"trait"                { RETTOKEN(T_TRAIT);}
+<ST_IN_SCRIPTING>"..."                  { RETTOKEN(T_ELLIPSIS);}
 <ST_IN_SCRIPTING>"insteadof"            { RETTOKEN(T_INSTEADOF);}
 <ST_IN_SCRIPTING>"extends"              { RETTOKEN(T_EXTENDS);}
 <ST_IN_SCRIPTING>"implements"           { RETTOKEN(T_IMPLEMENTS);}
@@ -423,6 +428,8 @@ BACKQUOTE_CHARS     ("{"*([^$`\\{]|("\\"{ANY_CHAR}))|{BACKQUOTE_LITERAL_DOLLAR})
 <ST_IN_SCRIPTING>"-="                 { RETSTEP(T_MINUS_EQUAL);}
 <ST_IN_SCRIPTING>"*="                 { RETSTEP(T_MUL_EQUAL);}
 <ST_IN_SCRIPTING>"/="                 { RETSTEP(T_DIV_EQUAL);}
+<ST_IN_SCRIPTING>"**"                 { RETSTEP(T_POW);}
+<ST_IN_SCRIPTING>"**="                { RETSTEP(T_POW_EQUAL);}
 <ST_IN_SCRIPTING>".="                 { RETSTEP(T_CONCAT_EQUAL);}
 <ST_IN_SCRIPTING>"%="                 { RETSTEP(T_MOD_EQUAL);}
 <ST_IN_SCRIPTING>"<<="                { RETSTEP(T_SL_EQUAL);}
@@ -462,7 +469,7 @@ BACKQUOTE_CHARS     ("{"*([^$`\\{]|("\\"{ANY_CHAR}))|{BACKQUOTE_LITERAL_DOLLAR})
 }
 
 <ST_IN_SCRIPTING>"tuple"/("("|{WHITESPACE_AND_COMMENTS}"(") {
-  HH_ONLY_KEYWORD(T_TUPLE);
+  HH_ONLY_KEYWORD(T_ARRAY);
 }
 
 <ST_IN_SCRIPTING>"?"/":"[a-zA-Z_\x7f-\xff] {
@@ -482,14 +489,6 @@ BACKQUOTE_CHARS     ("{"*([^$`\\{]|("\\"{ANY_CHAR}))|{BACKQUOTE_LITERAL_DOLLAR})
 <ST_LOOKING_FOR_COLON>":" {
   BEGIN(ST_IN_SCRIPTING);
   RETSTEP(':');
-}
-
-<ST_IN_SCRIPTING>"..." {
-  if (!_scanner->isHHSyntaxEnabled()) {
-    yyless(1);
-    RETSTEP('.');
-  }
-  RETTOKEN(T_VARARG);
 }
 
 <ST_IN_SCRIPTING>">>" {
@@ -1387,7 +1386,9 @@ namespace HPHP {
     yylex_destroy(m_yyscanner);
   }
 
+  static void suppress_unused_errors() __attribute__((unused));
   static void suppress_unused_errors() {
+    yyinput(yyscan_t());
     yyunput(0,0,0);
     yy_top_state(0);
     suppress_unused_errors();

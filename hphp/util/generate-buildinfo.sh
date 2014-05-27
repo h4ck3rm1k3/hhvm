@@ -9,10 +9,12 @@
 # contents would've changed.
 #
 
+DIR="$( cd "$( dirname "$0" )" && pwd )"
+
 # OSS version depends on this fallback since it's
 # obviously not using fbmake
 if [ x"$FBMAKE_PRE_COMMAND_OUTDIR" = x"" ]; then
-  FBMAKE_PRE_COMMAND_OUTDIR="$HPHP_HOME/hphp/"
+  FBMAKE_PRE_COMMAND_OUTDIR="$DIR/../"
 fi
 
 BUILDINFO_FILE="$FBMAKE_PRE_COMMAND_OUTDIR/hphp-build-info.cpp"
@@ -21,10 +23,22 @@ REPO_SCHEMA_H="$FBMAKE_PRE_COMMAND_OUTDIR/hphp-repo-schema.h"
 GIT_TLD=$(git rev-parse --show-toplevel)
 GIT="yes"
 if [ x"$GIT_TLD" = x"" ]; then
-  GIT_TLD=$HPHP_HOME
+  GIT_TLD=$DIR/../../
   GIT="no"
 fi
 cd $GIT_TLD
+
+######################################################################
+
+# First check if they configured anything hphp-related.  If not, skip
+# this stuff, because these git commands take .5s or so.
+if [ -d $GIT_TLD/.fbbuild ]; then
+  if cat $GIT_TLD/.fbbuild/generated/info 2>/dev/null \
+    | grep fbconfig_argv \
+    | grep -v hphp >/dev/null 2>&1 ; then
+    exit 0
+  fi
+fi
 
 ######################################################################
 

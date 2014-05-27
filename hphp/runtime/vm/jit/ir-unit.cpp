@@ -22,18 +22,17 @@ namespace HPHP {  namespace JIT {
 
 TRACE_SET_MOD(hhir);
 
-IRUnit::IRUnit(Offset initialBcOffset)
-  : m_nextBlockId(0)
-  , m_nextOpndId(0)
-  , m_nextInstId(0)
-  , m_bcOff(initialBcOffset)
+IRUnit::IRUnit(TransContext context)
+  : m_context(context)
   , m_entry(defBlock())
-{
-}
+{}
 
-IRInstruction* IRUnit::defLabel(unsigned numDst, BCMarker marker) {
+IRInstruction* IRUnit::defLabel(unsigned numDst, BCMarker marker,
+                                const smart::vector<unsigned>& producedRefs) {
   IRInstruction inst(DefLabel, marker);
   IRInstruction* label = cloneInstruction(&inst);
+  always_assert(producedRefs.size() == numDst);
+  m_labelRefs[label] = producedRefs;
   if (numDst > 0) {
     SSATmp* dsts = (SSATmp*) m_arena.alloc(numDst * sizeof(SSATmp));
     for (unsigned i = 0; i < numDst; ++i) {
@@ -58,7 +57,7 @@ IRInstruction* IRUnit::mov(SSATmp* dst, SSATmp* src, BCMarker marker) {
 
 SSATmp* IRUnit::findConst(Type type) {
   assert(type.isConst());
-  IRInstruction inst(DefConst, BCMarker());
+  IRInstruction inst(DefConst, BCMarker{});
   inst.setTypeParam(type);
   if (SSATmp* tmp = m_constTable.lookup(&inst)) {
     assert(tmp->type().equals(type));

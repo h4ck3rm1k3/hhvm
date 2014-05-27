@@ -20,11 +20,10 @@
 #include "hphp/runtime/ext/ext_closure.h"
 #include "hphp/runtime/ext/asio/asio_context.h"
 #include "hphp/runtime/ext/asio/asio_session.h"
-#include <hphp/runtime/ext/asio/static_exception_wait_handle.h>
-#include <hphp/runtime/ext/asio/static_result_wait_handle.h>
+#include <hphp/runtime/ext/asio/static_wait_handle.h>
 #include "hphp/system/systemlib.h"
-#include "hphp/runtime/base/hphp-array.h"
-#include "hphp/runtime/base/hphp-array-defs.h"
+#include "hphp/runtime/base/mixed-array.h"
+#include "hphp/runtime/base/mixed-array-defs.h"
 
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
@@ -40,12 +39,6 @@ namespace {
       exception_field = new_exception;
     }
   }
-}
-
-void c_GenArrayWaitHandle::t___construct() {
-  Object e(SystemLib::AllocInvalidOperationExceptionObject(
-        "Use GenArrayWaitHandle::create() instead of constructor"));
-  throw e;
 }
 
 void c_GenArrayWaitHandle::ti_setoncreatecallback(const Variant& callback) {
@@ -67,22 +60,29 @@ static void fail() {
 }
 
 Object c_GenArrayWaitHandle::ti_create(const Array& inputDependencies) {
-  Array depCopy = inputDependencies->copy();
-  if (UNLIKELY(depCopy->kind() > ArrayData::kMixedKind)) {
-    // The only array kind that can return a non-kPackedKind or
-    // non-kMixedKind from ->copy() is NameValueTableWrapper, which
-    // returns itself.  This is only for $GLOBALS, which is about to
-    // throw anyway since it will fail the WaitHandle checks below.
+  Array depCopy(inputDependencies->copy());
+  if (UNLIKELY(depCopy->kind() > ArrayData::kMixedKind) &&
+      depCopy->kind() != ArrayData::kEmptyKind) {
+    // The only array kind that can return a non-k{Packed,Mixed,Empty}Kind
+    // from ->copy() is NameValueTableWrapper, which returns itself.
+    // This is only for $GLOBALS, which is about to throw anyway since it
+    // will fail the WaitHandle checks below.
     fail();
   }
   assert(depCopy->kind() == ArrayData::kPackedKind ||
-         depCopy->kind() == ArrayData::kMixedKind);
+         depCopy->kind() == ArrayData::kMixedKind ||
+         depCopy->kind() == ArrayData::kEmptyKind);
+
+  if (depCopy->kind() == ArrayData::kEmptyKind) {
+    auto const empty = make_tv<KindOfArray>(depCopy.get());
+    return c_StaticWaitHandle::CreateSucceeded(empty);
+  }
 
   Object exception;
 
-  HphpArray::ValIter arrIter(static_cast<HphpArray*>(depCopy.get()));
+  MixedArray::ValIter arrIter(depCopy.get());
   for (; !arrIter.empty(); arrIter.advance()) {
-    auto const current = &arrIter.current()->data;
+    auto const current = arrIter.current();
     if (UNLIKELY(current->m_type == KindOfRef)) {
       tvUnbox(current);
     }
@@ -109,7 +109,7 @@ Object c_GenArrayWaitHandle::ti_create(const Array& inputDependencies) {
     auto const current_pos = arrIter.currentPos();
     arrIter.advance();
     for (; !arrIter.empty(); arrIter.advance()) {
-      auto const future = &arrIter.current()->data;
+      auto const future = arrIter.current();
       if (UNLIKELY(future->m_type == KindOfRef)) {
         tvUnbox(future);
       }
@@ -134,14 +134,15 @@ Object c_GenArrayWaitHandle::ti_create(const Array& inputDependencies) {
   // that's all we give back.  Otherwise give back the array of
   // results.
   if (exception.isNull()) {
-    return c_StaticResultWaitHandle::Create(
+    return c_StaticWaitHandle::CreateSucceeded(
       make_tv<KindOfArray>(depCopy.get()));
   } else {
-    return c_StaticExceptionWaitHandle::Create(exception.get());
+    return c_StaticWaitHandle::CreateFailed(exception.get());
   }
 }
 
 void c_GenArrayWaitHandle::initialize(const Object& exception, const Array& deps, ssize_t iter_pos, c_WaitableWaitHandle* child) {
+  setState(STATE_BLOCKED);
   m_exception = exception;
   m_deps = deps;
   m_iterPos = iter_pos;
@@ -161,10 +162,11 @@ void c_GenArrayWaitHandle::initialize(const Object& exception, const Array& deps
 }
 
 void c_GenArrayWaitHandle::onUnblocked() {
-  HphpArray::ValIter arrIter(static_cast<HphpArray*>(m_deps.get()), m_iterPos);
+  assert(getState() == STATE_BLOCKED);
+  MixedArray::ValIter arrIter(m_deps.get(), m_iterPos);
 
   for (; !arrIter.empty(); arrIter.advance()) {
-    auto const current = tvAssertCell(&arrIter.current()->data);
+    auto const current = tvAssertCell(arrIter.current());
 
     if (IS_NULL_TYPE(current->m_type)) continue;
     assert(current->m_type == KindOfObject);
@@ -197,13 +199,16 @@ void c_GenArrayWaitHandle::onUnblocked() {
   m_iterPos = arrIter.currentPos();
 
   if (m_exception.isNull()) {
-    setResult(make_tv<KindOfArray>(m_deps.get()));
-    m_deps = nullptr;
+    setState(STATE_SUCCEEDED);
+    cellDup(make_tv<KindOfArray>(m_deps.get()), m_resultOrException);
   } else {
-    setException(m_exception.get());
+    setState(STATE_FAILED);
+    tvWriteObject(m_exception.get(), &m_resultOrException);
     m_exception = nullptr;
-    m_deps = nullptr;
   }
+
+  m_deps = nullptr;
+  done();
 }
 
 String c_GenArrayWaitHandle::getName() {
@@ -213,7 +218,7 @@ String c_GenArrayWaitHandle::getName() {
 c_WaitableWaitHandle* c_GenArrayWaitHandle::getChild() {
   assert(getState() == STATE_BLOCKED);
   return static_cast<c_WaitableWaitHandle*>(
-      m_deps->nvGetValueRef(m_iterPos)->m_data.pobj);
+    m_deps->getValueRef(m_iterPos).asTypedValue()->m_data.pobj);
 }
 
 void c_GenArrayWaitHandle::enterContextImpl(context_idx_t ctx_idx) {
@@ -222,7 +227,8 @@ void c_GenArrayWaitHandle::enterContextImpl(context_idx_t ctx_idx) {
   // recursively import current child
   {
     assert(m_iterPos != ArrayData::invalid_index);
-    Cell* current = tvAssertCell(m_deps->nvGetValueRef(m_iterPos));
+    auto const current = tvAssertCell(
+      m_deps->getValueRef(m_iterPos).asTypedValue());
 
     assert(current->m_type == KindOfObject);
     assert(current->m_data.pobj->instanceof(c_WaitableWaitHandle::classof()));
@@ -239,7 +245,8 @@ void c_GenArrayWaitHandle::enterContextImpl(context_idx_t ctx_idx) {
          iter_pos != ArrayData::invalid_index;
          iter_pos = m_deps->iter_advance(iter_pos)) {
 
-      Cell* current = tvAssertCell(m_deps->nvGetValueRef(iter_pos));
+      auto const current = tvAssertCell(
+        m_deps->getValueRef(iter_pos).asTypedValue());
       if (IS_NULL_TYPE(current->m_type)) {
         continue;
       }

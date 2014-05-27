@@ -16,16 +16,12 @@
 
 #include "hphp/runtime/vm/jit/extra-data.h"
 
-#include "hphp/runtime/ext/ext_continuation.h"
+#include "hphp/runtime/ext/ext_generator.h"
+#include "hphp/runtime/ext/asio/async_function_wait_handle.h"
 #include "hphp/runtime/vm/jit/ssa-tmp.h"
 #include "hphp/util/text-util.h"
 
 namespace HPHP { namespace JIT {
-
-std::string LocalData::show() const {
-  return folly::to<std::string>(LocalId::show(), ',',
-                                typeSrc ? typeSrc->toString() : "null");
-}
 
 std::string NewStructData::show() const {
   std::ostringstream os;
@@ -41,12 +37,19 @@ std::string NewStructData::show() const {
 
 const RawMemData::Info& RawMemData::info() const {
   static const Info infos[] = {
-    {CONTOFF(m_label),           sz::dword, JIT::Type::Int},
-    {CONTOFF(m_index),           sz::qword, JIT::Type::Int},
-    {c_Continuation::stateOff(), sz::byte,  JIT::Type::Int},
-    {CONTOFF(m_entry),           sz::qword, JIT::Type::TCA},
-    {StringData::sizeOff(),      sz::dword, JIT::Type::Int},
-    {Func::numParamsOff(),       sz::dword, JIT::Type::Int},
+    {c_WaitHandle::stateOff(),    sz::byte,  JIT::Type::Int},
+    {c_AsyncFunctionWaitHandle::resumeAddrOff(),
+                                  sz::qword, JIT::Type::TCA|JIT::Type::Nullptr},
+    {c_AsyncFunctionWaitHandle::resumeOffsetOff(),
+                                  sz::dword, JIT::Type::Int},
+    {c_Generator::resumeAddrOff(),
+                                  sz::qword, JIT::Type::TCA|JIT::Type::Nullptr},
+    {c_Generator::resumeOffsetOff(),
+                                  sz::dword, JIT::Type::Int},
+    {c_Generator::stateOff(),  sz::byte,  JIT::Type::Int},
+    {CONTOFF(m_index),            sz::qword, JIT::Type::Int},
+    {StringData::sizeOff(),       sz::dword, JIT::Type::Int},
+    {Func::paramCountsOff(),      sz::dword, JIT::Type::Int},
   };
   static_assert(sizeof infos / sizeof infos[0] == kNumTypes,
                 "Incorrect size of infos array");

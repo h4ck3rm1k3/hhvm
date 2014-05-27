@@ -50,10 +50,11 @@ namespace Eval {
   x(PDOException)                               \
   x(SoapFault)                                  \
   x(Closure)                                    \
-  x(Continuation)                               \
+  x(Generator)                                  \
   x(Serializable)                               \
   x(ArrayAccess)                                \
   x(ArrayObject)                                \
+  x(ArrayIterator)                              \
   x(Iterator)                                   \
   x(IteratorAggregate)                          \
   x(Traversable)                                \
@@ -62,12 +63,13 @@ namespace Eval {
   x(LazyIterableView)                           \
   x(LazyKeyedIterableView)                      \
   x(Phar)                                       \
-  x(__PHP_Incomplete_Class)                     \
-  x(__PHP_Unserializable_Class)                 \
+  x(CURLFile)                                   \
+  x(__PHP_Incomplete_Class)
 
 class SystemLib {
  public:
   static bool s_inited;
+  static bool s_anyNonPersistentBuiltins;
   static std::string s_source;
   static HPHP::Unit* s_unit;
   static HPHP::Unit* s_hhas_unit;
@@ -81,8 +83,6 @@ class SystemLib {
 #undef DECLARE_SYSTEMLIB_CLASS
 
   static HPHP::Func* s_nullFunc;
-  static HPHP::Func* s_continuationSendFunc;
-  static HPHP::Func* s_continuationRaiseFunc;
 
   static ObjectData* AllocStdClassObject();
   static ObjectData* AllocPinitSentinel();

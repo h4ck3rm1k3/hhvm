@@ -21,21 +21,19 @@ hphp.log
 /hphp/test/vm/perf/*.perf
 /hphp/runtime/ext_hhvm/ext_noinline.cpp
 /hphp/compiler/analysis/code_error.inc
+/hphp/runtime/ext/*/CMakeLists.txt
+/hphp/runtime/ext/*/*.so
 
 /hphp/runtime/tmp/Test*
 /hphp/runtime/tmp/run
 /hphp/runtime/tmp/run.sh
 /hphp/runtime/tmp/libtest.so
-/hphp/hphp-build-info.cpp
-/hphp/hphp-repo-schema.h
 
 /hphp/hhvm/gen
 /hphp/hhvm/hhvm
 
 *.ext_hhvm.cpp
 *.ext_hhvm.h
-/hphp/runtime/ext_hhvm/ext_hhvm_infotabs.cpp
-/hphp/runtime/ext_hhvm/ext_hhvm_infotabs.h
 
 /hphp/tools/shmw/shmw
 
@@ -51,7 +49,11 @@ install_manifest.txt
 
 /hphp/TAGS
 
-/hphp/third_party/libzip/libzip.dylib
+# old directories with makefiles
+/hphp/submodules
+/hphp/third_party
+
+/third-party/libzip/libzip.dylib
 
 # Generated makefiles
 /hphp/runtime/ext_hhvm/Makefile
@@ -73,6 +75,7 @@ install_manifest.txt
 .*.swo
 *.vimrc
 .syntastic_cpp_config
+*~
 
 # tags files
 tags

@@ -39,6 +39,11 @@ namespace JIT {
 
 struct PropInfo;
 
+enum class IRGenMode {
+  Trace,
+  CFG,
+};
+
 //////////////////////////////////////////////////////////////////////
 
 /*
@@ -60,24 +65,36 @@ struct PropInfo;
  * made at this level.
  */
 struct HhbcTranslator {
-  HhbcTranslator(Offset startOffset,
-                 uint32_t initialSpOffsetFromFp,
-                 bool inGenerator,
-                 const Func* func);
+  explicit HhbcTranslator(TransContext context);
 
   // Accessors.
   IRBuilder& irBuilder() const { return *m_irb.get(); }
   IRUnit& unit() { return m_unit; }
 
-  // In between each emit* call, irtranslator indicates the new
-  // bytecode offset (or whether we're finished) using this API.
-  void setBcOff(Offset newOff, bool lastBcOff, bool maybeStartBlock = false);
+  /*
+   * In between each emit* call, irtranslator indicates the new
+   * bytecode offset (or whether we're finished) using this API.
+   *
+   * Also updated is the id of the profiling translation for the code
+   * we're about to generate next, if there was one.  (Otherwise,
+   * kInvalidTransID.)
+   */
+  void setProfTransID(TransID);
+  void setBcOff(Offset newOff, bool lastBcOff);
+
+  void      setGenMode(IRGenMode mode);
+  IRGenMode genMode() const { return m_mode; }
 
   // End a bytecode block and do the right thing with fallthrough.
   void endBlock(Offset next);
 
   void end();
   void end(Offset nextPc);
+
+  // Prepare for a possible side exit.  This forces a SpillStack, so
+  // that no instruction is needed in the exit block and thus a branch
+  // in the main block can be smashed.
+  void prepareForSideExit();
 
   // Tracelet guards.
   void guardTypeStack(uint32_t stackIndex, Type type, bool outerOnly);
@@ -95,17 +112,14 @@ struct HhbcTranslator {
   void checkTypeStack(uint32_t idx, Type type, Offset dest);
   void checkTypeTopOfStack(Type type, Offset nextByteCode);
   void assertType(const RegionDesc::Location& loc, Type type);
-  void checkType(const RegionDesc::Location& loc, Type type,
-                         Offset dest);
-  void assertClass(const RegionDesc::Location& loc, const Class* cls);
-
+  void checkType(const RegionDesc::Location& loc, Type type, Offset dest);
   RuntimeType rttFromLocation(const Location& loc);
 
   // Inlining-related functions.
   void beginInlining(unsigned numArgs,
                      const Func* target,
                      Offset returnBcOffset,
-                     Type retTypePred = Type::Gen);
+                     Type retTypePred);
   bool isInlining() const;
   int inliningDepth() const;
   void profileFunctionEntry(const char* category);
@@ -153,6 +167,7 @@ struct HhbcTranslator {
   void emitCnsE(uint32_t id);
   void emitCnsU(uint32_t id, uint32_t fallbackId);
   void emitConcat();
+  void emitConcatN(int n);
   void emitDefCls(int id, Offset after);
   void emitDefFunc(int id);
 
@@ -201,9 +216,13 @@ struct HhbcTranslator {
   void emitPopR();
   void emitDup();
   void emitUnboxR();
-  void emitJmpZ(Offset taken, Offset next, bool bothPaths);
-  void emitJmpNZ(Offset taken, Offset next, bool bothPaths);
-  void emitJmp(int32_t offset, bool breakTracelet, bool noSurprise);
+  void emitJmpZ(Offset taken, Offset next, bool bothPaths, bool breaksTracelet);
+  void emitJmpNZ(Offset taken, Offset next, bool bothPaths,
+                 bool breaksTracelet);
+  void emitJmp(int32_t offset, bool breakTracelet, Block* catchBlock);
+  void emitJmp(int32_t offset, bool breakTracelet, bool noSurprise) {
+    emitJmp(offset, breakTracelet, noSurprise ? nullptr : makeCatch());
+  }
   void emitGt()    { emitCmp(Gt);    }
   void emitGte()   { emitCmp(Gte);   }
   void emitLt()    { emitCmp(Lt);    }
@@ -244,6 +263,11 @@ struct HhbcTranslator {
                                 int32_t numParams,
                                 bool shouldFatal,
                                 SSATmp* extraSpill = nullptr);
+  void fpushObjMethodUnknown(SSATmp* obj,
+                             const StringData* methodName,
+                             int32_t numParams,
+                             bool shouldFatal,
+                             SSATmp* extraSpill);
   void emitFPushClsMethodF(int32_t numParams);
   SSATmp* emitAllocObjFast(const Class* cls);
   void emitFPushCtorD(int32_t numParams, int32_t classNameStrId);
@@ -293,12 +317,9 @@ struct HhbcTranslator {
   void emitCeil();
   void emitCheckProp(Id propId);
   void emitInitProp(Id propId, InitPropOp op);
-  void emitAssertTL(int32_t id, AssertTOp);
-  void emitAssertTStk(int32_t offset, AssertTOp);
-  void emitAssertObjL(int32_t id, Id, AssertObjOp);
-  void emitAssertObjStk(int32_t offset, Id, AssertObjOp);
-  void emitPredictTL(int32_t id, AssertTOp);
-  void emitPredictTStk(int32_t offset, AssertTOp);
+  void emitAssertRATL(int32_t loc, RepoAuthType rat);
+  void emitAssertRATStk(int32_t offset, RepoAuthType rat);
+  void emitSilence(Id localId, unsigned char subop);
 
   // arithmetic ops
   void emitAdd();
@@ -311,6 +332,7 @@ struct HhbcTranslator {
   void emitAbs();
   void emitMod();
   void emitDiv();
+  void emitPow();
   void emitSqrt();
   void emitShl();
   void emitShr();
@@ -321,11 +343,9 @@ struct HhbcTranslator {
   // boolean ops
   void emitXor();
   void emitNot();
-  void emitNativeImpl();
 
-  void emitClassExists();
-  void emitInterfaceExists();
-  void emitTraitExists();
+  void emitNativeImpl();
+  void emitOODeclExists(unsigned char subop);
 
   void emitStaticLocInit(uint32_t varId, uint32_t litStrId);
   void emitStaticLoc(uint32_t varId, uint32_t litStrId);
@@ -386,27 +406,24 @@ struct HhbcTranslator {
   void emitIterBreak(const ImmVector& iv, uint32_t offset, bool breakTracelet);
   void emitVerifyParamType(uint32_t paramId);
 
+  void emitResumedReturnControl(Block* catchBlock);
+
   // continuations
-  void emitCreateCont();
-  void emitContEnter(int32_t returnBcOffset);
-  void emitUnpackCont();
-  void emitContReturnControl();
-  void emitContSuspendImpl(int64_t labelId);
-  void emitContSuspend(int64_t labelId);
-  void emitContSuspendK(int64_t labelId);
-  void emitContRetC();
+  void emitCreateCont(Offset resumeOffset);
+  void emitContEnter(Offset returnOffset);
+  void emitYieldImpl(Offset resumeOffset);
+  void emitYield(Offset resumeOffset);
+  void emitYieldK(Offset resumeOffset);
   void emitContCheck(bool checkStarted);
-  void emitContRaise();
   void emitContValid();
   void emitContKey();
   void emitContCurrent();
-  void emitContStopped();
 
   // async functions
-  void emitAsyncAwait();
-  void emitAsyncESuspend(int64_t labelId, int iters);
-  void emitAsyncWrapResult();
-  void emitAsyncWrapException();
+  void emitAwaitE(SSATmp* child, Block* catchBlock, Offset resumeOffset,
+                  int iters);
+  void emitAwaitR(SSATmp* child, Block* catchBlock, Offset resumeOffset);
+  void emitAwait(Offset resumeOffset, int iters);
 
   void emitStrlen();
   void emitIncStat(int32_t counter, int32_t value, bool force);
@@ -424,6 +441,10 @@ struct HhbcTranslator {
   void emitArrayIdx();
   void emitIsTypeC(DataType t);
   void emitIsTypeL(uint32_t id, DataType t);
+
+#define CASE(nm) static constexpr bool supports##nm = true;
+  REGULAR_INSTRS
+#undef CASE
 
 private:
   /*
@@ -478,9 +499,11 @@ private:
     void emitIncDecNewElem();
     void emitBindNewElem();
     void emitArraySet(SSATmp* key, SSATmp* value);
-    void emitArrayGet(SSATmp* key);
+    SSATmp* emitArrayGet(SSATmp* key);
+    void emitProfiledArrayGet(SSATmp* key);
     void emitArrayIsset();
-    void emitPackedArrayGet(SSATmp* key);
+    SSATmp* emitPackedArrayGet(SSATmp* base, SSATmp* key,
+                               bool profiled = false);
     void emitPackedArrayIsset();
     void emitStringGet(SSATmp* key);
     void emitStringIsset();
@@ -561,6 +584,8 @@ private:
       None,
       // simple opcode on Array
       Array,
+      // simple opcode on Profiled Array,
+      ProfiledArray,
       // simple opcode on Packed Array
       PackedArray,
       // simple opcode on String
@@ -655,18 +680,21 @@ private:
   void emitIncDecMem(bool pre, bool inc, SSATmp* ptr, Block* exit);
   void checkStrictlyInteger(SSATmp*& key, KeyType& keyType,
                             bool& checkForInt);
-  Type assertObjType(const StringData*);
+  folly::Optional<Type> ratToAssertType(RepoAuthType rat) const;
   void destroyName(SSATmp* name);
-  SSATmp* ldClsPropAddr(Block* catchBlock, SSATmp* cls, SSATmp* name);
+  SSATmp* ldClsPropAddr(Block* catchBlock, SSATmp* cls,
+                        SSATmp* name, bool raise);
   void emitUnboxRAux();
   void emitAGet(SSATmp* src, Block* catchBlock);
   void emitRetFromInlined(Type type);
-  SSATmp* emitDecRefLocalsInline(SSATmp* retVal);
+  void emitNativeImplInlined();
+  void emitEndInlinedCommon();
+  void emitDecRefLocalsInline();
   void emitRet(Type type, bool freeInline);
   void emitCmp(Opcode opc);
   SSATmp* emitJmpCondHelper(int32_t offset, bool negate, SSATmp* src);
   void emitJmpHelper(int32_t taken, int32_t next, bool negate,
-                     bool bothPaths, SSATmp* src);
+                     bool bothPaths, bool breaksTracelet, SSATmp* src);
   SSATmp* emitIncDec(bool pre, bool inc, bool over, SSATmp* src);
   template<class Lambda>
   SSATmp* emitIterInitCommon(int offset, Lambda genFunc, bool invertCond);
@@ -675,8 +703,9 @@ private:
   template<class Lambda>
   SSATmp* emitMIterInitCommon(int offset, Lambda genFunc);
   SSATmp* staticTVCns(const TypedValue*);
-  void emitJmpSurpriseCheck();
-  void emitRetSurpriseCheck(SSATmp* retVal, bool inGenerator);
+  void emitJmpSurpriseCheck(Block* catchBlock);
+  void emitRetSurpriseCheck(SSATmp* retVal, Block* catchBlock,
+                            bool suspendingResumed);
   void classExistsImpl(ClassKind);
 
   folly::Optional<Type> interpOutputType(const NormalizedInstruction&,
@@ -685,11 +714,17 @@ private:
   interpOutputLocals(const NormalizedInstruction&, bool& smashAll,
                      folly::Optional<Type> pushedType);
 
+  template<typename G, typename L>
+  void emitProfiledGuard(Type t, const char* location, int32_t id, G doGuard,
+                         L loadAddr);
+
 private: // Exit trace creation routines.
   Block* makeExit(Offset targetBcOff = -1);
   Block* makeExit(Offset targetBcOff, std::vector<SSATmp*>& spillValues);
   Block* makeExitWarn(Offset targetBcOff, std::vector<SSATmp*>& spillValues,
                       const StringData* warning);
+  Block* makeExitError(SSATmp* msg, Block* catchBlock);
+  Block* makeExitNullThis();
 
   SSATmp* promoteBool(SSATmp* src);
   Opcode promoteBinaryDoubles(Op op, SSATmp*& src1, SSATmp*& src2);
@@ -725,13 +760,14 @@ private: // Exit trace creation routines.
   template<typename Body>
   Block* makeCatchImpl(Body body);
   Block* makeCatch(std::vector<SSATmp*> extraSpill =
-                   std::vector<SSATmp*>());
+                   std::vector<SSATmp*>(),
+                   int64_t numPop = 0);
   Block* makeCatchNoSpill();
 
   /*
    * Create a block for a branch target that will be generated later.
    */
-  Block* makeBlock(Offset);
+  Block* makeBlock(Offset offset);
 
   /*
    * Implementation for the above.  Takes spillValues, target offset,
@@ -761,8 +797,9 @@ public:
   Class*      curClass()    const { return curFunc()->cls(); }
   Unit*       curUnit()     const { return curFunc()->unit(); }
   Offset      bcOff()       const { return m_bcStateStack.back().bcOff; }
-  SrcKey      curSrcKey()   const { return SrcKey(curFunc(), bcOff()); }
-  bool        inGenerator() const { return m_bcStateStack.back().inGenerator; }
+  SrcKey      curSrcKey()   const { return SrcKey(curFunc(), bcOff(),
+                                                  resumed()); }
+  bool        resumed()     const { return m_bcStateStack.back().resumed; }
   size_t      spOffset()    const;
   Type        topType(uint32_t i, TypeConstraint c = DataTypeSpecific) const;
 
@@ -779,7 +816,7 @@ private:
    * tracelet or not).
    */
   SrcKey nextSrcKey() const {
-    SrcKey srcKey(curFunc(), bcOff());
+    SrcKey srcKey = curSrcKey();
     srcKey.advance(curFunc()->unit());
     return srcKey;
   }
@@ -823,58 +860,91 @@ private:
   SSATmp* topC(uint32_t i = 0, TypeConstraint tc = DataTypeSpecific) {
     return top(Type::Cell, i, tc);
   }
+  SSATmp* topF(uint32_t i = 0, TypeConstraint tc = DataTypeSpecific) {
+    return top(Type::Gen, i, tc);
+  }
   SSATmp* topV(uint32_t i = 0) { return top(Type::BoxedCell, i); }
   SSATmp* topR(uint32_t i = 0) { return top(Type::Gen, i); }
   std::vector<SSATmp*> peekSpillValues() const;
   SSATmp* emitSpillStack(SSATmp* sp,
-                         const std::vector<SSATmp*>& spillVals);
+                         const std::vector<SSATmp*>& spillVals,
+                         int64_t extraOffset = 0);
   SSATmp* spillStack();
   void    exceptionBarrier();
   SSATmp* ldStackAddr(int32_t offset, TypeConstraint tc);
   void    extendStack(uint32_t index, Type type);
   void    replace(uint32_t index, SSATmp* tmp);
 
+  SSATmp* unbox(SSATmp* val, Block* exit);
+
   /*
-   * Local instruction helpers.
+   * Local instruction helpers. The ldgblExit is so helpers can emit the guard
+   * for LdGbl insts if we're in the pseudomain. The ldrefExit is for helpers
+   * that might need to emit a LdRef to unbox a local.
    */
-  SSATmp* ldLoc(uint32_t id, TypeConstraint constraint);
+  SSATmp* ldLoc(uint32_t id,
+                Block* ldgblExit,
+                TypeConstraint constraint);
   SSATmp* ldLocAddr(uint32_t id, TypeConstraint constraint);
 private:
-  SSATmp* ldLocInner(uint32_t id, Block* exit,
+  SSATmp* ldLocInner(uint32_t id,
+                     Block* ldrefExit,
+                     Block* ldgblExit,
                      TypeConstraint constraint);
-  SSATmp* ldLocInnerWarn(uint32_t id, Block* target,
+  SSATmp* ldLocInnerWarn(uint32_t id,
+                         Block* ldrefExit,
+                         Block* ldgblExit,
                          TypeConstraint constraint,
                          Block* catchBlock = nullptr);
-public:
-  SSATmp* pushStLoc(uint32_t id, Block* exit, SSATmp* newVal);
-  SSATmp* stLoc(uint32_t id, Block* exit, SSATmp* newVal);
-  SSATmp* stLocNRC(uint32_t id, Block* exit, SSATmp* newVal);
-  SSATmp* stLocImpl(uint32_t id, Block*, SSATmp* newVal, bool doRefCount);
+
+  SSATmp* pushStLoc(uint32_t id,
+                    Block* ldrefExit,
+                    Block* ldgblExit,
+                    SSATmp* newVal);
+  SSATmp* stLoc(uint32_t id,
+                Block* ldrefExit,
+                Block* ldgblExit,
+                SSATmp* newVal);
+  SSATmp* stLocNRC(uint32_t id,
+                   Block* ldrefExit,
+                   Block* ldgblExit,
+                   SSATmp* newVal);
+  SSATmp* stLocImpl(uint32_t id,
+                    Block* ldrefExit,
+                    Block* ldgblExit,
+                    SSATmp* newVal,
+                    bool decRefOld,
+                    bool incRefOld);
+
+  SSATmp* genStLocal(uint32_t id, SSATmp* fp, SSATmp* newVal);
+
+  bool inPseudoMain() const;
 
 private:
   // Tracks information about the current bytecode offset and which
   // function we are in.  Goes in m_bcStateStack; we push and pop as
   // we deal with inlined calls.
   struct BcState {
-    explicit BcState(Offset bcOff, bool inGenerator, const Func* func)
+    explicit BcState(Offset bcOff, bool resumed, const Func* func)
       : bcOff(bcOff)
-      , inGenerator(inGenerator)
+      , resumed(resumed)
       , func(func)
     {}
 
     Offset bcOff;
-    bool inGenerator;
+    bool resumed;
     const Func* func;
   };
 
 private:
+  const TransContext m_context;
   IRUnit m_unit;
   std::unique_ptr<IRBuilder> const m_irb;
-
   std::vector<BcState> m_bcStateStack;
 
-  // The first HHBC offset for this tracelet
-  const Offset m_startBcOff;
+  // The id of the profiling translation for the code we're currently
+  // generating, if there was one, otherwise kInvalidTransID.
+  TransID m_profTransID{kInvalidTransID};
 
   // True if we're on the last HHBC opcode that will be emitted for
   // this tracelet.
@@ -896,13 +966,10 @@ private:
    * When we know that a call site is being inlined we add its StkPtr
    * offset pair to this stack to prevent it from being erroneously
    * popped during an FCall.
-   *
-   * XXX: There should be a better way to do this.  We don't allow
-   * the tracelet to break during inlining so if we're careful it
-   * should be possible to make sure FPush* and FCall[Array|Builtin]
-   * is always matched with corresponding push()/pop().
    */
   std::stack<std::pair<SSATmp*,int32_t>> m_fpiActiveStack;
+
+  IRGenMode m_mode;
 };
 
 //////////////////////////////////////////////////////////////////////

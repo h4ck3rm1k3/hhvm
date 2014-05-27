@@ -4,7 +4,10 @@ array(3) {
   [1]=>
   string(13) "fb_setprofile"
   [2]=>
-  NULL
+  array(1) {
+    ["return"]=>
+    NULL
+  }
 }
 array(3) {
   [0]=>
@@ -103,7 +106,10 @@ array(3) {
   [1]=>
   string(5) "srand"
   [2]=>
-  NULL
+  array(1) {
+    ["return"]=>
+    NULL
+  }
 }
 array(3) {
   [0]=>
@@ -184,7 +190,63 @@ array(3) {
   [1]=>
   string(15) "debug_backtrace"
   [2]=>
-  NULL
+  array(1) {
+    ["return"]=>
+    array(4) {
+      [0]=>
+      array(4) {
+        ["function"]=>
+        string(9) "initTrace"
+        ["class"]=>
+        string(9) "Exception"
+        ["type"]=>
+        string(2) "->"
+        ["args"]=>
+        array(0) {
+        }
+      }
+      [1]=>
+      array(6) {
+        ["file"]=>
+        string(%d) "%s"
+        ["line"]=>
+        int(16)
+        ["function"]=>
+        string(8) "__init__"
+        ["class"]=>
+        string(9) "Exception"
+        ["type"]=>
+        string(2) "->"
+        ["args"]=>
+        array(0) {
+        }
+      }
+      [2]=>
+      array(4) {
+        ["file"]=>
+        string(%d) "%s"
+        ["line"]=>
+        int(37)
+        ["function"]=>
+        string(14) "test_exception"
+        ["args"]=>
+        array(0) {
+        }
+      }
+      [3]=>
+      array(4) {
+        ["file"]=>
+        string(%d) "%s"
+        ["line"]=>
+        int(45)
+        ["function"]=>
+        string(4) "main"
+        ["args"]=>
+        array(0) {
+        }
+      }
+    }
+  }
 }
 array(3) {
   [0]=>
@@ -259,7 +321,20 @@ array(3) {
   [1]=>
   string(11) "array_shift"
   [2]=>
-  NULL
+  array(1) {
+    ["return"]=>
+    array(4) {
+      ["function"]=>
+      string(9) "initTrace"
+      ["class"]=>
+      string(9) "Exception"
+      ["type"]=>
+      string(2) "->"
+      ["args"]=>
+      array(0) {
+      }
+    }
+  }
 }
 array(3) {
   [0]=>
@@ -283,7 +358,10 @@ array(3) {
   [1]=>
   string(10) "strcasecmp"
   [2]=>
-  NULL
+  array(1) {
+    ["return"]=>
+    int(0)
+  }
 }
 array(3) {
   [0]=>
@@ -307,7 +385,10 @@ array(3) {
   [1]=>
   string(10) "strcasecmp"
   [2]=>
-  NULL
+  array(1) {
+    ["return"]=>
+    int(10)
+  }
 }
 array(3) {
   [0]=>
@@ -370,7 +451,24 @@ array(3) {
   [1]=>
   string(11) "array_shift"
   [2]=>
-  NULL
+  array(1) {
+    ["return"]=>
+    array(6) {
+      ["file"]=>
+      string(%d) "%s"
+      ["line"]=>
+      int(16)
+      ["function"]=>
+      string(8) "__init__"
+      ["class"]=>
+      string(9) "Exception"
+      ["type"]=>
+      string(2) "->"
+      ["args"]=>
+      array(0) {
+      }
+    }
+  }
 }
 array(3) {
   [0]=>
@@ -394,7 +492,10 @@ array(3) {
   [1]=>
   string(10) "strcasecmp"
   [2]=>
-  NULL
+  array(1) {
+    ["return"]=>
+    int(0)
+  }
 }
 array(3) {
   [0]=>
@@ -418,7 +519,10 @@ array(3) {
   [1]=>
   string(10) "strcasecmp"
   [2]=>
-  NULL
+  array(1) {
+    ["return"]=>
+    int(0)
+  }
 }
 array(3) {
   [0]=>
@@ -538,7 +642,7 @@ array(3) {
   [2]=>
   array(1) {
     ["return"]=>
-    object(Continuation)#2 (0) {
+    object(Generator)#2 (0) {
     }
   }
 }
@@ -546,7 +650,7 @@ array(3) {
   [0]=>
   string(5) "enter"
   [1]=>
-  string(20) "Continuation::rewind"
+  string(17) "Generator::rewind"
   [2]=>
   array(1) {
     ["args"]=>
@@ -558,7 +662,7 @@ array(3) {
   [0]=>
   string(5) "enter"
   [1]=>
-  string(18) "Continuation::next"
+  string(15) "Generator::next"
   [2]=>
   array(1) {
     ["args"]=>
@@ -570,7 +674,7 @@ array(3) {
   [0]=>
   string(5) "enter"
   [1]=>
-  string(16) "gen$continuation"
+  string(3) "gen"
   [2]=>
   array(1) {
     ["args"]=>
@@ -582,7 +686,7 @@ array(3) {
   [0]=>
   string(4) "exit"
   [1]=>
-  string(16) "gen$continuation"
+  string(3) "gen"
   [2]=>
   NULL
 }
@@ -590,7 +694,7 @@ array(3) {
   [0]=>
   string(4) "exit"
   [1]=>
-  string(18) "Continuation::next"
+  string(15) "Generator::next"
   [2]=>
   array(1) {
     ["return"]=>
@@ -601,15 +705,18 @@ array(3) {
   [0]=>
   string(4) "exit"
   [1]=>
-  string(20) "Continuation::rewind"
+  string(17) "Generator::rewind"
   [2]=>
-  NULL
+  array(1) {
+    ["return"]=>
+    NULL
+  }
 }
 array(3) {
   [0]=>
   string(5) "enter"
   [1]=>
-  string(19) "Continuation::valid"
+  string(16) "Generator::valid"
   [2]=>
   array(1) {
     ["args"]=>
@@ -621,7 +728,7 @@ array(3) {
   [0]=>
   string(4) "exit"
   [1]=>
-  string(19) "Continuation::valid"
+  string(16) "Generator::valid"
   [2]=>
   array(1) {
     ["return"]=>
@@ -632,7 +739,7 @@ array(3) {
   [0]=>
   string(5) "enter"
   [1]=>
-  string(21) "Continuation::current"
+  string(18) "Generator::current"
   [2]=>
   array(1) {
     ["args"]=>
@@ -644,7 +751,7 @@ array(3) {
   [0]=>
   string(4) "exit"
   [1]=>
-  string(21) "Continuation::current"
+  string(18) "Generator::current"
   [2]=>
   array(1) {
     ["return"]=>
@@ -655,7 +762,7 @@ array(3) {
   [0]=>
   string(5) "enter"
   [1]=>
-  string(18) "Continuation::next"
+  string(15) "Generator::next"
   [2]=>
   array(1) {
     ["args"]=>
@@ -667,7 +774,7 @@ array(3) {
   [0]=>
   string(5) "enter"
   [1]=>
-  string(16) "gen$continuation"
+  string(3) "gen"
   [2]=>
   array(1) {
     ["args"]=>
@@ -679,7 +786,7 @@ array(3) {
   [0]=>
   string(4) "exit"
   [1]=>
-  string(16) "gen$continuation"
+  string(3) "gen"
   [2]=>
   NULL
 }
@@ -687,7 +794,7 @@ array(3) {
   [0]=>
   string(4) "exit"
   [1]=>
-  string(18) "Continuation::next"
+  string(15) "Generator::next"
   [2]=>
   array(1) {
     ["return"]=>
@@ -698,7 +805,7 @@ array(3) {
   [0]=>
   string(5) "enter"
   [1]=>
-  string(19) "Continuation::valid"
+  string(16) "Generator::valid"
   [2]=>
   array(1) {
     ["args"]=>
@@ -710,7 +817,7 @@ array(3) {
   [0]=>
   string(4) "exit"
   [1]=>
-  string(19) "Continuation::valid"
+  string(16) "Generator::valid"
   [2]=>
   array(1) {
     ["return"]=>
@@ -721,7 +828,7 @@ array(3) {
   [0]=>
   string(5) "enter"
   [1]=>
-  string(21) "Continuation::current"
+  string(18) "Generator::current"
   [2]=>
   array(1) {
     ["args"]=>
@@ -733,7 +840,7 @@ array(3) {
   [0]=>
   string(4) "exit"
   [1]=>
-  string(21) "Continuation::current"
+  string(18) "Generator::current"
   [2]=>
   array(1) {
     ["return"]=>
@@ -744,7 +851,7 @@ array(3) {
   [0]=>
   string(5) "enter"
   [1]=>
-  string(18) "Continuation::next"
+  string(15) "Generator::next"
   [2]=>
   array(1) {
     ["args"]=>
@@ -756,7 +863,7 @@ array(3) {
   [0]=>
   string(5) "enter"
   [1]=>
-  string(16) "gen$continuation"
+  string(3) "gen"
   [2]=>
   array(1) {
     ["args"]=>
@@ -768,7 +875,7 @@ array(3) {
   [0]=>
   string(4) "exit"
   [1]=>
-  string(16) "gen$continuation"
+  string(3) "gen"
   [2]=>
   NULL
 }
@@ -776,7 +883,7 @@ array(3) {
   [0]=>
   string(4) "exit"
   [1]=>
-  string(18) "Continuation::next"
+  string(15) "Generator::next"
   [2]=>
   array(1) {
     ["return"]=>
@@ -787,7 +894,7 @@ array(3) {
   [0]=>
   string(5) "enter"
   [1]=>
-  string(19) "Continuation::valid"
+  string(16) "Generator::valid"
   [2]=>
   array(1) {
     ["args"]=>
@@ -799,7 +906,7 @@ array(3) {
   [0]=>
   string(4) "exit"
   [1]=>
-  string(19) "Continuation::valid"
+  string(16) "Generator::valid"
   [2]=>
   array(1) {
     ["return"]=>

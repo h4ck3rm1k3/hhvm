@@ -48,6 +48,8 @@
 #include "hphp/runtime/vm/jit/translator.h"
 #include "hphp/runtime/vm/debugger-hook.h"
 #include "hphp/runtime/vm/event-hook.h"
+#include "hphp/runtime/vm/runtime.h"
+#include "hphp/system/constants.h"
 
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
@@ -64,6 +66,7 @@ ExecutionContext::ExecutionContext()
   , m_protectedLevel(0)
   , m_stdout(nullptr)
   , m_stdoutData(nullptr)
+  , m_stdoutBytesWritten(0)
   , m_errorState(ExecutionContext::ErrorState::NoError)
   , m_lastErrorNum(0)
   , m_throwAllErrors(false)
@@ -81,14 +84,20 @@ ExecutionContext::ExecutionContext()
   , m_executingSetprofileCallback(false)
 {
   // We want this to run on every request, instead of just once per thread
-  auto max_mem = std::to_string(RuntimeOption::RequestMemoryMaxBytes);
-  IniSetting::Set("memory_limit", max_mem);
+  auto hasSystemDefault = IniSetting::ResetSystemDefault("memory_limit");
+  if (!hasSystemDefault) {
+    auto max_mem = std::to_string(RuntimeOption::RequestMemoryMaxBytes);
+    IniSetting::SetUser("memory_limit", max_mem);
+  }
 
   // This one is hot so we don't want to go through the ini_set() machinery to
   // change it in error_reporting(). Because of that, we have to set it back to
   // the default on every request.
-  ThreadInfo::s_threadInfo.getNoCheck()->m_reqInjectionData.
-    setErrorReportingLevel(RuntimeOption::RuntimeErrorReportingLevel);
+  hasSystemDefault = IniSetting::ResetSystemDefault("error_reporting");
+  if (!hasSystemDefault) {
+    ThreadInfo::s_threadInfo.getNoCheck()->m_reqInjectionData.
+      setErrorReportingLevel(RuntimeOption::RuntimeErrorReportingLevel);
+  }
 
   // Make sure any fields accessed from the TC are within a byte of
   // ExecutionContext's beginning.
@@ -195,9 +204,14 @@ void ExecutionContext::writeStdout(const char *s, int len) {
     } else {
       safe_stdout(s, len);
     }
+    m_stdoutBytesWritten += len;
   } else {
     m_stdout(s, len, m_stdoutData);
   }
+}
+
+size_t ExecutionContext::getStdoutBytesWritten() const {
+  return m_stdoutBytesWritten;
 }
 
 void ExecutionContext::write(const char *s, int len) {
@@ -250,9 +264,14 @@ int ExecutionContext::obGetContentLength() {
   return m_buffers.back()->oss.size();
 }
 
-void ExecutionContext::obClean() {
+void ExecutionContext::obClean(int handler_flag) {
   if (!m_buffers.empty()) {
-    m_buffers.back()->oss.clear();
+    OutputBuffer *last = m_buffers.back();
+    if (!last->handler.isNull()) {
+      vm_call_user_func(last->handler,
+                        make_packed_array(last->oss.detach(), handler_flag));
+    }
+    last->oss.clear();
   }
 }
 
@@ -261,7 +280,7 @@ bool ExecutionContext::obFlush() {
   if ((int)m_buffers.size() > m_protectedLevel) {
     std::list<OutputBuffer*>::const_iterator iter = m_buffers.end();
     OutputBuffer *last = *(--iter);
-    const int flag = PHP_OUTPUT_HANDLER_START | PHP_OUTPUT_HANDLER_END;
+    const int flag = k_PHP_OUTPUT_HANDLER_START | k_PHP_OUTPUT_HANDLER_END;
     if (iter != m_buffers.begin()) {
       OutputBuffer *prev = *(--iter);
       if (last->handler.isNull()) {
@@ -335,7 +354,6 @@ const StaticString
 Array ExecutionContext::obGetStatus(bool full) {
   Array ret = Array::Create();
   std::list<OutputBuffer*>::const_iterator iter = m_buffers.begin();
-  ++iter; // skip over the fake outermost buffer
   int level = 0;
   for (; iter != m_buffers.end(); ++iter, ++level) {
     Array status;
@@ -549,7 +567,8 @@ bool ExecutionContext::errorNeedsHandling(int errnum,
   if (m_throwAllErrors) {
     throw errnum;
   }
-  if (mode != ErrorThrowMode::Never || errorNeedsLogging(errnum)) {
+  if (mode != ErrorThrowMode::Never || errorNeedsLogging(errnum) ||
+      ThreadInfo::s_threadInfo->m_reqInjectionData.hasTrackErrors()) {
     return true;
   }
   if (callUserHandler) {
@@ -585,7 +604,8 @@ private:
 
 const StaticString
   s_file("file"),
-  s_line("line");
+  s_line("line"),
+  s_php_errormsg("php_errormsg");
 
 void ExecutionContext::handleError(const std::string& msg,
                                        int errnum,
@@ -623,19 +643,43 @@ void ExecutionContext::handleError(const std::string& msg,
     exn.setSilent(!errorNeedsLogging(errnum));
     throw exn;
   }
-  if (!handled && errorNeedsLogging(errnum)) {
-    DEBUGGER_ATTACHED_ONLY(phpDebuggerErrorHook(ee.getMessage()));
-    String file = empty_string;
-    int line = 0;
-    if (RuntimeOption::InjectedStackTrace) {
-      Array bt = ee.getBackTrace();
-      if (!bt.empty()) {
-        Array top = bt.rvalAt(0).toArray();
-        if (top.exists(s_file)) file = top.rvalAt(s_file).toString();
-        if (top.exists(s_line)) line = top.rvalAt(s_line).toInt64();
+  if (!handled) {
+    if (ThreadInfo::s_threadInfo->m_reqInjectionData.hasTrackErrors()) {
+      // Set $php_errormsg in the parent scope
+      Variant varFrom(ee.getMessage());
+      const auto tvFrom(varFrom.asTypedValue());
+      JIT::VMRegAnchor _;
+      auto fp = getFP();
+      if (fp->func()->isBuiltin()) {
+        fp = getPrevVMState(fp);
+      }
+      assert(fp);
+      auto id = fp->func()->lookupVarId(s_php_errormsg.get());
+      if (id != kInvalidId) {
+        auto tvTo = frame_local(fp, id);
+        if (tvTo->m_type == KindOfRef) {
+          tvTo = tvTo->m_data.pref->tv();
+        }
+        tvDup(*tvFrom, *tvTo);
+      } else if (fp->hasVarEnv()) {
+        g_context->setVar(s_php_errormsg.get(), tvFrom);
       }
     }
-    Logger::Log(Logger::LogError, prefix.c_str(), ee, file.c_str(), line);
+
+    if (errorNeedsLogging(errnum)) {
+      DEBUGGER_ATTACHED_ONLY(phpDebuggerErrorHook(ee.getMessage()));
+      String file = empty_string;
+      int line = 0;
+      if (RuntimeOption::InjectedStackTrace) {
+        Array bt = ee.getBackTrace();
+        if (!bt.empty()) {
+          Array top = bt.rvalAt(0).toArray();
+          if (top.exists(s_file)) file = top.rvalAt(s_file).toString();
+          if (top.exists(s_line)) line = top.rvalAt(s_line).toInt64();
+        }
+      }
+      Logger::Log(Logger::LogError, prefix.c_str(), ee, file.c_str(), line);
+    }
   }
 }
 
@@ -747,9 +791,9 @@ void ExecutionContext::debuggerInfo(
     std::vector<std::pair<const char*,std::string>>& info) {
   int64_t newInt = convert_bytes_to_long(IniSetting::Get("memory_limit"));
   if (newInt <= 0) {
-    newInt = INT64_MAX;
+    newInt = std::numeric_limits<int64_t>::max();
   }
-  if (newInt == INT64_MAX) {
+  if (newInt == std::numeric_limits<int64_t>::max()) {
     info.emplace_back("Max Memory", "(unlimited)");
   } else {
     info.emplace_back("Max Memory", IDebuggable::FormatSize(newInt));
@@ -763,6 +807,10 @@ void ExecutionContext::debuggerInfo(
 
 void ExecutionContext::setenv(const String& name, const String& value) {
   m_envs.set(name, value);
+}
+
+void ExecutionContext::unsetenv(const String& name) {
+  m_envs.remove(name);
 }
 
 String ExecutionContext::getenv(const String& name) const {

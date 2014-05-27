@@ -30,7 +30,8 @@ class Transliterator {
    *   or NULL on failure.
    */
   public static function create(string $id,
-                                int $direction = self::FORWARD) {
+                                int $direction = self::FORWARD):
+                                                              ?Transliterator {
     $obj = new Transliterator();
     if (!$obj->__init($id, $direction, false)) {
       return null;
@@ -49,7 +50,8 @@ class Transliterator {
    *   or NULL on failure.
    */
   public static function createFromRules(string $rules,
-                                         int $direction = self::FORWARD) {
+                                         int $direction = self::FORWARD):
+                                                              ?Transliterator {
     $obj = new Transliterator;
     if (!$obj->__init($rules, $direction, true)) {
       return null;
@@ -70,7 +72,7 @@ class Transliterator {
    * @return Transliterator - Returns a Transliterator object on success,
    *   or NULL on failure
    */
-  public function createInverse() {
+  public function createInverse(): ?Transliterator {
     $obj = $this->__createInverse();
     if (!$obj) {
       return null;
@@ -138,7 +140,7 @@ class Transliterator {
  *   or NULL on failure.
  */
 function transliterator_create
-       (string $id, int $direction = Transliterator::FORWARD) {
+       (string $id, int $direction = Transliterator::FORWARD): ?Transliterator {
   return Transliterator::create($id, $direction);
 }
 
@@ -152,7 +154,7 @@ function transliterator_create
  *   or NULL on failure.
  */
 function transliterator_create_from_rules
-       (string $id, int $direction = Transliterator::FORWARD) {
+       (string $id, int $direction = Transliterator::FORWARD): ?Transliterator {
   return Transliterator::createFromRules($id, $direction);
 }
 
@@ -162,7 +164,7 @@ function transliterator_create_from_rules
  * @return Transliterator - Returns a Transliterator object on success,
  *   or NULL on failure
  */
-function transliterator_create_inverse(Transliterator $t) {
+function transliterator_create_inverse(Transliterator $t): ?Transliterator {
   return $t->createInverse();
 }
 
@@ -172,7 +174,7 @@ function transliterator_create_inverse(Transliterator $t) {
  * @return int - The error code on success, or FALSE if none exists, or
  *   on failure.
  */
-function transliterator_get_error_code(Transliterator $t) {
+function transliterator_get_error_code(Transliterator $t): int {
   return $t->getErrorCode();
 }
 
@@ -182,7 +184,7 @@ function transliterator_get_error_code(Transliterator $t) {
  * @return string - The error code on success, or FALSE if none exists,
  *   or on failure.
  */
-function transliterator_get_error_message(Transliterator $t) {
+function transliterator_get_error_message(Transliterator $t): string {
   return $t->getErrorMessage();
 }
 
@@ -192,7 +194,7 @@ function transliterator_get_error_message(Transliterator $t) {
  * @return array - An array of registered transliterator IDs on success,
  *   .
  */
-function transliterator_list_ids() {
+function transliterator_list_ids(): array {
   return Transliterator::listIDs();
 }
 
@@ -209,7 +211,7 @@ function transliterator_list_ids() {
 function transliterator_transliterate(mixed $tOrId,
                                       string $subject,
                                       int $start = 0,
-                                      int $end = -1) {
+                                      int $end = -1): mixed {
   if (!($tOrId instanceof Transliterator)) {
     $tOrId = Transliterator::create((string)$tOrId,
                                     Transliterator::FORWARD);

@@ -36,13 +36,13 @@ class IntlError {
   void setError(UErrorCode code, const char *format = nullptr, ...);
   void clearError(bool clearGlobalError = true);
 
-  void throwException(const char *format, ...) {
+  Object getException(const char *format, ...) {
     va_list args;
     va_start(args, format);
     char buffer[1024];
     vsnprintf(buffer, sizeof(buffer), format, args);
     va_end(args);
-    throw Object(SystemLib::AllocExceptionObject(buffer));
+    return Object(SystemLib::AllocExceptionObject(buffer));
   }
 
   UErrorCode getErrorCode() const { return m_errorCode; }
@@ -108,6 +108,7 @@ class IntlExtension : public Extension {
 
   void moduleInit() override {
     bindConstants();
+    initICU(); // HHVM-specific ICU functions
     initLocale();
     initNumberFormatter();
     initTimeZone();
@@ -134,6 +135,7 @@ class IntlExtension : public Extension {
  private:
   void bindIniSettings();
   void bindConstants();
+  void initICU();
   void initLocale();
   void initNumberFormatter();
   void initTimeZone();

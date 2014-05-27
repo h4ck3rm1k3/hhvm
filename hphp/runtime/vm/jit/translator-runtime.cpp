@@ -21,10 +21,12 @@
 #include "hphp/runtime/ext/ext_collections.h"
 #include "hphp/runtime/vm/member-operations.h"
 #include "hphp/runtime/vm/type-constraint.h"
+#include "hphp/runtime/vm/unit-util.h"
 #include "hphp/runtime/vm/jit/translator-inline.h"
 #include "hphp/runtime/vm/jit/mc-generator.h"
 #include "hphp/runtime/vm/jit/mc-generator-internal.h"
 #include "hphp/runtime/base/stats.h"
+#include "hphp/runtime/base/packed-array.h"
 
 namespace HPHP {
 
@@ -120,6 +122,25 @@ void setNewElem(TypedValue* base, Cell val) {
 
 void setNewElemArray(TypedValue* base, Cell val) {
   HPHP::SetNewElemArray(base, &val);
+}
+
+TypedValue setOpElem(TypedValue* base, TypedValue key,
+                     Cell val, MInstrState* mis, SetOpOp op) {
+  TypedValue* result =
+    HPHP::SetOpElem(mis->tvScratch, mis->tvRef, op, base, key, &val);
+
+  Cell ret;
+  cellDup(*tvToCell(result), ret);
+  return ret;
+}
+
+TypedValue incDecElem(TypedValue* base, TypedValue key,
+                      MInstrState* mis, IncDecOp op) {
+  TypedValue result;
+  HPHP::IncDecElem<true>(
+    mis->tvScratch, mis->tvRef, op, base, key, result);
+  assert(result.m_type != KindOfRef);
+  return result;
 }
 
 void bindNewElemIR(TypedValue* base, RefData* val, MInstrState* mis) {
@@ -348,11 +369,8 @@ void VerifyRetTypeFail(TypedValue tv) {
 
 RefData* closureStaticLocInit(StringData* name, ActRec* fp, TypedValue val) {
   auto const func = fp->m_func;
-  assert(func->isClosureBody() || func->isGeneratorFromClosure());
-  auto const closureLoc =
-    LIKELY(func->isClosureBody())
-      ? frame_local(fp, func->numParams())
-      : frame_local(fp, func->getGeneratorOrigFunc()->numParams());
+  assert(func->isClosureBody());
+  auto const closureLoc = frame_local(fp, func->numParams());
 
   bool inited;
   auto const refData = lookupStaticFromClosure(
@@ -364,7 +382,7 @@ RefData* closureStaticLocInit(StringData* name, ActRec* fp, TypedValue val) {
 }
 
 ALWAYS_INLINE
-static int64_t ak_exist_string_impl(ArrayData* arr, StringData* key) {
+static bool ak_exist_string_impl(ArrayData* arr, StringData* key) {
   int64_t n;
   if (key->isStrictlyInteger(n)) {
     return arr->exists(n);
@@ -372,35 +390,28 @@ static int64_t ak_exist_string_impl(ArrayData* arr, StringData* key) {
   return arr->exists(key);
 }
 
-int64_t ak_exist_string(ArrayData* arr, StringData* key) {
+bool ak_exist_string(ArrayData* arr, StringData* key) {
   return ak_exist_string_impl(arr, key);
 }
 
-int64_t ak_exist_int(ArrayData* arr, int64_t key) {
-  bool res = arr->exists(key);
-  return res;
-}
-
-int64_t ak_exist_string_obj(ObjectData* obj, StringData* key) {
+bool ak_exist_string_obj(ObjectData* obj, StringData* key) {
   if (obj->isCollection()) {
-    return collectionOffsetContains(obj, key);
+    return collectionContains(obj, key);
   }
   const Array& arr = obj->o_toArray();
-  int64_t res = ak_exist_string_impl(arr.get(), key);
-  return res;
+  return ak_exist_string_impl(arr.get(), key);
 }
 
-int64_t ak_exist_int_obj(ObjectData* obj, int64_t key) {
+bool ak_exist_int_obj(ObjectData* obj, int64_t key) {
   if (obj->isCollection()) {
-    return collectionOffsetContains(obj, key);
+    return collectionContains(obj, key);
   }
   const Array& arr = obj->o_toArray();
-  bool res = arr.get()->exists(key);
-  return res;
+  return arr.get()->exists(key);
 }
 
 ALWAYS_INLINE
-TypedValue& getDefaultIfNullCell(TypedValue* tv, TypedValue& def) {
+TypedValue getDefaultIfNullCell(const TypedValue* tv, TypedValue& def) {
   if (UNLIKELY(nullptr == tv)) {
     // DecRef of def is done unconditionally by the IR, since there's
     // a good chance it will be paired with an IncRef and optimized
@@ -408,7 +419,7 @@ TypedValue& getDefaultIfNullCell(TypedValue* tv, TypedValue& def) {
     tvRefcountedIncRef(&def);
     return def;
   }
-  TypedValue* ret = tvToCell(tv);
+  auto const ret = tvToCell(tv);
   tvRefcountedIncRef(ret);
   return *ret;
 }
@@ -433,18 +444,41 @@ const StaticString s_idx("idx");
 TypedValue genericIdx(TypedValue obj, TypedValue key, TypedValue def) {
   static auto func = Unit::loadFunc(s_idx.get());
   assert(func != nullptr);
-  Array args = PackedArrayInit(3)
-                         .append(tvAsVariant(&obj))
-                         .append(tvAsVariant(&key))
-                         .append(tvAsVariant(&def))
-                         .toArray();
+  TypedValue args[] = {
+    obj,
+    key,
+    def
+  };
   TypedValue ret;
-  g_context->invokeFunc(&ret, func, args);
+  g_context->invokeFuncFew(&ret, func, nullptr, nullptr, 3, &args[0]);
   return ret;
 }
 
 int32_t arrayVsize(ArrayData* ad) {
   return ad->vsize();
+}
+
+TypedValue* getSPropOrNull(const Class* cls,
+                           const StringData* name,
+                           Class* ctx) {
+  bool visible, accessible;
+  TypedValue* val = cls->getSProp(ctx, name, visible, accessible);
+
+  if (UNLIKELY(!visible || !accessible)) {
+    return nullptr;
+  }
+  return val;
+}
+
+TypedValue* getSPropOrRaise(const Class* cls,
+                            const StringData* name,
+                            Class* ctx) {
+  auto sprop = getSPropOrNull(cls, name, ctx);
+  if (UNLIKELY(!sprop)) {
+    raise_error("Invalid static property access: %s::%s",
+                cls->name()->data(), name->data());
+  }
+  return sprop;
 }
 
 TypedValue* ldGblAddrHelper(StringData* name) {
@@ -539,7 +573,7 @@ Cell lookupCnsHelper(const TypedValue* tv,
     }
   }
 
-  Cell *cns = nullptr;
+  const Cell* cns = nullptr;
   if (UNLIKELY(RDS::s_constants().get() != nullptr)) {
     cns = RDS::s_constants()->nvGet(nm);
   }
@@ -600,7 +634,7 @@ void lookupClsMethodHelper(Class* cls,
 Cell lookupCnsUHelper(const TypedValue* tv,
                       StringData* nm,
                       StringData* fallback) {
-  Cell *cns = nullptr;
+  const Cell* cns = nullptr;
   Cell c1;
 
   // lookup qualified name in thread-local constants
@@ -647,16 +681,15 @@ void checkFrame(ActRec* fp, Cell* sp, bool checkLocals) {
     assert(!func->cls()->isZombie());
   }
   if (fp->hasVarEnv()) {
-    assert(fp->getVarEnv()->getCfp() == fp);
+    assert(fp->getVarEnv()->getFP() == fp);
   }
   // TODO: validate this pointer from actrec
   int numLocals = func->numLocals();
-  assert(sp <= (Cell*)fp - func->numSlotsInFrame()
-         || fp->inGenerator());
+  assert(sp <= (Cell*)fp - func->numSlotsInFrame() || fp->resumed());
   if (checkLocals) {
     int numParams = func->numParams();
-    for (int i=0; i < numLocals; i++) {
-      if (i >= numParams && fp->inGenerator() && i < func->numNamedLocals()) {
+    for (int i = 0; i < numLocals; i++) {
+      if (i >= numParams && fp->resumed() && i < func->numNamedLocals()) {
         continue;
       }
       assert(tvIsPlausible(*frame_local(fp, i)));
@@ -721,7 +754,7 @@ void loadArrayFunctionContext(ArrayData* arr, ActRec* preLiveAR, ActRec* fp) {
   try {
     loadFuncContextImpl<OnFail::Fatal>(ArrNR(arr), preLiveAR, fp);
   } catch (...) {
-    *arPreliveOverwriteCells(preLiveAR) = make_tv<KindOfArray>(arr);
+    arPreliveOverwriteCells(preLiveAR);
     throw;
   }
 }
@@ -749,8 +782,8 @@ void fpushCufHelperArray(ArrayData* arr, ActRec* preLiveAR, ActRec* fp) {
       return fpushCufHelperArraySlowPath(arr, preLiveAR, fp);
     }
 
-    auto const elem0 = tvToCell(HphpArray::NvGetIntPacked(arr, 0));
-    auto const elem1 = tvToCell(HphpArray::NvGetIntPacked(arr, 1));
+    auto const elem0 = tvToCell(PackedArray::NvGetInt(arr, 0));
+    auto const elem1 = tvToCell(PackedArray::NvGetInt(arr, 1));
 
     if (UNLIKELY(elem0->m_type != KindOfObject ||
                  !IS_STRING_TYPE(elem1->m_type))) {
@@ -780,7 +813,7 @@ void fpushCufHelperArray(ArrayData* arr, ActRec* preLiveAR, ActRec* fp) {
     inst->incRefCount();
     preLiveAR->setThis(inst);
   } catch (...) {
-    *arPreliveOverwriteCells(preLiveAR) = make_tv<KindOfArray>(arr);
+    arPreliveOverwriteCells(preLiveAR);
     throw;
   }
 }
@@ -810,7 +843,7 @@ void fpushCufHelperString(StringData* sd, ActRec* preLiveAR, ActRec* fp) {
       return fpushStringFail(sd, preLiveAR);
     }
   } catch (...) {
-    *arPreliveOverwriteCells(preLiveAR) = make_tv<KindOfString>(sd);
+    arPreliveOverwriteCells(preLiveAR);
     throw;
   }
 }
@@ -820,6 +853,21 @@ const Func* lookupUnknownFunc(const StringData* name) {
   auto const func = Unit::loadFunc(name);
   if (UNLIKELY(!func)) {
     raise_error("Call to undefined function %s()", name->data());
+  }
+  return func;
+}
+
+const Func* lookupFallbackFunc(const StringData* name,
+                               const StringData* fallback) {
+  JIT::VMRegAnchor _;
+  // Try to load the first function
+  auto func = Unit::loadFunc(name);
+  if (LIKELY(!func)) {
+    // Then try to load the fallback function
+    func = Unit::loadFunc(fallback);
+    if (UNLIKELY(!func)) {
+        raise_error("Call to undefined function %s()", name->data());
+    }
   }
   return func;
 }
@@ -841,7 +889,6 @@ Cell lookupClassConstantTv(TypedValue* cache,
                            const StringData* cls,
                            const StringData* cns) {
   Cell clsCns = g_context->lookupClsCns(ne, cls, cns);
-  assert(isUncounted(clsCns));
   cellDup(clsCns, *cache);
   return clsCns;
 }
@@ -905,50 +952,126 @@ static void sync_regstate_to_caller(ActRec* preLive) {
   auto const ec = g_context.getNoCheck();
   ec->m_stack.top() = (TypedValue*)preLive - preLive->numArgs();
   ActRec* fp = preLive == ec->m_firstAR ?
-    ec->m_nestedVMs.back().fp : (ActRec*)preLive->m_savedRbp;
+    ec->m_nestedVMs.back().fp : preLive->m_sfp;
   ec->m_fp = fp;
   ec->m_pc = fp->m_func->unit()->at(fp->m_func->base() + preLive->m_soff);
   tl_regState = VMRegState::CLEAN;
 }
 
-void trimExtraArgs(ActRec* ar) {
-  assert(!ar->hasInvName());
+#define SHUFFLE_EXTRA_ARGS_PRELUDE()                                    \
+  assert(!ar->hasInvName());                                            \
+  const Func* f = ar->m_func;                                           \
+  int numParams = f->numNonVariadicParams();                            \
+  int numArgs = ar->numArgs();                                          \
+  assert(numArgs > numParams);                                          \
+  int numExtra = numArgs - numParams;                                   \
+  TRACE(1, "extra args: %d args, function %s takes only %d, ar %p\n",   \
+        numArgs, f->name()->data(), numParams, ar);                     \
+  auto tvArgs = reinterpret_cast<TypedValue*>(ar) - numArgs;            \
+  /* end SHUFFLE_EXTRA_ARGS_PRELUDE */
 
+NEVER_INLINE
+static void trimExtraArgsMayReenter(ActRec* ar,
+                                    TypedValue* tvArgs,
+                                    TypedValue* limit
+                                   ) {
   sync_regstate_to_caller(ar);
-  const Func* f = ar->m_func;
-  int numParams = f->numParams();
-  int numArgs = ar->numArgs();
-  assert(numArgs > numParams);
-  int numExtra = numArgs - numParams;
+  do {
+    tvRefcountedDecRef(tvArgs); // may reenter for __destruct
+    ++tvArgs;
+  } while (tvArgs != limit);
+  ar->setNumArgs(ar->m_func->numParams());
 
-  TRACE(1, "trimExtraArgs: %d args, function %s takes only %d, ar %p\n",
-        numArgs, f->name()->data(), numParams, ar);
-
-  if (f->attrs() & AttrMayUseVV) {
-    assert(!ar->hasExtraArgs());
-    ar->setExtraArgs(ExtraArgs::allocateCopy(
-      (TypedValue*)(uintptr_t(ar) - numArgs * sizeof(TypedValue)),
-      numArgs - numParams));
-  } else {
-    // Function is not marked as "MayUseVV", so discard the extra arguments
-    TypedValue* tv = (TypedValue*)(uintptr_t(ar) - numArgs*sizeof(TypedValue));
-    for (int i = 0; i < numExtra; ++i) {
-      tvRefcountedDecRef(tv);
-      ++tv;
-    }
-    ar->setNumArgs(numParams);
-  }
-
-  // Only go back to dirty in a non-exception case.  (Same reason as
-  // above.)
+  // go back to dirty (see the comments of sync_regstate_to_caller)
   tl_regState = VMRegState::DIRTY;
 }
 
-void raiseMissingArgument(const char* name, int expected, int got) {
+void trimExtraArgs(ActRec* ar) {
+  SHUFFLE_EXTRA_ARGS_PRELUDE()
+  assert(!f->hasVariadicCaptureParam());
+  assert(!(f->attrs() & AttrMayUseVV));
+
+  TypedValue* limit = tvArgs + numExtra;
+  do {
+    if (UNLIKELY(tvDecRefWillCallHelper(tvArgs))) {
+      trimExtraArgsMayReenter(ar, tvArgs, limit);
+      return;
+    }
+    tvDecRefOnly(tvArgs);
+    ++tvArgs;
+  } while (tvArgs != limit);
+
+  assert(f->numParams() == (numArgs - numExtra));
+  assert(f->numParams() == numParams);
+  ar->setNumArgs(numParams);
+}
+
+void shuffleExtraArgsMayUseVV(ActRec* ar) {
+  SHUFFLE_EXTRA_ARGS_PRELUDE()
+  assert(!f->hasVariadicCaptureParam());
+  assert(f->attrs() & AttrMayUseVV);
+
+  {
+    assert(!ar->hasExtraArgs());
+    ar->setExtraArgs(ExtraArgs::allocateCopy(tvArgs, numExtra));
+  }
+}
+
+void shuffleExtraArgsVariadic(ActRec* ar) {
+  SHUFFLE_EXTRA_ARGS_PRELUDE()
+  assert(f->hasVariadicCaptureParam());
+  assert(!(f->attrs() & AttrMayUseVV));
+
+  {
+    auto varArgsArray = Array::attach(MixedArray::MakePacked(numExtra, tvArgs));
+    // write into the last (variadic) param
+    auto tv = reinterpret_cast<TypedValue*>(ar) - numParams - 1;
+    tv->m_type = KindOfArray;
+    tv->m_data.parr = varArgsArray.detach();
+    assert(tv->m_data.parr->hasExactlyOneRef());
+
+    // no incref is needed, since extra values are being transferred
+    // from the stack to the last local
+    assert(f->numParams() == (numArgs - numExtra + 1));
+    assert(f->numParams() == (numParams + 1));
+    ar->setNumArgs(numParams + 1);
+  }
+}
+
+void shuffleExtraArgsVariadicAndVV(ActRec* ar) {
+  SHUFFLE_EXTRA_ARGS_PRELUDE()
+  assert(f->hasVariadicCaptureParam());
+  assert(f->attrs() & AttrMayUseVV);
+
+  {
+    assert(!ar->hasExtraArgs());
+    ar->setExtraArgs(ExtraArgs::allocateCopy(tvArgs, numExtra));
+
+    auto varArgsArray = Array::attach(MixedArray::MakePacked(numExtra, tvArgs));
+    auto tvIncr = tvArgs; uint32_t i = 0;
+    // an incref is needed to compensate for discarding from the stack
+    for (; i < numExtra; ++i, ++tvIncr) { tvRefcountedIncRef(tvIncr); }
+    // write into the last (variadic) param
+    auto tv = reinterpret_cast<TypedValue*>(ar) - numParams - 1;
+    tv->m_type = KindOfArray;
+    tv->m_data.parr = varArgsArray.detach();
+    assert(tv->m_data.parr->hasExactlyOneRef());
+    // Before, for each arg: refcount = n + 1 (stack)
+    // After, for each arg: refcount = n + 2 (ExtraArgs, varArgsArray)
+  }
+}
+
+#undef SHUFFLE_EXTRA_ARGS_PRELUDE
+
+void raiseMissingArgument(const Func* func, int got) {
+  const auto expected = func->numNonVariadicParams();
+  const auto variadic = func->hasVariadicCaptureParam();
   if (expected == 1) {
-    raise_warning(Strings::MISSING_ARGUMENT, name, got);
+    raise_warning(Strings::MISSING_ARGUMENT, func->name()->data(),
+                  variadic ? "at least" : "exactly", got);
   } else {
-    raise_warning(Strings::MISSING_ARGUMENTS, name, expected, got);
+    raise_warning(Strings::MISSING_ARGUMENTS, func->name()->data(),
+                  variadic ? "at least" : "exactly", expected, got);
   }
 }
 

@@ -26,11 +26,13 @@ struct NativeDataInfo {
   typedef void (*InitFunc)(ObjectData *obj);
   typedef void (*CopyFunc)(ObjectData *dest, ObjectData *src);
   typedef void (*DestroyFunc)(ObjectData *obj);
+  typedef void (*SweepFunc)(ObjectData *sweep);
 
   size_t sz;
-  InitFunc init;
-  CopyFunc copy;
-  DestroyFunc destroy;
+  InitFunc init; // new Object
+  CopyFunc copy; // clone $obj
+  DestroyFunc destroy; // unset($obj)
+  SweepFunc sweep; // sweep $obj
 };
 
 NativeDataInfo* getNativeDataInfo(const StringData* name);
@@ -46,7 +48,8 @@ void registerNativeDataInfo(const StringData* name,
                             size_t sz,
                             NativeDataInfo::InitFunc init,
                             NativeDataInfo::CopyFunc copy,
-                            NativeDataInfo::DestroyFunc destroy);
+                            NativeDataInfo::DestroyFunc destroy,
+                            NativeDataInfo::SweepFunc sweep);
 
 template<class T>
 void nativeDataInfoInit(ObjectData* obj) {
@@ -54,21 +57,54 @@ void nativeDataInfoInit(ObjectData* obj) {
 }
 
 template<class T>
-void nativeDataInfoCopy(ObjectData* dest, ObjectData* src) {
+typename std::enable_if<std::is_assignable<T,T>::value,
+void>::type nativeDataInfoCopy(ObjectData* dest, ObjectData* src) {
   *data<T>(dest) = *data<T>(src);
 }
+
+// Dummy copy method for classes where the assignment has been deleted
+template<class T>
+typename std::enable_if<!std::is_assignable<T,T>::value,
+void>::type nativeDataInfoCopy(ObjectData* dest, ObjectData* src) {}
 
 template<class T>
 void nativeDataInfoDestroy(ObjectData* obj) {
   data<T>(obj)->~T();
 }
 
+// If the NDI class has a void sweep() method,
+// call it during sweep, otherwise call ~T()
+FOLLY_CREATE_HAS_MEMBER_FN_TRAITS(hasSweep, sweep);
+
 template<class T>
-void registerNativeDataInfo(const StringData* name) {
+typename std::enable_if<hasSweep<T,void ()>::value,
+void>::type nativeDataInfoSweep(ObjectData* obj) {
+  data<T>(obj)->sweep();
+}
+
+template<class T>
+typename std::enable_if<!hasSweep<T,void ()>::value,
+void>::type nativeDataInfoSweep(ObjectData* obj) {
+  data<T>(obj)->~T();
+}
+
+enum NDIFlags {
+  NONE           = 0,
+  // Skipping the ctor/dtor is generally a bad idea
+  // since memory props won't get setup/torn-down
+  NO_COPY        = (1<<0),
+  NO_SWEEP       = (1<<1),
+};
+
+template<class T>
+void registerNativeDataInfo(const StringData* name, int64_t flags = 0) {
   registerNativeDataInfo(name, sizeof(T),
                          &nativeDataInfoInit<T>,
-                         &nativeDataInfoCopy<T>,
-                         &nativeDataInfoDestroy<T>);
+                         (flags & NDIFlags::NO_COPY)
+                           ? nullptr : &nativeDataInfoCopy<T>,
+                         &nativeDataInfoDestroy<T>,
+                         (flags & NDIFlags::NO_SWEEP)
+                           ? nullptr : &nativeDataInfoSweep<T>);
 }
 
 ObjectData* nativeDataInstanceCtor(Class* cls);

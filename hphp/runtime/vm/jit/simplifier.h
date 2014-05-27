@@ -25,10 +25,6 @@ namespace HPHP {  namespace JIT {
 
 //////////////////////////////////////////////////////////////////////
 
-class IRBuilder;
-
-//////////////////////////////////////////////////////////////////////
-
 /*
  * Module that handles state-independent optimizations.
  *
@@ -37,9 +33,8 @@ class IRBuilder;
  * can be modified in place or replaced with new instructions as
  * needed.
  *
- * The Simplifier recursively invokes IRBuilder, which can call
- * back into it.  It's used both during our initial gen-time
- * optimizations and in the IRBuilder::reoptimize pass.
+ * The Simplifier recursively invokes itself, so that all instructions
+ * returned from simplify() have been fully simplified themselves.
  *
  * The line of separation between these two modules is essentially
  * about who needs to know about tracked state.  If an optimization is
@@ -48,9 +43,14 @@ class IRBuilder;
  * other pass.
  */
 struct Simplifier {
-  explicit Simplifier(IRBuilder& irb) : m_irb(irb) {}
+  explicit Simplifier(IRUnit& unit) : m_unit(unit) {}
+
+  Simplifier(const Simplifier&) = delete;
+  Simplifier& operator=(const Simplifier&) = delete;
 
   /*
+   * Simplify performs a number of optimizations.
+   *
    * In general, the simplifier transforms one instruction into zero or more
    * instructions. The pair represents the zero or more instructions to replace
    * the input with, plus the SSATmp* to use instead of the input instruction's
@@ -60,28 +60,21 @@ struct Simplifier {
     smart::vector<IRInstruction*> instrs;
     SSATmp* dst;
   };
-
-  /*
-   * Simplify performs a number of optimizations.
-   *
-   * In many cases this may involve returning a SSATmp* that should be
-   * used instead of the candidate instruction passed to this
-   * function.  If this function returns nullptr, the candidate
-   * instruction should still be used (but the call to simplify may
-   * have changed it, also).
-   */
-  Result simplify(IRInstruction*);
-
-  using ConstraintFunc = std::function<void(TypeConstraint)>;
-  SSATmp* simplifyAssertTypeOp(IRInstruction* inst, Type prevType,
-                               ConstraintFunc cf) const;
+  Result simplify(const IRInstruction*, bool typesMightRelax);
 
 private:
-  SSATmp* simplifyWork(IRInstruction*);
+  SSATmp* simplifyWork(const IRInstruction*);
 
+  /*
+   * Individual simplification routines return nullptr if they don't
+   * want to change anything, or they can call gen any number of times
+   * to produce a different IR sequence, returning the thing gen'd
+   * that should be used as the value of the simplified instruction
+   * sequence.
+   */
   SSATmp* simplifyMov(SSATmp* src);
   SSATmp* simplifyNot(SSATmp* src);
-  SSATmp* simplifyAbsDbl(IRInstruction* inst);
+  SSATmp* simplifyAbsDbl(const IRInstruction* inst);
   SSATmp* simplifyAddInt(SSATmp* src1, SSATmp* src2);
   SSATmp* simplifySubInt(SSATmp* src1, SSATmp* src2);
   SSATmp* simplifyMulInt(SSATmp* src1, SSATmp* src2);
@@ -92,12 +85,12 @@ private:
   SSATmp* simplifySubIntO(SSATmp* src1, SSATmp* src2);
   SSATmp* simplifyMulIntO(SSATmp* src1, SSATmp* src2);
   SSATmp* simplifyMod(SSATmp* src1, SSATmp* src2);
-  SSATmp* simplifyDivDbl(IRInstruction* inst);
+  SSATmp* simplifyDivDbl(const IRInstruction* inst);
   SSATmp* simplifyAndInt(SSATmp* src1, SSATmp* src2);
   SSATmp* simplifyOrInt(SSATmp* src1, SSATmp* src2);
   SSATmp* simplifyXorInt(SSATmp* src1, SSATmp* src2);
-  SSATmp* simplifyShl(IRInstruction* inst);
-  SSATmp* simplifyShr(IRInstruction* inst);
+  SSATmp* simplifyShl(const IRInstruction* inst);
+  SSATmp* simplifyShr(const IRInstruction* inst);
   SSATmp* simplifyXorBool(SSATmp* src1, SSATmp* src2);
   SSATmp* simplifyXorTrue(SSATmp* src);
   SSATmp* simplifyGt(SSATmp* src1, SSATmp* src2);
@@ -108,67 +101,63 @@ private:
   SSATmp* simplifyNeq(SSATmp* src1, SSATmp* src2);
   SSATmp* simplifySame(SSATmp* src1, SSATmp* src2);
   SSATmp* simplifyNSame(SSATmp* src1, SSATmp* src2);
-  SSATmp* simplifyIsType(IRInstruction*);
-  SSATmp* simplifyIsScalarType(IRInstruction*);
-  SSATmp* simplifyConcatCellCell(IRInstruction*);
+  SSATmp* simplifyIsType(const IRInstruction*);
+  SSATmp* simplifyIsScalarType(const IRInstruction*);
+  SSATmp* simplifyConcatCellCell(const IRInstruction*);
   SSATmp* simplifyConcatStrStr(SSATmp* src1, SSATmp* src2);
-  SSATmp* simplifyConvToArr(IRInstruction*);
-  SSATmp* simplifyConvArrToBool(IRInstruction*);
-  SSATmp* simplifyConvDblToBool(IRInstruction*);
-  SSATmp* simplifyConvIntToBool(IRInstruction*);
-  SSATmp* simplifyConvStrToBool(IRInstruction*);
-  SSATmp* simplifyConvToDbl(IRInstruction*);
-  SSATmp* simplifyConvArrToDbl(IRInstruction*);
-  SSATmp* simplifyConvBoolToDbl(IRInstruction*);
-  SSATmp* simplifyConvIntToDbl(IRInstruction*);
-  SSATmp* simplifyConvStrToDbl(IRInstruction*);
-  SSATmp* simplifyConvArrToInt(IRInstruction*);
-  SSATmp* simplifyConvBoolToInt(IRInstruction*);
-  SSATmp* simplifyConvDblToInt(IRInstruction*);
-  SSATmp* simplifyConvObjToInt(IRInstruction*);
-  SSATmp* simplifyConvStrToInt(IRInstruction*);
-  SSATmp* simplifyConvBoolToStr(IRInstruction*);
-  SSATmp* simplifyConvDblToStr(IRInstruction*);
-  SSATmp* simplifyConvIntToStr(IRInstruction*);
-  SSATmp* simplifyConvCellToBool(IRInstruction*);
-  SSATmp* simplifyConvCellToStr(IRInstruction*);
-  SSATmp* simplifyConvCellToInt(IRInstruction*);
-  SSATmp* simplifyConvCellToDbl(IRInstruction*);
-  SSATmp* simplifyFloor(IRInstruction*);
-  SSATmp* simplifyCeil(IRInstruction*);
-  SSATmp* simplifyUnbox(IRInstruction*);
-  SSATmp* simplifyUnboxPtr(IRInstruction*);
-  SSATmp* simplifyBoxPtr(IRInstruction*);
-  SSATmp* simplifyCheckInit(IRInstruction* inst);
-  SSATmp* simplifyDecRef(IRInstruction* inst);
-  SSATmp* simplifyIncRef(IRInstruction* inst);
-  SSATmp* simplifyIncRefCtx(IRInstruction* inst);
-  SSATmp* simplifyCheckType(IRInstruction* inst);
-  SSATmp* simplifyAssertType(IRInstruction* inst);
-  SSATmp* simplifyCheckStk(IRInstruction* inst);
-  SSATmp* simplifyLdCls(IRInstruction* inst);
-  SSATmp* simplifyLdClsPropAddr(IRInstruction*);
-  SSATmp* simplifyLdCtx(IRInstruction*);
-  SSATmp* simplifyLdClsCtx(IRInstruction*);
-  SSATmp* simplifyGetCtxFwdCall(IRInstruction* inst);
-  SSATmp* simplifyConvClsToCctx(IRInstruction* inst);
-  SSATmp* simplifySpillStack(IRInstruction* inst);
-  SSATmp* simplifyCmp(Opcode opName, IRInstruction* inst,
+  SSATmp* simplifyConvToArr(const IRInstruction*);
+  SSATmp* simplifyConvArrToBool(const IRInstruction*);
+  SSATmp* simplifyConvDblToBool(const IRInstruction*);
+  SSATmp* simplifyConvIntToBool(const IRInstruction*);
+  SSATmp* simplifyConvStrToBool(const IRInstruction*);
+  SSATmp* simplifyConvToDbl(const IRInstruction*);
+  SSATmp* simplifyConvArrToDbl(const IRInstruction*);
+  SSATmp* simplifyConvBoolToDbl(const IRInstruction*);
+  SSATmp* simplifyConvIntToDbl(const IRInstruction*);
+  SSATmp* simplifyConvStrToDbl(const IRInstruction*);
+  SSATmp* simplifyConvArrToInt(const IRInstruction*);
+  SSATmp* simplifyConvBoolToInt(const IRInstruction*);
+  SSATmp* simplifyConvDblToInt(const IRInstruction*);
+  SSATmp* simplifyConvObjToInt(const IRInstruction*);
+  SSATmp* simplifyConvStrToInt(const IRInstruction*);
+  SSATmp* simplifyConvBoolToStr(const IRInstruction*);
+  SSATmp* simplifyConvDblToStr(const IRInstruction*);
+  SSATmp* simplifyConvIntToStr(const IRInstruction*);
+  SSATmp* simplifyConvCellToBool(const IRInstruction*);
+  SSATmp* simplifyConvCellToStr(const IRInstruction*);
+  SSATmp* simplifyConvCellToInt(const IRInstruction*);
+  SSATmp* simplifyConvCellToDbl(const IRInstruction*);
+  SSATmp* simplifyFloor(const IRInstruction*);
+  SSATmp* simplifyCeil(const IRInstruction*);
+  SSATmp* simplifyUnboxPtr(const IRInstruction*);
+  SSATmp* simplifyBoxPtr(const IRInstruction*);
+  SSATmp* simplifyCheckInit(const IRInstruction* inst);
+  SSATmp* simplifyDecRef(const IRInstruction* inst);
+  SSATmp* simplifyIncRef(const IRInstruction* inst);
+  SSATmp* simplifyIncRefCtx(const IRInstruction* inst);
+  SSATmp* simplifyLdCls(const IRInstruction* inst);
+  SSATmp* simplifyLdClsPropAddr(const IRInstruction*);
+  SSATmp* simplifyLdCtx(const IRInstruction*);
+  SSATmp* simplifyLdClsCtx(const IRInstruction*);
+  SSATmp* simplifyGetCtxFwdCall(const IRInstruction* inst);
+  SSATmp* simplifyConvClsToCctx(const IRInstruction* inst);
+  SSATmp* simplifySpillStack(const IRInstruction* inst);
+  SSATmp* simplifyCmp(Opcode opName, const IRInstruction* inst,
                       SSATmp* src1, SSATmp* src2);
-  SSATmp* simplifyCondJmp(IRInstruction*);
-  SSATmp* simplifyQueryJmp(IRInstruction*);
-  SSATmp* simplifyExitOnVarEnv(IRInstruction*);
-  SSATmp* simplifyCastStk(IRInstruction*);
-  SSATmp* simplifyCoerceStk(IRInstruction*);
-  SSATmp* simplifyAssertStk(IRInstruction*);
-  SSATmp* simplifyLdStack(IRInstruction*);
-  SSATmp* simplifyTakeStack(IRInstruction*);
-  SSATmp* simplifyLdStackAddr(IRInstruction*);
-  SSATmp* simplifyDecRefStack(IRInstruction*);
-  SSATmp* simplifyDecRefLoc(IRInstruction*);
-  SSATmp* simplifyLdLoc(IRInstruction*);
-  SSATmp* simplifyAssertNonNull(IRInstruction*);
-
+  SSATmp* simplifyCondJmp(const IRInstruction*);
+  SSATmp* simplifyQueryJmp(const IRInstruction*);
+  SSATmp* simplifyExitOnVarEnv(const IRInstruction*);
+  SSATmp* simplifyCastStk(const IRInstruction*);
+  SSATmp* simplifyCoerceStk(const IRInstruction*);
+  SSATmp* simplifyLdStack(const IRInstruction*);
+  SSATmp* simplifyTakeStack(const IRInstruction*);
+  SSATmp* simplifyLdStackAddr(const IRInstruction*);
+  SSATmp* simplifyDecRefStack(const IRInstruction*);
+  SSATmp* simplifyLdLoc(const IRInstruction*);
+  SSATmp* simplifyAssertNonNull(const IRInstruction*);
+  SSATmp* simplifyCallBuiltin(const IRInstruction*);
+  SSATmp* simplifyConvObjToBool(const IRInstruction*);
+  SSATmp* simplifyIsWaitHandle(const IRInstruction*);
 
   template <class Oper>
   SSATmp* simplifyConst(SSATmp* src1, SSATmp* src2, Oper op);
@@ -189,18 +178,21 @@ private:
 
   template<class Oper>
   SSATmp* simplifyShift(SSATmp* src1, SSATmp* src2, Oper op);
-  template<class Oper> SSATmp* simplifyRoundCommon(IRInstruction*, Oper);
+  template<class Oper> SSATmp* simplifyRoundCommon(const IRInstruction*, Oper);
 
-  SSATmp* simplifyCheckPackedArrayBounds(IRInstruction*);
-  SSATmp* simplifyLdPackedArrayElem(IRInstruction*);
+  SSATmp* simplifyCheckPackedArrayBounds(const IRInstruction*);
+  SSATmp* simplifyLdPackedArrayElem(const IRInstruction*);
 
-private: // IRBuilder forwarders
+  bool typeMightRelax(SSATmp* src) const;
+
+private: // makeInstruction forwarders
   template<class... Args> SSATmp* cns(Args&&...);
   template<class... Args> SSATmp* gen(Opcode op, Args&&...);
   template<class... Args> SSATmp* gen(Opcode op, BCMarker marker, Args&&...);
 
 private:
-  IRBuilder& m_irb;
+  IRUnit& m_unit;
+  bool m_typesMightRelax;
 
   // The current instruction being simplified is always at
   // m_insts.top(). This has to be a stack instead of just a pointer
@@ -218,7 +210,7 @@ struct StackValueInfo {
     , spansCall(false)
     , typeSrc(value->inst())
   {
-    TRACE(5, "%s created\n", show().c_str());
+    ITRACE(5, "{} created\n", show());
   }
 
   explicit StackValueInfo(IRInstruction* inst, Type type)
@@ -227,7 +219,7 @@ struct StackValueInfo {
     , spansCall(false)
     , typeSrc(inst)
   {
-    TRACE(5, "%s created\n", show().c_str());
+    ITRACE(5, "{} created\n", show());
   }
 
   std::string show() const {

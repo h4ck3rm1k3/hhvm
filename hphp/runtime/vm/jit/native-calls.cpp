@@ -26,8 +26,7 @@
 #include "hphp/runtime/vm/jit/ir.h"
 #include "hphp/runtime/vm/jit/arg-group.h"
 #include "hphp/runtime/ext/asio/async_function_wait_handle.h"
-#include "hphp/runtime/ext/asio/static_result_wait_handle.h"
-#include "hphp/runtime/ext/asio/static_exception_wait_handle.h"
+#include "hphp/runtime/ext/asio/static_wait_handle.h"
 
 namespace HPHP {  namespace JIT { namespace NativeCalls {
 
@@ -36,10 +35,8 @@ namespace {
 
 constexpr SyncOptions SNone = SyncOptions::kNoSyncPoint;
 constexpr SyncOptions SSync = SyncOptions::kSyncPoint;
-constexpr SyncOptions SSyncAdj1 = SyncOptions::kSyncPointAdjustOne;
 
 constexpr DestType DSSA  = DestType::SSA;
-constexpr DestType DSSA2 = DestType::SSA2;
 constexpr DestType DTV   = DestType::TV;
 constexpr DestType DNone = DestType::None;
 
@@ -55,16 +52,6 @@ Arg extra(MemberType EDType::*ptr) {
 Arg immed(intptr_t imm) { return Arg(ArgType::Imm, imm); }
 
 FuncPtr fssa(uint64_t i) { return FuncPtr { FuncType::SSA, i }; }
-
-template<class Ret, class T, class... Args>
-FuncPtr method(Ret (T::*fp)(Args...) const) {
-  return FuncPtr(reinterpret_cast<TCA>(getMethodPtr(fp)));
-}
-
-template<class Ret, class T, class... Args>
-FuncPtr method(Ret (T::*fp)(Args...)) {
-  return FuncPtr(reinterpret_cast<TCA>(getMethodPtr(fp)));
-}
 
 auto constexpr SSA      = ArgType::SSA;
 auto constexpr TV       = ArgType::TV;
@@ -87,13 +74,12 @@ using IFaceSupportFn = bool (*)(const StringData*);
  * Func
  *   A value describing the function to call:
  *     <function pointer>          - Raw function pointer
- *     method(<pointer to member>) - Dispatch to a C++ member function---the
+ *     <pointer to member>         - Dispatch to a C++ member function---the
  *                                   function must be non-virtual.
  *     fssa(idx)                   - Use a const TCA from inst->src(idx)
  *
  * Dest
  *   DSSA  - The helper returns a single-register value
- *   DSSA2 - The helper returns a two-register value
  *   DTV   - The helper returns a TypedValue in two registers
  *   DNone - The helper does not return a value
  *
@@ -123,14 +109,14 @@ static CallMap s_callMap {
                            {{TV, 0}}},
     {ConvIntToArr,       convCellToArrHelper, DSSA, SNone,
                            {{TV, 0}}},
-    {ConvObjToArr,       convCellToArrHelper, DSSA, SNone,
+    {ConvObjToArr,       convCellToArrHelper, DSSA, SSync,
                            {{TV, 0}}},
     {ConvStrToArr,       convCellToArrHelper, DSSA, SNone,
                            {{TV, 0}}},
-    {ConvCellToArr,      convCellToArrHelper, DSSA, SNone,
+    {ConvCellToArr,      convCellToArrHelper, DSSA, SSync,
                            {{TV, 0}}},
 
-    {ConvStrToBool,      method(&StringData::toBoolean), DSSA, SNone,
+    {ConvStrToBool,      &StringData::toBoolean, DSSA, SNone,
                            {{SSA, 0}}},
     {ConvCellToBool,     cellToBool, DSSA, SNone,
                            {{TV, 0}}},
@@ -148,7 +134,7 @@ static CallMap s_callMap {
                            {{SSA, 0}}},
     {ConvObjToInt,       cellToInt, DSSA, SSync,
                            {{TV, 0}}},
-    {ConvStrToInt,       method(&StringData::toInt64), DSSA, SNone,
+    {ConvStrToInt,       &StringData::toInt64, DSSA, SNone,
                            {{SSA, 0}, immed(10)}},
     {ConvCellToInt,      cellToInt, DSSA, SSync,
                            {{TV, 0}}},
@@ -167,22 +153,26 @@ static CallMap s_callMap {
     {ConvCellToStr,      convCellToStrHelper, DSSA, SSync,
                            {{TV, 0}}},
 
-    {ConcatStrStr,       concat_ss, DSSA, SNone, {{SSA, 0}, {SSA, 1}}},
-    {ConcatStrInt,       concat_si, DSSA, SNone, {{SSA, 0}, {SSA, 1}}},
-    {ConcatIntStr,       concat_is, DSSA, SNone, {{SSA, 0}, {SSA, 1}}},
+    {ConcatStrStr,       concat_ss, DSSA, SSync, {{SSA, 0}, {SSA, 1}}},
+    {ConcatStrInt,       concat_si, DSSA, SSync, {{SSA, 0}, {SSA, 1}}},
+    {ConcatIntStr,       concat_is, DSSA, SSync, {{SSA, 0}, {SSA, 1}}},
+    {ConcatStr3,         concat_s3, DSSA, SSync,
+                           {{SSA, 0}, {SSA, 1}, {SSA, 2}}},
+    {ConcatStr4,         concat_s4, DSSA, SSync,
+                           {{SSA, 0}, {SSA, 1}, {SSA, 2}, {SSA, 3}}},
 
     {AddElemStrKey,      addElemStringKeyHelper, DSSA, SNone,
                            {{SSA, 0}, {SSA, 1}, {TV, 2}}},
     {AddElemIntKey,      addElemIntKeyHelper, DSSA, SNone,
                            {{SSA, 0}, {SSA, 1}, {TV, 2}}},
-    {AddNewElem,         &HphpArray::AddNewElemC, DSSA, SNone,
+    {AddNewElem,         &MixedArray::AddNewElemC, DSSA, SNone,
                            {{SSA, 0}, {TV, 1}}},
-    {ArrayAdd,           arrayAdd, DSSA, SNone, {{SSA, 0}, {SSA, 1}}},
+    {ArrayAdd,           arrayAdd, DSSA, SSync, {{SSA, 0}, {SSA, 1}}},
     {Box,                boxValue, DSSA, SNone, {{TV, 0}}},
-    {NewArray,           HphpArray::MakeReserve, DSSA, SNone, {{SSA, 0}}},
-    {Clone,              method(&ObjectData::clone), DSSA, SSync,
+    {NewArray,           MixedArray::MakeReserve, DSSA, SNone, {{SSA, 0}}},
+    {Clone,              &ObjectData::clone, DSSA, SSync,
                            {{SSA, 0}}},
-    {NewPackedArray,     HphpArray::MakePacked, DSSA, SNone,
+    {NewPackedArray,     MixedArray::MakePacked, DSSA, SNone,
                            {{SSA, 0}, {SSA, 1}}},
     {NewCol,             newColHelper, DSSA, SSync, {{SSA, 0}, {SSA, 1}}},
     {ColAddNewElemC,     colAddNewElemCHelper, DSSA, SSync,
@@ -191,7 +181,7 @@ static CallMap s_callMap {
                            {{SSA, 0}, {TV, 1}, {TV, 2}}},
     {AllocObj,           newInstance, DSSA, SSync,
                            {{SSA, 0}}},
-    {CustomInstanceInit, method(&ObjectData::callCustomInstanceInit),
+    {CustomInstanceInit, &ObjectData::callCustomInstanceInit,
                            DSSA, SSync, {{SSA, 0}}},
     {LdClsCtor,          loadClassCtor, DSSA, SSync,
                            {{SSA, 0}}},
@@ -235,6 +225,16 @@ static CallMap s_callMap {
                            {{SSA, 1}, {SSA, 2}, {TV, 3}}},
     {GenericIdx,         genericIdx, DTV, SSync,
                           {{TV, 0}, {TV, 1}, {TV, 2}}},
+
+    /* Static prop helpers */
+    {LdClsPropAddrOrNull,
+                         getSPropOrNull, DSSA, SSync,
+                           {{SSA, 0}, {SSA, 1}, {SSA, 2}}},
+    {LdClsPropAddrOrRaise,
+                         getSPropOrRaise, DSSA, SSync,
+                           {{SSA, 0}, {SSA, 1}, {SSA, 2}}},
+
+    /* Global helpers */
     {LdGblAddrDef,       ldGblAddrDefHelper, DSSA, SNone,
                            {{SSA, 0}}},
 
@@ -246,25 +246,15 @@ static CallMap s_callMap {
     {LdSwitchObjIndex,   switchObjHelper, DSSA, SSync,
                            {{SSA, 0}, {SSA, 1}, {SSA, 2}}},
 
-    /* Continuation support helpers */
-    {CreateContFunc,     &c_Continuation::CreateFunc, DSSA, SNone,
-                          { extra(&CreateContData::genFunc) }},
-    {CreateContMeth,     &c_Continuation::CreateMeth, DSSA, SNone,
-                          { extra(&CreateContData::genFunc),
-                            {SSA, 0} }},
+    /* Generator support helpers */
+    {CreateCont,         &c_Generator::Create, DSSA, SNone,
+                           {{SSA, 0}, {SSA, 1}, {SSA, 2}, {SSA, 3}}},
 
     /* Async function support helpers */
-    {CreateAFWHFunc,     &c_AsyncFunctionWaitHandle::CreateFunc, DSSA, SSync,
-                          { extra(&CreateContData::genFunc),
-                            {SSA, 0}, {SSA, 1} }},
-    {CreateAFWHMeth,     &c_AsyncFunctionWaitHandle::CreateMeth, DSSA, SSync,
-                          { extra(&CreateContData::genFunc),
-                            {SSA, 0}, {SSA, 1}, {SSA, 2} }},
-    {CreateSRWH,         &c_StaticResultWaitHandle::CreateFromVM, DSSA, SNone,
-                          { {TV, 0} }},
-    {CreateSEWH,         &c_StaticExceptionWaitHandle::CreateFromVM,
-                          DSSA, SNone,
-                          { {SSA, 0} }},
+    {CreateAFWH,         &c_AsyncFunctionWaitHandle::Create, DSSA, SSync,
+                           {{SSA, 0}, {SSA, 1}, {SSA, 2}, {SSA, 3}, {SSA, 4}}},
+    {CreateSSWH,         &c_StaticWaitHandle::CreateSucceededVM, DSSA, SNone,
+                           {{TV, 0}}},
 
     /* MInstrTranslator helpers */
     {BaseG,    fssa(0), DSSA, SSync, {{TV, 1}, {SSA, 2}}},
@@ -322,10 +312,10 @@ static CallMap s_callMap {
                  {{SSA, 1}, {MemberKeyIS, 2}, {TV, 3}}},
     {UnsetElem, fssa(0), DNone, SSync,
                  {{SSA, 1}, {MemberKeyIS, 2}}},
-    {SetOpElem, fssa(0), DTV, SSync,
-                 {{SSA, 1}, {TV, 2}, {TV, 3}, {SSA, 4}}},
-    {IncDecElem, fssa(0), DTV, SSync,
-                 {{SSA, 1}, {TV, 2}, {SSA, 3}}},
+    {SetOpElem, setOpElem, DTV, SSync,
+                 {{SSA, 0}, {TV, 1}, {TV, 2}, {SSA, 3}, {SSA, 4}}},
+    {IncDecElem, incDecElem, DTV, SSync,
+                 {{SSA, 0}, {TV, 1}, {SSA, 2}, {SSA, 3}}},
     {SetNewElem, setNewElem, DNone, SSync, {{SSA, 0}, {TV, 1}}},
     {SetNewElemArray, setNewElemArray, DNone, SSync, {{SSA, 0}, {TV, 1}}},
     {SetWithRefNewElem, fssa(0), DNone, SSync,
@@ -342,8 +332,8 @@ static CallMap s_callMap {
                  {{SSA, 1}, {MemberKeyIS, 2}, {SSA, 3}}},
 
     /* instanceof checks */
-    {InstanceOf, method(&Class::classof), DSSA, SNone, {{SSA, 0}, {SSA, 1}}},
-    {InstanceOfIface, method(&Class::ifaceofDirect), DSSA,
+    {InstanceOf, &Class::classof, DSSA, SNone, {{SSA, 0}, {SSA, 1}}},
+    {InstanceOfIface, &Class::ifaceofDirect, DSSA,
                       SNone, {{SSA, 0}, {SSA, 1}}},
     {InterfaceSupportsArr, IFaceSupportFn{interface_supports_array},
                              DSSA, SNone, {{SSA, 0}}},
@@ -353,14 +343,20 @@ static CallMap s_callMap {
                              DSSA, SNone, {{SSA, 0}}},
     {InterfaceSupportsDbl, IFaceSupportFn{interface_supports_double},
                              DSSA, SNone, {{SSA, 0}}},
+    {OODeclExists, &Unit::classExists, DSSA, SSync,
+                     {{SSA, 0}, {SSA, 1}, extra(&ClassKindData::kind)}},
 
     /* debug assert helpers */
     {DbgAssertPtr, assertTv, DNone, SNone, {{SSA, 0}}},
 
     /* surprise flag support */
     {SurpriseHook, &EventHook::CheckSurprise, DNone, SSync, {}},
-    {FunctionExitSurpriseHook, &EventHook::onFunctionExit, DNone, SSync,
-                               {{SSA, 0}}},
+    {FunctionExitSurpriseHook, &EventHook::onFunctionExitJit, DNone, SSync,
+                               {{SSA, 0}, {TV, 1}}},
+
+    /* silence operator support */
+    {ZeroErrorLevel, &zero_error_level, DSSA, SNone, {}},
+    {RestoreErrorLevel, &restore_error_level, DNone, SNone, {{SSA, 0}}},
 };
 
 ArgGroup CallInfo::toArgGroup(const RegAllocInfo& regs,

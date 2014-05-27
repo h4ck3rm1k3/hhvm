@@ -66,13 +66,21 @@ Variant f_array_keys(const Variant& input, const Variant& search_value = null_va
 Variant f_array_map(int _argc, const Variant& callback, const Variant& arr1,
                     const Array& _argv = null_array);
 
-Variant f_array_merge_recursive(int _argc, const Variant& array1, const Array& _argv = null_array);
+Variant f_array_merge_recursive(int _argc, const Variant& array1,
+                                const Variant& array2 = null_variant,
+                                const Array& _argv = null_array);
 
-Variant f_array_merge(int _argc, const Variant& array1, const Array& _argv = null_array);
+Variant f_array_merge(int _argc, const Variant& array1,
+                      const Variant& array2 = null_variant,
+                      const Array& _argv = null_array);
 
-Variant f_array_replace_recursive(int _argc, const Variant& array1, const Array& _argv = null_array);
+Variant f_array_replace_recursive(int _argc, const Variant& array1,
+                                  const Variant& array2 = null_variant,
+                                  const Array& _argv = null_array);
 
-Variant f_array_replace(int _argc, const Variant& array1, const Array& _argv = null_array);
+Variant f_array_replace(int _argc, const Variant& array1,
+                        const Variant& array2 = null_variant,
+                        const Array& _argv = null_array);
 
 Variant f_array_pad(const Variant& input, int pad_size, const Variant& pad_value);
 Variant f_array_pop(VRefParam array);
@@ -106,7 +114,11 @@ bool f_array_walk_recursive(VRefParam input, const Variant& funcname,
 bool f_array_walk(VRefParam input, const Variant& funcname,
                   const Variant& userdata = null_variant);
 
-Array f_compact(int _argc, const Variant& varname, const Array& _argv = null_array);
+Array f_compact(int _argc, const Variant& varname,
+                const Array& _argv = null_array);
+// __SystemLib\\compact_sl
+Array f_compact_sl(int _argc, const Variant& varname,
+                  const Array& _argv = null_array);
 
 bool f_shuffle(VRefParam array);
 int64_t f_count(const Variant& var, int64_t mode = 0);
@@ -166,7 +178,7 @@ bool f_uksort(VRefParam array, const Variant& cmp_function);
 Variant f_natsort(VRefParam array);
 Variant f_natcasesort(VRefParam array);
 
-bool f_array_multisort(int _argc, VRefParam ar1, const Array& _argv = null_array);
+bool f_array_multisort(int _argc, VRefParam arr1, const Array& _argv = null_array);
 
 String f_i18n_loc_get_default();
 bool f_i18n_loc_set_default(const String& locale);
@@ -175,8 +187,6 @@ bool f_i18n_loc_set_strength(int64_t strength);
 Variant f_i18n_loc_get_error_code();
 
 Variant f_hphp_array_idx(const Variant& search, const Variant& key, const Variant& def);
-
-Array ArrayObject_toArray(const ObjectData* obj);
 
 ///////////////////////////////////////////////////////////////////////////////
 }

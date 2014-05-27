@@ -52,6 +52,7 @@ const StaticString s_B("B");
 const StaticString s_BA("BA");
 const StaticString s_BB("BB");
 const StaticString s_BAA("BAA");
+const StaticString s_C("C");
 const StaticString s_IBase("IBase");
 const StaticString s_IA("IA");
 const StaticString s_IAA("IAA");
@@ -121,7 +122,21 @@ std::unique_ptr<php::Unit> make_test_unit() {
       .default_ctor;
     }
 
+    # Make sure BAA doesn't get AttrNoOverride:
+    .class [unique] BAADeriver extends BAA {
+      .default_ctor;
+    }
+
+    .class [no_override unique] C extends B implements (IA) {
+      .default_ctor;
+    }
+
     .class [unique] TestClass {
+      .default_ctor;
+    }
+
+    # Make sure TestClass doesn't get AttrNoOverride:
+    .class [unique] TestClassDeriver extends TestClass {
       .default_ctor;
     }
 
@@ -157,7 +172,7 @@ std::unique_ptr<php::Program> make_program() {
 //////////////////////////////////////////////////////////////////////
 
 auto const test_empty_array = folly::lazy([&] {
-  return HphpArray::GetStaticEmptyArray();
+  return staticEmptyArray();
 });
 
 auto const test_array_map_value = folly::lazy([&] {
@@ -647,8 +662,19 @@ TEST(Type, OptUnionOf) {
   EXPECT_EQ(TInitUnc, union_of(TOptSArr, TSStr));
   EXPECT_EQ(TInitUnc, union_of(TSStr, TOptSArr));
 
+  EXPECT_EQ(TOptSStr,
+            union_of(opt(sval(s_test.get())), opt(sval(s_TestClass.get()))));
+
+  EXPECT_EQ(TOptInt, union_of(opt(ival(2)), opt(ival(3))));
+  EXPECT_EQ(TOptDbl, union_of(opt(dval(2.0)), opt(dval(3.0))));
   EXPECT_EQ(TOptNum, union_of(TInitNull, TNum));
   EXPECT_EQ(TOptNum, union_of(TInitNull, union_of(dval(1), ival(0))));
+
+  auto const program = make_program();
+  Index index { borrow(program) };
+  auto const rcls = index.builtin_class(s_WaitHandle.get());
+
+  EXPECT_TRUE(union_of(TObj, opt(objExact(rcls))) == TOptObj);
 }
 
 TEST(Type, OptTV) {
@@ -727,6 +753,29 @@ TEST(Type, OptCouldBe) {
       EXPECT_TRUE(x.couldBe(y));
     }
   }
+}
+
+TEST(Type, Ref) {
+  EXPECT_TRUE(TRef == TRef);
+  EXPECT_TRUE(TRef != ref_to(TInt));
+  EXPECT_TRUE(ref_to(TInt) == ref_to(TInt));
+  EXPECT_TRUE(ref_to(TInt) != ref_to(TOptInt));
+
+  EXPECT_TRUE(TRef.couldBe(ref_to(TInt)));
+  EXPECT_TRUE(ref_to(TInt).couldBe(TRef));
+  EXPECT_TRUE(!ref_to(TInt).couldBe(ref_to(TObj)));
+  EXPECT_TRUE(ref_to(TOptInt).couldBe(ref_to(TInt)));
+
+  EXPECT_TRUE(!TRef.subtypeOf(ref_to(TInt)));
+  EXPECT_TRUE(ref_to(TInt).subtypeOf(TRef));
+  EXPECT_TRUE(ref_to(TInt).subtypeOf(ref_to(TOptInt)));
+  EXPECT_TRUE(!ref_to(TOptInt).subtypeOf(ref_to(TInt)));
+  EXPECT_TRUE(!ref_to(TObj).subtypeOf(ref_to(TInt)));
+  EXPECT_TRUE(!ref_to(TInt).subtypeOf(ref_to(TObj)));
+
+  EXPECT_TRUE(union_of(TRef, ref_to(TInt)) == TRef);
+  EXPECT_TRUE(union_of(ref_to(TInt), ref_to(TObj)) == ref_to(TInitCell));
+  EXPECT_TRUE(union_of(ref_to(TInitNull), ref_to(TObj)) == ref_to(TOptObj));
 }
 
 TEST(Type, SpecificExamples) {
@@ -1238,16 +1287,22 @@ TEST(Type, Interface) {
   // load classes in hierarchy
   auto const clsIA = idx.resolve_class(ctx, s_IA.get());
   if (!clsIA) EXPECT_TRUE(false);
+  auto const clsIB = idx.resolve_class(ctx, s_IB.get());
+  if (!clsIB) EXPECT_TRUE(false);
   auto const clsIAA = idx.resolve_class(ctx, s_IAA.get());
   if (!clsIAA) EXPECT_TRUE(false);
   auto const clsA = idx.resolve_class(ctx, s_A.get());
   if (!clsA) EXPECT_TRUE(false);
   auto const clsAA = idx.resolve_class(ctx, s_AA.get());
   if (!clsAA) EXPECT_TRUE(false);
+  auto const clsC = idx.resolve_class(ctx, s_C.get());
+  if (!clsC) EXPECT_TRUE(false);
 
   // make sometypes and objects
   auto const subObjIATy  = subObj(*clsIA);
   auto const subClsIATy  = subCls(*clsIA);
+  auto const subObjIBTy  = subObj(*clsIB);
+  auto const subClsIBTy  = subCls(*clsIB);
   auto const subObjIAATy = subObj(*clsIAA);
   auto const subClsIAATy = subCls(*clsIAA);
   auto const subObjATy   = subObj(*clsA);
@@ -1255,24 +1310,69 @@ TEST(Type, Interface) {
   auto const subClsATy   = subCls(*clsA);
   auto const subObjAATy  = subObj(*clsAA);
   auto const subClsAATy  = subCls(*clsAA);
+  auto const subObjCTy   = subObj(*clsC);
+  auto const subClsCTy   = subCls(*clsC);
+  auto const clsExactCTy = clsExact(*clsC);
 
-  // we don't support interfaces quite yet so let's put few tests
-  // that will fail once interfaces are supported
+  // Since A is not final, we use clsExactATy for couldBe relations
+  // class A implements interface IA
+  EXPECT_TRUE(subClsATy.subtypeOf(objcls(subObjIATy)));
+  EXPECT_TRUE(objcls(subObjATy).strictSubtypeOf(subClsIATy));
+  EXPECT_FALSE(subClsIATy.subtypeOf(objcls(subObjATy)));
+  EXPECT_FALSE(objcls(subObjIATy).strictSubtypeOf(subClsATy));
+  EXPECT_TRUE(clsExactATy.couldBe(objcls(subObjIATy)));
 
-  // first 2 are "not precise" - should be true
-  EXPECT_FALSE(subClsATy.subtypeOf(objcls(subObjIATy)));
-  EXPECT_FALSE(objcls(subObjATy).strictSubtypeOf(subClsIATy));
-  EXPECT_TRUE(subClsATy.couldBe(objcls(subObjIATy)));
+  // class A does not implement interface IB
+  EXPECT_FALSE(subClsATy.subtypeOf(objcls(subObjIBTy)));
+  EXPECT_FALSE(objcls(subObjATy).subtypeOf(subClsIBTy));
+  EXPECT_FALSE(subClsIBTy.subtypeOf(objcls(subObjATy)));
+  EXPECT_FALSE(objcls(subObjIBTy).strictSubtypeOf(subClsATy));
+  EXPECT_FALSE(clsExactATy.couldBe(objcls(subObjIBTy)));
 
-  // first 2 are "not precise" - should be true
-  EXPECT_FALSE(subClsAATy.subtypeOf(objcls(subObjIAATy)));
-  EXPECT_FALSE(objcls(subObjAATy).strictSubtypeOf(objcls(subObjIAATy)));
-  EXPECT_TRUE(subClsAATy.couldBe(objcls(subObjIAATy)));
-
-  // 3rd one is not precise - should be false
+  // class A does not implement interface IAA
   EXPECT_FALSE(subClsATy.subtypeOf(objcls(subObjIAATy)));
   EXPECT_FALSE(objcls(subObjATy).strictSubtypeOf(objcls(subObjIAATy)));
-  EXPECT_TRUE(clsExactATy.couldBe(objcls(subObjIAATy)));
+  EXPECT_FALSE(subClsIAATy.subtypeOf(objcls(subObjATy)));
+  EXPECT_FALSE(objcls(subObjIAATy).strictSubtypeOf(subClsATy));
+  EXPECT_FALSE(clsExactATy.couldBe(objcls(subObjIAATy)));
+
+  // class AA implements interface IAA and IA
+  EXPECT_TRUE(subClsAATy.subtypeOf(objcls(subObjIAATy)));
+  EXPECT_TRUE(subClsAATy.subtypeOf(objcls(subObjIATy)));
+  EXPECT_TRUE(objcls(subObjAATy).strictSubtypeOf(objcls(subObjIAATy)));
+  EXPECT_TRUE(objcls(subObjAATy).strictSubtypeOf(objcls(subObjIATy)));
+  EXPECT_FALSE(subClsIAATy.subtypeOf(objcls(subObjAATy)));
+  EXPECT_FALSE(objcls(subObjIAATy).strictSubtypeOf(subClsAATy));
+  EXPECT_TRUE(subClsAATy.couldBe(objcls(subObjIAATy)));
+  EXPECT_TRUE(subClsAATy.couldBe(objcls(subObjIATy)));
+
+  // class AA does not implement interface IB
+  EXPECT_FALSE(subClsAATy.subtypeOf(objcls(subObjIBTy)));
+  EXPECT_FALSE(objcls(subObjAATy).subtypeOf(subClsIBTy));
+  EXPECT_FALSE(subClsIBTy.subtypeOf(objcls(subObjAATy)));
+  EXPECT_FALSE(objcls(subObjIBTy).strictSubtypeOf(subClsAATy));
+  EXPECT_FALSE(subClsAATy.couldBe(objcls(subObjIBTy)));
+
+  // class C implements interface IA
+  EXPECT_TRUE(subClsCTy.subtypeOf(objcls(subObjIATy)));
+  EXPECT_TRUE(objcls(subObjCTy).strictSubtypeOf(subClsIATy));
+  EXPECT_FALSE(subClsIATy.subtypeOf(objcls(subObjCTy)));
+  EXPECT_FALSE(objcls(subObjIATy).strictSubtypeOf(subClsCTy));
+  EXPECT_TRUE(subClsCTy.couldBe(objcls(subObjIATy)));
+
+  // class C does not implement interface IB
+  EXPECT_FALSE(subClsCTy.subtypeOf(objcls(subObjIBTy)));
+  EXPECT_FALSE(objcls(subObjCTy).subtypeOf(subClsIBTy));
+  EXPECT_FALSE(subClsIBTy.subtypeOf(objcls(subObjCTy)));
+  EXPECT_FALSE(objcls(subObjIBTy).strictSubtypeOf(subClsCTy));
+  EXPECT_FALSE(subClsCTy.couldBe(objcls(subObjIBTy)));
+
+  // class C does not implement interface IAA
+  EXPECT_FALSE(subClsCTy.subtypeOf(objcls(subObjIAATy)));
+  EXPECT_FALSE(objcls(subObjCTy).strictSubtypeOf(objcls(subObjIAATy)));
+  EXPECT_FALSE(subClsIAATy.subtypeOf(objcls(subObjCTy)));
+  EXPECT_FALSE(objcls(subObjIAATy).strictSubtypeOf(subClsCTy));
+  EXPECT_FALSE(subClsCTy.couldBe(objcls(subObjIAATy)));
 }
 
 TEST(Type, NonUnique) {

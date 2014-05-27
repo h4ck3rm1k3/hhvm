@@ -22,6 +22,7 @@
 #include "hphp/vixl/a64/assembler-a64.h"
 #include "hphp/vixl/a64/constants-a64.h"
 
+#include "hphp/runtime/vm/jit/abi.h"
 #include "hphp/runtime/vm/jit/abi-x64.h"
 #include "hphp/runtime/vm/jit/phys-reg.h"
 
@@ -30,6 +31,11 @@ namespace HPHP { namespace JIT { namespace ARM {
 inline vixl::Register x2a(PhysReg x64reg) {
   always_assert(!x64reg.isSIMD());
   return vixl::Register(vixl::CPURegister(x64reg));
+}
+
+inline vixl::FPRegister x2simd(PhysReg x64reg) {
+  always_assert(x64reg.isSIMD());
+  return vixl::FPRegister(vixl::CPURegister(x64reg));
 }
 
 inline constexpr unsigned maxArgReg() { return 7; }
@@ -87,12 +93,13 @@ const vixl::Register rLinkReg(vixl::x30);
 const vixl::Register rReturnReg(vixl::x0);
 const vixl::Register rHostCallReg(vixl::x16);
 
-const RegSet kCallerSaved = RegSet()
+const RegSet kGPCallerSaved = RegSet()
   | RegSet(vixl::x0)
   | RegSet(vixl::x1)
   | RegSet(vixl::x2)
   | RegSet(vixl::x3)
   | RegSet(vixl::x4)
+  | RegSet(vixl::x5)
   | RegSet(vixl::x6)
   | RegSet(vixl::x7)
   | RegSet(vixl::x8)
@@ -108,7 +115,7 @@ const RegSet kCallerSaved = RegSet()
   | RegSet(vixl::x18)
   ;
 
-const RegSet kCalleeSaved = RegSet()
+const RegSet kGPCalleeSaved = RegSet()
   // x19 = rVmSp
   // x20 = rVmTl
   // x21 = rStashedAR
@@ -120,6 +127,92 @@ const RegSet kCalleeSaved = RegSet()
   | RegSet(vixl::x27)
   | RegSet(vixl::x28)
   ;
+
+const RegSet kGPUnreserved = RegSet()
+  | kGPCallerSaved
+  | kGPCalleeSaved
+  ;
+
+const RegSet kGPReserved = RegSet()
+  | RegSet(rAsm)
+  | RegSet(rAsm2)
+  | RegSet(rHostCallReg)
+  | RegSet(vixl::x17)
+  | RegSet(rVmSp)
+  | RegSet(rVmTl)
+  | RegSet(rStashedAR)
+  | RegSet(rGContextReg)
+  | RegSet(rVmFp)
+  | RegSet(rLinkReg)
+  // ARM machines really only have 32 GP regs. However, vixl has 33 separate
+  // register codes, because it treats the zero register and stack pointer
+  // (which are really both register 31) separately. Rather than lose this
+  // distinction in vixl (it's really helpful for avoiding stupid mistakes), we
+  // sacrifice the ability to represent all 32 SIMD regs, and pretend that are
+  // 33 GP regs.
+  | RegSet(vixl::xzr) // x31
+  | RegSet(vixl::sp) // x31, but with special vixl code
+  ;
+
+const RegSet kSIMDCallerSaved = RegSet()
+  | RegSet(vixl::d0)
+  | RegSet(vixl::d1)
+  | RegSet(vixl::d2)
+  | RegSet(vixl::d3)
+  | RegSet(vixl::d4)
+  | RegSet(vixl::d5)
+  | RegSet(vixl::d6)
+  | RegSet(vixl::d7)
+  // 8-15 are callee-saved
+  | RegSet(vixl::d16)
+  | RegSet(vixl::d17)
+  | RegSet(vixl::d18)
+  | RegSet(vixl::d19)
+  | RegSet(vixl::d20)
+  | RegSet(vixl::d21)
+  | RegSet(vixl::d22)
+  | RegSet(vixl::d23)
+  | RegSet(vixl::d24)
+  | RegSet(vixl::d25)
+  | RegSet(vixl::d26)
+  | RegSet(vixl::d27)
+  | RegSet(vixl::d28)
+  | RegSet(vixl::d29)
+  | RegSet(vixl::d30)
+  // d31 exists, but PhysReg can't represent it, so we don't use it.
+  ;
+
+const RegSet kSIMDCalleeSaved = RegSet()
+  | RegSet(vixl::d8)
+  | RegSet(vixl::d9)
+  | RegSet(vixl::d10)
+  | RegSet(vixl::d11)
+  | RegSet(vixl::d12)
+  | RegSet(vixl::d13)
+  | RegSet(vixl::d14)
+  | RegSet(vixl::d15)
+  ;
+
+const RegSet kSIMDUnreserved = RegSet()
+  | kSIMDCallerSaved
+  | kSIMDCalleeSaved
+  ;
+
+const RegSet kSIMDReserved = RegSet()
+  ;
+
+const RegSet kCalleeSaved = RegSet()
+  | kGPCalleeSaved
+  | kSIMDCalleeSaved
+  ;
+
+UNUSED const Abi abi {
+  kGPUnreserved,   // gpUnreserved
+  kGPReserved,     // gpReserved
+  kSIMDUnreserved, // simdUnreserved
+  kSIMDReserved,   // simdReserved
+  kCalleeSaved     // calleeSaved
+};
 
 }}}
 

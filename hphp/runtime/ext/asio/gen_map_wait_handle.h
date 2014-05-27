@@ -42,19 +42,17 @@ class c_GenMapWaitHandle : public c_BlockableWaitHandle {
   {}
   ~c_GenMapWaitHandle() {}
 
-  void t___construct();
   static void ti_setoncreatecallback(const Variant& callback);
   static Object ti_create(const Variant& dependencies);
 
  public:
-  String getName();
-
- protected:
   void onUnblocked();
+  String getName();
   c_WaitableWaitHandle* getChild();
   void enterContextImpl(context_idx_t ctx_idx);
 
  private:
+  void setState(uint8_t state) { setKindState(Kind::GenMap, state); }
   void initialize(const Object& exception, c_Map* deps,
                   ssize_t iter_pos, c_WaitableWaitHandle* child);
 

@@ -18,26 +18,39 @@
 #include "hphp/runtime/ext/asio/async_function_wait_handle.h"
 
 #include "hphp/runtime/ext/ext_closure.h"
-#include "hphp/runtime/ext/ext_continuation.h"
 #include "hphp/runtime/ext/asio/asio_context.h"
 #include "hphp/runtime/ext/asio/asio_session.h"
+#include "hphp/runtime/vm/bytecode.h"
+#include "hphp/runtime/vm/runtime.h"
+#include "hphp/runtime/vm/resumable.h"
+#include "hphp/runtime/vm/jit/types.h"
 #include "hphp/system/systemlib.h"
 
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
 
-// max depth of continuation
-const uint16_t MAX_DEPTH = 512;
-
-c_AsyncFunctionWaitHandle::c_AsyncFunctionWaitHandle(Class* cb)
-    : c_BlockableWaitHandle(cb), m_continuation(), m_child(), m_privData(),
-      m_depth(0) {
+void delete_AsyncFunctionWaitHandle(ObjectData* od, const Class*) {
+  auto const waitHandle = static_cast<c_AsyncFunctionWaitHandle*>(od);
+  auto const size = waitHandle->resumable()->size();
+  auto const base = (char*)(waitHandle + 1) - size;
+  waitHandle->~c_AsyncFunctionWaitHandle();
+  MM().objFreeLogged(base, size);
 }
 
-void c_AsyncFunctionWaitHandle::t___construct() {
-  Object e(SystemLib::AllocInvalidOperationExceptionObject(
-        "Use $continuation->getWaitHandle() instead of constructor"));
-  throw e;
+///////////////////////////////////////////////////////////////////////////////
+
+c_AsyncFunctionWaitHandle::c_AsyncFunctionWaitHandle(Class* cb)
+    : c_ResumableWaitHandle(cb), m_privData() {
+}
+
+c_AsyncFunctionWaitHandle::~c_AsyncFunctionWaitHandle() {
+  if (LIKELY(isFinished())) {
+    return;
+  }
+
+  assert(!isRunning());
+  frame_free_locals_inl_no_hook<false>(actRec(), actRec()->func()->numLocals());
+  decRefObj(m_child);
 }
 
 void c_AsyncFunctionWaitHandle::ti_setoncreatecallback(const Variant& callback) {
@@ -94,14 +107,10 @@ void c_AsyncFunctionWaitHandle::t_setprivdata(const Object& data) {
 
 namespace {
 
+const StaticString s__closure_("{closure}");
+
 void checkCreateErrors(c_WaitableWaitHandle* child) {
   AsioSession* session = AsioSession::Get();
-  if (UNLIKELY(session->getCurrentWaitHandleDepth() >= MAX_DEPTH)) {
-    Object e(SystemLib::AllocInvalidOperationExceptionObject(
-          "Asio stack overflow"));
-    throw e;
-  }
-
   if (session->isInContext()) {
     child->enterContext(session->getCurrentContextIdx());
   }
@@ -109,64 +118,47 @@ void checkCreateErrors(c_WaitableWaitHandle* child) {
 
 }
 
-ObjectData*
-c_AsyncFunctionWaitHandle::CreateFunc(const Func* genFunc,
-                                      int32_t label,
-                                      ObjectData* child) {
+c_AsyncFunctionWaitHandle*
+c_AsyncFunctionWaitHandle::Create(const ActRec* fp,
+                                  size_t numSlots,
+                                  JIT::TCA resumeAddr,
+                                  Offset resumeOffset,
+                                  ObjectData* child) {
+  assert(fp);
+  assert(!fp->resumed());
+  assert(fp->func()->isAsyncFunction());
+  assert(child);
   assert(child->instanceof(c_WaitableWaitHandle::classof()));
+
   auto child_wh = static_cast<c_WaitableWaitHandle*>(child);
   assert(!child_wh->isFinished());
 
   checkCreateErrors(child_wh);
 
-  auto cont = c_Continuation::CreateFunc(genFunc);
-  auto wait_handle = NEWOBJ(c_AsyncFunctionWaitHandle)();
-  wait_handle->incRefCount();
-  wait_handle->initialize(static_cast<c_Continuation*>(cont), label, child_wh);
-  return wait_handle;
+  void* obj = Resumable::Create(fp, numSlots, resumeAddr, resumeOffset,
+                                sizeof(c_AsyncFunctionWaitHandle));
+  auto const waitHandle = new (obj) c_AsyncFunctionWaitHandle();
+  waitHandle->incRefCount();
+  waitHandle->setNoDestruct();
+  waitHandle->initialize(child_wh);
+  return waitHandle;
 }
 
-ObjectData*
-c_AsyncFunctionWaitHandle::CreateMeth(const Func* genFunc,
-                                      void* objOrCls,
-                                      int32_t label,
-                                      ObjectData* child) {
-  assert(child->instanceof(c_WaitableWaitHandle::classof()));
-  auto child_wh = static_cast<c_WaitableWaitHandle*>(child);
-  assert(!child_wh->isFinished());
-
-  checkCreateErrors(child_wh);
-
-  auto cont = c_Continuation::CreateMeth(genFunc, objOrCls);
-  auto wait_handle = NEWOBJ(c_AsyncFunctionWaitHandle)();
-  wait_handle->incRefCount();
-  wait_handle->initialize(static_cast<c_Continuation*>(cont), label, child_wh);
-  return wait_handle;
-}
-
-void c_AsyncFunctionWaitHandle::initialize(c_Continuation* continuation,
-                                           int32_t label,
-                                           c_WaitableWaitHandle* child) {
-  auto session = AsioSession::Get();
-
-  continuation->m_label = label;
-  continuation->start();
-
-  m_continuation = continuation;
+void c_AsyncFunctionWaitHandle::initialize(c_WaitableWaitHandle* child) {
+  setState(STATE_BLOCKED);
   m_child = child;
   m_privData = nullptr;
-  m_depth = session->getCurrentWaitHandleDepth() + 1;
-  blockOn(m_child.get());
-  decRefObj(continuation);
-  decRefObj(child);
+
+  blockOn(child);
 
   // needs to be called with non-zero refcnt
+  auto session = AsioSession::Get();
   if (UNLIKELY(session->hasOnAsyncFunctionCreateCallback())) {
     session->onAsyncFunctionCreate(this, child);
   }
 }
 
-void c_AsyncFunctionWaitHandle::run() {
+void c_AsyncFunctionWaitHandle::resume() {
   // may happen if scheduled in multiple contexts
   if (getState() != STATE_SCHEDULED) {
     return;
@@ -175,56 +167,54 @@ void c_AsyncFunctionWaitHandle::run() {
   try {
     setState(STATE_RUNNING);
 
-    // iterate continuation
+    // resume async function
     if (LIKELY(m_child->isSucceeded())) {
-      // child succeeded, pass the result to the continuation
-      m_continuation->call_send(m_child->getResult());
+      // child succeeded, pass the result to the async function
+      g_context->resumeAsyncFunc(resumable(), m_child, m_child->getResult());
     } else if (m_child->isFailed()) {
-      // child failed, raise the exception inside continuation
-      m_continuation->call_raise(m_child->getException());
+      // child failed, raise the exception inside the async function
+      g_context->resumeAsyncFuncThrow(resumable(), m_child,
+                                      m_child->getException());
     } else {
       throw FatalErrorException(
           "Invariant violation: child neither succeeded nor failed");
     }
 
   retry:
-    // continuation finished, retrieve result from its m_value
-    if (m_continuation->done()) {
-      markAsSucceeded(*m_continuation->m_value.asCell());
+    // async function reached RetC, which already set m_resultOrException
+    if (isSucceeded()) {
+      markAsSucceeded();
       return;
     }
 
-    // save child
-    Cell* value = tvAssertCell(m_continuation->m_value.asTypedValue());
-    assert(value->m_type == KindOfObject);
-    assert(value->m_data.pobj->instanceof(c_WaitableWaitHandle::classof()));
-
-    m_child = static_cast<c_WaitableWaitHandle*>(value->m_data.pobj);
+    // async function reached AsyncSuspend, which already set m_child
     assert(!m_child->isFinished());
+    assert(m_child->instanceof(c_WaitableWaitHandle::classof()));
 
     // import child into the current context, detect cross-context cycles
     try {
-      m_child->enterContext(getContextIdx());
+      child()->enterContext(getContextIdx());
     } catch (Object& e) {
-      m_continuation->call_raise(e.get());
+      g_context->resumeAsyncFuncThrow(resumable(), m_child, e.get());
       goto retry;
     }
 
     // detect cycles
-    if (UNLIKELY(isDescendantOf(m_child.get()))) {
-      Object e(createCycleException(m_child.get()));
-      m_continuation->call_raise(e.get());
+    if (UNLIKELY(isDescendantOf(child()))) {
+      Object e(createCycleException(child()));
+      g_context->resumeAsyncFuncThrow(resumable(), m_child, e.get());
       goto retry;
     }
 
     // on await callback
     AsioSession* session = AsioSession::Get();
     if (UNLIKELY(session->hasOnAsyncFunctionAwaitCallback())) {
-      session->onAsyncFunctionAwait(this, m_child.get());
+      session->onAsyncFunctionAwait(this, m_child);
     }
 
     // set up dependency
-    blockOn(m_child.get());
+    setState(STATE_BLOCKED);
+    blockOn(child());
   } catch (const Object& exception) {
     // process exception thrown by the async function
     markAsFailed(exception);
@@ -242,17 +232,18 @@ void c_AsyncFunctionWaitHandle::onUnblocked() {
   }
 }
 
-void c_AsyncFunctionWaitHandle::markAsSucceeded(const Cell& result) {
+void c_AsyncFunctionWaitHandle::ret(Cell& result) {
+  setState(STATE_SUCCEEDED);
+  cellCopy(result, m_resultOrException);
+}
+
+void c_AsyncFunctionWaitHandle::markAsSucceeded() {
   AsioSession* session = AsioSession::Get();
   if (UNLIKELY(session->hasOnAsyncFunctionSuccessCallback())) {
-    session->onAsyncFunctionSuccess(this, cellAsCVarRef(result));
+    session->onAsyncFunctionSuccess(this, cellAsCVarRef(m_resultOrException));
   }
 
-  setResult(result);
-
-  // free m_continuation / m_child later, result may be stored there
-  m_continuation = nullptr;
-  m_child = nullptr;
+  done();
 }
 
 void c_AsyncFunctionWaitHandle::markAsFailed(const Object& exception) {
@@ -261,24 +252,59 @@ void c_AsyncFunctionWaitHandle::markAsFailed(const Object& exception) {
     session->onAsyncFunctionFail(this, exception);
   }
 
-  setException(exception.get());
+  setState(STATE_FAILED);
+  tvWriteObject(exception.get(), &m_resultOrException);
+  done();
+}
 
-  m_continuation = nullptr;
-  m_child = nullptr;
+void
+c_AsyncFunctionWaitHandle::suspend(JIT::TCA resumeAddr, Offset resumeOffset,
+                                   c_WaitableWaitHandle* child) {
+  resumable()->setResumeAddr(resumeAddr, resumeOffset);
+  m_child = child;
 }
 
 String c_AsyncFunctionWaitHandle::getName() {
   switch (getState()) {
     case STATE_BLOCKED:
     case STATE_SCHEDULED:
-    case STATE_RUNNING:
-      if (m_continuation->t_getcalledclass().empty()) {
-        return m_continuation->t_getorigfuncname();
-      } else {
-        return concat3(m_continuation->t_getcalledclass(),
-                       "::",
-                       m_continuation->t_getorigfuncname());
+    case STATE_RUNNING: {
+      auto func = actRec()->func();
+      if (!actRec()->getThisOrClass() ||
+          func->cls()->attrs() & AttrNoOverride) {
+        auto name = func->fullName();
+        if (func->isClosureBody()) {
+          const char* p = strchr(name->data(), ':');
+          if (p) {
+            return
+              concat(String(name->data(), p + 1 - name->data(), CopyString),
+                     s__closure_);
+          } else {
+            return s__closure_;
+          }
+        }
+        return const_cast<StringData*>(name);
       }
+      String funcName;
+      if (actRec()->func()->isClosureBody()) {
+        // Can we do better than this?
+        funcName = s__closure_;
+      } else {
+        funcName = const_cast<StringData*>(actRec()->func()->name());
+      }
+
+      String clsName;
+      if (actRec()->hasThis()) {
+        clsName = const_cast<StringData*>(actRec()->getThis()->
+                                          getVMClass()->name());
+      } else if (actRec()->hasClass()) {
+        clsName = const_cast<StringData*>(actRec()->getClass()->name());
+      } else {
+        return funcName;
+      }
+
+      return concat3(clsName, "::", funcName);
+    }
 
     default:
       throw FatalErrorException(
@@ -288,7 +314,8 @@ String c_AsyncFunctionWaitHandle::getName() {
 
 c_WaitableWaitHandle* c_AsyncFunctionWaitHandle::getChild() {
   if (getState() == STATE_BLOCKED) {
-    return m_child.get();
+    assert(m_child);
+    return child();
   } else {
     assert(getState() == STATE_SCHEDULED || getState() == STATE_RUNNING);
     return nullptr;
@@ -299,7 +326,8 @@ void c_AsyncFunctionWaitHandle::enterContextImpl(context_idx_t ctx_idx) {
   switch (getState()) {
     case STATE_BLOCKED:
       // enter child into new context recursively
-      m_child->enterContext(ctx_idx);
+      assert(m_child);
+      child()->enterContext(ctx_idx);
       setContextIdx(ctx_idx);
       break;
 
@@ -365,30 +393,31 @@ void c_AsyncFunctionWaitHandle::exitContext(context_idx_t ctx_idx) {
 
 // Get the filename in which execution will proceed when execution resumes.
 String c_AsyncFunctionWaitHandle::getFileName() {
-  if (m_continuation.isNull()) return empty_string;
-  auto ar = m_continuation->actRec();
-  auto file = ar->m_func->unit()->filepath()->data();
-  if (ar->m_func->originalFilename()) {
-    file = ar->m_func->originalFilename()->data();
+  if (actRec()->func()->originalFilename()) {
+    return actRec()->func()->originalFilename()->data();
+  } else {
+    return actRec()->func()->unit()->filepath()->data();
   }
-  return file;
 }
 
 // Get the next execution offset
 Offset c_AsyncFunctionWaitHandle::getNextExecutionOffset() {
-  if (m_continuation.isNull()) return InvalidAbsoluteOffset;
-  return m_continuation->getNextExecutionOffset();
+  if (isFinished()) {
+    return InvalidAbsoluteOffset;
+  }
+
+  always_assert(!isRunning());
+  return resumable()->resumeOffset();
 }
 
 // Get the line number on which execution will proceed when execution resumes.
 int c_AsyncFunctionWaitHandle::getLineNumber() {
-  if (m_continuation.isNull()) return -1;
-  auto const unit = m_continuation->actRec()->m_func->unit();
-  return unit->getLineNumber(m_continuation->getNextExecutionOffset());
-}
+  if (isFinished()) {
+    return -1;
+  }
 
-ActRec* c_AsyncFunctionWaitHandle::getActRec() {
-  return m_continuation->actRec();
+  always_assert(!isRunning());
+  return actRec()->func()->unit()->getLineNumber(resumable()->resumeOffset());
 }
 
 ///////////////////////////////////////////////////////////////////////////////

@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    | Copyright (c) 1997-2010 The PHP Group                                |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
@@ -24,6 +24,14 @@
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
 // stream context
+
+extern const int64_t k_STREAM_SERVER_BIND;
+extern const int64_t k_STREAM_SERVER_LISTEN;
+
+const int64_t k_STREAM_FILTER_READ  = 1;
+const int64_t k_STREAM_FILTER_WRITE = 2;
+const int64_t k_STREAM_FILTER_ALL   = k_STREAM_FILTER_READ |
+                                      k_STREAM_FILTER_WRITE;
 
 class StreamContext : public ResourceData {
 public:

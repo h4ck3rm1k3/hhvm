@@ -6,6 +6,7 @@
 #include "hphp/runtime/vm/jit/translator-inline.h"
 #include "hphp/runtime/base/thread-init-fini.h"
 #include "hphp/runtime/base/stream-wrapper-registry.h"
+#include "hphp/util/string-vsnprintf.h"
 
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
@@ -211,11 +212,31 @@ static void xslt_ext_function_object_php(xmlXPathParserContextPtr ctxt,
   xslt_ext_function_php(ctxt, nargs, 2);
 }
 
+static void xslt_ext_error_handler(void *ctx,
+                                   const char *fmt, ...) ATTRIBUTE_PRINTF(2,3);
+static void xslt_ext_error_handler(void *ctx,
+                                   const char *fmt, ...) {
+  va_list args;
+  va_start(args, fmt);
+  try {
+    std::string msg;
+    string_vsnprintf(msg, fmt, args);
+
+    /* remove any trailing \n */
+    while (!msg.empty() && msg[msg.size() - 1] == '\n') {
+      msg = msg.substr(0, msg.size() - 1);
+    }
+
+    raise_warning("%s", msg.c_str());
+  } catch (...) {}
+  va_end(args);
+}
+
 c_XSLTProcessor::c_XSLTProcessor(Class *cb) :
   ExtObjectData(cb),
   m_stylesheet(nullptr), m_doc(nullptr), m_secprefs(k_XSL_SECPREF_DEFAULT),
   m_registerPhpFunctions(0) {
-  xsltSetGenericErrorFunc(nullptr, php_libxml_ctx_error);
+  xsltSetGenericErrorFunc(nullptr, xslt_ext_error_handler);
   exsltRegisterAll();
 }
 
@@ -247,7 +268,7 @@ void c_XSLTProcessor::t___construct() {
 
 Variant c_XSLTProcessor::t_getparameter(const String& namespaceURI,
                                         const String& localName) {
-  // namespaceURI argument is unused in Zend PHP XSL extension.
+  // namespaceURI argument is unused in PHP5 XSL extension.
   if (m_params.exists(localName)) {
     assert(m_params[localName].isString());
     return m_params[localName].toString();
@@ -298,7 +319,7 @@ void c_XSLTProcessor::t_importstylesheet(const Object& stylesheet) {
 
 bool c_XSLTProcessor::t_removeparameter(const String& namespaceURI,
                                         const String& localName) {
-  // namespaceURI argument is unused in Zend PHP XSL extension.
+  // namespaceURI argument is unused in PHP5 XSL extension.
   if (m_params.exists(localName)) {
     assert(m_params[localName].isString());
     m_params.remove(localName);
@@ -337,7 +358,7 @@ void c_XSLTProcessor::t_registerphpfunctions(
 bool c_XSLTProcessor::t_setparameter(const String& namespaceURI,
                                      const Variant& localName,
                                      const Variant& value /*=null_variant */) {
-  // namespaceURI argument is unused in Zend PHP XSL extension.
+  // namespaceURI argument is unused in PHP5 XSL extension.
   if (localName.isString() && value.isString()) {
     if (m_params.exists(localName)) {
       m_params.set(localName, value);
@@ -387,6 +408,7 @@ bool c_XSLTProcessor::t_setprofiling(const String& filename) {
   if (filename.length() > 0) {
     String translated = File::TranslatePath(filename);
     Stream::Wrapper* w = Stream::getWrapperFromURI(translated);
+    if (!w) return false;
     if (w->access(translated, W_OK)) {
       m_profile = translated;
       return true;
@@ -480,6 +502,11 @@ xmlDocPtr c_XSLTProcessor::apply_stylesheet() {
   }
 
   xsltTransformContextPtr ctxt = xsltNewTransformContext (m_stylesheet, m_doc);
+  if (ctxt == nullptr) {
+    raise_error("Unable to apply stylesheet");
+    return nullptr;
+  }
+
   ctxt->_private = this;
 
   xsltSecurityPrefsPtr prefs = nullptr;

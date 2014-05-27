@@ -24,19 +24,19 @@
 #include "zend.h"
 #include "zend_list.h"
 // has to be before zend_API since that defines getThis()
-#include "hphp/runtime/ext_zend_compat/hhvm/ZendRequestLocal.h"
+#include "hphp/runtime/ext_zend_compat/hhvm/zend-request-local.h"
 #include "zend_API.h"
 #include "php.h"
 #include "php_streams.h"
+#include "hphp/runtime/vm/jit/translator-inline.h"
 
 ZEND_API int le_index_ptr;
 
 namespace HPHP {
-  IMPLEMENT_OBJECT_ALLOCATION(ZendResourceData);
+  static std::vector<zend_rsrc_list_dtors_entry> s_resource_dtors;
 
-  ZEND_REQUEST_LOCAL_MAP(int, zend_rsrc_list_dtors_entry, s_resource_dtors);
   const String& ZendResourceData::o_getClassNameHook() const {
-    auto& dtor = s_resource_dtors.get()->get()[type];
+    auto& dtor = s_resource_dtors.at(type);
 
     if (dtor.type_name_str.empty()) {
       dtor.type_name_str = dtor.type_name;
@@ -44,13 +44,24 @@ namespace HPHP {
 
     return dtor.type_name_str;
   }
+
+  ZendResourceData::~ZendResourceData() {
+    auto& dtor = s_resource_dtors.at(type);
+    if (dtor.list_dtor_ex) {
+      TSRMLS_FETCH();
+      JIT::VMRegAnchor _;
+      dtor.list_dtor_ex(this TSRMLS_CC);
+    }
+  }
 }
 
-ZEND_REQUEST_LOCAL_LIST(zend_rsrc_list_entry*, s_regular_list);
-typedef ZendRequestLocalList<zend_rsrc_list_entry*>::list zend_rsrc_list;
+ZEND_REQUEST_LOCAL_VECTOR(zend_rsrc_list_entry*, tl_regular_list);
+typedef HPHP::ZendRequestLocalVector<zend_rsrc_list_entry*>::container zend_rsrc_list;
 
-zend_rsrc_list& RL() {
-  return s_regular_list.get()->get();
+namespace {
+  zend_rsrc_list& RL() {
+    return tl_regular_list.get()->get();
+  }
 }
 
 static zend_rsrc_list_entry *zend_list_id_to_entry(int id TSRMLS_DC) {
@@ -64,9 +75,7 @@ static zend_rsrc_list_entry *zend_list_id_to_entry(int id TSRMLS_DC) {
 ///////////////////////////////////////////////////////////////////////////////////
 
 ZEND_API int zend_list_insert(void *ptr, int type TSRMLS_DC) {
-  zend_rsrc_list_entry* le = NEWOBJ(zend_rsrc_list_entry)(ptr, type);
-  // TODO is this right?
-  le->incRefCount();
+  zend_rsrc_list_entry* le = new zend_rsrc_list_entry(ptr, type);
   le->incRefCount();
   RL().push_back(le);
   int id = RL().size() - 1;
@@ -75,7 +84,7 @@ ZEND_API int zend_list_insert(void *ptr, int type TSRMLS_DC) {
 }
 
 ZEND_API int _zend_list_delete(int id TSRMLS_DC) {
-  zend_rsrc_list_entry* le = zend_list_id_to_entry(id);
+  zend_rsrc_list_entry* le = zend_list_id_to_entry(id TSRMLS_CC);
   if (le) {
     int refcount = le->getCount();
     decRefRes(le);
@@ -91,7 +100,7 @@ ZEND_API int _zend_list_delete(int id TSRMLS_DC) {
 }
 
 ZEND_API void *_zend_list_find(int id, int *type TSRMLS_DC) {
-  zend_rsrc_list_entry* le = zend_list_id_to_entry(id);
+  zend_rsrc_list_entry* le = zend_list_id_to_entry(id TSRMLS_CC);
   HPHP::ZendNormalResourceDataHolder* holder =
     dynamic_cast<HPHP::ZendNormalResourceDataHolder*>(le);
   if (holder) {
@@ -107,7 +116,7 @@ ZEND_API void *_zend_list_find(int id, int *type TSRMLS_DC) {
 }
 
 ZEND_API int _zend_list_addref(int id TSRMLS_DC) {
-  zend_rsrc_list_entry* le = zend_list_id_to_entry(id);
+  zend_rsrc_list_entry* le = zend_list_id_to_entry(id TSRMLS_CC);
   if (le) {
     le->incRefCount();
     return SUCCESS;
@@ -206,11 +215,11 @@ ZEND_API int zend_register_list_destructors_ex(rsrc_dtor_func_t ld, rsrc_dtor_fu
   lde.list_dtor_ex = ld;
   lde.plist_dtor_ex = pld;
   lde.module_number = module_number;
-  lde.resource_id = HPHP::s_resource_dtors.get()->get().size();
+  lde.resource_id = HPHP::s_resource_dtors.size();
   lde.type = ZEND_RESOURCE_LIST_TYPE_EX;
   lde.type_name = type_name;
 
-  HPHP::s_resource_dtors.get()->get()[lde.resource_id] = lde;
+  HPHP::s_resource_dtors.push_back(lde);
   return lde.resource_id;
 }
 
@@ -222,7 +231,7 @@ int zval_get_resource_id(const zval &z) {
   }
 
   // Make a zend_rsrc_list_entry and return that
-  le = NEWOBJ(HPHP::ZendNormalResourceDataHolder)(z.tv()->m_data.pres);
+  le = new HPHP::ZendNormalResourceDataHolder(z.tv()->m_data.pres);
   RL().push_back(le);
   int id = RL().size() - 1;
   le->id = id;
@@ -230,7 +239,7 @@ int zval_get_resource_id(const zval &z) {
 }
 
 HPHP::ResourceData *zend_list_id_to_resource_data(int id TSRMLS_DC) {
-  zend_rsrc_list_entry* le = zend_list_id_to_entry(id);
+  zend_rsrc_list_entry* le = zend_list_id_to_entry(id TSRMLS_CC);
   HPHP::ZendNormalResourceDataHolder* holder =
     dynamic_cast<HPHP::ZendNormalResourceDataHolder*>(le);
   return holder ? holder->getResourceData() : le;

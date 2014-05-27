@@ -279,7 +279,7 @@ TypeConstraint::checkPrimitive(DataType dt) const {
 static const char* describe_actual_type(const TypedValue* tv, bool isHHType) {
   tv = tvToCell(tv);
   switch (tv->m_type) {
-    case KindOfUninit:
+    case KindOfUninit:        return "undefined variable";
     case KindOfNull:          return "null";
     case KindOfBoolean:       return "bool";
     case KindOfInt64:         return "int";
@@ -361,12 +361,22 @@ void TypeConstraint::verifyFail(const Func* func, TypedValue* tv,
       ).str()
     );
   } else {
-    raise_typehint_error(
-      folly::format(
-        "Argument {} passed to {}() must be an instance of {}, {} given",
-        id + 1, func->fullName()->data(), name, givenType
-      ).str()
-    );
+    auto cls = Unit::lookupClass(m_typeName);
+    if (cls && isInterface(cls)) {
+      raise_typehint_error(
+        folly::format(
+          "Argument {} passed to {}() must implement interface {}, {} given",
+          id + 1, func->fullName()->data(), name, givenType
+        ).str()
+      );
+    } else {
+      raise_typehint_error(
+        folly::format(
+          "Argument {} passed to {}() must be an instance of {}, {} given",
+          id + 1, func->fullName()->data(), name, givenType
+        ).str()
+      );
+    }
   }
 }
 

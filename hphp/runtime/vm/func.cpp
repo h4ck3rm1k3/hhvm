@@ -13,28 +13,34 @@
    | license@php.net so we can mail you a copy immediately.               |
    +----------------------------------------------------------------------+
 */
+
 #include "hphp/runtime/vm/func.h"
 
-#include <iostream>
-#include <boost/scoped_ptr.hpp>
+#include "hphp/parser/parser.h"
 
 #include "hphp/runtime/base/base-includes.h"
-#include "hphp/util/atomic-vector.h"
-#include "hphp/util/trace.h"
-#include "hphp/util/debug.h"
-#include "hphp/runtime/base/strings.h"
-#include "hphp/runtime/base/complex-types.h"
-#include "hphp/runtime/base/rds.h"
-#include "hphp/runtime/vm/runtime.h"
-#include "hphp/runtime/vm/repo.h"
 #include "hphp/runtime/base/file-repository.h"
-#include "hphp/runtime/vm/jit/mc-generator.h"
+#include "hphp/runtime/base/rds.h"
+#include "hphp/runtime/base/strings.h"
+
 #include "hphp/runtime/vm/blob-helper.h"
-#include "hphp/runtime/vm/func-inline.h"
-#include "hphp/system/systemlib.h"
 #include "hphp/runtime/vm/bytecode.h"
+#include "hphp/runtime/vm/func-inline.h"
 #include "hphp/runtime/vm/native.h"
-#include "hphp/parser/parser.h"
+#include "hphp/runtime/vm/repo.h"
+#include "hphp/runtime/vm/runtime.h"
+
+#include "hphp/runtime/vm/jit/mc-generator.h"
+#include "hphp/runtime/vm/jit/types.h"
+
+#include "hphp/runtime/vm/verifier/cfg.h"
+
+#include "hphp/system/systemlib.h"
+
+#include "hphp/util/atomic-vector.h"
+#include "hphp/util/debug.h"
+#include "hphp/util/trace.h"
+#include "hphp/runtime/ext_zend_compat/hhvm/zend-wrap-func.h"
 
 namespace HPHP {
 
@@ -42,47 +48,84 @@ TRACE_SET_MOD(hhbc);
 using JIT::tx;
 using JIT::mcg;
 
-const StringData* Func::s___call = makeStaticString("__call");
-const StringData* Func::s___callStatic =
-  makeStaticString("__callStatic");
+const StringData* Func::s___call       = makeStaticString("__call");
+const StringData* Func::s___callStatic = makeStaticString("__callStatic");
 
 //=============================================================================
 // Func.
 
-static void decl_incompat(const PreClass* implementor,
-                          const Func* imeth) {
+static inline void decl_incompat(const PreClass* implementor,
+                                 const Func* imeth) {
   const char* name = imeth->name()->data();
   raise_error("Declaration of %s::%s() must be compatible with "
-              "that of %s::%s()", implementor->name()->data(), name,
+              "that of %s::%s()",
+              implementor->name()->data(), name,
               imeth->cls()->preClass()->name()->data(), name);
 }
 
 // Check compatibility vs interface and abstract declarations
-void Func::parametersCompat(const PreClass* preClass, const Func* imeth) const {
+void Func::checkDeclarationCompat(const PreClass* preClass,
+                                  const Func* imeth) const {
   const Func::ParamInfoVec& params = this->params();
   const Func::ParamInfoVec& iparams = imeth->params();
+  auto const ivariadic = imeth->hasVariadicCaptureParam();
+  if (ivariadic && !this->hasVariadicCaptureParam()) {
+    decl_incompat(preClass, imeth);
+  }
+
   // Verify that meth has at least as many parameters as imeth.
-  if ((params.size() < iparams.size())) {
+  if (this->numParams() < imeth->numParams()) {
+    // This check doesn't require special casing for variadics, because
+    // it's not ok to turn a variadic function into a non-variadic.
     decl_incompat(preClass, imeth);
   }
   // Verify that the typehints for meth's parameters are compatible with
   // imeth's corresponding parameter typehints.
-  unsigned firstOptional = 0;
-  for (unsigned i = 0; i < iparams.size(); ++i) {
-    if (!params[i].typeConstraint().compat(iparams[i].typeConstraint())
-        && !iparams[i].typeConstraint().isTypeVar()) {
-      decl_incompat(preClass, imeth);
+  size_t firstOptional = 0;
+  {
+    size_t i = 0;
+    for (; i < imeth->numNonVariadicParams(); ++i) {
+      auto const& p = params[i];
+      if (p.isVariadic()) { decl_incompat(preClass, imeth); }
+      auto const& ip = iparams[i];
+      if (!p.typeConstraint().compat(ip.typeConstraint())
+          && !ip.typeConstraint().isTypeVar()) {
+        decl_incompat(preClass, imeth);
+      }
+      if (!iparams[i].hasDefaultValue()) {
+        // The leftmost of imeth's contiguous trailing optional parameters
+        // must start somewhere to the right of this parameter (which may
+        // be the variadic param)
+        firstOptional = i + 1;
+      }
     }
-    if (!iparams[i].hasDefaultValue()) {
-      // The leftmost of imeth's contiguous trailing optional parameters
-      // must start somewhere to the right of this parameter.
-      firstOptional = i + 1;
+    if (ivariadic) {
+      assert(iparams[iparams.size() - 1].isVariadic());
+      assert(params[params.size() - 1].isVariadic());
+      // reffiness of the variadics must match
+      if (imeth->byRef(iparams.size() - 1) != this->byRef(params.size() - 1)) {
+        decl_incompat(preClass, imeth);
+      }
+
+      // To be compatible with a variadic interface, params from the
+      // variadic onwards must have a compatible typehint
+      auto const& ivarConstraint = iparams[iparams.size() - 1].typeConstraint();
+      if (!ivarConstraint.isTypeVar()) {
+        for (; i < this->numParams(); ++i) {
+          auto const& p = params[i];
+          if (!p.typeConstraint().compat(ivarConstraint)) {
+            decl_incompat(preClass, imeth);
+          }
+        }
+      }
     }
   }
+
   // Verify that meth provides defaults, starting with the parameter that
   // corresponds to the leftmost of imeth's contiguous trailing optional
-  // parameters.
-  for (unsigned i = firstOptional; i < params.size(); ++i) {
+  // parameters and *not* including any variadic last param (variadics
+  // don't have any default values).
+  for (unsigned i = firstOptional; i < this->numNonVariadicParams(); ++i) {
     if (!params[i].hasDefaultValue()) {
       decl_incompat(preClass, imeth);
     }
@@ -122,7 +165,7 @@ bool Func::isFuncIdValid(FuncId id) {
   return s_funcVec.get(id) != nullptr;
 }
 
-void Func::setFullName() {
+void Func::setFullName(int numParams) {
   assert(m_name->isStatic());
   if (m_cls) {
     m_fullName = makeStaticString(
@@ -131,12 +174,55 @@ void Func::setFullName() {
     m_fullName = m_name;
     m_namedEntity = Unit::GetNamedEntity(m_name);
   }
+  if (RuntimeOption::EvalPerfDataMap) {
+    int numPre = isClosureBody() ? 1 : 0;
+    char* from = (char*)this - numPre * sizeof(Func);
+
+    int maxNumPrologues = Func::getMaxNumPrologues(numParams);
+    int numPrologues = maxNumPrologues > kNumFixedPrologues ?
+      maxNumPrologues : kNumFixedPrologues;
+    char* to = (char*)(m_prologueTable + numPrologues);
+    Debug::DebugInfo::recordDataMap(
+      from, to, folly::format("Func-{}-{}", numPre,
+                              (isPseudoMain() ?
+                               m_unit->filepath()->data() :
+                               m_fullName->data())).str());
+  }
   if (RuntimeOption::DynamicInvokeFunctions.size()) {
     if (RuntimeOption::DynamicInvokeFunctions.find(m_fullName->data()) !=
         RuntimeOption::DynamicInvokeFunctions.end()) {
-      m_attrs = Attr(m_attrs | AttrDynamicInvoke);
+      m_attrs = Attr(m_attrs | AttrInterceptable);
     }
   }
+}
+
+bool Func::anyBlockEndsAt(Offset off) const {
+  assert(JIT::Translator::WriteLease().amOwner());
+  // The empty() check relies on a Func's bytecode always being nonempty
+  assert(base() != past());
+  if (m_shared->m_blockEnds.empty()) {
+    using namespace Verifier;
+
+    Arena arena;
+    GraphBuilder builder{arena, this};
+    Graph* cfg = builder.build();
+
+    for (LinearBlocks blocks = linearBlocks(cfg); !blocks.empty(); ) {
+      auto last = blocks.popFront()->last - m_unit->entry();
+      m_shared->m_blockEnds.insert(last);
+    }
+
+    assert(!m_shared->m_blockEnds.empty());
+  }
+
+  return m_shared->m_blockEnds.count(off) != 0;
+}
+
+int Func::numPrologues() const {
+  int maxNumPrologues = Func::getMaxNumPrologues(numParams());
+  int nPrologues = maxNumPrologues > kNumFixedPrologues ? maxNumPrologues
+                                                        : kNumFixedPrologues;
+  return nPrologues;
 }
 
 void Func::resetPrologue(int numParams) {
@@ -173,9 +259,9 @@ void Func::init(int numParams) {
   m_maybeIntercepted = -1;
   if (!preClass()) {
     setNewFuncId();
-    setFullName();
+    setFullName(numParams);
   } else {
-    m_fullName = 0;
+    m_fullName = nullptr;
   }
   if (isSpecial(m_name)) {
     /*
@@ -198,7 +284,6 @@ void Func::init(int numParams) {
 
 void* Func::allocFuncMem(
   const StringData* name, int numParams,
-  bool needsGeneratorOrigFunc,
   bool needsNextClonedClosure,
   bool lowMem) {
   int maxNumPrologues = Func::getMaxNumPrologues(numParams);
@@ -206,9 +291,7 @@ void* Func::allocFuncMem(
     maxNumPrologues > kNumFixedPrologues ?
     maxNumPrologues - kNumFixedPrologues :
     0;
-  int numExtraFuncPtrs =
-    (int) needsGeneratorOrigFunc +
-    (int) needsNextClonedClosure;
+  int numExtraFuncPtrs = (int) needsNextClonedClosure;
   size_t funcSize =
     sizeof(Func) +
     numExtraPrologues * sizeof(unsigned char*) +
@@ -217,15 +300,12 @@ void* Func::allocFuncMem(
   void* mem = lowMem ? low_malloc(funcSize) : malloc(funcSize);
 
   /**
-   * The Func object can have optional generatorOrigFunc and nextClonedClosure
-   * pointers to Func in front of the actual object. The layout is as follows:
+   * The Func object can have optional nextClonedClosure pointer to Func
+   * in front of the actual object. The layout is as follows:
    *
    *               +--------------------------------+ low address
    *               |  nextClonedClosure (optional)  |
-   *               |  in closures and closure gens  |
-   *               +--------------------------------+
-   *               |  generatorOrigFunc (optional)  |
-   *               |  in generator bodies           |
+   *               |  in closures                   |
    *               +--------------------------------+ Func* address
    *               |  Func object                   |
    *               +--------------------------------+ high address
@@ -250,7 +330,7 @@ Func::Func(Unit& unit, Id id, PreClass* preClass, int line1, int line2,
 
 Func::~Func() {
   if (m_fullName != nullptr && m_maybeIntercepted != -1) {
-    unregister_intercept_flag(fullNameRef(), &m_maybeIntercepted);
+    unregister_intercept_flag(fullNameStr(), &m_maybeIntercepted);
   }
   if (m_funcId != InvalidFuncId) {
     DEBUG_ONLY auto oldVal = s_funcVec.exchange(m_funcId, nullptr);
@@ -261,7 +341,7 @@ Func::~Func() {
     maxNumPrologues > kNumFixedPrologues ? maxNumPrologues
                                          : kNumFixedPrologues;
   if (mcg != nullptr) {
-    mcg->smashPrologueGuards((TCA *)m_prologueTable,
+    mcg->smashPrologueGuards((JIT::TCA*)m_prologueTable,
                              numPrologues, this);
   }
 #ifdef DEBUG
@@ -277,9 +357,8 @@ void Func::destroy(Func* func) {
    */
   bool lowMem = !func->preClass() || func->m_cls;
   void* mem = func;
-  if (func->isClosureBody() || func->isGeneratorFromClosure()) {
+  if (func->isClosureBody()) {
     Func** startOfFunc = ((Func**) mem) - 1; // move back by a pointer
-    if (func->isGenerator()) --startOfFunc;  // one more if in generator
     mem = startOfFunc;
     if (Func* f = *startOfFunc) {
       /*
@@ -288,11 +367,9 @@ void Func::destroy(Func* func) {
        * They're not real prologs, and they shouldn't be
        * smashed, so clear them out here.
        */
-      f->initPrologues(f->m_numParams);
+      f->initPrologues(f->numParams());
       Func::destroy(f);
     }
-  } else if (func->isGenerator()) {
-    mem = ((Func**)mem) - 1;
   }
   func->~Func();
   if (lowMem) {
@@ -302,20 +379,23 @@ void Func::destroy(Func* func) {
   }
 }
 
-Func* Func::clone(Class* cls) const {
+Func* Func::clone(Class* cls, const StringData* name) const {
+  auto numParams = this->numParams();
   Func* f = new (allocFuncMem(
                    m_name,
-                   m_numParams,
-                   isGenerator(),
-                   isClosureBody() || isGeneratorFromClosure(),
+                   numParams,
+                   isClosureBody(),
                    cls || !preClass())) Func(*this);
 
-  f->initPrologues(m_numParams);
+  f->initPrologues(numParams);
   f->m_funcId = InvalidFuncId;
+  if (name) {
+    f->m_name = name;
+  }
   if (cls != f->m_cls) {
     f->m_cls = cls;
-    f->setFullName();
   }
+  f->setFullName(numParams);
   f->m_profCounter = 0;
   return f;
 }
@@ -358,7 +438,7 @@ Func* Func::findCachedClone(Class* cls) const {
 
 void Func::rename(const StringData* name) {
   m_name = name;
-  setFullName();
+  setFullName(numParams());
   // load the renamed function
   Unit::loadFunc(this);
 }
@@ -432,7 +512,7 @@ bool Func::isClonedClosure() const {
 
 bool Func::isNameBindingImmutable(const Unit* fromUnit) const {
   if (RuntimeOption::EvalJitEnableRenameFunction ||
-      m_attrs & AttrDynamicInvoke) {
+      m_attrs & AttrInterceptable) {
     return false;
   }
 
@@ -456,7 +536,7 @@ bool Func::byRef(int32_t arg) const {
   if (UNLIKELY(arg >= kBitsPerQword)) {
     // Super special case. A handful of builtins are varargs functions where the
     // (not formally declared) varargs are pass-by-reference. psychedelic-kitten
-    if (arg >= m_numParams) {
+    if (arg >= numParams()) {
       return m_attrs & AttrVariadicByRef;
     }
     ref = &shared()->m_refBitPtr[(uint32_t)arg / kBitsPerQword - 1];
@@ -465,22 +545,36 @@ bool Func::byRef(int32_t arg) const {
   return *ref & (1ull << bit);
 }
 
+const StaticString s_extract("extract");
+const StaticString s_extractNative("__SystemLib\\extract");
+
 bool Func::mustBeRef(int32_t arg) const {
-  if (byRef(arg)) {
-    return
-      arg < m_numParams ||
-      !(m_attrs & AttrVariadicByRef) ||
-      !methInfo() ||
-      !(methInfo()->attribute & ClassInfo::MixedVariableArguments);
+  if (!byRef(arg)) return false;
+  if (arg == 0) {
+    if (UNLIKELY(m_attrs & AttrNative)) {
+      // Extract is special (in more ways than one)---here it needs
+      // to be able to take its first argument by ref or not by ref.
+      if (name() == s_extract.get() && !cls()) return false;
+      if (name() == s_extractNative.get() && !cls()) return false;
+    }
   }
-  return false;
+  return
+    arg < numParams() ||
+    !(m_attrs & AttrVariadicByRef) ||
+    !methInfo() ||
+    !(methInfo()->attribute & ClassInfo::MixedVariableArguments);
 }
 
 void Func::appendParam(bool ref, const Func::ParamInfo& info,
                        std::vector<ParamInfo>& pBuilder) {
-  int qword = m_numParams / kBitsPerQword;
-  int bit   = m_numParams % kBitsPerQword;
-  m_numParams++;
+  auto numParams = pBuilder.size();
+
+  // When called by FuncEmitter, the least significant bit of m_paramCounts
+  // are not yet being used as a variadic flag, so numParams() cannot be
+  // used
+  int qword = numParams / kBitsPerQword;
+  int bit   = numParams % kBitsPerQword;
+  assert(!info.isVariadic() || (m_attrs & AttrVariadicParam));
   uint64_t* refBits = &m_refBitVal;
   // Grow args, if necessary.
   if (qword) {
@@ -504,6 +598,26 @@ void Func::appendParam(bool ref, const Func::ParamInfo& info,
   pBuilder.push_back(info);
 }
 
+/* This function is expected to be called after all calls to appendParam
+ * are complete. After, m_paramCounts is initialized such that the least
+ * significant bit of this->m_paramCounts indicates whether the last param
+ * is (non)variadic; and the rest of the bits are the number of params.
+ */
+void Func::finishedEmittingParams(std::vector<ParamInfo>& fParams) {
+  assert(m_paramCounts == 0);
+  if (!fParams.size()) {
+    assert(!m_refBitVal && !shared()->m_refBitPtr);
+    m_refBitVal = attrs() & AttrVariadicByRef ? -1uLL : 0uLL;
+  }
+
+  shared()->m_params = fParams;
+  m_paramCounts = fParams.size() << 1;
+  if (!(m_attrs & AttrVariadicParam)) {
+    m_paramCounts |= 1;
+  }
+  assert(numParams() == fParams.size());
+}
+
 Id Func::lookupVarId(const StringData* name) const {
   assert(name != nullptr);
   return shared()->m_localNames.findIndex(name);
@@ -518,6 +632,8 @@ static void print_attrs(std::ostream& out, Attr attrs) {
   if (attrs & AttrFinal)     { out << " final"; }
   if (attrs & AttrPhpLeafFn) { out << " (leaf)"; }
   if (attrs & AttrHot)       { out << " (hot)"; }
+  if (attrs & AttrInterceptable) { out << " (interceptable)"; }
+  if (attrs & AttrPersistent) { out << " (persistent)"; }
 }
 
 void Func::prettyPrint(std::ostream& out, const PrintOpts& opts) const {
@@ -552,6 +668,9 @@ void Func::prettyPrint(std::ostream& out, const PrintOpts& opts) const {
       out << std::endl;
     }
   }
+  out << "maxStackCells: " << maxStackCells() << '\n'
+      << "numLocals: " << numLocals() << '\n'
+      << "numIterators: " << numIterators() << '\n';
 
   const EHEntVec& ehtab = shared()->m_ehtab;
   size_t ehId = 0;
@@ -568,8 +687,9 @@ void Func::prettyPrint(std::ostream& out, const PrintOpts& opts) const {
     }
     if (catcher) {
       out << std::endl;
-      for (EHEnt::CatchVec::const_iterator it2 = it->m_catches.begin();
-           it2 != it->m_catches.end(); ++it2) {
+      for (auto it2 = it->m_catches.begin();
+          it2 != it->m_catches.end();
+          ++it2) {
         out << "  Handle " << m_unit->lookupLitstrId(it2->first)->data()
           << " at " << it2->second;
       }
@@ -618,13 +738,6 @@ void Func::getFuncInfo(ClassInfo::MethodInfo* mi) const {
     if (!(attr & ClassInfo::IsProtected || attr & ClassInfo::IsPrivate)) {
       attr |= ClassInfo::IsPublic;
     }
-    if (preClass() &&
-        (!strcasecmp(m_name->data(), "__construct") ||
-         (!(preClass()->attrs() & AttrTrait) &&
-          !strcasecmp(m_name->data(), preClass()->name()->data()) &&
-          !preClass()->hasMethod(String("__construct").get())))) {
-      attr |= ClassInfo::IsConstructor;
-    }
     if (attr == 0) attr = ClassInfo::IsNothing;
     mi->attribute = (ClassInfo::Attribute)attr;
     mi->name = m_name->data();
@@ -635,7 +748,8 @@ void Func::getFuncInfo(ClassInfo::MethodInfo* mi) const {
       mi->docComment = docComment()->data();
     }
     // Get the parameter info
-    for (unsigned i = 0; i < unsigned(m_numParams); ++i) {
+    auto limit = numParams();
+    for (unsigned i = 0; i < limit; ++i) {
       ClassInfo::ParameterInfo* pi = new ClassInfo::ParameterInfo;
       attr = 0;
       if (byRef(i)) {
@@ -664,7 +778,7 @@ void Func::getFuncInfo(ClassInfo::MethodInfo* mi) const {
           // exceptions here.
           const Variant& v = g_context->getEvaledArg(
             fpi.phpCode(),
-            cls() ? cls()->nameRef() : nameRef()
+            cls() ? cls()->nameStr() : nameStr()
           );
           pi->value = strdup(f_serialize(v).get()->data());
         }
@@ -680,7 +794,7 @@ void Func::getFuncInfo(ClassInfo::MethodInfo* mi) const {
         // convert the typedvalue to a cvarref and push into pi.
         auto userAttr = new ClassInfo::UserAttributeInfo;
         assert(it->first->isStatic());
-        userAttr->name = const_cast<StringData*>(it->first);
+        userAttr->name = const_cast<StringData*>(it->first.get());
         userAttr->setStaticValue(tvAsCVarRef(&it->second));
         pi->userAttrs.push_back(userAttr);
       }
@@ -698,7 +812,7 @@ void Func::getFuncInfo(ClassInfo::MethodInfo* mi) const {
     for (SVInfoVec::const_iterator it = staticVars.begin();
          it != staticVars.end(); ++it) {
       ClassInfo::ConstantInfo* ci = new ClassInfo::ConstantInfo;
-      ci->name = *(String*)(&(*it).name);
+      ci->name = StrNR(it->name);
       if ((*it).phpCode != nullptr) {
         ci->valueLen = (*it).phpCode->size();
         ci->valueText = (*it).phpCode->data();
@@ -732,9 +846,8 @@ Func::SharedData::SharedData(PreClass* preClass, Id id,
     m_past(past), m_line1(line1), m_line2(line2),
     m_info(nullptr), m_refBitPtr(0), m_builtinFuncPtr(nullptr),
     m_docComment(docComment), m_top(top), m_isClosureBody(false),
-    m_isGenerator(false), m_isGeneratorFromClosure(false),
-    m_isPairGenerator(false), m_isGenerated(false), m_isAsync(false),
-    m_generatorBodyName(nullptr), m_originalFilename(nullptr) {
+    m_isAsync(false), m_isGenerator(false), m_isPairGenerator(false),
+    m_isGenerated(false), m_originalFilename(nullptr) {
 }
 
 Func::SharedData::~SharedData() {
@@ -745,35 +858,27 @@ void Func::SharedData::atomicRelease() {
   delete this;
 }
 
-const Func* Func::getGeneratorBody() const {
-  const Func* genFunc;
-  if (isMethod() && !isClosureBody()) {
-    genFunc = cls()->lookupMethod(getGeneratorBodyName());
-  } else {
-    genFunc = Unit::lookupFunc(getGeneratorBodyName());
-    if (isMethod() && isClosureBody()) {
-      genFunc = genFunc->cloneAndSetClass(cls());
-    }
-  }
-
-  const_cast<Func*>(genFunc)->setGeneratorOrigFunc(this);
-  return genFunc;
-}
-
 bool Func::isEntry(Offset offset) const {
   return offset == base() || isDVEntry(offset);
 }
 
 bool Func::isDVEntry(Offset offset) const {
-  for (int i = 0; i < numParams(); i++) {
+  auto const nparams = numNonVariadicParams();
+  for (int i = 0; i < nparams; i++) {
     const ParamInfo& pi = params()[i];
     if (pi.hasDefaultValue() && pi.funcletOff() == offset) return true;
   }
   return false;
 }
 
+int Func::getEntryNumParams(Offset offset) const {
+  if (offset == base()) return numNonVariadicParams();
+  return getDVEntryNumParams(offset);
+}
+
 int Func::getDVEntryNumParams(Offset offset) const {
-  for (int i = 0; i < numParams(); i++) {
+  auto const nparams = numNonVariadicParams();
+  for (int i = 0; i < nparams; i++) {
     const ParamInfo& pi = params()[i];
     if (pi.hasDefaultValue() && pi.funcletOff() == offset) return i;
   }
@@ -782,7 +887,8 @@ int Func::getDVEntryNumParams(Offset offset) const {
 
 Offset Func::getEntryForNumArgs(int numArgsPassed) const {
   assert(numArgsPassed >= 0);
-  for (unsigned i = numArgsPassed; i < numParams(); i++) {
+  auto const nparams = numNonVariadicParams();
+  for (unsigned i = numArgsPassed; i < nparams; i++) {
     const Func::ParamInfo& pi = params()[i];
     if (pi.hasDefaultValue()) {
       return pi.funcletOff();
@@ -794,13 +900,12 @@ Offset Func::getEntryForNumArgs(int numArgsPassed) const {
 bool Func::shouldPGO() const {
   if (!RuntimeOption::EvalJitPGO) return false;
 
-  // Cloned closures use the func prologue tables to hold the
-  // addresses of the DV funclets, and not real prologues.  The
-  // mechanism to retranslate prologues currently assumes that the
-  // prologue tables contain real prologues, so it doesn't properly
-  // handle cloned closures for now.  So don't profile & retranslate
-  // them for now.
-  if (isClonedClosure()) return false;
+  // Non-cloned closures simply contain prologues that redispacth to
+  // cloned closures.  They don't contain a translation for the
+  // function entry, which is what triggers an Optimize retranslation.
+  // So don't generate profiling translations for them -- there's not
+  // much to do with PGO anyway here, since they just have prologues.
+  if (isClosureBody() && !isClonedClosure()) return false;
 
   if (!RuntimeOption::EvalJitPGOHotOnly) return true;
   return attrs() & AttrHot;
@@ -812,6 +917,19 @@ void Func::incProfCounter() {
   if (m_profCounter >= RuntimeOption::EvalHotFuncThreshold) {
     m_attrs = (Attr)(m_attrs | AttrHot);
   }
+}
+
+bool Func::isParamCoerceMode() const {
+  if (!isBuiltin()) return false;
+
+  // No method info implies this is an HNI or a systemlib PHP function. HNI
+  // functions are all PCM, systemlib functions are not.
+  if (!methInfo()) return isNative();
+
+  auto const attr = methInfo()->attribute;
+  auto const pcm =
+    ClassInfo::ParamCoerceModeNull | ClassInfo::ParamCoerceModeFalse;
+  return attr & pcm;
 }
 
 //=============================================================================
@@ -834,14 +952,12 @@ FuncEmitter::FuncEmitter(UnitEmitter& ue, int sn, Id id, const StringData* n)
   , m_returnType(KindOfInvalid)
   , m_top(false)
   , m_isClosureBody(false)
+  , m_isAsync(false)
   , m_isGenerator(false)
-  , m_isGeneratorFromClosure(false)
   , m_isPairGenerator(false)
   , m_containsCalls(false)
-  , m_isAsync(false)
   , m_info(nullptr)
   , m_builtinFuncPtr(nullptr)
-  , m_generatorBodyName(nullptr)
   , m_originalFilename(nullptr)
 {}
 
@@ -862,14 +978,12 @@ FuncEmitter::FuncEmitter(UnitEmitter& ue, int sn, const StringData* n,
   , m_returnType(KindOfInvalid)
   , m_top(false)
   , m_isClosureBody(false)
+  , m_isAsync(false)
   , m_isGenerator(false)
-  , m_isGeneratorFromClosure(false)
   , m_isPairGenerator(false)
   , m_containsCalls(false)
-  , m_isAsync(false)
   , m_info(nullptr)
   , m_builtinFuncPtr(nullptr)
-  , m_generatorBodyName(nullptr)
   , m_originalFilename(nullptr)
 {}
 
@@ -1094,6 +1208,7 @@ void FuncEmitter::addUserAttribute(const StringData* name, TypedValue tv) {
  *  "NoFCallBuiltin": Prevent FCallBuiltin optimization
  *      Effectively forces functions to generate an ActRec
  *  "NoInjection": Do not include this frame in backtraces
+ *  "ZendCompat": Use zend compat wrapper
  *
  *  e.g.   <<__Native("ActRec")>> function foo():mixed;
  */
@@ -1102,7 +1217,8 @@ static const StaticString
   s_actrec("ActRec"),
   s_nofcallbuiltin("NoFCallBuiltin"),
   s_variadicbyref("VariadicByRef"),
-  s_noinjection("NoInjection");
+  s_noinjection("NoInjection"),
+  s_zendcompat("ZendCompat");
 
 int FuncEmitter::parseNativeAttributes(Attr &attrs) const {
   int ret = Native::AttrNone;
@@ -1124,6 +1240,11 @@ int FuncEmitter::parseNativeAttributes(Attr &attrs) const {
         attrs = attrs | AttrVariadicByRef;
       } else if (userAttrStrVal.get()->isame(s_noinjection.get())) {
         attrs = attrs | AttrNoInjection;
+      } else if (userAttrStrVal.get()->isame(s_zendcompat.get())) {
+        ret = ret | Native::AttrZendCompat;
+        // ZendCompat implies ActRec, no FCallBuiltin
+        attrs = attrs | AttrMayUseVV | AttrNoFCallBuiltin;
+        ret = ret | Native::AttrActRec;
       }
     }
   }
@@ -1142,7 +1263,7 @@ void FuncEmitter::commit(RepoTxn& txn) const {
 
 Func* FuncEmitter::create(Unit& unit, PreClass* preClass /* = NULL */) const {
   bool isGenerated = isdigit(m_name->data()[0]) ||
-    ParserBase::IsClosureName(m_name->toCppString()) || m_isGenerator;
+    ParserBase::IsClosureName(m_name->toCppString());
 
   Attr attrs = m_attrs;
   if (preClass && preClass->attrs() & AttrInterface) {
@@ -1150,31 +1271,33 @@ Func* FuncEmitter::create(Unit& unit, PreClass* preClass /* = NULL */) const {
   }
   if (attrs & AttrPersistent &&
       ((RuntimeOption::EvalJitEnableRenameFunction && !isGenerated) ||
-       (!RuntimeOption::RepoAuthoritative && SystemLib::s_inited))) {
+       (!RuntimeOption::RepoAuthoritative && SystemLib::s_inited) ||
+       attrs & AttrInterceptable)) {
+    if (attrs & AttrBuiltin) {
+      SystemLib::s_anyNonPersistentBuiltins = true;
+    }
     attrs = Attr(attrs & ~AttrPersistent);
   }
   if (RuntimeOption::EvalJitEnableRenameFunction &&
       !m_name->empty() &&
       !Func::isSpecial(m_name) &&
-      !m_isClosureBody &&
-      !m_isGenerator) {
+      !m_isClosureBody) {
     // intercepted functions need to pass all args through
     // to the interceptee
-    attrs = attrs | AttrMayUseVV;
+    attrs = Attr(attrs | AttrMayUseVV);
   }
+  if (isVariadic()) { attrs = Attr(attrs | AttrVariadicParam); }
 
-  if (!m_containsCalls) attrs = Attr(attrs | AttrPhpLeafFn);
+  if (!m_containsCalls) { attrs = Attr(attrs | AttrPhpLeafFn); }
 
   assert(!m_pce == !preClass);
   Func* f = m_ue.newFunc(this, unit, m_id, preClass, m_line1, m_line2, m_base,
                          m_past, m_name, attrs, m_top, m_docComment,
-                         m_params.size(),
-                         m_isGenerator,
-                         m_isClosureBody | m_isGeneratorFromClosure);
+                         m_params.size(), m_isClosureBody);
 
   f->shared()->m_info = m_info;
   f->shared()->m_returnType = m_returnType;
-  std::vector<Func::ParamInfo> pBuilder;
+  std::vector<Func::ParamInfo> fParams;
   for (unsigned i = 0; i < m_params.size(); ++i) {
     Func::ParamInfo pi;
     pi.setFuncletOff(m_params[i].funcletOff());
@@ -1184,14 +1307,10 @@ Func* FuncEmitter::create(Unit& unit, PreClass* preClass /* = NULL */) const {
     pi.setUserAttributes(m_params[i].userAttributes());
     pi.setBuiltinType(m_params[i].builtinType());
     pi.setUserType(m_params[i].userType());
-    f->appendParam(m_params[i].ref(), pi, pBuilder);
-  }
-  if (!m_params.size()) {
-    assert(!f->m_refBitVal && !f->shared()->m_refBitPtr);
-    f->m_refBitVal = attrs & AttrVariadicByRef ? -1uLL : 0uLL;
+    pi.setVariadic(m_params[i].isVariadic());
+    f->appendParam(m_params[i].ref(), pi, fParams);
   }
 
-  f->shared()->m_params = pBuilder;
   f->shared()->m_localNames.create(m_localNames);
   f->shared()->m_numLocals = m_numLocals;
   f->shared()->m_numIterators = m_numIterators;
@@ -1200,18 +1319,18 @@ Func* FuncEmitter::create(Unit& unit, PreClass* preClass /* = NULL */) const {
   f->shared()->m_ehtab = m_ehtab;
   f->shared()->m_fpitab = m_fpitab;
   f->shared()->m_isClosureBody = m_isClosureBody;
+  f->shared()->m_isAsync = m_isAsync;
   f->shared()->m_isGenerator = m_isGenerator;
-  f->shared()->m_isGeneratorFromClosure = m_isGeneratorFromClosure;
   f->shared()->m_isPairGenerator = m_isPairGenerator;
   f->shared()->m_userAttributes = m_userAttributes;
   f->shared()->m_builtinFuncPtr = m_builtinFuncPtr;
   f->shared()->m_nativeFuncPtr = m_nativeFuncPtr;
-  f->shared()->m_generatorBodyName = m_generatorBodyName;
   f->shared()->m_retTypeConstraint = m_retTypeConstraint;
   f->shared()->m_retUserType = m_retUserType;
   f->shared()->m_originalFilename = m_originalFilename;
   f->shared()->m_isGenerated = isGenerated;
-  f->shared()->m_isAsync = m_isAsync;
+
+  f->finishedEmittingParams(fParams);
 
   if (attrs & AttrNative) {
     auto nif = Native::GetBuiltinFunction(m_name,
@@ -1219,13 +1338,19 @@ Func* FuncEmitter::create(Unit& unit, PreClass* preClass /* = NULL */) const {
                                           f->isStatic());
     if (nif) {
       Attr dummy = AttrNone;
-      if (parseNativeAttributes(dummy) & Native::AttrActRec) {
-        f->shared()->m_builtinFuncPtr = nif;
-        f->shared()->m_nativeFuncPtr = nullptr;
-      } else {
+      int nativeAttrs = parseNativeAttributes(dummy);
+      if (nativeAttrs & Native::AttrZendCompat) {
         f->shared()->m_nativeFuncPtr = nif;
-        f->shared()->m_builtinFuncPtr = m_pce ? Native::methodWrapper
-                                              : Native::functionWrapper;
+        f->shared()->m_builtinFuncPtr = zend_wrap_func;
+      } else {
+        if (parseNativeAttributes(dummy) & Native::AttrActRec) {
+          f->shared()->m_builtinFuncPtr = nif;
+          f->shared()->m_nativeFuncPtr = nullptr;
+        } else {
+          f->shared()->m_nativeFuncPtr = nif;
+          f->shared()->m_builtinFuncPtr = m_pce ? Native::methodWrapper
+                                                : Native::functionWrapper;
+        }
       }
     } else {
       f->shared()->m_builtinFuncPtr = Native::unimplementedWrapper;
@@ -1282,9 +1407,10 @@ void FuncEmitter::setBuiltinFunc(const ClassInfo::MethodInfo* info,
   for (unsigned i = 0; i < info->parameters.size(); ++i) {
     // For builtin only, we use a dummy ParamInfo
     FuncEmitter::ParamInfo pi;
-    pi.setRef((bool)(info->parameters[i]->attribute & ClassInfo::IsReference));
-    pi.setBuiltinType(info->parameters[i]->argType);
-    appendParam(makeStaticString(info->parameters[i]->name), pi);
+    const auto& parameter = info->parameters[i];
+    pi.setRef((bool)(parameter->attribute & ClassInfo::IsReference));
+    pi.setBuiltinType(parameter->argType);
+    appendParam(makeStaticString(parameter->name), pi);
   }
 }
 
@@ -1315,11 +1441,10 @@ void FuncEmitter::serdeMetaData(SerDe& sd) {
     (m_numIterators)
     (m_maxStackCells)
     (m_isClosureBody)
+    (m_isAsync)
     (m_isGenerator)
-    (m_isGeneratorFromClosure)
     (m_isPairGenerator)
     (m_containsCalls)
-    (m_isAsync)
 
     (m_params)
     (m_localNames)
@@ -1327,7 +1452,6 @@ void FuncEmitter::serdeMetaData(SerDe& sd) {
     (m_ehtab)
     (m_fpitab)
     (m_userAttributes)
-    (m_generatorBodyName)
     (m_retTypeConstraint)
     (m_retUserType)
     (m_originalFilename)

@@ -66,12 +66,6 @@ const StaticString
 
 bool disableWrapper(const String& scheme) {
   String lscheme = f_strtolower(scheme);
-
-  if (lscheme.same(s_file)) {
-    // Zend quietly succeeds, but does nothing
-    return true;
-  }
-
   bool ret = false;
 
   // Unregister request-specific wrappers entirely
@@ -161,7 +155,7 @@ Array enumWrappers() {
   return ret;
 }
 
-Wrapper* getWrapper(const String& scheme) {
+Wrapper* getWrapper(const String& scheme, bool warn /*= false */) {
   String lscheme = f_strtolower(scheme);
 
   // Request local wrapper?
@@ -182,32 +176,46 @@ Wrapper* getWrapper(const String& scheme) {
     }
   }
 
+  if (warn) {
+    raise_warning("Unknown URI scheme \"%s\"", scheme.c_str());
+  }
   return nullptr;
 }
 
-Wrapper* getWrapperFromURI(const String& uri) {
+Wrapper* getWrapperFromURI(const String& uri,
+                           int* pathIndex /* = NULL */,
+                           bool warn /*= true */) {
   const char *uri_string = uri.data();
 
   /* Special case for PHP4 Backward Compatability */
   if (!strncasecmp(uri_string, "zlib:", sizeof("zlib:") - 1)) {
-    return getWrapper(s_compress_zlib);
+    return getWrapper(s_compress_zlib, warn);
   }
 
   // data wrapper can come with or without a double forward slash
   if (!strncasecmp(uri_string, "data:", sizeof("data:") - 1)) {
-    return getWrapper(s_data);
+    return getWrapper(s_data, warn);
   }
 
-  const char *colon = strstr(uri_string, "://");
+  int n = 0;
+  const char* p = uri_string;
+  while (*p && (isalnum((unsigned char)*p) ||
+         *p == '+' || *p == '-' || *p == '.')) {
+    n++;
+    p++;
+  }
+  const char* colon = nullptr;
+  if (*p == ':' && n > 1 && (!strncmp("//", p + 1, 2))) {
+    colon = p;
+  }
+
   if (!colon) {
-    return getWrapper(s_file);
+    return getWrapper(s_file, warn);
   }
 
   int len = colon - uri_string;
-  if (Wrapper *w = getWrapper(String(uri_string, len, CopyString))) {
-    return w;
-  }
-  return getWrapper(s_file);
+  if (pathIndex != nullptr) *pathIndex = len + sizeof("://") - 1;
+  return getWrapper(String(uri_string, len, CopyString), warn);
 }
 
 static FileStreamWrapper s_file_stream_wrapper;

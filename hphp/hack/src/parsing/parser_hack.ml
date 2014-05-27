@@ -387,50 +387,57 @@ let rec entry ~fail content =
   let lb = Lexing.from_string content in
   let env = init_env lb in
   let ast = header env in
-  if fail && !(env.errors) <> []
-  then raise (Utils.Error (filter_duplicate_errors [] !(env.errors)));
-  if not !is_hh_file
-  then raise (Utils.Error [Pos.none, "PHP FILE"]);
+  if fail then begin
+    if !(env.errors) <> [] then
+      (env.errors := (filter_duplicate_errors [] !(env.errors)))
+    else if not !is_hh_file then
+      env.errors := [Pos.none, "PHP FILE"];
+  end else
+    env.errors := [];
   let comments = !L.comment_list in
   L.comment_list := [];
-  comments, ast
+  comments, ast, !(env.errors)
 
 (*****************************************************************************)
 (* Hack headers (strict, decl, partial) *)
 (*****************************************************************************)
 
 and header env =
-  match get_header env with
-  | None ->
-      []
-  | Some Ast.Mdecl ->
+  let file_type, head = get_header env in
+  match file_type, head with
+  | Ast.PhpFile, _
+  | _, Some Ast.Mdecl ->
       let env = { env with mode = Ast.Mdecl } in
       let attr = SMap.empty in
       let result = ignore_toplevel ~attr [] env (fun x -> x = Teof) in
       expect env Teof;
-      is_hh_file := true;
+      if head = Some Ast.Mdecl then is_hh_file := true;
       result
-  | Some mode ->
+  | _, Some mode ->
       let result = toplevel [] { env with mode = mode } (fun x -> x = Teof) in
       expect env Teof;
       is_hh_file := true;
       result
+  | _ ->
+      []
 
 and get_header env =
   match L.header env.lb with
-  | `error -> None
-  | `default_mode -> Some Ast.Mpartial
+  | `error -> Ast.HhFile, None
+  | `default_mode -> Ast.HhFile, Some Ast.Mpartial
+  | `php_decl_mode -> Ast.PhpFile, Some Ast.Mdecl
+  | `php_mode -> Ast.PhpFile, None
   | `explicit_mode ->
       let _token = L.token env.lb in
       (match Lexing.lexeme env.lb with
-      | "strict" when !(Silent.is_silent_mode) || !(Ide.is_ide_mode) -> Some Ast.Mpartial
-      | "strict" -> Some Ast.Mstrict
-      | ("decl"|"only-headers") -> Some Ast.Mdecl
-      | "partial" -> Some Ast.Mpartial
+      | "strict" when !(Silent.is_silent_mode) || !(Ide.is_ide_mode) -> Ast.HhFile, Some Ast.Mpartial
+      | "strict" -> Ast.HhFile, Some Ast.Mstrict
+      | ("decl"|"only-headers") -> Ast.HhFile, Some Ast.Mdecl
+      | "partial" -> Ast.HhFile, Some Ast.Mpartial
       | _ ->
           error env
  "Incorrect comment; possible values include strict, decl, partial or empty";
-          Some Ast.Mdecl
+          Ast.HhFile, Some Ast.Mdecl
       )
 
 (*****************************************************************************)
@@ -472,6 +479,16 @@ and ignore_toplevel ~attr acc env terminate =
               L.back env.lb;
               let def = toplevel_word ~attr env "function" in
               ignore_toplevel ~attr:SMap.empty (def @ acc) env terminate
+          (* function &foo(...), we still want them in decl mode *)
+          | Tamp ->
+            (match L.token env.lb with
+            | Tword ->
+                L.back env.lb;
+                let def = toplevel_word ~attr env "function" in
+                ignore_toplevel ~attr:SMap.empty (def @ acc) env terminate
+            | _ ->
+              ignore_toplevel ~attr acc env terminate
+            )
           | _ ->
               ignore_toplevel ~attr acc env terminate
           )
@@ -484,6 +501,9 @@ and ignore_toplevel ~attr acc env terminate =
           ignore_toplevel ~attr:SMap.empty (def @ acc) env terminate
       | _ -> ignore_toplevel ~attr acc env terminate
       )
+  | Tclose_php ->
+      error env "Hack does not allow the closing ?> tag";
+      acc
   | _ -> ignore_toplevel ~attr acc env terminate
 
 (*****************************************************************************)
@@ -571,7 +591,10 @@ and toplevel_word ~attr env = function
       }]
   | "namespace" ->
       let id, body = namespace env in
-      [Namespace (id, body)]
+      (* Check for an empty name and omit the Namespace wrapper *)
+      (match id with
+      | (_, "") -> body
+      | _ -> [Namespace (id, body)])
   | "use" ->
       let usel = namespace_use_list env [] in
       [NamespaceUse usel]
@@ -1560,14 +1583,6 @@ and statement_word env = function
           "Parse error: declarations are not supported outside global scope";
       ignore (ignore_toplevel SMap.empty [] env (fun _ -> true));
       Noop
-  | "require" | "require_once" ->
-      if env.mode = Ast.Mstrict
-      then
-        error env
-          "Parse error: require_once is not supported outside global scope";
-      let _ = expr env in
-      expect env Tsc;
-      Noop
   | x ->
       L.back env.lb;
       let e = expr env in
@@ -2163,7 +2178,7 @@ and lambda_expr_body : env -> block = fun env ->
   let (p, e1) = expr env in
   [Return (p, (Some (p, e1)))]
 
-and lambda_body env params =
+and lambda_body env params ret =
   let body =
     if peek env = Tlcb
     then function_body env
@@ -2173,7 +2188,7 @@ and lambda_body env params =
     f_name = (Pos.none, ";anonymous");
     f_tparams = [];
     f_params = params;
-    f_ret = None;
+    f_ret = ret;
     f_body = body;
     f_user_attributes = Utils.SMap.empty;
     f_type = FSync;
@@ -2195,37 +2210,27 @@ and make_lambda_param : id -> fun_param = fun var_id ->
 
 and lambda_single_arg env var_id =
   expect env Tlambda;
-  lambda_body env [make_lambda_param var_id]
-
-and short_lambda_param_list env acc =
-  let tok = L.token env.lb in
-  match tok with
-  | Trp -> Some acc;
-  | Tlvar ->
-    let next_tok = peek env in
-    (match next_tok with
-    | Tcomma | Trp ->
-        let pos = Pos.make env.lb in
-        let var_id = (pos, Lexing.lexeme env.lb) in
-        let acc = (make_lambda_param var_id) :: acc in
-        drop env;
-        if next_tok = Tcomma
-        then short_lambda_param_list env acc
-        else Some (List.rev acc)
-    | _ -> None)
-  | _ -> None
+  lambda_body env [make_lambda_param var_id] None
 
 and try_short_lambda env =
   try_parse env begin fun env ->
-    match short_lambda_param_list env [] with
-    | Some param_list ->
-        if not (peek env = Tlambda)
-        then None
-        else begin
-          drop env;
-          Some (lambda_body env param_list)
-        end
-    | None -> None
+    let error_state = !(env.errors) in
+    let param_list = parameter_list_remain env in
+    if !(env.errors) != error_state then begin
+      env.errors := error_state; 
+      None
+    end else begin
+      let ret = hint_return_opt env in
+      if !(env.errors) != error_state then begin
+        env.errors := error_state;
+        None
+      end else if not (peek env = Tlambda)
+      then None
+      else begin
+        drop env;
+        Some (lambda_body env param_list ret)
+      end
+    end
   end
 
 (*****************************************************************************)
@@ -2326,6 +2331,14 @@ and expr_atomic_word ~allow_class env pos = function
       expr_clone env pos
   | "list" ->
       expr_php_list env pos
+  | "require" | "require_once" ->
+      if env.mode = Ast.Mstrict
+      then
+        error env
+          ("Parse error: require_once is supported only as a toplevel "^
+          "declaration");
+      let _ = expr env in
+      pos, Null
   | x ->
       pos, Id (pos, x)
 
@@ -2389,9 +2402,6 @@ and expr_colcol env e1 =
     | (_, Id cname) ->
         (* XYZ::class is OK ... *)
         expr_colcol_remain ~allow_class:true env e1 cname
-    | pos, Lvar cname when env.mode = Ast.Mstrict ->
-        error_at env pos "Don't use dynamic classes";
-        e1
     | pos, Lvar cname  ->
         (* ... but get_class($x) should be used instead of $x::class *)
         expr_colcol_remain ~allow_class:false env e1 cname
@@ -3139,8 +3149,8 @@ and xhp_body pos name env =
       if is_xhp env
       then
         (match xhp env with
-        | _, Xml (_, _, el) ->
-            el @ xhp_body pos name env
+        | (_, Xml (_, _, _)) as xml ->
+            xml :: xhp_body pos name env
         | _ -> xhp_body pos name env)
       else
         (match L.xhptoken env.lb with
@@ -3246,12 +3256,20 @@ and namespace env =
   let tl = match env.mode with
     | Ast.Mdecl -> ignore_toplevel ~attr:SMap.empty
     | _ -> toplevel in
-  let id = identifier env in
+  (* The name for a namespace is actually optional, so we need to check for
+   * the name first. Setting the name to an empty string if there's no
+   * identifier following the `namespace` token *)
+  let id = match L.token env.lb with
+    | Tword -> L.back env.lb; identifier env
+    | _ -> L.back env.lb; Pos.make env.lb, "" in
   match L.token env.lb with
   | Tlcb ->
       let body = tl [] env (fun x -> x = Trcb) in
       expect env Trcb;
       id, body
+  | Tsc when (snd id) = "" ->
+      error_expect env "{";
+      id, []
   | Tsc ->
       let terminate = function
         | Tword -> Lexing.lexeme env.lb = "namespace"
@@ -3289,16 +3307,24 @@ and namespace_use_list env acc =
 (* Helper *)
 (*****************************************************************************)
 
+let ensure_no_errors errors =
+  if errors <> []
+  then raise (Utils.Error errors)
+  else ()
+
 let program ?(fail=true) content =
-  snd (entry ~fail content)
+  let _, ast, errors = (entry ~fail content) in
+  ensure_no_errors errors;
+  ast 
+
+let from_file_with_errors filename =
+  let content = Utils.cat filename in
+  entry ~fail:true content
 
 let from_file_with_comments filename =
-  let ic = open_in filename in
-  let buf = Buffer.create 256 in
-  Buffer.add_channel buf ic (in_channel_length ic);
-  let content = Buffer.contents buf in
-  close_in ic;
-  entry ~fail:true content
+  let comments, ast, errors = from_file_with_errors filename in
+  ensure_no_errors errors;
+  comments, ast
 
 let from_file filename =
   snd (from_file_with_comments filename)

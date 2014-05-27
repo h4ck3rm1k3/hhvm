@@ -98,7 +98,7 @@ inline TypedValue* arPreliveOverwriteCells(ActRec *preLiveAR) {
   for (size_t ar_cell = 0; ar_cell < HPHP::kNumActRecCells; ++ar_cell) {
     tvWriteNull(actRecCell + ar_cell);
   }
-  return actRecCell;
+  return actRecCell + HPHP::kNumActRecCells - 1;
 }
 
 ArrayData* addElemIntKeyHelper(ArrayData* ad, int64_t key, TypedValue val);
@@ -109,7 +109,10 @@ void setNewElemArray(TypedValue* base, Cell val);
 void bindNewElemIR(TypedValue* base, RefData* val, MInstrState* mis);
 RefData* boxValue(TypedValue tv);
 ArrayData* arrayAdd(ArrayData* a1, ArrayData* a2);
-
+TypedValue setOpElem(TypedValue* base, TypedValue key,
+                     Cell val, MInstrState* mis, SetOpOp op);
+TypedValue incDecElem(TypedValue* base, TypedValue key,
+                      MInstrState* mis, IncDecOp op);
 /* Helper functions for conversion instructions that are too
  * complicated to inline
  */
@@ -145,10 +148,9 @@ void raise_error_sd(const StringData* sd);
 
 RefData* closureStaticLocInit(StringData* name, ActRec* fp, TypedValue val);
 
-int64_t ak_exist_string(ArrayData* arr, StringData* key);
-int64_t ak_exist_int(ArrayData* arr, int64_t key);
-int64_t ak_exist_string_obj(ObjectData* obj, StringData* key);
-int64_t ak_exist_int_obj(ObjectData* obj, int64_t key);
+bool ak_exist_string(ArrayData* arr, StringData* key);
+bool ak_exist_string_obj(ObjectData* obj, StringData* key);
+bool ak_exist_int_obj(ObjectData* obj, int64_t key);
 
 TypedValue arrayIdxI(ArrayData*, int64_t, TypedValue);
 TypedValue arrayIdxS(ArrayData*, StringData*, TypedValue);
@@ -160,6 +162,11 @@ int32_t arrayVsize(ArrayData*);
 
 TypedValue* ldGblAddrHelper(StringData* name);
 TypedValue* ldGblAddrDefHelper(StringData* name);
+
+TypedValue* getSPropOrNull(const Class* cls,
+    const StringData* name, Class* ctx);
+TypedValue* getSPropOrRaise(const Class* cls,
+    const StringData* name, Class* ctx);
 
 int64_t switchDoubleHelper(int64_t val, int64_t base, int64_t nTargets);
 int64_t switchStringHelper(StringData* s, int64_t base, int64_t nTargets);
@@ -189,6 +196,7 @@ void fpushCufHelperArray(ArrayData*, ActRec* preLiveAR, ActRec* fp);
 void fpushCufHelperString(StringData*, ActRec* preLiveAR, ActRec* fp);
 
 const Func* lookupUnknownFunc(const StringData*);
+const Func* lookupFallbackFunc(const StringData*, const StringData*);
 
 Class* lookupKnownClass(Class** cache, const StringData* clsName);
 
@@ -202,9 +210,14 @@ ObjectData* colAddNewElemCHelper(ObjectData* coll, TypedValue value);
 ObjectData* colAddElemCHelper(ObjectData* coll, TypedValue key,
                               TypedValue value);
 
+// These shuffle* functions are the JIT's version of bytecode.cpp's
+// shuffleExtraStackArgs
 void trimExtraArgs(ActRec* ar);
+void shuffleExtraArgsMayUseVV(ActRec* ar);
+void shuffleExtraArgsVariadic(ActRec* ar);
+void shuffleExtraArgsVariadicAndVV(ActRec* ar);
 
-void raiseMissingArgument(const char* name, int expected, int got);
+void raiseMissingArgument(const Func* func, int got);
 
 RDS::Handle lookupClsRDSHandle(const StringData* name);
 

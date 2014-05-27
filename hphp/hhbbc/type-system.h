@@ -25,6 +25,8 @@
 #include "folly/Optional.h"
 
 #include "hphp/runtime/base/complex-types.h"
+#include "hphp/runtime/base/repo-auth-type.h"
+#include "hphp/runtime/base/repo-auth-type-array.h"
 
 #include "hphp/hhbbc/misc.h"
 #include "hphp/hhbbc/index.h"
@@ -97,7 +99,7 @@ struct Type;
  *   WaitH<T>
  *
  *       A WaitHandle that is known will either return a value of type
- *       T from its join() method (or AsyncAwait), or else throw an
+ *       T from its join() method (or Await), or else throw an
  *       exception.
  *
  * Array types:
@@ -249,6 +251,7 @@ enum class DataTag : uint8_t {
   Int,
   Dbl,
   Cls,
+  RefInner,
   ArrVal,
   ArrPacked,
   ArrPackedN,
@@ -258,12 +261,18 @@ enum class DataTag : uint8_t {
 
 //////////////////////////////////////////////////////////////////////
 
+// Tag for precision of the type a class/object.
+enum class ClsTag : uint8_t {
+  Exact,
+  Sub
+};
+
 /*
  * Information about a class type.  The class is either exact or a
  * subtype of the supplied class.
  */
 struct DCls {
-  enum { Exact, Sub } type;
+  ClsTag type;
   res::Class cls;
 };
 
@@ -275,14 +284,12 @@ struct DCls {
  * the wait handle will produce.
  */
 struct DObj {
-  enum Tag { Exact, Sub };
-
-  explicit DObj(Tag type, res::Class cls)
+  explicit DObj(ClsTag type, res::Class cls)
     : type(type)
     , cls(cls)
   {}
 
-  Tag type;
+  ClsTag type;
   res::Class cls;
   copy_ptr<Type> whType;
 };
@@ -348,6 +355,7 @@ private:
   friend Type wait_handle(const Index&, Type);
   friend bool is_specialized_wait_handle(const Type&);
   friend bool is_specialized_array(const Type&);
+  friend bool is_ref_with_inner(const Type&);
   friend Type wait_handle_inner(const Type&);
   friend Type sval(SString);
   friend Type ival(int64_t);
@@ -357,6 +365,7 @@ private:
   friend Type objExact(res::Class);
   friend Type subCls(res::Class);
   friend Type clsExact(res::Class);
+  friend Type ref_to(Type);
   friend Type arr_packed(std::vector<Type>);
   friend Type sarr_packed(std::vector<Type>);
   friend Type carr_packed(std::vector<Type>);
@@ -380,9 +389,13 @@ private:
   friend std::string show(Type);
   friend struct ArrKey disect_key(const Type&);
   friend Type array_elem(const Type&, const Type&);
+  friend Type arrayN_set(Type, const Type&, const Type&);
   friend Type array_set(Type, const Type&, const Type&);
+  friend std::pair<Type,Type> arrayN_newelem_key(const Type&, const Type&);
   friend std::pair<Type,Type> array_newelem_key(const Type&, const Type&);
   friend std::pair<Type,Type> iter_types(const Type&);
+  friend RepoAuthType make_repo_type_arr(ArrayTypeTable::Builder&,
+    const Type&);
 
 private:
   union Data {
@@ -395,6 +408,7 @@ private:
     SArray aval;
     DObj dobj;
     DCls dcls;
+    copy_ptr<Type> inner;
     copy_ptr<DArrPacked> apacked;
     copy_ptr<DArrPackedN> apackedn;
     copy_ptr<DArrStruct> astruct;
@@ -410,6 +424,8 @@ private:
   static Type unionArr(const Type& a, const Type& b);
 
 private:
+  template<class Ret, class T, class Function>
+  DJHelperFn<Ret,T,Function> djbind(const Function& f, const T& t) const;
   template<class Ret, class T, class Function>
   Ret dj2nd(const Type&, DJHelperFn<Ret,T,Function>) const;
   template<class Function>
@@ -804,6 +820,17 @@ std::pair<Type,Type> array_newelem_key(const Type& arr, const Type& val);
  * the returned types are at worst InitCell.
  */
 std::pair<Type,Type> iter_types(const Type&);
+
+/*
+ * Create a RepoAuthType for a Type.
+ *
+ * RepoAuthTypes may contain things like RepoAuthType::Array*'s or
+ * SStrings for class names.  The emit code needs to handle making
+ * sure these things are merged into the appropriate unit or repo.
+ *
+ * Pre: !t.couldBe(TCls)
+ */
+RepoAuthType make_repo_type(ArrayTypeTable::Builder&, const Type& t);
 
 //////////////////////////////////////////////////////////////////////
 

@@ -62,9 +62,18 @@ class StringDataPrinter:
     def to_string(self):
         return "Str: '%s'" % string_data_val(self.val)
 
+class _BaseIterator:
+    """
+    Base iterator for Python 2 compatibility (in Python 3, next() is renamed
+    to __next__()). See http://legacy.python.org/dev/peps/pep-3114/
+    """
+    def next(self):
+        return self.__next__()
+
 class ArrayDataPrinter:
-    RECOGNIZE = '^HPHP::(ArrayData|HphpArray)$'
-    class _iterator:
+    RECOGNIZE = '^HPHP::(ArrayData|MixedArray)$'
+
+    class _iterator(_BaseIterator):
         def __init__(self, kind, begin, end):
             self.kind = kind
             self.cur = begin
@@ -74,13 +83,16 @@ class ArrayDataPrinter:
         def __iter__(self):
             return self
 
-        def next(self):
+        def __next__(self):
             if self.cur == self.end:
                 raise StopIteration
             elt = self.cur
-            data = elt['data']
             packed = gdb.lookup_global_symbol('HPHP::ArrayData::kPackedKind') \
                 .value()
+            if self.kind == packed:
+                data = elt.dereference()
+            else:
+                data = elt['data']
             if self.kind == packed:
                 key = '%d' % self.count
             elif data['m_aux']['u_hash'] == 0:
@@ -93,19 +105,23 @@ class ArrayDataPrinter:
 
     def __init__(self, val):
         self.kind = val['m_kind']
-        if self.kind == 0 or self.kind == 1:
-            self.val = val.cast(gdb.lookup_type('HPHP::HphpArray'))
+        if self.kind == self.mixedKind():
+            self.val = val.cast(gdb.lookup_type('HPHP::MixedArray'))
         elif self.kind == self.proxyKind():
             self.val = val.cast(gdb.lookup_type('HPHP::ProxyArray'))
         else:
             self.val = val
 
     def children(self):
-        # Only support kPackedKind or kMixedKind
-        if self.kind == self.packedKind() or self.kind == self.mixedKind():
+        if self.kind == self.packedKind():
+            data = self.val.address.cast(gdb.lookup_type('char').pointer()) + \
+                   self.val.type.sizeof
+            pval = data.cast(gdb.lookup_type('HPHP::TypedValue').pointer())
+            return self._iterator(self.kind, pval, pval + self.val['m_size'])
+        elif self.kind == self.mixedKind():
             data = self.val.address.cast(gdb.lookup_type('char').pointer()) + \
                 self.val.type.sizeof
-            pelm = data.cast(gdb.lookup_type('HPHP::HphpArray::Elm').pointer())
+            pelm = data.cast(gdb.lookup_type('HPHP::MixedArray::Elm').pointer())
             return self._iterator(self.kind, pelm, pelm + self.val['m_size'])
         return self._iterator(0, 0, 0)
 
@@ -127,7 +143,8 @@ objectDataCount = 100
 
 class ObjectDataPrinter:
     RECOGNIZE = '^HPHP::(ObjectData|Instance)$'
-    class _iterator:
+
+    class _iterator(_BaseIterator):
         def __init__(self, val, cls, begin, end):
             self.cur = begin
             self.end = end
@@ -139,7 +156,7 @@ class ObjectDataPrinter:
         def __iter__(self):
             return self
 
-        def next(self):
+        def __next__(self):
             if self.cur == self.end:
                 raise StopIteration
 
@@ -157,7 +174,9 @@ class ObjectDataPrinter:
     def __init__(self, val):
         self.dtype = val.dynamic_type
         self.val = val.cast(self.dtype)
-        self.cls = val['m_cls']
+
+        clstype = gdb.lookup_type('HPHP::Class').pointer()
+        self.cls = val['m_cls']['m_raw'].cast(clstype)
 
     def children(self):
         dp = self.cls['m_declProperties']
@@ -176,7 +195,8 @@ class ObjectDataPrinter:
 
 class SmartPtrPrinter:
     RECOGNIZE = '^HPHP::((Static)?String|Array|Object|SmartPtr<.*>)$'
-    class _iterator:
+
+    class _iterator(_BaseIterator):
         def __init__(self, begin, end):
             self.cur = begin
             self.end = end
@@ -184,7 +204,7 @@ class SmartPtrPrinter:
         def __iter__(self):
             return self
 
-        def next(self):
+        def __next__(self):
             if self.cur == self.end:
                 raise StopIteration
             key = self.cur
@@ -243,8 +263,8 @@ printer_classes = [
     ResourceDataPrinter,
     ClassPrinter,
 ]
-type_printers = dict((re.compile(cls.RECOGNIZE), cls)
-                     for cls in printer_classes)
+type_printers = {(re.compile(cls.RECOGNIZE), cls)
+                     for cls in printer_classes}
 
 def lookup_function(val):
     type = val.type
@@ -261,7 +281,7 @@ def lookup_function(val):
     # Iterate over local dict of types to determine if a printer is
     # registered for that type.  Return an instantiation of the
     # printer if found.
-    for recognizer_regex, func in type_printers.iteritems():
+    for recognizer_regex, func in type_printers:
         if recognizer_regex.search(typename):
             return func(val)
 

@@ -78,6 +78,9 @@ struct EvalStack {
   int  size()  const { return m_vector.size(); }
   void clear()       { m_vector.clear(); }
 
+  void swap(std::vector<SSATmp*> &vector) {
+    m_vector.swap(vector);
+  }
 private:
   std::vector<SSATmp*> m_vector;
 };
@@ -126,11 +129,15 @@ struct LocalStateHook {
  *
  *   - current function and bytecode offset
  */
-struct FrameState : private LocalStateHook {
-  explicit FrameState(IRUnit& unit);
+struct FrameState final : private LocalStateHook {
   FrameState(IRUnit& unit, BCMarker firstMarker);
-  FrameState(IRUnit& unit, Offset initialSpOffset, const Func* func);
-  ~FrameState();
+  FrameState(IRUnit& unit, Offset initialSpOffset, const Func* func,
+             uint32_t numLocals);
+
+  FrameState(const FrameState&) = delete;
+  FrameState& operator=(const FrameState&) = delete;
+
+  FrameState(FrameState&&) = default;
 
   void update(const IRInstruction* inst);
 
@@ -200,11 +207,12 @@ struct FrameState : private LocalStateHook {
   // frame.
   void forEachLocal(LocalFunc func) const;
 
-  SSATmp* cseLookup(IRInstruction* inst, const folly::Optional<IdomVector>&);
+  SSATmp* cseLookup(IRInstruction* inst,
+                    Block* srcBlock,
+                    const folly::Optional<IdomVector>&);
 
   void getLocalEffects(const IRInstruction* inst, LocalStateHook& hook) const;
 
- private:
   /*
    * LocalState stores information about a local in the current function.
    */
@@ -227,8 +235,12 @@ struct FrameState : private LocalStateHook {
         typeSource == b.typeSource;
     }
   };
+
   typedef smart::vector<LocalState> LocalVec;
 
+  const LocalVec& localsForBlock(Block* b) const;
+
+ private:
   /*
    * Snapshot stores fields of FrameState to be saved, restored, and merged for
    * inlining and control flow.
@@ -260,7 +272,7 @@ struct FrameState : private LocalStateHook {
   };
 
   void trackDefInlineFP(const IRInstruction* inst);
-  void trackInlineReturn(const IRInstruction* inst);
+  void trackInlineReturn();
 
   /* LocalStateHook overrides */
   void setLocalValue(uint32_t id, SSATmp* value) override;

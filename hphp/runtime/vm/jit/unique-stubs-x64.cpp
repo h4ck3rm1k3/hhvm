@@ -26,6 +26,7 @@
 #include "hphp/runtime/vm/jit/mc-generator-internal.h"
 #include "hphp/runtime/vm/jit/abi-x64.h"
 #include "hphp/runtime/vm/jit/code-gen-helpers-x64.h"
+#include "hphp/runtime/vm/jit/service-requests-inline.h"
 #include "hphp/runtime/vm/runtime.h"
 
 namespace HPHP { namespace JIT { namespace X64 {
@@ -59,11 +60,11 @@ TCA emitRetFromInterpretedGeneratorFrame() {
   moveToAlign(mcg->code.stubs());
   auto const ret = a.frontier();
 
-  // We have to get the Continuation object from the current AR's $this, then
+  // We have to get the Generator object from the current AR's $this, then
   // find where its embedded AR is.
   PhysReg rContAR = serviceReqArgRegs[0];
   a.    loadq  (rVmFp[AROFF(m_this)], rContAR);
-  a.    lea  (rContAR[c_Continuation::getArOffset()], rContAR);
+  a.    lea  (rContAR[c_Generator::arOff()], rContAR);
   a.    movq   (rVmFp, serviceReqArgRegs[1]);
   emitServiceReq(mcg->code.stubs(), SRFlags::JmpInsteadOfRet,
                  REQ_POST_INTERP_RET);
@@ -161,20 +162,21 @@ void emitFreeLocalsHelpers(UniqueStubs& uniqueStubs) {
   Label loopHead;
 
   /*
-   * Note: the IR currently requires that we preserve r13/r14 across
+   * Note: the IR currently requires that we preserve r13 across
    * calls to these free locals helpers.  These helpers assume the
    * stack is balanced (rsp%16 == 0) on entry, unlike normal ABI calls
    * where the stack was balanced before the call, and now has the
    * return address on the stack (rsp%16 == 8).
    */
-  static_assert(rVmSp == rbx, "");
-  auto const rIter     = rbx;
+  auto const rIter     = r14;
   auto const rFinished = r15;
   auto const rType     = esi;
   auto const rData     = rdi;
+  int const tvSize     = sizeof(TypedValue);
 
   Asm a { mcg->code.main() };
   moveToAlign(mcg->code.main(), kNonFallthroughAlign);
+  auto stubBegin = a.frontier();
 
 asm_label(a, release);
   a.    loadq  (rIter[TVOFF(m_data)], rData);
@@ -207,7 +209,7 @@ asm_label(a, doRelease);
   // kNumFreeLocalsHelpers.
 asm_label(a, loopHead);
   emitDecLocal();
-  a.    addq   (sizeof(TypedValue), rIter);
+  a.    addq   (tvSize, rIter);
   a.    cmpq   (rIter, rFinished);
   a.    jnz8   (loopHead);
 
@@ -215,12 +217,14 @@ asm_label(a, loopHead);
     uniqueStubs.freeLocalsHelpers[kNumFreeLocalsHelpers - i - 1] = a.frontier();
     emitDecLocal();
     if (i != kNumFreeLocalsHelpers - 1) {
-      a.addq   (sizeof(TypedValue), rIter);
+      a.addq   (tvSize, rIter);
     }
   }
 
-  a.    addq   (AROFF(m_r) + sizeof(TypedValue), rVmSp);
   a.    ret    ();
+
+  // Keep me small!
+  always_assert(a.frontier() - stubBegin <= 4 * kX64CacheLineSize);
 
   uniqueStubs.add("freeLocalsHelpers", uniqueStubs.freeManyLocalsHelper);
 }
@@ -242,9 +246,11 @@ void emitFuncPrologueRedispatch(UniqueStubs& uniqueStubs) {
   // edx := num passed parameters
   // ecx := num declared parameters
   a.    loadq  (rStashedAR[AROFF(m_func)], rax);
-  a.    loadl  (rStashedAR[AROFF(m_numArgsAndGenCtorFlags)], edx);
-  a.    andl   (0x3fffffff, edx);
-  a.    loadl  (rax[Func::numParamsOff()], ecx);
+  a.    loadl  (rStashedAR[AROFF(m_numArgsAndFlags)], edx);
+  a.    andl   (0x1fffffff, edx);
+  a.    loadl  (rax[Func::paramCountsOff()], ecx);
+  // see Func::finishedEmittingParams and Func::numParams for rationale
+  a.    shrl   (0x1, ecx);
 
   // If we passed more args than declared, jump to the numParamsCheck.
   a.    cmpl   (edx, ecx);
@@ -367,7 +373,7 @@ void emitFCallHelperThunk(UniqueStubs& uniqueStubs) {
   a.    movq   (rVmSp, argNumToRegName[1]);
   a.    cmpq   (rStashedAR, rVmFp);
   a.    jne8   (popAndXchg);
-  emitCall(a, CppCall(helper));
+  emitCall(a, CppCall::direct(helper));
   a.    jmp    (rax);
   // The ud2 is a hint to the processor that the fall-through path of the
   // indirect jump (which it statically predicts as most likely) is not
@@ -387,7 +393,7 @@ asm_label(a, popAndXchg);
   // frames, however, so switch it into rbp in case fcallHelper throws.
   a.    pop    (rStashedAR[AROFF(m_savedRip)]);
   a.    xchgq  (rStashedAR, rVmFp);
-  emitCall(a, CppCall(helper));
+  emitCall(a, CppCall::direct(helper));
   a.    testq  (rax, rax);
   a.    js8    (skip);
   a.    xchgq  (rStashedAR, rVmFp);
@@ -418,7 +424,7 @@ void emitFuncBodyHelperThunk(UniqueStubs& uniqueStubs) {
   // fcallArrayHelper). So the stack parity is already correct.
   a.    movq   (rVmFp, argNumToRegName[0]);
   a.    movq   (rVmSp, argNumToRegName[1]);
-  emitCall(a, CppCall(helper));
+  emitCall(a, CppCall::direct(helper));
   a.    jmp    (rax);
   a.    ud2    ();
 
@@ -439,9 +445,9 @@ void emitFunctionEnterHelper(UniqueStubs& uniqueStubs) {
   a.   push    (rVmFp);
   a.   movq    (rsp, rVmFp);
   a.   push    (ar[AROFF(m_savedRip)]);
-  a.   push    (ar[AROFF(m_savedRbp)]);
+  a.   push    (ar[AROFF(m_sfp)]);
   a.   movq    (EventHook::NormalFunc, argNumToRegName[1]);
-  emitCall(a, CppCall(helper));
+  emitCall(a, CppCall::direct(helper));
   a.   testb   (al, al);
   a.   je8     (skip);
   a.   addq    (16, rsp);
@@ -491,4 +497,3 @@ UniqueStubs emitUniqueStubs() {
 //////////////////////////////////////////////////////////////////////
 
 }}}
-

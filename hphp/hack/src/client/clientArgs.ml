@@ -124,6 +124,10 @@ let parse_check_args cmd =
       " (mode) finds references of the provided class name";
     "--identify-function", Arg.String (fun x -> set_mode (MODE_IDENTIFY_FUNCTION x) ()),
       " (mode) print the full function name at the position [line:character] of the text on stdin";
+    "--refactor", Arg.Unit (set_mode MODE_REFACTOR),
+      "";
+    "--search", Arg.String (fun x -> set_mode (MODE_SEARCH x) ()),
+      "";
     "--outline", Arg.Unit (set_mode MODE_OUTLINE),
       " (mode) prints an outline of the text on stdin";
     "--version", Arg.Unit (set_mode MODE_VERSION),
@@ -255,14 +259,19 @@ let parse_status_args () =
       Sys.argv.(0) in
   let root = ref None in
   let user = ref None in
+  let output_json = ref false in
   let options = [
     "--root", Arg.String (fun x -> root := Some (Path.mk_path x)),
     " --root /some/path/www only shows servers for /some/path/www";
     "--user", Arg.String (fun x -> user := Some x),
     " --user billy only shows servers for the user \"billy\"";
+    "--json", Arg.Set output_json,
+      " output json for machine consumption. (default: false)";
   ] in
   let _ = parse_without_command options usage "status" in
-  CStatus {ClientStatus.root = !root; ClientStatus.user = !user }
+  CStatus {ClientStatus.root = !root;
+           ClientStatus.user = !user;
+           ClientStatus.output_json = !output_json }
 
 let parse_build_args () =
   let usage =
@@ -276,13 +285,17 @@ let parse_build_args () =
   let test_dir = ref None in
   let grade = ref true in
   let list_classes = ref false in
+  let check = ref false in
+  let clean = ref false in
   (* todo: for now better to default to true here, but this is temporary! *)
-  let clean = ref true in
+  let clean_before_build = ref true in
   let run_scripts = ref true in
   let options = [
     "--steps", Arg.String (fun x ->
       steps := Some (Str.split (Str.regexp ",") x)),
     " comma-separated list of build steps to run";
+    "--no-run-scripts", Arg.Clear run_scripts,
+    " don't run unported arc build scripts";
     "--serial", Arg.Set serial,
     " run without parallel worker processes";
     "--test-dir", Arg.String (fun x -> test_dir := Some x),
@@ -291,12 +304,14 @@ let parse_build_args () =
     " skip full comparison with root";
     "--list-classes", Arg.Set list_classes,
     " generate files listing subclasses used in analysis";
+    "--check", Arg.Set check,
+    " run some sanity checks on the server state";
     "--clean", Arg.Set clean,
-    " erase all previously generated files before building";
-    "--no-clean", Arg.Clear clean,
-    " guess what";
-    "--no-run-scripts", Arg.Clear run_scripts,
-    " don't run unported arc build scripts";
+    " erase all previously generated files";
+    "--clean-before-build", Arg.Set clean_before_build,
+    " erase previously generated files before building (default)";
+    "--no-clean-before-build", Arg.Clear clean_before_build,
+    " do not erase previously generated files before building";
     "--verbose", Arg.Set verbose,
     " guess what";
   ] in
@@ -309,12 +324,14 @@ let parse_build_args () =
   CBuild { ServerMsg.
            root = root;
            steps = !steps;
+           run_scripts = !run_scripts;
            serial = !serial;
            test_dir = !test_dir;
            grade = !grade;
            list_classes = !list_classes;
            clean = !clean;
-           run_scripts = !run_scripts;
+           clean_before_build = !clean_before_build;
+           check = !check;
            verbose = !verbose;
          }
 

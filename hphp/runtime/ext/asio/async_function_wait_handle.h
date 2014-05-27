@@ -19,28 +19,28 @@
 #define incl_HPHP_EXT_ASIO_ASYNC_FUNCTION_WAIT_HANDLE_H_
 
 #include "hphp/runtime/base/base-includes.h"
-#include "hphp/runtime/ext/asio/blockable_wait_handle.h"
+#include "hphp/runtime/ext/asio/resumable_wait_handle.h"
+#include "hphp/runtime/vm/bytecode.h"
+#include "hphp/runtime/vm/resumable.h"
+#include "hphp/runtime/vm/jit/types.h"
 
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
 // class AsyncFunctionWaitHandle
 
 /**
- * A continuation wait handle represents a basic unit of asynchronous execution
- * powered by continuation object. An asynchronous program can be written using
- * continuations; a dependency on another wait handle is set up by awaiting such
+ * An async function wait handle represents a basic unit of asynchronous
+ * execution. A dependency on another wait handle is set up by awaiting such
  * wait handle, giving control of the execution back to the asio framework.
  */
-FORWARD_DECLARE_CLASS(Continuation);
 FORWARD_DECLARE_CLASS(AsyncFunctionWaitHandle);
-class c_AsyncFunctionWaitHandle : public c_BlockableWaitHandle {
+class c_AsyncFunctionWaitHandle : public c_ResumableWaitHandle {
  public:
   DECLARE_CLASS_NO_SWEEP(AsyncFunctionWaitHandle)
 
   explicit c_AsyncFunctionWaitHandle(
     Class* cls = c_AsyncFunctionWaitHandle::classof());
-  ~c_AsyncFunctionWaitHandle() {}
-  void t___construct();
+  ~c_AsyncFunctionWaitHandle();
   static void ti_setoncreatecallback(const Variant& callback);
   static void ti_setonawaitcallback(const Variant& callback);
   static void ti_setonsuccesscallback(const Variant& callback);
@@ -49,47 +49,61 @@ class c_AsyncFunctionWaitHandle : public c_BlockableWaitHandle {
   void t_setprivdata(const Object& data);
 
  public:
-  static ptrdiff_t getContOffset() {
-    // offset of m_continuation from the beginning of ObjectData
-    auto const objOffset = reinterpret_cast<uintptr_t>(static_cast<ObjectData*>(
-          reinterpret_cast<c_AsyncFunctionWaitHandle*>(0x100))) - 0x100;
-    return offsetof(c_AsyncFunctionWaitHandle, m_continuation) - objOffset;
+  static constexpr ptrdiff_t resumableOff() { return -sizeof(Resumable); }
+  static constexpr ptrdiff_t arOff() {
+    return resumableOff() + Resumable::arOff();
   }
-  static ObjectData* CreateFunc(const Func* genFunc,
-                                int32_t label,
-                                ObjectData* child);
-  static ObjectData* CreateMeth(const Func* genFunc,
-                                void* objOrCls,
-                                int32_t label,
-                                ObjectData* child);
-  void run();
-  uint16_t getDepth() { return m_depth; }
+  static constexpr ptrdiff_t resumeAddrOff() {
+    return resumableOff() + Resumable::resumeAddrOff();
+  }
+  static constexpr ptrdiff_t resumeOffsetOff() {
+    return resumableOff() + Resumable::resumeOffsetOff();
+  }
+  static constexpr ptrdiff_t childOff() {
+    return offsetof(c_AsyncFunctionWaitHandle, m_child);
+  }
+  static c_AsyncFunctionWaitHandle* Create(const ActRec* origFp,
+                                           size_t numSlots,
+                                           JIT::TCA resumeAddr,
+                                           Offset resumeOffset,
+                                           ObjectData* child);
+  void resume();
+  void onUnblocked();
+  void ret(Cell& result);
   String getName();
+  c_WaitableWaitHandle* getChild();
+  void enterContextImpl(context_idx_t ctx_idx);
   void exitContext(context_idx_t ctx_idx);
   bool isRunning() { return getState() == STATE_RUNNING; }
+  void suspend(JIT::TCA resumeAddr, Offset resumeOffset,
+               c_WaitableWaitHandle* child);
   String getFileName();
   Offset getNextExecutionOffset();
   int getLineNumber();
-  ActRec* getActRec();
 
- protected:
-  void onUnblocked();
-  c_WaitableWaitHandle* getChild();
-  void enterContextImpl(context_idx_t ctx_idx);
+  Resumable* resumable() const {
+    return reinterpret_cast<Resumable*>(
+      const_cast<char*>(reinterpret_cast<const char*>(this) + resumableOff()));
+  }
+
+  ActRec* actRec() const {
+    return resumable()->actRec();
+  }
 
  private:
-  void initialize(c_Continuation* continuation, int32_t label,
-                  c_WaitableWaitHandle* child);
-  void markAsSucceeded(const Cell& result);
+  void setState(uint8_t state) { setKindState(Kind::AsyncFunction, state); }
+  void initialize(c_WaitableWaitHandle* child);
+  void markAsSucceeded();
   void markAsFailed(const Object& exception);
+  c_WaitableWaitHandle* child() { return m_child; }
 
-  p_Continuation m_continuation;
-  p_WaitableWaitHandle m_child;
+  // valid if STATE_SCHEDULED || STATE_BLOCKED
+  c_WaitableWaitHandle* m_child;
+
   Object m_privData;
-  uint16_t m_depth;
 
-  static const int8_t STATE_SCHEDULED = 4;
-  static const int8_t STATE_RUNNING   = 5;
+  static const int8_t STATE_SCHEDULED = 3;
+  static const int8_t STATE_RUNNING   = 4;
 };
 
 ///////////////////////////////////////////////////////////////////////////////

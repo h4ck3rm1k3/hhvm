@@ -17,7 +17,7 @@
 
 #include "hphp/runtime/ext/ext_spl.h"
 #include "hphp/runtime/ext/ext_math.h"
-#include "hphp/runtime/ext/ext_class.h"
+#include "hphp/runtime/ext/std/ext_std_classobj.h"
 #include "hphp/runtime/ext/ext_string.h"
 #include "hphp/runtime/ext/ext_file.h"
 
@@ -103,11 +103,11 @@ const StaticString spl_classes[] = {
 
 Array f_spl_classes() {
   const size_t num_classes = sizeof(spl_classes) / sizeof(spl_classes[0]);
-  ArrayInit ret(num_classes);
+  ArrayInit ret(num_classes, ArrayInit::Map{});
   for (size_t i = 0; i < num_classes; ++i) {
     ret.set(spl_classes[i], spl_classes[i]);
   }
-  return ret.create();
+  return ret.toArray();
 }
 
 void throw_spl_exception(const char *fmt, ...) ATTRIBUTE_PRINTF(1,2);
@@ -165,7 +165,7 @@ Variant f_class_implements(const Variant& obj, bool autoload /* = true */) {
   Array ret(Array::Create());
   const Class::InterfaceMap& ifaces = cls->allInterfaces();
   for (int i = 0, size = ifaces.size(); i < size; i++) {
-    ret.set(ifaces[i]->nameRef(), ifaces[i]->nameRef());
+    ret.set(ifaces[i]->nameStr(), VarNR(ifaces[i]->name()));
   }
   return ret;
 }
@@ -184,8 +184,7 @@ Variant f_class_parents(const Variant& obj, bool autoload /* = true */) {
   }
   Array ret(Array::Create());
   for (cls = cls->parent(); cls; cls = cls->parent()) {
-    auto& clsName = cls->nameRef();
-    ret.set(clsName, clsName);
+    ret.set(cls->nameStr(), VarNR(cls->name()));
   }
   return ret;
 }
@@ -204,8 +203,7 @@ Variant f_class_uses(const Variant& obj, bool autoload /* = true */) {
   }
   Array ret(Array::Create());
   for (auto const& traitName : cls->preClass()->usedTraits()) {
-    const String& nameRef = *(String*)(&traitName);
-    ret.set(nameRef, nameRef);
+    ret.set(StrNR(traitName), VarNR(traitName));
   }
   return ret;
 }
@@ -311,10 +309,11 @@ bool f_spl_autoload_unregister(const Variant& autoload_function) {
 
 Variant f_spl_autoload_functions() {
   const Array& handlers = AutoloadHandler::s_instance->getHandlers();
-  if (handlers.isNull())
+  if (handlers.isNull()) {
     return false;
-  else
+  } else {
     return handlers.values();
+  }
 }
 
 void f_spl_autoload_call(const String& class_name) {
@@ -343,27 +342,6 @@ String f_spl_autoload_extensions(const String& file_extensions /* = null_string 
     return file_extensions;
   }
   return StringUtil::Implode(s_extension_list->extensions, ",");
-}
-
-void f_spl_autoload(const String& class_name,
-                    const String& file_extensions /* = null_string */) {
-  Array ext = file_extensions.isNull()
-              ? s_extension_list->extensions
-              : StringUtil::Explode(file_extensions, ",").toArray();
-  String lClass = f_strtolower(class_name);
-  bool found = false;
-  for (ArrayIter iter(ext); iter; ++iter) {
-    String fileName = lClass + iter.second().toString();
-    include(fileName, true, "", false);
-    if (f_class_exists(class_name, false)) {
-      found = true;
-      break;
-    }
-  }
-
-  if (!found && !AutoloadHandler::s_instance->isRunning()) {
-    throw_spl_exception("Class %s could not be loaded", class_name.c_str());
-  }
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -396,7 +374,7 @@ static int64_t HHVM_METHOD(GlobIterator, count) {
 static class SPLExtension : public Extension {
  public:
   SPLExtension() : Extension("SPL", "0.2") { }
-  virtual void moduleLoad(Hdf config) {
+  virtual void moduleLoad(const IniSetting::Map& ini, Hdf config) {
     HHVM_ME(DirectoryIterator, hh_readdir);
     HHVM_ME(GlobIterator, count);
   }

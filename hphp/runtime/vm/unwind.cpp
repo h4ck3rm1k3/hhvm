@@ -21,6 +21,8 @@
 
 #include "hphp/util/trace.h"
 #include "hphp/runtime/base/complex-types.h"
+#include "hphp/runtime/ext/ext_generator.h"
+#include "hphp/runtime/ext/asio/static_wait_handle.h"
 #include "hphp/runtime/vm/bytecode.h"
 #include "hphp/runtime/vm/func.h"
 #include "hphp/runtime/vm/unit.h"
@@ -143,11 +145,9 @@ UnwindAction checkHandlers(const EHEnt* eh,
 }
 
 void tearDownFrame(ActRec*& fp, Stack& stack, PC& pc) {
-  auto const func = fp->m_func;
+  auto const func = fp->func();
   auto const curOp = *reinterpret_cast<const Op*>(pc);
-  auto const unwindingGeneratorFrame = fp->inGenerator();
-  auto const unwindingReturningFrame = curOp == OpRetC || curOp == OpRetV;
-  auto const prevFp = fp->arGetSfp();
+  auto const prevFp = fp->sfp();
   auto const soff = fp->m_soff;
 
   FTRACE(1, "tearDownFrame: {} ({})\n  fp {} prevFp {}\n",
@@ -163,52 +163,55 @@ void tearDownFrame(ActRec*& fp, Stack& stack, PC& pc) {
   // or user profiler, most likely). More importantly, fp->m_this may have
   // already been destructed and/or overwritten due to sharing space with
   // fp->m_r.
-  if (!unwindingReturningFrame && fp->isFromFPushCtor() && fp->hasThis()) {
+  if (fp->isFromFPushCtor() && fp->hasThis() && curOp != OpRetC) {
     fp->getThis()->setNoDestruct();
   }
 
-  // A generator's locals don't live on this stack.
-  if (LIKELY(!unwindingGeneratorFrame)) {
-    /*
-     * If we're unwinding through a frame that's returning, it's only
-     * possible that its locals have already been decref'd.
-     *
-     * Here's why:
-     *
-     *   - If a destructor for any of these things throws a php
-     *     exception, it's swallowed at the dtor boundary and we keep
-     *     running php.
-     *
-     *   - If the destructor for any of these things throws a fatal,
-     *     it's swallowed, and we set surprise flags to throw a fatal
-     *     from now on.
-     *
-     *   - If the second case happened and we have to run another
-     *     destructor, its enter hook will throw, but it will be
-     *     swallowed again.
-     *
-     *   - Finally, the exit hook for the returning function can
-     *     throw, but this happens last so everything is destructed.
-     *
-     */
-    if (!unwindingReturningFrame) {
-      try {
-        // Note that we must convert locals and the $this to
-        // uninit/zero during unwind.  This is because a backtrace
-        // from another destructing object during this unwind may try
-        // to read them.
-        frame_free_locals_unwind(fp, func->numLocals());
-      } catch (...) {}
-    }
+  /*
+   * It is possible that locals have already been decref'd.
+   *
+   * Here's why:
+   *
+   *   - If a destructor for any of these things throws a php
+   *     exception, it's swallowed at the dtor boundary and we keep
+   *     running php.
+   *
+   *   - If the destructor for any of these things throws a fatal,
+   *     it's swallowed, and we set surprise flags to throw a fatal
+   *     from now on.
+   *
+   *   - If the second case happened and we have to run another
+   *     destructor, its enter hook will throw, but it will be
+   *     swallowed again.
+   *
+   *   - Finally, the exit hook for the returning function can
+   *     throw, but this happens last so everything is destructed.
+   *
+   *   - When that happens, exit hook sets localsDecRefd flag.
+   */
+  if (!fp->localsDecRefd()) {
+    try {
+      // Note that we must convert locals and the $this to
+      // uninit/zero during unwind.  This is because a backtrace
+      // from another destructing object during this unwind may try
+      // to read them.
+      frame_free_locals_unwind(fp, func->numLocals());
+    } catch (...) {}
+  }
+
+  if (LIKELY(!fp->resumed())) {
+    // Free ActRec.
     stack.ndiscard(func->numSlotsInFrame());
     stack.discardAR();
+  } else if (fp->func()->isAsyncFunction()) {
+    // Do nothing. AsyncFunctionWaitHandle will handle the exception.
+  } else if (fp->func()->isAsyncGenerator()) {
+    // Do nothing. AsyncGeneratorWaitHandle will handle the exception.
+  } else if (fp->func()->isNonAsyncGenerator()) {
+    // Mark the generator as finished.
+    frame_generator(fp)->finish();
   } else {
-    // The generator's locals will be cleaned up when the Continuation
-    // object is destroyed. But we are leaving the generator function
-    // now, so signal that to anyone who cares.
-    try {
-      EventHook::FunctionExit(fp);
-    } catch (...) {} // As above, don't let new exceptions out of unwind.
+    not_reached();
   }
 
   /*
@@ -216,12 +219,48 @@ void tearDownFrame(ActRec*& fp, Stack& stack, PC& pc) {
    * pc and fp since we're about to re-throw the exception.  And we
    * don't want to dereference prefFp since we just popped it.
    */
-  if (prevFp == fp) return;
+  if (!prevFp) return;
 
   assert(stack.isValidAddress(reinterpret_cast<uintptr_t>(prevFp)) ||
-         prevFp->inGenerator());
-  auto const prevOff = soff + prevFp->m_func->base();
-  pc = prevFp->m_func->unit()->at(prevOff);
+         prevFp->resumed());
+  auto const prevOff = soff + prevFp->func()->base();
+  pc = prevFp->func()->unit()->at(prevOff);
+  fp = prevFp;
+}
+
+void tearDownEagerAsyncFrame(ActRec*& fp, Stack& stack, PC& pc, ObjectData* e) {
+  auto const func = fp->func();
+  auto const prevFp = fp->sfp();
+  auto const soff = fp->m_soff;
+  assert(!fp->resumed());
+  assert(func->isAsyncFunction());
+  assert(*reinterpret_cast<const Op*>(pc) != OpRetC);
+
+  FTRACE(1, "tearDownAsyncFrame: {} ({})\n  fp {} prevFp {}\n",
+         func->fullName()->data(),
+         func->unit()->filepath()->data(),
+         implicit_cast<void*>(fp),
+         implicit_cast<void*>(prevFp));
+
+  try {
+    frame_free_locals_unwind(fp, func->numLocals());
+  } catch (...) {}
+
+  stack.ndiscard(func->numSlotsInFrame());
+  stack.ret();
+  assert(stack.topTV() == &fp->m_r);
+  tvWriteObject(c_StaticWaitHandle::CreateFailed(e), &fp->m_r);
+  e->decRefCount();
+
+  if (UNLIKELY(!prevFp)) {
+    pc = 0;
+    return;
+  }
+
+  assert(stack.isValidAddress(reinterpret_cast<uintptr_t>(prevFp)) ||
+         prevFp->resumed());
+  auto const prevOff = soff + prevFp->func()->base();
+  pc = prevFp->func()->unit()->at(prevOff);
   fp = prevFp;
 }
 
@@ -293,6 +332,11 @@ bool chainFaults(Fault& fault) {
  *   - Check if the faultOffset that raised the exception is inside a
  *     protected region, if so, if it can handle the Fault resume the
  *     VM at the handler.
+ *
+ *   - Check if we are handling user exception in an eagerly executed
+ *     async function. If so, pop its frame, wrap the exception into
+ *     failed StaticWaitHandle object, leave it on the stack as
+ *     a return value from the async function and resume VM.
  *
  *   - Failing any of the above, pop the frame for the current
  *     function.  If the current function was the last frame in the
@@ -373,6 +417,8 @@ UnwindAction unwind(ActRec*& fp,
           return UnwindAction::ResumeVM;
         case UnwindAction::Propagate:
           break;
+        case UnwindAction::Return:
+          not_reached();
         }
       }
       // If we came here, it means that no further EHs were found for
@@ -382,9 +428,18 @@ UnwindAction unwind(ActRec*& fp,
       // escapes the exception handler where it was thrown.
     } while (chainFaults(fault));
 
+    // If in an eagerly executed async function, wrap the user exception
+    // into a failed StaticWaitHandle and return it to the caller.
+    if (!fp->resumed() && fp->m_func->isAsyncFunction() &&
+        fault.m_faultType == Fault::Type::UserException) {
+      tearDownEagerAsyncFrame(fp, stack, pc, fault.m_userException);
+      g_context->m_faults.pop_back();
+      return pc ? UnwindAction::ResumeVM : UnwindAction::Return;
+    }
+
     // We found no more handlers in this frame, so the nested fault
     // count starts over for the caller frame.
-    auto const lastFrameForNesting = fp == fp->arGetSfp();
+    auto const lastFrameForNesting = !fp->sfp();
     tearDownFrame(fp, stack, pc);
 
     // Once we are done with EHs for the current frame we restore
@@ -428,7 +483,7 @@ void unwindBuiltinFrame() {
   }
 
   // Free the locals and VarEnv if there is one
-  frame_free_locals_inl(fp, fp->m_func->numLocals());
+  frame_free_locals_inl(fp, fp->m_func->numLocals(), nullptr);
 
   // Tear down the frame
   Offset pc = -1;

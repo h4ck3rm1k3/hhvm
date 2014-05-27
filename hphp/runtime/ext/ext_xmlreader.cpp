@@ -274,7 +274,7 @@ String c_XMLReader::read_string_func(xmlreader_read_char_t internal_function) {
     xmlFree(retchar);
     return ret;
   } else {
-    return String("");
+    return empty_string;
   }
 }
 
@@ -287,7 +287,7 @@ String c_XMLReader::t_readinnerxml() {
 }
 
 String c_XMLReader::t_readouterxml() {
-  return read_string_func(xmlTextReaderReadString);
+  return read_string_func(xmlTextReaderReadOuterXml);
 }
 
 bool c_XMLReader::bool_func_no_arg(xmlreader_read_int_t internal_function) {
@@ -577,7 +577,7 @@ Variant c_XMLReader::t___get(Variant name) {
       if (retchar) {
         return String((char*)retchar, CopyString);
       } else {
-        return String("");
+        return empty_string;
       }
     case KindOfBoolean:
       return (retint ? true : false);

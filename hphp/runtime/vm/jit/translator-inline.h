@@ -22,9 +22,6 @@
 #include <boost/noncopyable.hpp>
 #include "hphp/runtime/base/execution-context.h"
 
-#define TVOFF(nm) offsetof(TypedValue, nm)
-#define AROFF(nm) offsetof(ActRec, nm)
-
 /*
  * Because of a circular dependence with ExecutionContext, these
  * translation-related helpers cannot live in translator.h.
@@ -47,11 +44,12 @@ inline ActRec* liveFrame()    { return (ActRec*)vmfp(); }
 inline const Func* liveFunc() { return liveFrame()->m_func; }
 inline const Unit* liveUnit() { return liveFunc()->unit(); }
 inline Class* liveClass() { return liveFunc()->cls(); }
+inline bool liveResumed() { return liveFrame()->resumed(); }
 
 inline Offset liveSpOff() {
   Cell* fp = vmfp();
-  if (liveFrame()->inGenerator()) {
-    fp = (Cell*)Stack::generatorStackBase((ActRec*)fp);
+  if (liveFrame()->resumed()) {
+    fp = (Cell*)Stack::resumableStackBase((ActRec*)fp);
   }
   return fp - vmsp();
 }
@@ -62,11 +60,11 @@ inline bool isNativeImplCall(const Func* funcd, int numArgs) {
   return funcd && funcd->methInfo() && numArgs == funcd->numParams();
 }
 
-inline ptrdiff_t cellsToBytes(int nCells) {
-  return nCells * sizeof(Cell);
+inline int cellsToBytes(int nCells) {
+  return safe_cast<int32_t>(nCells * ssize_t(sizeof(Cell)));
 }
 
-inline int64_t localOffset(int64_t locId) {
+inline int localOffset(int locId) {
   return -cellsToBytes(locId + 1);
 }
 
@@ -76,6 +74,23 @@ inline void assert_native_stack_aligned() {
 #endif
 }
 
+/**
+ * This class is used as a scoped guard around code that is called from the JIT
+ * which needs the VM to be in a consistent state. JIT helpers use it to guard
+ * calls into HHVM's runtime. It is used like this:
+ *
+ *   void helperFunction() {
+ *      JIT::VMRegAnchor _;
+ *      runtimeCall();
+ *   }
+ *
+ * VMRegAnchor should also be used before entering a C library compiled with
+ * -fomit-frame-pointer which will call back into HHVM. If VMRegAnchor is not
+ * used, HHVM's runtime will attempt to traverse the native stack, and will
+ * assert or crash if it attempts to parse a part of the stack with no frame
+ * pointers. VMRegAnchor forces the stack traversal to be done when it is
+ * constructed.
+ */
 struct VMRegAnchor : private boost::noncopyable {
   VMRegState m_old;
   VMRegAnchor() {
@@ -92,9 +107,8 @@ struct VMRegAnchor : private boost::noncopyable {
 
     auto prevAr = g_context->getOuterVMFrame(ar);
     const Func* prevF = prevAr->m_func;
-    vmsp() = ar->inGenerator() ?
-      Stack::generatorStackBase(ar) - 1 :
-      (TypedValue*)ar - ar->numArgs();
+    assert(!ar->resumed());
+    vmsp() = (TypedValue*)ar - ar->numArgs();
     assert(g_context->m_stack.isValidAddress((uintptr_t)vmsp()));
     vmpc() = prevF->unit()->at(prevF->base() + ar->m_soff);
     vmfp() = (TypedValue*)prevAr;
@@ -104,6 +118,12 @@ struct VMRegAnchor : private boost::noncopyable {
   }
 };
 
+/**
+ * This class is used as an invocation guard equivalent to VMRegAnchor, except
+ * the sync is assumed to have already been done. This was part of a
+ * project aimed at improving performance by doing the fixup in advance, i.e.
+ * eagerly -- the benefits turned out to be marginal or negative in most cases.
+ */
 struct EagerVMRegAnchor {
   VMRegState m_old;
   EagerVMRegAnchor() {
@@ -112,7 +132,9 @@ struct EagerVMRegAnchor {
       DEBUG_ONLY const Cell* sp = vmsp();
       DEBUG_ONLY const auto* pc = vmpc();
       VMRegAnchor _;
-      assert(vmfp() == fp && vmsp() == sp && vmpc() == pc);
+      assert(vmfp() == fp);
+      assert(vmsp() == sp);
+      assert(vmpc() == pc);
     }
     m_old = tl_regState;
     tl_regState = VMRegState::CLEAN;

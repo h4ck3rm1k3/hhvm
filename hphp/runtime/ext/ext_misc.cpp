@@ -24,13 +24,16 @@
 #include "hphp/runtime/base/hphp-system.h"
 #include "hphp/runtime/base/runtime-option.h"
 #include "hphp/runtime/base/strings.h"
-#include "hphp/runtime/ext/ext_class.h"
 #include "hphp/runtime/ext/ext_math.h"
 #include "hphp/runtime/vm/bytecode.h"
+#include "hphp/runtime/vm/type-profile.h"
 #include "hphp/parser/scanner.h"
 #include "hphp/runtime/base/class-info.h"
+#include "hphp/runtime/vm/jit/mc-generator.h"
+#include "hphp/runtime/vm/jit/timer.h"
 #include "hphp/runtime/vm/jit/translator.h"
 #include "hphp/runtime/vm/jit/translator-inline.h"
+#include "hphp/system/constants.h"
 #include "hphp/util/logger.h"
 
 namespace HPHP {
@@ -43,6 +46,35 @@ IMPLEMENT_THREAD_LOCAL(std::string, s_misc_highlight_default_html);
 IMPLEMENT_THREAD_LOCAL(std::string, s_misc_display_errors);
 
 const std::string s_1("1"), s_2("2"), s_stdout("stdout"), s_stderr("stderr");
+
+static String HHVM_FUNCTION(server_warmup_status) {
+  // Fail if we jitted more than 25kb of code.
+  size_t begin, end;
+  JIT::mcg->codeEmittedThisRequest(begin, end);
+  auto const diff = end - begin;
+  auto constexpr kMaxTCBytes = 25 << 10;
+  if (diff > kMaxTCBytes) {
+    return folly::format("Translation cache grew by {} bytes to {} bytes.",
+                         diff, begin).str();
+  }
+
+  // Fail if we spent more than 0.5ms in the JIT.
+  auto const jittime = JIT::Timer::CounterValue(JIT::Timer::translate);
+  auto constexpr kMaxJitTimeNS = 500000;
+  if (jittime.total > kMaxJitTimeNS) {
+    return folly::format("Spent {}us in the JIT.", jittime.total / 1000).str();
+  }
+
+  if (shouldProfile()) {
+    return "Warmup profiling is still enabled.";
+  }
+
+  if (requestCount() <= RuntimeOption::EvalJitProfileRequests) {
+    return "PGO profiling translations are still enabled.";
+  }
+
+  return "";
+}
 
 static class MiscExtension : public Extension {
 public:
@@ -75,7 +107,7 @@ public:
     );
     IniSetting::Bind(
       this, IniSetting::PHP_INI_ALL,
-      "display_errors", "1",
+      "display_errors", RuntimeOption::EnableHipHopSyntax ? "stderr" : "1",
       IniSetting::SetAndGet<std::string>(
         [](const std::string& value) {
           if (value == s_1 || value == s_stdout) {
@@ -94,6 +126,10 @@ public:
     );
   }
 
+  virtual void moduleInit() override {
+    HHVM_FALIAS(HH\\server_warmup_status, server_warmup_status);
+    loadSystemlib();
+  }
 } s_misc_extension;
 
 using JIT::CallerFrame;
@@ -181,8 +217,8 @@ Variant f_constant(const String& name) {
     }
     raise_warning("Couldn't find constant %s", data);
   } else {
-    auto cns = Unit::loadCns(name.get());
-    if (cns) return tvAsVariant(cns);
+    auto const cns = Unit::loadCns(name.get());
+    if (cns) return tvAsCVarRef(cns);
   }
 
   return uninit_null();
@@ -315,7 +351,7 @@ Variant f_time_nanosleep(int seconds, int nanoseconds) {
   recordNanosleepTime(req, &rem);
   if (errno == EINTR) {
     return make_map_array(s_seconds, (int64_t)rem.tv_sec,
-                       s_nanoseconds, (int64_t)rem.tv_nsec);
+                          s_nanoseconds, (int64_t)rem.tv_nsec);
   }
   return false;
 }
@@ -511,7 +547,7 @@ const int UserTokenId_T_START_HEREDOC = 372;
 const int UserTokenId_T_END_HEREDOC = 373;
 const int UserTokenId_T_DOLLAR_OPEN_CURLY_BRACES = 374;
 const int UserTokenId_T_CURLY_OPEN = 375;
-const int UserTokenId_T_PAAMAYIM_NEKUDOTAYIM = 376;
+const int UserTokenId_T_PAAMAYIM_NEKUDOTAYIM UNUSED = 376;
 const int UserTokenId_T_NAMESPACE = 377;
 const int UserTokenId_T_NS_C = 378;
 const int UserTokenId_T_DIR = 379;
@@ -528,7 +564,7 @@ const int UserTokenId_T_XHP_REQUIRED = 389;
 const int UserTokenId_T_TRAIT = 390;
 const int UserTokenId_T_INSTEADOF = 391;
 const int UserTokenId_T_TRAIT_C = 392;
-const int UserTokenId_T_VARARG = 393;
+const int UserTokenId_T_ELLIPSIS = 393;
 const int UserTokenId_T_HH_ERROR = 394;
 const int UserTokenId_T_FINALLY = 395;
 const int UserTokenId_T_XHP_TAG_LT = 396;
@@ -545,7 +581,6 @@ const int UserTokenId_T_UNRESOLVED_NEWTYPE = 406;
 const int UserTokenId_T_COMPILER_HALT_OFFSET = 407;
 const int UserTokenId_T_AWAIT = 408;
 const int UserTokenId_T_ASYNC = 409;
-const int UserTokenId_T_TUPLE = 410;
 const int UserTokenId_T_FROM = 411;
 const int UserTokenId_T_WHERE = 412;
 const int UserTokenId_T_JOIN = 413;
@@ -567,7 +602,9 @@ const int UserTokenId_T_LAMBDA_CP = 428;
 const int UserTokenId_T_UNRESOLVED_OP = 429;
 const int UserTokenId_T_CALLABLE = 430;
 const int UserTokenId_T_ONUMBER = 431;
-const int MaxUserTokenId = 432; // Marker, not a real user token ID
+const int UserTokenId_T_POW = 432;
+const int UserTokenId_T_POW_EQUAL = 433;
+const int MaxUserTokenId = 434; // Marker, not a real user token ID
 
 #undef YYTOKENTYPE
 #undef YYTOKEN_MAP

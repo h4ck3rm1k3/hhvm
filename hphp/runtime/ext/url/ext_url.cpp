@@ -24,7 +24,10 @@
 #include "hphp/runtime/ext/ext_string.h"
 #include "hphp/runtime/ext/ext_file.h"
 #include "hphp/runtime/ext/pcre/ext_pcre.h"
-#include "hphp/runtime/ext/ext_options.h"
+#include "hphp/runtime/base/preg.h"
+#include "hphp/runtime/ext/std/ext_std_classobj.h"
+#include "hphp/runtime/ext/std/ext_std_options.h"
+#include "hphp/system/constants.h"
 
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
@@ -113,7 +116,7 @@ Array HHVM_FUNCTION(get_meta_tags, const String& filename,
 
   Variant matches;
   HHVM_FN(preg_match_all)("/<meta\\s+name=\"(.*?)\"\\s+content=\"(.*?)\".*?>/s",
-                          f, ref(matches), k_PREG_SET_ORDER);
+                          f, ref(matches), PREG_SET_ORDER);
 
   Array ret = Array::Create();
   for (ArrayIter iter(matches.toArray()); iter; ++iter) {
@@ -141,7 +144,7 @@ static void url_encode_array(StringBuffer &ret, const Variant& varr,
     Object o = varr.toObject();
     arr = o->isCollection()
       ? varr.toArray()
-      : f_get_object_vars(o).toArray();
+      : HHVM_FN(get_object_vars(o));
   } else {
     arr = varr.toArray();
   }
@@ -207,7 +210,7 @@ Variant HHVM_FUNCTION(http_build_query, const Variant& formdata,
 
   String arg_sep;
   if (arg_separator.empty()) {
-    arg_sep = f_ini_get(s_arg_separator_output);
+    arg_sep = HHVM_FN(ini_get)(s_arg_separator_output);
   } else {
     arg_sep = arg_separator;
   }
@@ -233,16 +236,13 @@ const StaticString
   s_port("port");
 
 #define RETURN_COMPONENT(name)                          \
-  if (resource.name != NULL) {                          \
-    String ret(resource.name, AttachString);            \
-    resource.name = NULL;                               \
-    return ret;                                         \
+  if (!resource.name.isNull()) {                        \
+    return resource.name;                               \
   }                                                     \
 
 #define SET_COMPONENT(name)                                             \
-  if (resource.name != NULL) {                                          \
-    ret.set(s_ ## name, String(resource.name, AttachString));           \
-    resource.name = NULL;                                               \
+  if (!resource.name.isNull()) {                                        \
+    ret.set(s_ ## name, resource.name);                                 \
   }                                                                     \
 
 Variant HHVM_FUNCTION(parse_url, const String& url,
@@ -274,7 +274,7 @@ Variant HHVM_FUNCTION(parse_url, const String& url,
     return uninit_null();
   }
 
-  ArrayInit ret(8);
+  ArrayInit ret(8, ArrayInit::Map{});
   SET_COMPONENT(scheme);
   SET_COMPONENT(host);
   if (resource.port) {

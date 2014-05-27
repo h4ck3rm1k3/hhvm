@@ -26,10 +26,11 @@
 #include <list>
 #include <map>
 
-#include "hphp/util/thread-local.h"
-#include "hphp/util/mutex.h"
 #include "hphp/util/functional.h"
 #include "hphp/util/hash-map-typedefs.h"
+#include "hphp/util/low-ptr.h"
+#include "hphp/util/mutex.h"
+#include "hphp/util/thread-local.h"
 #include "hphp/runtime/base/datatype.h"
 #include "hphp/runtime/base/macros.h"
 #include "hphp/runtime/base/memory-manager.h"
@@ -64,14 +65,26 @@ class StringData;
 class ArrayData;
 class ObjectData;
 class ResourceData;
+class MArrayIter;
 
-class ArrayIter;
-class MutableArrayIter;
-
-class FullPos;
+class Class;
 
 class VariableSerializer;
 class VariableUnserializer;
+
+///////////////////////////////////////////////////////////////////////////////
+
+#ifdef USE_LOWPTR
+constexpr bool use_lowptr = true;
+
+typedef LowPtr<Class, uint32_t> LowClassPtr;
+typedef LowPtr<const StringData, uint32_t> LowStringPtr;
+#else
+constexpr bool use_lowptr = false;
+
+typedef LowPtr<Class, uintptr_t> LowClassPtr;
+typedef LowPtr<const StringData, uintptr_t> LowStringPtr;
+#endif
 
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -159,6 +172,13 @@ inline bool isMutableType(Collection::Type ctype) {
           ctype == Collection::MapType ||
           ctype == Collection::SetType);
 }
+inline bool isImmutableType(Collection::Type ctype) {
+  return !isMutableType(ctype);
+}
+
+inline bool isTypeWithPossibleIntStringKeys(Collection::Type ctype) {
+  return Collection::isSetType(ctype) || Collection::isMapType(ctype);
+}
 
 }
 
@@ -202,8 +222,6 @@ inline RefResult ref(Variant& v) {
   return *(RefResultValue*)&v;
 }
 
-class Class;
-
 ///////////////////////////////////////////////////////////////////////////////
 
 class GlobalNameValueTableWrapper;
@@ -246,6 +264,16 @@ typedef const unsigned char* PC;
 typedef int Id;
 const Id kInvalidId = Id(-1);
 
+/*
+ * Translation IDs.
+ *
+ * These represent compilation units for the JIT, and are used to key
+ * into several runtime structures for finding profiling data or
+ * tracking translation information.
+ */
+using TransID = uint32_t;
+constexpr TransID kInvalidTransID = -1u;
+
 // Bytecode offsets.  Used for both absolute offsets and relative
 // offsets.
 typedef int32_t Offset;
@@ -277,6 +305,7 @@ namespace RDS {
  */
 typedef uint32_t FuncId;
 constexpr FuncId InvalidFuncId = FuncId(-1LL);
+constexpr FuncId DummyFuncId = FuncId(-2LL);
 typedef hphp_hash_set<FuncId> FuncIdSet;
 
 /*
@@ -314,9 +343,12 @@ typedef hphp_hash_set<FuncId> FuncIdSet;
  *   when searching for the context (eg array_map evaluates its
  *   callback in the context of its caller).
  *
- * AttrVMEntry is set on functions that are generally VM entry points.
- *   This is not necessary for correctness; it simply allows better
- *   code generation in the JIT.
+ * AttrInterceptable is only valid in RepoAuthoritative mode, and
+ * indicates a function can be used with fb_rename_function (even if
+ * JitEnableRenameFunction is false) and can be used with
+ * fb_intercept.  (Note: we could split this into two bits, since you
+ * can technically pessimize less for fb_intercept than you need to
+ * for fb_rename_function, but we haven't done so at this point.)
  */
 enum Attr {
   AttrNone          = 0,         // class  property  method  //
@@ -332,7 +364,7 @@ enum Attr {
   AttrTrait         = (1 <<  8), //    X                X    //
   AttrNoInjection   = (1 <<  9), //                     X    //
   AttrUnique        = (1 << 10), //    X                X    //
-  AttrDynamicInvoke = (1 << 11), //                     X    //
+  AttrInterceptable = (1 << 11), //                     X    //
   AttrNoExpandTrait = (1 << 12), //    X                     //
   AttrNoOverride    = (1 << 13), //    X                X    //
   AttrClone         = (1 << 14), //                     X    //
@@ -345,10 +377,10 @@ enum Attr {
   AttrAllowOverride = (1 << 21), //                     X    //
   AttrSkipFrame     = (1 << 22), //                     X    //
   AttrNative        = (1 << 23), //                     X    //
-  AttrVMEntry       = (1 << 24), //                     X    //
   AttrHPHPSpecific  = (1 << 25), //                     X    //
   AttrIsFoldable    = (1 << 26), //                     X    //
   AttrNoFCallBuiltin= (1 << 27), //                     X    //
+  AttrVariadicParam = (1 << 28), //                     X    //
 };
 
 inline Attr operator|(Attr a, Attr b) { return Attr((int)a | (int)b); }

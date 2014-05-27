@@ -25,6 +25,7 @@
 #include "hphp/util/logger.h"
 #include "hphp/util/text-util.h"
 
+#include "hphp/runtime/base/arch.h"
 #include "hphp/runtime/base/hphp-system.h"
 #include "hphp/runtime/base/http-client.h"
 #include "hphp/runtime/base/program-functions.h"
@@ -38,7 +39,6 @@
 #include "hphp/runtime/server/transport.h"
 #include "hphp/runtime/server/upload.h"
 #include "hphp/runtime/server/virtual-host.h"
-#include "hphp/runtime/vm/jit/arch.h"
 
 #define DEFAULT_POST_CONTENT_TYPE "application/x-www-form-urlencoded"
 
@@ -171,11 +171,11 @@ static void PrepareEnv(Array& env, Transport *transport) {
   if (RuntimeOption::EvalJit) {
     env.set(s_HHVM_JIT, 1);
   }
-  switch (JIT::arch()) {
-  case JIT::Arch::X64:
+  switch (arch()) {
+  case Arch::X64:
     env.set(s_HHVM_ARCH, "x64");
     break;
-  case JIT::Arch::ARM:
+  case Arch::ARM:
     env.set(s_HHVM_ARCH, "arm");
     break;
   }
@@ -225,8 +225,8 @@ void HttpProtocol::PrepareSystemVariables(Transport *transport,
                                           const SourceRootInfo &sri) {
 
   auto const vhost = VirtualHost::GetCurrent();
-  auto const g = get_global_variables();
-  Variant emptyArr(HphpArray::GetStaticEmptyArray());
+  auto const g = get_global_variables()->asArrayData();
+  Variant emptyArr(staticEmptyArray());
   for (auto& key : s_arraysToClear) {
     g->remove(key.get(), false);
     g->set(key.get(), emptyArr, false);
@@ -250,12 +250,17 @@ void HttpProtocol::PrepareSystemVariables(Transport *transport,
 
 #undef X
 
+  Variant HTTP_RAW_POST_DATA;
+  SCOPE_EXIT {
+    g->set(s_HTTP_RAW_POST_DATA.get(), HTTP_RAW_POST_DATA, false);
+  };
+
   StartRequest(SERVERarr);
   PrepareEnv(ENVarr, transport);
   PrepareRequestVariables(REQUESTarr,
                           GETarr,
                           POSTarr,
-                          g->getRef(s_HTTP_RAW_POST_DATA),
+                          HTTP_RAW_POST_DATA,
                           FILESarr,
                           COOKIEarr,
                           transport,
@@ -511,7 +516,7 @@ static void CopyServerInfo(Array& server,
   server.set(s_SERVER_ADDR, transport->getServerAddr());
   server.set(s_SERVER_NAME, hostName);
   server.set(s_SERVER_PORT, transport->getServerPort());
-  server.set(s_SERVER_SOFTWARE, s_HPHP);
+  server.set(s_SERVER_SOFTWARE, transport->getServerSoftware());
   server.set(s_SERVER_PROTOCOL, "HTTP/" + transport->getHTTPVersion());
   server.set(s_SERVER_ADMIN, empty_string);
   server.set(s_SERVER_SIGNATURE, empty_string);
@@ -620,6 +625,10 @@ static void CopyPathInfo(Array& server,
     // fix it so it is settable, so I'll leave this for now
     documentRoot = vhost->getDocumentRoot();
   }
+  if (documentRoot != s_forwardslash &&
+      documentRoot[documentRoot.length() - 1] == '/') {
+    documentRoot = documentRoot.substr(0, documentRoot.length() - 1);
+  }
   server.set(s_DOCUMENT_ROOT, documentRoot);
   server.set(s_SCRIPT_FILENAME, r.absolutePath());
 
@@ -637,7 +646,7 @@ static void CopyPathInfo(Array& server,
       } else {
         server.set(s_PATH_TRANSLATED,
                    String(server[s_DOCUMENT_ROOT].toCStrRef() +
-                          pathTranslated));
+                          s_forwardslash + pathTranslated));
       }
     } else {
       server.set(s_PATH_TRANSLATED,
@@ -684,9 +693,10 @@ void HttpProtocol::PrepareServerVariable(Array& server,
   HeaderMap headers;
   transport->getHeaders(headers);
   // Do this first so other methods can overwrite them
-  CopyTransportParams(server, transport);
   CopyHeaderVariables(server, headers);
   CopyServerInfo(server, transport, vhost);
+  // Do this last so it can overwrite all the previous settings
+  CopyTransportParams(server, transport);
   CopyRemoteInfo(server, transport);
   CopyAuthInfo(server, transport);
   CopyPathInfo(server, transport, r, vhost);
@@ -705,7 +715,7 @@ void HttpProtocol::PrepareServerVariable(Array& server,
   for (auto& kv : vhost->getServerVars()) {
     server.set(String(kv.first), String(kv.second));
   }
-  sri.setServerVariables(server);
+  server = sri.setServerVariables(std::move(server));
 
   const char *threadType = transport->getThreadTypeName();
   server.set(s_THREAD_TYPE, threadType);
@@ -749,25 +759,20 @@ void HttpProtocol::DecodeParameters(Array& variables, const char *data,
   last_value:
     if ((val = (const char *)memchr(s, '=', (p - s)))) {
       int len = val - s;
-      char *name = url_decode(s, len);
-      String sname(name, len, AttachString);
+      String sname = url_decode(s, len);
 
       val++;
       len = p - val;
-      char *value = url_decode(val, len);
+      String value = url_decode(val, len);
       if (RuntimeOption::EnableMagicQuotesGpc) {
-        char *slashedvalue = string_addslashes(value, len);
-        free(value);
-        value = slashedvalue;
+        value = string_addslashes(value.data(), len);
       }
-      String svalue(value, len, AttachString);
 
-      register_variable(variables, (char*)sname.data(), svalue);
+      register_variable(variables, (char*)sname.data(), value);
     } else if (!post) {
       int len = p - s;
-      char *name = url_decode(s, len);
-      String sname(name, len, AttachString);
-      register_variable(variables, (char*)sname.data(), "");
+      String sname = url_decode(s, len);
+      register_variable(variables, (char*)sname.data(), empty_string);
     }
     s = p + 1;
   }
@@ -794,26 +799,21 @@ void HttpProtocol::DecodeCookies(Array& variables, char *data) {
     if (var != val && *var != '\0') {
       if (val) { /* have a value */
         int len = val - var;
-        char *name = url_decode(var, len);
-        String sname(name, len, AttachString);
+        String sname = url_decode(var, len);
 
         ++val;
         len = strlen(val);
-        char *value = url_decode(val, len);
+        String value = url_decode(val, len);
         if (RuntimeOption::EnableMagicQuotesGpc) {
-          char *slashedvalue = string_addslashes(value, len);
-          free(value);
-          value = slashedvalue;
+          value = string_addslashes(value.data(), len);
         }
-        String svalue(value, len, AttachString);
 
-        register_variable(variables, (char*)sname.data(), svalue, false);
+        register_variable(variables, (char*)sname.data(), value, false);
       } else {
         int len = strlen(var);
-        char *name = url_decode(var, len);
-        String sname(name, len, AttachString);
+        String sname = url_decode(var, len);
 
-        register_variable(variables, (char*)sname.data(), "", false);
+        register_variable(variables, (char*)sname.data(), empty_string, false);
       }
     }
 

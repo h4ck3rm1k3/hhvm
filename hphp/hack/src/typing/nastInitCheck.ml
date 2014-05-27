@@ -153,7 +153,7 @@ module Env = struct
     let _, tc = Typing_env.get_class tenv parent in
     (match tc with
     | None -> acc
-    | Some { tc_members_init = members } ->
+    | Some { tc_members_init = members; _ } ->
       SSet.union members acc
     )
     | _ -> acc
@@ -173,7 +173,7 @@ open Env
 (*****************************************************************************)
 
 let is_whitelisted = function
-  | "get_class" -> true
+  | "\\get_class" -> true
   | _ -> false
 
 let rec class_decl tenv c =

@@ -931,23 +931,10 @@ static bool HHVM_METHOD(Imagick, flipImage) {
   return true;
 }
 
-static TypedValue* HHVM_MN(Imagick, floodFillPaintImage)(ActRec* ar_) {
-  Object this_ = ar_->m_this;
-  TypedValue* fill_;
-  double fuzz;
-  TypedValue* target_;
-  int64_t x;
-  int64_t y;
-  bool invert;
-  int64_t channel = DefaultChannels;
-
-  if (!parseArgs(ar_, "vdvllb|l",
-    &fill_, &fuzz, &target_, &x, &y, &invert, &channel)) {
-    return arReturn(ar_, false);
-  }
-  Variant fill = tvAsVariant(fill_);
-  Variant target = tvAsVariant(target_);
-
+static bool HHVM_METHOD(Imagick, floodFillPaintImage,
+                        const Variant& fill, double fuzz,
+                        const Variant& target, int64_t x, int64_t y,
+                        bool invert, int64_t channel /*=Default*/) {
   auto wand = getMagickWandResource(this_);
   auto fillPixel = buildColorWand(fill);
   auto targetPixel = buildColorWand(target);
@@ -957,7 +944,7 @@ static TypedValue* HHVM_MN(Imagick, floodFillPaintImage)(ActRec* ar_) {
   if (status == MagickFalse) {
     IMAGICK_THROW("Unable to floodfill paint image");
   }
-  return arReturn(ar_, true);
+  return true;
 }
 
 static bool HHVM_METHOD(Imagick, flopImage) {
@@ -1180,8 +1167,8 @@ static Array HHVM_METHOD(Imagick, getImageChannelExtrema, int64_t channel) {
     IMAGICK_THROW("Unable to get image channel extrema");
   }
   return make_map_array(
-    s_minima, minima,
-    s_maxima, maxima);
+    s_minima, (int64_t)minima,
+    s_maxima, (int64_t)maxima);
 }
 
 static Array HHVM_METHOD(Imagick, getImageChannelKurtosis, int64_t channel) {
@@ -1231,17 +1218,17 @@ static Array HHVM_METHOD(Imagick, getImageChannelStatistics) {
   auto wand = getMagickWandResource(this_);
   auto stat = MagickGetImageChannelStatistics(wand->getWand());
 
-  ArrayInit ret(sizeof(channels) / sizeof(channels[0]));
-  for (auto channel: channels) {
+  ArrayInit ret(sizeof(channels) / sizeof(channels[0]), ArrayInit::Mixed{});
+  for (auto channel : channels) {
     ret.set(channel, make_map_array(
         s_mean, stat[channel].mean,
         s_minima, stat[channel].minima,
         s_maxima, stat[channel].maxima,
         s_standardDeviation, stat[channel].standard_deviation,
-        s_depth, stat[channel].depth));
+        s_depth, (int64_t)stat[channel].depth));
   }
   freeMagickMemory(stat);
-  return ret.create();
+  return ret.toArray();
 }
 
 static Object HHVM_METHOD(Imagick, getImageClipMask) {
@@ -1325,8 +1312,8 @@ static Array HHVM_METHOD(Imagick, getImageExtrema) {
     IMAGICK_THROW("Unable to get image extrema");
   }
   return make_map_array(
-    s_min, min,
-    s_max, max);
+    s_min, (int64_t)min,
+    s_max, (int64_t)max);
 }
 
 static String HHVM_METHOD(Imagick, getImageFilename) {
@@ -1450,10 +1437,10 @@ static Array HHVM_METHOD(Imagick, getImagePage) {
     IMAGICK_THROW("Unable to get image page");
   }
   return make_map_array(
-    s_width, width,
-    s_height, height,
-    s_x, x,
-    s_y, y);
+    s_width, (int64_t)width,
+    s_height, (int64_t)height,
+    s_x, (int64_t)x,
+    s_y, (int64_t)y);
 }
 
 static Object HHVM_METHOD(Imagick, getImagePixelColor,
@@ -1495,13 +1482,14 @@ static Array HHVM_METHOD(Imagick, getImageProfiles,
   }
 
   if (with_values) {
-    ArrayInit ret(count);
+    ArrayInit ret(count, ArrayInit::Map{});
     for (size_t i = 0; i < count; ++i) {
-      ret.set(String(profiles[i]),
-              magickGetImageProfile(wand->getWand(), profiles[i]));
+      ret.setKeyUnconverted(
+        String(profiles[i]),
+        magickGetImageProfile(wand->getWand(), profiles[i]));
     }
     freeMagickMemory(profiles);
-    return ret.create();
+    return ret.toArray();
   } else {
     return convertMagickArray(count, profiles);
   }
@@ -1523,13 +1511,14 @@ static Array HHVM_METHOD(Imagick, getImageProperties,
   }
 
   if (with_values) {
-    ArrayInit ret(count);
+    ArrayInit ret(count, ArrayInit::Map{});
     for (size_t i = 0; i < count; ++i) {
-      ret.set(String(properties[i]),
-              magickGetImageProperty(wand->getWand(), properties[i]));
+      ret.setKeyUnconverted(
+        String(properties[i]),
+        magickGetImageProperty(wand->getWand(), properties[i]));
     }
     freeMagickMemory(properties);
-    return ret.create();
+    return ret.toArray();
   } else {
     return convertMagickArray(count, properties);
   }
@@ -1685,10 +1674,10 @@ static Array HHVM_METHOD(Imagick, getPage) {
     IMAGICK_THROW("Unable to get page");
   }
   return make_map_array(
-    s_width, width,
-    s_height, height,
-    s_x, x,
-    s_y, y);
+    s_width, (int64_t)width,
+    s_height, (int64_t)height,
+    s_x, (int64_t)x,
+    s_y, (int64_t)y);
 }
 
 static Object HHVM_METHOD(Imagick, getPixelIterator) {
@@ -1709,7 +1698,7 @@ static Array HHVM_STATIC_METHOD(Imagick, getQuantumDepth) {
   size_t depth;
   const char* quantumDepth = MagickGetQuantumDepth(&depth);
   return make_map_array(
-    s_quantumDepthLong, depth,
+    s_quantumDepthLong, (int64_t)depth,
     s_quantumDepthString, quantumDepth);
 }
 
@@ -1717,7 +1706,7 @@ static Array HHVM_STATIC_METHOD(Imagick, getQuantumRange) {
   size_t range;
   const char* quantumRange = MagickGetQuantumRange(&range);
   return make_map_array(
-    s_quantumRangeLong, range,
+    s_quantumRangeLong, (int64_t)range,
     s_quantumRangeString, quantumRange);
 }
 
@@ -1750,8 +1739,8 @@ static Array HHVM_METHOD(Imagick, getSize) {
     IMAGICK_THROW("Unable to get size");
   }
   return make_map_array(
-    s_columns, columns,
-    s_rows, rows);
+    s_columns, (int64_t)columns,
+    s_rows, (int64_t)rows);
 }
 
 static int64_t HHVM_METHOD(Imagick, getSizeOffset) {
@@ -1768,7 +1757,7 @@ static Array HHVM_STATIC_METHOD(Imagick, getVersion) {
   size_t version;
   const char* versionStr = MagickGetVersion(&version);
   return make_map_array(
-    s_versionNumber, version,
+    s_versionNumber, (int64_t)version,
     s_versionString, versionStr);
 }
 
@@ -1828,7 +1817,7 @@ static Array HHVM_METHOD(Imagick, identifyImage, bool appendRawOutput) {
   auto wand = getMagickWandResource(this_);
   String identify = convertMagickString(MagickIdentifyImage(wand->getWand()));
   auto parsedIdentify = parseIdentify(identify);
-  ArrayInit ret(parsedIdentify.size() + 6);
+  ArrayInit ret(parsedIdentify.size() + 6, ArrayInit::Map{});
 
   ret.set(s_imageName,
     convertMagickString(MagickGetImageFilename(wand->getWand())));
@@ -1837,7 +1826,7 @@ static Array HHVM_METHOD(Imagick, identifyImage, bool appendRawOutput) {
   ret.set(s_mimetype, mimetype.empty() ? s_unknown.get() : mimetype);
 
   for (const auto& i: parsedIdentify) {
-    ret.set(i.first, i.second);
+    ret.setKeyUnconverted(i.first, i.second);
   }
 
   ret.set(s_geometry, ImageGeometry(wand->getWand()).toArray());
@@ -1854,7 +1843,7 @@ static Array HHVM_METHOD(Imagick, identifyImage, bool appendRawOutput) {
     ret.set(s_rawOutput, identify);
   }
 
-  return ret.create();
+  return ret.toArray();
 }
 
 static bool HHVM_METHOD(Imagick, implodeImage, double radius) {
@@ -2192,23 +2181,11 @@ static bool HHVM_METHOD(Imagick, orderedPosterizeImage,
   return true;
 }
 
-static TypedValue* HHVM_MN(Imagick, paintFloodfillImage)(ActRec* ar_) {
+static bool HHVM_METHOD(Imagick, paintFloodfillImage,
+                        const Variant& fill, double fuzz,
+                        const Variant& bordercolor,
+                        int64_t x, int64_t y, int64_t channel) {
   raiseDeprecated(s_Imagick.c_str(), "paintFloodfillImage");
-  Object this_ = ar_->m_this;
-  TypedValue* fill_;
-  double fuzz;
-  TypedValue* bordercolor_;
-  int64_t x;
-  int64_t y;
-  int64_t channel = AllChannels;
-
-  if (!parseArgs(ar_, "vdvll|l",
-    &fill_, &fuzz, &bordercolor_, &x, &y, &channel)) {
-    return arReturn(ar_, false);
-  }
-  Variant fill = tvAsVariant(fill_);
-  Variant bordercolor= tvAsVariant(bordercolor_);
-
   auto wand = getMagickWandResource(this_);
   auto fillPixel = buildColorWand(fill);
   auto borderPixel = bordercolor.isNull()
@@ -2223,7 +2200,7 @@ static TypedValue* HHVM_MN(Imagick, paintFloodfillImage)(ActRec* ar_) {
   if (status == MagickFalse) {
     IMAGICK_THROW("Unable to paint floodfill image");
   }
-  return arReturn(ar_, true);
+  return true;
 }
 
 static bool HHVM_METHOD(Imagick, paintOpaqueImage,
@@ -2421,20 +2398,20 @@ static Array HHVM_METHOD(Imagick, queryFontMetrics,
     static const size_t boundingBoxOffset = 7;
     static const size_t size = 13;
 
-    ArrayInit ret(size - 3);
+    ArrayInit ret(size - 3, ArrayInit::Map{});
     for (size_t i = 0; i < size; ++i) {
       if (keys[i] == s_boundingBox) {
         ret.set(s_boundingBox, make_map_array(
-            s_x1, metrics[boundingBoxOffset + 0],
-            s_y1, metrics[boundingBoxOffset + 1],
-            s_x2, metrics[boundingBoxOffset + 2],
-            s_y2, metrics[boundingBoxOffset + 3]));
+                s_x1, metrics[boundingBoxOffset + 0],
+                s_y1, metrics[boundingBoxOffset + 1],
+                s_x2, metrics[boundingBoxOffset + 2],
+                s_y2, metrics[boundingBoxOffset + 3]));
       } else if (!keys[i].empty()) {
         ret.set(keys[i], metrics[i]);
       }
     }
     freeMagickMemory(metrics);
-    return ret.create();
+    return ret.toArray();
   }
 }
 
@@ -2495,7 +2472,9 @@ static bool HHVM_METHOD(Imagick, readImageBlob,
   if (status == MagickFalse) {
     IMAGICK_THROW("Unable to read image blob");
   }
-  MagickSetImageFilename(wand->getWand(), filename.c_str());
+  if (!filename.empty()) {
+    MagickSetImageFilename(wand->getWand(), filename.c_str());
+  }
   MagickSetLastIterator(wand->getWand());
   return true;
 }

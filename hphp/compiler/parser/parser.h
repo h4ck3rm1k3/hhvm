@@ -36,14 +36,6 @@
 #endif
 #define HPHP_PARSER_NS Compiler
 
-#define LOG_PARSE_ERROR(file, line, fmt, args...)     \
-  HPHP::Logger::Error(                                \
-    "\nFatal error: " fmt " in %s on line %d",   \
-    ##args,                                           \
-    (file),                                           \
-    (line)                                            \
-  )
-
 #ifdef HPHP_PARSER_ERROR
 #undef HPHP_PARSER_ERROR
 #endif
@@ -166,6 +158,7 @@ public:
   void encapRefDim(Token &out, Token &var, Token &offset);
   void encapObjProp(Token &out, Token &var, Token &name);
   void encapArray(Token &out, Token &var, Token &expr);
+  void onConst(Token &out, Token &name, Token &value);
   void onConstantValue(Token &out, Token &constant);
   void onScalar(Token &out, int type, Token &scalar);
   void onExprListElem(Token &out, Token *exprs, Token &expr);
@@ -196,8 +189,11 @@ public:
   void onFunctionStart(Token &name, bool doPushComment = true);
   void onFunction(Token &out, Token *modifier, Token &ret, Token &ref,
                   Token &name, Token &params, Token &stmt, Token *attr);
+  void onVariadicParam(Token &out, Token *params,
+                       Token &type, Token &var,
+                       bool ref, Token *attr, Token *modifier);
   void onParam(Token &out, Token *params, Token &type, Token &var,
-               bool ref, Token *defValue, Token *attr, Token *modifiers);
+               bool ref, Token *defValue, Token *attr, Token *modifier);
   void onClassStart(int type, Token &name);
   void onClass(Token &out, int type, Token &name, Token &base,
                Token &baseInterface, Token &stmt, Token *attr);
@@ -297,10 +293,13 @@ public:
   // for namespace support
   void onNamespaceStart(const std::string &ns, bool file_scope = false);
   void onNamespaceEnd();
-  void onUse(const std::string &ns, const std::string &as);
   void nns(int token = 0, const std::string& text = std::string());
   std::string nsDecl(const std::string &name);
   std::string resolve(const std::string &ns, bool cls);
+
+  void onUse(const std::string &ns, const std::string &as);
+  void onUseFunction(const std::string &fn, const std::string &as);
+  void onUseConst(const std::string &cnst, const std::string &as);
 
   /*
    * Get the current label scope. A new label scope is demarcated by
@@ -342,18 +341,18 @@ public:
 private:
   struct FunctionContext {
     FunctionContext()
-      : hasReturn(false)
+      : hasNonEmptyReturn(false)
       , isGenerator(false)
       , isAsync(false)
     {}
 
     void checkFinalAssertions() {
-      assert(!isGenerator || (!isAsync && !hasReturn));
+      assert(!isGenerator || (!isAsync && !hasNonEmptyReturn));
     }
 
-    bool hasReturn;       // function contains a return statement
-    bool isGenerator;     // function determined to be a generator
-    bool isAsync;         // function determined to be async
+    bool hasNonEmptyReturn; // function contains a non-empty return statement
+    bool isGenerator;       // function determined to be a generator
+    bool isAsync;           // function determined to be async
   };
 
   enum class FunctionType {
@@ -389,6 +388,8 @@ private:
 
   void newScope();
   void completeScope(BlockScopePtr inner);
+
+  void setHasNonEmptyReturn(ConstructPtr blame);
 
   void invalidYield();
   bool setIsGenerator();
@@ -474,7 +475,15 @@ private:
   NamespaceState m_nsState;
   bool m_nsFileScope;
   std::string m_namespace; // current namespace
-  AliasTable m_aliasTable;
+  AliasTable m_nsAliasTable;
+
+  // Function aliases
+  hphp_string_iset m_fnTable;
+  hphp_string_imap<std::string> m_fnAliasTable;
+
+  // Constant aliases
+  hphp_string_set m_cnstTable;
+  hphp_string_map<std::string> m_cnstAliasTable;
 
   void registerAlias(std::string name);
   bool isAutoAliasOn();

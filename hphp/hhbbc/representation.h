@@ -212,7 +212,12 @@ struct Param {
   /*
    * Whether this parameter is passed by reference.
    */
-  bool byRef : 1;
+  bool byRef: 1;
+
+  /*
+   * Whether this parameter is a variadic capture.
+   */
+  bool isVariadic: 1;
 };
 
 /*
@@ -294,29 +299,19 @@ struct Func {
   bool isClosureBody : 1;
 
   /*
-   * This is the "generator body" function for a continuation.
-   * I.e. this is the code that runs when a generator is asked to
-   * yield a new element.
+   * This is an async function.
    */
-  bool isGeneratorBody : 1;
+  bool isAsync : 1;
 
   /*
-   * This is the generator body for a generator closure.  (I.e. a
-   * closure with yield statements in it.)
+   * This is a generator.
    */
-  bool isGeneratorFromClosure : 1;
+  bool isGenerator : 1;
 
   /*
    * This generator yields key value pairs.
    */
   bool isPairGenerator : 1;
-
-  /*
-   * This is an async function.  This flag is set on both the "inner"
-   * and "outer" functions for a generator when it used async/await
-   * instead of yield.
-   */
-  bool isAsync : 1;
 
   /*
    * All owning pointers to blocks are in this vector, which has the
@@ -357,18 +352,6 @@ struct Func {
    * User attribute list.
    */
   UserAttributeMap userAttributes;
-
-  /*
-   * These pointers link "inner" functions for a generator to their
-   * associated outer function.
-   *
-   * When compiling a generator, hhbc makes use of two functions.  The
-   * "outer" one allocates the continuation object and returns it.
-   * The "inner" one contains the body of the function, and will
-   * always have isGeneratorBody set.
-   */
-  borrowed_ptr<php::Func> innerGeneratorFunc;
-  borrowed_ptr<php::Func> outerGeneratorFunc;
 
   /*
    * User-visible return type specification as a string.  This is only
@@ -488,7 +471,7 @@ struct Class {
   /*
    * Names of inherited interfaces.
    */
-  std::vector<SString> interfaceNames;
+  std::vector<LowStringPtr> interfaceNames;
 
   /*
    * Names of used traits, and the trait alias/precedence rules (if
@@ -498,7 +481,7 @@ struct Class {
    * WholeProgram mode, we won't see these because traits will already
    * be flattened.
    */
-  std::vector<SString> usedTraitNames;
+  std::vector<LowStringPtr> usedTraitNames;
   std::vector<PreClass::TraitRequirement> traitRequirements;
   std::vector<PreClass::TraitPrecRule> traitPrecRules;
   std::vector<PreClass::TraitAliasRule> traitAliasRules;

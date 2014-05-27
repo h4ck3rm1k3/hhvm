@@ -228,6 +228,14 @@ struct IndexedDispReg {
     assert(int(base) != -1 && "invalid register");
   }
 
+  // Constructor for baseless()
+  explicit IndexedDispReg(ScaledIndexDisp sid)
+    : base(r64(RegNumber(-1)))
+    , index(sid.si.index)
+    , scale(sid.si.scale)
+    , disp(sid.disp)
+  {}
+
   IndexedMemoryRef operator*() const;
   IndexedMemoryRef operator[](intptr_t disp) const;
 
@@ -355,10 +363,13 @@ inline RIPRelativeRef RegRIP::operator[](intptr_t disp) const {
 }
 
 /*
- * Used for the x64 addressing mode where there is a displacement but
- * no base register.
+ * Used for the x64 addressing mode where there is a displacement,
+ * possibly with a scaled index, but no base register.
  */
 inline MemoryRef baseless(intptr_t disp) { return *(DispReg { disp }); }
+inline IndexedMemoryRef baseless(ScaledIndexDisp sid) {
+  return *(IndexedDispReg { sid });
+}
 
 //////////////////////////////////////////////////////////////////////
 
@@ -459,9 +470,6 @@ namespace reg {
   constexpr RegXMM xmm13(13);
   constexpr RegXMM xmm14(14);
   constexpr RegXMM xmm15(15);
-
-  // rAsm is the symbolic name for a reg that is reserved for the assembler
-  constexpr Reg64  rAsm(r10);
 
 #define X(x) if (r == x) return "%"#x
   inline const char* regname(Reg64 r) {
@@ -830,39 +838,24 @@ public:
   /*
    * For when we a have a memory operand and the operand size is
    * 64-bits, only a 32-bit (sign-extended) immediate is supported.
-   * If the immediate is too big, we'll move it into rAsm first.
    */
 #define IMM64_STORE_OP(name, instr)             \
   void name##q(Immed i, MemoryRef m) {          \
-    if (i.fits(sz::dword)) {                    \
-      return instrIM(instr, i, m);              \
-    }                                           \
-    movq   (i, reg::rAsm);                      \
-    name##q(reg::rAsm, m);                      \
+    return instrIM(instr, i, m);                \
   }                                             \
                                                 \
   void name##q(Immed i, IndexedMemoryRef m) {   \
-    if (i.fits(sz::dword)) {                    \
-      return instrIM(instr, i, m);              \
-    }                                           \
-    movq   (i, reg::rAsm);                      \
-    name##q(reg::rAsm, m);                      \
+    return instrIM(instr, i, m);                \
   }
 
   /*
    * For instructions other than movq, even when the operand size is
-   * 64 bits only a 32-bit (sign-extended) immediate is supported.  We
-   * provide foo##q instructions that may emit multiple x64
-   * instructions (smashing rAsm) if the immediate does not
-   * actually fit in a long.
+   * 64 bits only a 32-bit (sign-extended) immediate is supported.
    */
 #define IMM64R_OP(name, instr)                  \
   void name##q(Immed imm, Reg64 r) {            \
-    if (imm.fits(sz::dword)) {                  \
-      return instrIR(instr, imm, r);            \
-    }                                           \
-    movq   (imm, reg::rAsm);                    \
-    name##q(reg::rAsm, r);                      \
+    always_assert(imm.fits(sz::dword));         \
+    return instrIR(instr, imm, r);              \
   }
 
 #define FULL_OP(name, instr)                    \
@@ -899,7 +892,7 @@ public:
 #undef BYTE_REG_OP
 
   // 64-bit immediates work with mov to a register.
-  void movq(Immed imm, Reg64 r) { instrIR(instr_mov, imm, r); }
+  void movq(Immed64 imm, Reg64 r) { instrIR(instr_mov, imm, r); }
 
   // movzbx is a special snowflake. We don't have movzbq because it behaves
   // exactly the same as movzbl but takes an extra byte.
@@ -928,11 +921,6 @@ public:
   void xchgb(Reg8 r1, Reg8 r2)   { instrRR(instr_xchgb, r1, r2); }
 
   void imul(Reg64 r1, Reg64 r2)  { instrRR(instr_imul, r1, r2); }
-
-  void imul(Immed im, Reg64 r1) {
-    movq(im, reg::rAsm);
-    imul(reg::rAsm, r1);
-  }
 
   void push(Reg64 r)  { instrR(instr_push, r); }
   void pushl(Reg32 r) { instrR(instr_push, r); }
@@ -967,6 +955,13 @@ public:
   void decl(MemoryRef m) { instrM32(instr_dec, m); }
   void decw(MemoryRef m) { instrM16(instr_dec, m); }
 
+  void incq(IndexedMemoryRef m) { instrM(instr_inc,  m); }
+  void incl(IndexedMemoryRef m) { instrM32(instr_inc, m); }
+  void incw(IndexedMemoryRef m) { instrM16(instr_inc, m); }
+  void decq(IndexedMemoryRef m) { instrM(instr_dec,  m); }
+  void decl(IndexedMemoryRef m) { instrM32(instr_dec, m); }
+  void decw(IndexedMemoryRef m) { instrM16(instr_dec, m); }
+
   void movdqu(RegXMM x, MemoryRef m)        { instrRM(instr_movdqu, x, m); }
   void movdqu(RegXMM x, IndexedMemoryRef m) { instrRM(instr_movdqu, x, m); }
   void movdqu(MemoryRef m, RegXMM x)        { instrMR(instr_movdqu, m, x); }
@@ -985,13 +980,14 @@ public:
   void lddqu (IndexedMemoryRef m, RegXMM x) { instrMR(instr_lddqu, m, x); }
   void unpcklpd(RegXMM s, RegXMM d)         { instrRR(instr_unpcklpd, d, s); }
 
-  void shlq  (Immed i, Reg64 r) { instrIR(instr_shl, i.b(), r); }
-  void shrq  (Immed i, Reg64 r) { instrIR(instr_shr, i.b(), r); }
-  void sarq  (Immed i, Reg64 r) { instrIR(instr_sar, i.b(), r); }
-  void shll  (Immed i, Reg32 r) { instrIR(instr_shl, i.b(), r); }
-  void shrl  (Immed i, Reg32 r) { instrIR(instr_shr, i.b(), r); }
-  void shlw  (Immed i, Reg16 r) { instrIR(instr_shl, i.b(), r); }
-  void shrw  (Immed i, Reg16 r) { instrIR(instr_shr, i.b(), r); }
+  void rorq  (Immed i, Reg64 r) { instrIR(instr_ror, i, r); }
+  void shlq  (Immed i, Reg64 r) { instrIR(instr_shl, i, r); }
+  void shrq  (Immed i, Reg64 r) { instrIR(instr_shr, i, r); }
+  void sarq  (Immed i, Reg64 r) { instrIR(instr_sar, i, r); }
+  void shll  (Immed i, Reg32 r) { instrIR(instr_shl, i, r); }
+  void shrl  (Immed i, Reg32 r) { instrIR(instr_shr, i, r); }
+  void shlw  (Immed i, Reg16 r) { instrIR(instr_shl, i, r); }
+  void shrw  (Immed i, Reg16 r) { instrIR(instr_shr, i, r); }
 
   void shlq (Reg64 r) { instrR(instr_shl, r); }
   void sarq (Reg64 r) { instrR(instr_sar, r); }
@@ -1016,29 +1012,18 @@ public:
   void jmp(IndexedMemoryRef m) { instrM(instr_jmp, m); }
   void call(Reg64 r)           { instrR(instr_call, r); }
   void call(MemoryRef m)       { instrM(instr_call, m); }
+  void call(RIPRelativeRef m)  { instrM(instr_call, m); }
   void call(IndexedMemoryRef m){ instrM(instr_call, m); }
 
   void jmp8(CodeAddress dest)  { emitJ8(instr_jmp, ssize_t(dest)); }
 
-  // May smash rAsm.
   void jmp(CodeAddress dest) {
-    always_assert(dest);
-    if (!jmpDeltaFits(dest)) {
-      movq (dest, reg::rAsm);
-      jmp  (reg::rAsm);
-      return;
-    }
+    always_assert(dest && jmpDeltaFits(dest));
     emitJ32(instr_jmp, ssize_t(dest));
   }
 
-  // May smash rAsm.
   void call(CodeAddress dest) {
-    always_assert(dest);
-    if (!jmpDeltaFits(dest)) {
-      movq (dest, reg::rAsm);
-      call (reg::rAsm);
-      return;
-    }
+    always_assert(dest && jmpDeltaFits(dest));
     emitJ32(instr_call, ssize_t(dest));
   }
 
@@ -1163,7 +1148,7 @@ public:
    * (E.g. combine common idioms or patterns, smash code, etc.)
    */
 
-  void emitImmReg(Immed imm, Reg64 dest) {
+  void emitImmReg(Immed64 imm, Reg64 dest) {
     if (imm.q() == 0) {
       // Zeros the top bits also.
       xorl  (r32(rn(dest)), r32(rn(dest)));
@@ -1633,7 +1618,7 @@ public:
   //     ir cannot be set to 'sp'
   ALWAYS_INLINE
   void emitCMX(X64Instr op, int jcond, RegNumber brName, RegNumber irName,
-               int s, int disp,
+               int s, int64_t disp,
                RegNumber rName,
                bool reverse = false,
                ssize_t imm = 0,
@@ -1722,7 +1707,7 @@ public:
     if (ir == int(reg::noreg)) ir = 4;
     int dispSize = sz::nosize;
     if (disp != 0) {
-      if (disp <= 127 && disp >= -128) {
+      if (!ripRelative && disp <= 127 && disp >= -128) {
         dispSize = sz::byte;
       } else {
         dispSize = sz::dword;
@@ -1764,6 +1749,9 @@ public:
     }
     // Emit displacement if needed
     if (dispSize == sz::dword) {
+      if (ripRelative) {
+        disp -= (int64_t)codeBlock.frontier() + immSize + dispSize;
+      }
       dword(disp);
     } else if (dispSize == sz::byte) {
       byte(disp & 0xff);
@@ -1831,7 +1819,7 @@ public:
   }
 
   ALWAYS_INLINE
-  void emitMR(X64Instr op, RegNumber br, RegNumber ir, int s, int disp,
+  void emitMR(X64Instr op, RegNumber br, RegNumber ir, int s, int64_t disp,
               RegNumber r, int opSz = sz::qword, bool ripRelative = false) {
     emitCMX(op, 0, br, ir, s, disp, r, true, 0, false, opSz, ripRelative);
   }
@@ -1867,9 +1855,10 @@ public:
   }
 
   ALWAYS_INLINE
-  void emitM(X64Instr op, RegNumber br, RegNumber ir, int s, int disp,
-             int opSz = sz::qword) {
-    emitCMX(op, 0, br, ir, s, disp, reg::noreg, false, 0, false, opSz);
+  void emitM(X64Instr op, RegNumber br, RegNumber ir, int s, int64_t disp,
+             int opSz = sz::qword, bool ripRelative = false) {
+    emitCMX(op, 0, br, ir, s, disp, reg::noreg, false, 0, false, opSz,
+            ripRelative);
   }
 
   ALWAYS_INLINE
@@ -2042,8 +2031,12 @@ private:
   void instrRR(X64Instr  op, RegXMM x, RegXMM y) { emitRR(op,   rn(x), rn(y)); }
   void instrM(X64Instr   op, MemoryRef m)        { emitM(op,    UMR(m));       }
   void instrM(X64Instr   op, IndexedMemoryRef m) { emitM(op,    UIMR(m));      }
+  void instrM(X64Instr   op, RIPRelativeRef m)   { emitM(op,    URIP(m),
+                                                         sz::qword, true);     }
   void instrM32(X64Instr op, MemoryRef m)        { emitM32(op,  UMR(m));       }
+  void instrM32(X64Instr op, IndexedMemoryRef m) { emitM32(op,  UIMR(m));      }
   void instrM16(X64Instr op, MemoryRef m)        { emitM16(op,  UMR(m));       }
+  void instrM16(X64Instr op, IndexedMemoryRef m) { emitM16(op,  UIMR(m));      }
 
   void instrRM(X64Instr op,
                Reg64 r,
@@ -2111,6 +2104,9 @@ private:
                Reg64 r)            { emitMR(op, URIP(m), rn(r),
                                             sz::qword, true); }
 
+  void instrIR(X64Instr op, Immed64 i, Reg64 r) {
+    emitIR(op, rn(r), i.q());
+  }
   void instrIR(X64Instr op, Immed i, Reg64 r) {
     emitIR(op, rn(r), i.q());
   }

@@ -16,15 +16,19 @@
 #ifndef incl_HPHP_TYPE_CONSTRAINT_H_
 #define incl_HPHP_TYPE_CONSTRAINT_H_
 
-#include <string>
-#include <functional>
-
-#include "hphp/runtime/base/types.h"
-#include "hphp/util/functional.h"
 #include "hphp/runtime/vm/named-entity.h"
 #include "hphp/runtime/vm/type-profile.h"
+#include "hphp/runtime/vm/unit.h"
 
-namespace HPHP { struct Func; }
+#include "hphp/util/functional.h"
+
+#include <functional>
+#include <string>
+
+namespace HPHP {
+struct Func;
+struct StringData;
+}
 
 namespace HPHP {
 
@@ -199,9 +203,23 @@ struct TypeConstraint {
        */
       return true;
     }
-    return (m_typeName == other.m_typeName
-            || (m_typeName != nullptr && other.m_typeName != nullptr
-                && m_typeName->isame(other.m_typeName)));
+
+    if (m_typeName == other.m_typeName) {
+      return true;
+    }
+
+    if (m_typeName && other.m_typeName) {
+      if (m_typeName->isame(other.m_typeName)) {
+        return true;
+      }
+
+      const Class* cls = Unit::lookupClass(m_typeName);
+      const Class* otherCls = Unit::lookupClass(other.m_typeName);
+
+      return cls && otherCls && cls == otherCls;
+    }
+
+    return false;
   }
 
   // General check for any constraint.
@@ -262,7 +280,7 @@ private:
   // alias name and test for a different DataType.
   Type m_type;
   Flags m_flags;
-  const StringData* m_typeName;
+  LowStringPtr m_typeName;
   const NamedEntity* m_namedEntity;
 };
 

@@ -36,6 +36,7 @@
 #include "hphp/runtime/base/runtime-option.h"
 #include "hphp/hhvm/process-init.h"
 #include "hphp/runtime/vm/repo.h"
+#include "hphp/runtime/vm/repo-global-data.h"
 
 #include "hphp/hhbbc/misc.h"
 #include "hphp/hhbbc/parallel.h"
@@ -114,6 +115,8 @@ void parse_options(int argc, char** argv) {
     ("hard-const-prop",         po::value(&options.HardConstProp))
     ("hard-type-hints",         po::value(&options.HardTypeHints))
     ("hard-private-prop",       po::value(&options.HardPrivatePropInference))
+    ("disallow-dyn-var-env-funcs",
+                                po::value(&options.DisallowDynamicVarEnvFuncs))
     ;
 
   po::options_description all;
@@ -188,7 +191,8 @@ std::vector<std::unique_ptr<UnitEmitter>> load_input() {
   );
 }
 
-void write_output(std::vector<std::unique_ptr<UnitEmitter>> ues) {
+void write_output(std::vector<std::unique_ptr<UnitEmitter>> ues,
+                  std::unique_ptr<ArrayTypeTable::Builder> arrTable) {
   RuntimeOption::RepoCommit = true;
   RuntimeOption::RepoEvalMode = "local";
   open_repo(output_repo);
@@ -199,6 +203,9 @@ void write_output(std::vector<std::unique_ptr<UnitEmitter>> ues) {
   gd.UsedHHBBC                = true;
   gd.HardTypeHints            = options.HardTypeHints;
   gd.HardPrivatePropInference = options.HardPrivatePropInference;
+  gd.DisallowDynamicVarEnvFuncs = options.DisallowDynamicVarEnvFuncs;
+
+  gd.arrayTypeTable.repopulate(*arrTable);
   Repo::get().saveGlobalData(gd);
 }
 
@@ -208,11 +215,10 @@ void compile_repo() {
     std::cout << folly::format("{} units\n", ues.size());
   }
 
-  ues = whole_program(std::move(ues));
-
+  auto pair = whole_program(std::move(ues));
   {
     trace_time timer("writing output repo");
-    write_output(std::move(ues));
+    write_output(std::move(pair.first), std::move(pair.second));
   }
 }
 
@@ -233,19 +239,23 @@ int main(int argc, char** argv) try {
   }
 
   Hdf config;
-  RuntimeOption::Load(config);
+  IniSetting::Map ini = IniSetting::Map::object;
+  RuntimeOption::Load(ini, config);
   RuntimeOption::RepoLocalPath     = "/tmp/hhbbc.repo";
   RuntimeOption::RepoCentralPath   = input_repo;
   RuntimeOption::RepoLocalMode     = "--";
   RuntimeOption::RepoJournal       = "memory";
   RuntimeOption::RepoCommit        = false;
-  RuntimeOption::RepoAuthoritative = true;
 
   register_process_init();
   initialize_repo();
   Repo::shutdown();
 
   hphp_process_init();
+
+  // We only need to set this flag so Repo::global will let us access
+  // it.
+  RuntimeOption::RepoAuthoritative = true;
 
   Trace::BumpRelease bumper(Trace::hhbbc_time, -1, logging);
   compile_repo();

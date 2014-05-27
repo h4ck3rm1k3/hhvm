@@ -27,7 +27,6 @@
 #include "hphp/runtime/base/file-repository.h"
 #include "hphp/runtime/debugger/debugger.h"
 #include "hphp/runtime/ext/ext_process.h"
-#include "hphp/runtime/ext/ext_class.h"
 #include "hphp/runtime/ext/ext_function.h"
 #include "hphp/runtime/ext/ext_file.h"
 #include "hphp/runtime/ext/ext_collections.h"
@@ -38,12 +37,13 @@
 #include "hphp/runtime/vm/jit/translator.h"
 #include "hphp/runtime/vm/jit/translator-inline.h"
 #include "hphp/runtime/vm/unit.h"
+#include "hphp/runtime/vm/unit-util.h"
 #include "hphp/runtime/vm/event-hook.h"
 #include "hphp/system/systemlib.h"
 #include "folly/Format.h"
 #include "hphp/util/text-util.h"
-#include "hphp/util/file-util.h"
 #include "hphp/util/string-vsnprintf.h"
+#include "hphp/runtime/base/file-util.h"
 #include "hphp/runtime/base/container-functions.h"
 #include "hphp/runtime/base/request-injection-data.h"
 
@@ -297,6 +297,14 @@ vm_decode_function(const Variant& function,
         }
       }
     }
+
+    if (f->isClosureBody() && !this_) {
+      if (warn) {
+        raise_warning("cannot invoke closure body without closure object");
+      }
+      return nullptr;
+    }
+
     assert(f && f->preClass());
     // If this_ is non-NULL, then this_ is the current instance and cls is
     // the class of the current instance.
@@ -532,13 +540,22 @@ void throw_collection_compare_exception() {
   static const string msg(
     "Cannot use relational comparison operators (<, <=, >, >=) to compare "
     "a collection with an integer, double, string, array, or object");
-  Object e(SystemLib::AllocRuntimeExceptionObject(msg));
+  Object e(SystemLib::AllocInvalidOperationExceptionObject(msg));
   throw e;
 }
 
 void throw_param_is_not_container() {
   static const string msg("Parameter must be an array or collection");
   Object e(SystemLib::AllocInvalidArgumentExceptionObject(msg));
+  throw e;
+}
+
+void throw_cannot_modify_immutable_object(const char* className) {
+  auto msg = folly::format(
+    "Cannot modify immutable object of type {}",
+    className
+  ).str();
+  Object e(SystemLib::AllocInvalidOperationExceptionObject(msg));
   throw e;
 }
 
@@ -578,6 +595,28 @@ void pause_forever() {
   for (;;) sleep(300);
 }
 
+void throw_missing_min_arguments_nr(const char *fn, int expected, int got,
+                                   int level /* = 0 */,
+                                   TypedValue *rv /* = nullptr */) {
+  if (rv != nullptr) {
+    rv->m_data.num = 0LL;
+    rv->m_type = KindOfNull;
+  }
+  if (level == 2 || RuntimeOption::ThrowMissingArguments) {
+    if (expected == 1) {
+      raise_error(Strings::MISSING_MIN_ARGUMENT, fn, got);
+    } else {
+      raise_error(Strings::MISSING_MIN_ARGUMENTS, fn, expected, got);
+    }
+  } else {
+    if (expected == 1) {
+      raise_warning(Strings::MISSING_MIN_ARGUMENT, fn, got);
+    } else {
+      raise_warning(Strings::MISSING_MIN_ARGUMENTS, fn, expected, got);
+    }
+  }
+}
+
 void throw_missing_arguments_nr(const char *fn, int expected, int got,
                                 int level /* = 0 */,
                                 TypedValue *rv /* = nullptr */) {
@@ -587,15 +626,15 @@ void throw_missing_arguments_nr(const char *fn, int expected, int got,
   }
   if (level == 2 || RuntimeOption::ThrowMissingArguments) {
     if (expected == 1) {
-      raise_error(Strings::MISSING_ARGUMENT, fn, got);
+      raise_error(Strings::MISSING_ARGUMENT, fn, "exactly", got);
     } else {
-      raise_error(Strings::MISSING_ARGUMENTS, fn, expected, got);
+      raise_error(Strings::MISSING_ARGUMENTS, fn, "exactly", expected, got);
     }
   } else {
     if (expected == 1) {
-      raise_warning(Strings::MISSING_ARGUMENT, fn, got);
+      raise_warning(Strings::MISSING_ARGUMENT, fn, "exactly", got);
     } else {
-      raise_warning(Strings::MISSING_ARGUMENTS, fn, expected, got);
+      raise_warning(Strings::MISSING_ARGUMENTS, fn, "exactly", expected, got);
     }
   }
 }
@@ -619,6 +658,10 @@ void throw_wrong_arguments_nr(const char *fn, int count, int cmin, int cmax,
   if (rv != nullptr) {
     rv->m_data.num = 0LL;
     rv->m_type = KindOfNull;
+  }
+  if (cmin >= 0 && count < cmin && cmin != cmax) {
+    throw_missing_min_arguments_nr(fn, cmin, count, level);
+    return;
   }
   if (cmin >= 0 && count < cmin) {
     throw_missing_arguments_nr(fn, cmin, count, level);
@@ -708,49 +751,6 @@ Exception* generate_memory_exceeded_exception() {
   }
   return new RequestMemoryExceededException(
     "request has exceeded memory limit", exceptionStack);
-}
-
-String f_serialize(const Variant& value) {
-  switch (value.getType()) {
-  case KindOfUninit:
-  case KindOfNull:
-    return "N;";
-  case KindOfBoolean:
-    return value.getBoolean() ? "b:1;" : "b:0;";
-  case KindOfInt64: {
-    StringBuffer sb;
-    sb.append("i:");
-    sb.append(value.getInt64());
-    sb.append(';');
-    return sb.detach();
-  }
-  case KindOfStaticString:
-  case KindOfString: {
-    StringData *str = value.getStringData();
-    StringBuffer sb;
-    sb.append("s:");
-    sb.append(str->size());
-    sb.append(":\"");
-    sb.append(str->data(), str->size());
-    sb.append("\";");
-    return sb.detach();
-  }
-  case KindOfArray: {
-    ArrayData *arr = value.getArrayData();
-    if (arr->empty()) return "a:0:{}";
-    // fall-through
-  }
-  case KindOfObject:
-  case KindOfResource:
-  case KindOfDouble: {
-    VariableSerializer vs(VariableSerializer::Type::Serialize);
-    return vs.serialize(value, true);
-  }
-  default:
-    assert(false);
-    break;
-  }
-  return "";
 }
 
 Variant unserialize_ex(const char* str, int len,
@@ -897,8 +897,7 @@ String resolve_include(const String& file, const char* currentDir,
     }
 
   } else if (c_file[0] == '/') {
-    String can_path(FileUtil::canonicalize(file.c_str(), file.size()),
-                    AttachString);
+    String can_path = FileUtil::canonicalize(file);
 
     if (tryFile(can_path, ctx)) {
       return can_path;
@@ -908,8 +907,7 @@ String resolve_include(const String& file, const char* currentDir,
     c_file[1] == '.' && c_file[2] == '/')))) {
 
     String path(String(g_context->getCwd() + "/" + file));
-    String can_path(FileUtil::canonicalize(path.c_str(), path.size()),
-                    AttachString);
+    String can_path = FileUtil::canonicalize(path);
 
     if (tryFile(can_path, ctx)) {
       return can_path;
@@ -935,8 +933,7 @@ String resolve_include(const String& file, const char* currentDir,
       }
 
       path += file;
-      String can_path(FileUtil::canonicalize(path.c_str(), path.size()),
-                      AttachString);
+      String can_path = FileUtil::canonicalize(path);
 
       if (tryFile(can_path, ctx)) {
         return can_path;
@@ -947,16 +944,14 @@ String resolve_include(const String& file, const char* currentDir,
       String path(currentDir);
       path += "/";
       path += file;
-      String can_path(FileUtil::canonicalize(path.c_str(), path.size()),
-                      AttachString);
+      String can_path = FileUtil::canonicalize(path);
 
       if (tryFile(can_path, ctx)) {
         return can_path;
       }
     } else {
       String path(g_context->getCwd() + "/" + currentDir + file);
-      String can_path(FileUtil::canonicalize(path.c_str(), path.size()),
-                      AttachString);
+      String can_path = FileUtil::canonicalize(path);
 
       if (tryFile(can_path, ctx)) {
         return can_path;
@@ -1045,11 +1040,15 @@ class ConstantExistsChecker {
 };
 
 template <class T>
-AutoloadHandler::Result AutoloadHandler::loadFromMap(const String& name,
+AutoloadHandler::Result AutoloadHandler::loadFromMap(const String& clsName,
                                                      const String& kind,
                                                      bool toLower,
                                                      const T &checkExists) {
   assert(!m_map.isNull());
+
+  // always normalize name before autoloading
+  const String& name = normalizeNS(clsName);
+
   while (true) {
     const Variant& type_map = m_map.get()->get(kind);
     auto const typeMapCell = type_map.asCell();
@@ -1057,6 +1056,7 @@ AutoloadHandler::Result AutoloadHandler::loadFromMap(const String& name,
     String canonicalName = toLower ? f_strtolower(name) : name;
     const Variant& file = typeMapCell->m_data.parr->get(canonicalName);
     bool ok = false;
+    Variant err{Variant::NullInit()};
     if (file.isString()) {
       String fName = file.toCStrRef().get();
       if (fName.get()->data()[0] != '/') {
@@ -1079,7 +1079,13 @@ AutoloadHandler::Result AutoloadHandler::loadFromMap(const String& name,
           }
           ok = true;
         }
-      } catch (...) {}
+      } catch (Exception& e) {
+        err = e.getMessage();
+      } catch (Object& e) {
+        err = e;
+      } catch (...) {
+        err = String("Unknown Exception");
+      }
     }
     if (ok && checkExists(name)) {
       return Success;
@@ -1090,7 +1096,8 @@ AutoloadHandler::Result AutoloadHandler::loadFromMap(const String& name,
     //  - true means the map was updated. try again
     //  - false means we should stop applying autoloaders (only affects classes)
     //  - anything else means keep going
-    Variant action = vm_call_user_func(func, make_packed_array(kind, name));
+    Variant action = vm_call_user_func(func,
+                                       make_packed_array(kind, name, err));
     auto const actionCell = action.asCell();
     if (actionCell->m_type == KindOfBoolean) {
       if (actionCell->m_data.num) continue;
@@ -1125,12 +1132,12 @@ bool AutoloadHandler::autoloadType(const String& name) {
  * false otherwise. When this function returns true, it is the caller's
  * responsibility to check if the given class or interface exists.
  */
-bool AutoloadHandler::invokeHandler(const String& className,
+bool AutoloadHandler::invokeHandler(const String& clsName,
                                     bool forceSplStack /* = false */) {
 
-  if (className.empty()) {
-    return false;
-  }
+  if (clsName.empty()) return false;
+
+  const String& className = normalizeNS(clsName);
 
   if (!m_map.isNull()) {
     ClassExistsChecker ce;
@@ -1204,7 +1211,7 @@ bool AutoloadHandler::invokeHandler(const String& className,
 
 Array AutoloadHandler::getHandlers() {
   if (!m_spl_stack_inited) {
-    return null_array;
+    return Array();
   }
 
   PackedArrayInit handlers(m_handlers.size());

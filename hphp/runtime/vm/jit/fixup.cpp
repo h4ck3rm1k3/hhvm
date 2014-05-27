@@ -32,7 +32,7 @@ FixupMap::getFrameRegs(const ActRec* ar, const ActRec* prevAr,
   // Non-obvious off-by-one fun: if the *return address* points into the TC,
   // then the frame we were running on in the TC is actually the previous
   // frame.
-  ar = (const ActRec*)ar->m_savedRbp;
+  ar = ar->m_sfp;
   auto* ent = m_fixups.find(tca);
   if (!ent) return false;
   if (ent->isIndirect()) {
@@ -41,7 +41,7 @@ FixupMap::getFrameRegs(const ActRec* ar, const ActRec* prevAr,
     // stubs in a.code stop.
     assert(prevAr);
     auto pRealRip = ent->indirect.returnIpDisp +
-      uintptr_t(prevAr->m_savedRbp);
+      uintptr_t(prevAr->m_sfp);
     ent = m_fixups.find(*reinterpret_cast<CTCA*>(pRealRip));
     assert(ent && !ent->isIndirect());
   }
@@ -50,24 +50,23 @@ FixupMap::getFrameRegs(const ActRec* ar, const ActRec* prevAr,
 }
 
 void
-FixupMap::recordSyncPoint(CodeAddress frontier, Offset pcOff, Offset spOff) {
-  m_pendingFixups.push_back(PendingFixup(frontier, Fixup(pcOff, spOff)));
-}
-
-void
 FixupMap::recordIndirectFixup(CodeAddress frontier, int dwordsPushed) {
   recordIndirectFixup(frontier, IndirectFixup((2 + dwordsPushed) * 8));
 }
 
 namespace {
+
+// If this function asserts or crashes, it is usually because VMRegAnchor was
+// not used to force a sync prior to calling a runtime function.
 bool isVMFrame(const ExecutionContext* ec, const ActRec* ar) {
-  // If this assert is failing, you may have forgotten a sync point somewhere
   assert(ar);
+  // Determine whether the frame pointer is outside the native stack, cleverly
+  // using a single unsigned comparison to do both halves of the bounds check.
   bool ret = uintptr_t(ar) - s_stackLimit >= s_stackSize;
   assert(!ret ||
          (ar >= ec->m_stack.getStackLowAddress() &&
           ar < ec->m_stack.getStackHighAddress()) ||
-         (ar->m_func->validate(), ar->inGenerator()));
+         (ar->m_func->validate(), ar->resumed()));
   return ret;
 }
 }
@@ -84,7 +83,7 @@ FixupMap::fixupWork(ExecutionContext* ec, ActRec* rbp) const {
     auto* prevRbp = rbp;
     rbp = nextRbp;
     assert(rbp && "Missing fixup for native call");
-    nextRbp = reinterpret_cast<ActRec*>(rbp->m_savedRbp);
+    nextRbp = rbp->m_sfp;
     TRACE(2, "considering frame %p, %p\n", rbp, (void*)rbp->m_savedRip);
 
     if (isVMFrame(ec, nextRbp)) {
@@ -122,7 +121,7 @@ FixupMap::fixupWorkSimulated(ExecutionContext* ec) const {
     assert(!ret ||
            (ar >= g_context->m_stack.getStackLowAddress() &&
             ar < g_context->m_stack.getStackHighAddress()) ||
-           ar->inGenerator());
+           ar->resumed());
     return ret;
   };
 
@@ -139,7 +138,7 @@ FixupMap::fixupWorkSimulated(ExecutionContext* ec) const {
 
     while (rbp && !isVMFrame(rbp, sim)) {
       tca = reinterpret_cast<TCA>(rbp->m_savedRip);
-      rbp = reinterpret_cast<ActRec*>(rbp->m_savedRbp);
+      rbp = rbp->m_sfp;
     }
 
     if (!rbp) continue;
@@ -182,16 +181,6 @@ FixupMap::fixup(ExecutionContext* ec) const {
   }
 }
 
-void
-FixupMap::processPendingFixups() {
-  for (uint i = 0; i < m_pendingFixups.size(); i++) {
-    TCA tca = m_pendingFixups[i].m_tca;
-    assert(mcg->isValidCodeAddress(tca));
-    recordFixup(tca, m_pendingFixups[i].m_fixup);
-  }
-  m_pendingFixups.clear();
-}
-
 /* This is somewhat hacky. It decides which helpers/builtins should
  * use eager vmreganchor based on profile information. Using eager
  * vmreganchor for all helper calls is a perf regression. */
@@ -199,8 +188,10 @@ bool
 FixupMap::eagerRecord(const Func* func) {
   const char* list[] = {
     "func_get_args",
+    "__SystemLib\\func_get_args_sl",
     "get_called_class",
     "func_num_args",
+    "__SystemLib\\func_num_arg_",
     "array_filter",
     "array_map",
     "__SystemLib\\func_slice_args",

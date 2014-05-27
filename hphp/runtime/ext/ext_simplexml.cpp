@@ -18,7 +18,6 @@
 #include "hphp/runtime/ext/ext_simplexml.h"
 #include <vector>
 #include "hphp/runtime/ext/ext_file.h"
-#include "hphp/runtime/ext/ext_class.h"
 #include "hphp/runtime/ext/ext_domdocument.h"
 #include "hphp/runtime/base/class-info.h"
 #include "hphp/runtime/base/request-local.h"
@@ -76,7 +75,7 @@ static inline void sxe_add_namespace_name(Array& ret, xmlNsPtr ns) {
 static void sxe_add_registered_namespaces(c_SimpleXMLElement* sxe,
                                           xmlNodePtr node, bool recursive,
                                           Array& return_value) {
-  if (node->type == XML_ELEMENT_NODE) {
+  if (node != nullptr && node->type == XML_ELEMENT_NODE) {
     xmlNsPtr ns = node->nsDef;
     while (ns != nullptr) {
       sxe_add_namespace_name(return_value, ns);
@@ -662,7 +661,7 @@ static inline String sxe_xmlNodeListGetString(xmlDocPtr doc, xmlNodePtr list,
     xmlFree(tmp);
     return ret;
   } else {
-    return String("");
+    return empty_string;
   }
 }
 
@@ -1105,10 +1104,10 @@ Variant f_simplexml_import_dom(
     if (!cls) {
       return uninit_null();
     }
-    Object obj = create_object(cls->nameRef(), Array(), false);
+    Object obj = create_object(cls->nameStr(), Array(), false);
     c_SimpleXMLElement* sxe = obj.getTyped<c_SimpleXMLElement>();
     sxe->document = Resource(NEWOBJ(XmlDocWrapper)(nodep->doc, node));
-    sxe->node = xmlDocGetRootElement(nodep->doc);
+    sxe->node = nodep;
     return obj;
   } else {
     raise_warning("Invalid Nodetype to import");
@@ -1134,7 +1133,7 @@ Variant f_simplexml_load_string(
     return false;
   }
 
-  Object obj = create_object(cls->nameRef(), Array(), false);
+  Object obj = create_object(cls->nameStr(), Array(), false);
   c_SimpleXMLElement* sxe = obj.getTyped<c_SimpleXMLElement>();
   sxe->document = Resource(NEWOBJ(XmlDocWrapper)(doc));
   sxe->node = xmlDocGetRootElement(doc);
@@ -1615,7 +1614,7 @@ Array c_SimpleXMLElement::ToArray(const ObjectData* obj) {
 }
 
 Variant c_SimpleXMLElement::t_getiterator() {
-  Object obj = create_object(c_SimpleXMLElementIterator::classof()->nameRef(),
+  Object obj = create_object(c_SimpleXMLElementIterator::classof()->nameStr(),
                              Array(), false);
   c_SimpleXMLElementIterator* iter = obj.getTyped<c_SimpleXMLElementIterator>();
   iter->sxe = this;
@@ -1653,15 +1652,11 @@ c_SimpleXMLElementIterator::c_SimpleXMLElementIterator(Class* cb) :
     ExtObjectData(cb), sxe(nullptr) {
 }
 
-void c_SimpleXMLElementIterator::sweep() {
+c_SimpleXMLElementIterator::~c_SimpleXMLElementIterator() {
   if (sxe) {
     sxe->decRefCount();
     sxe = nullptr;
   }
-}
-
-c_SimpleXMLElementIterator::~c_SimpleXMLElementIterator() {
-  c_SimpleXMLElementIterator::sweep();
 }
 
 void c_SimpleXMLElementIterator::t___construct() {
@@ -1718,14 +1713,19 @@ hphp_libxml_input_buffer(const char *URI, xmlCharEncoding enc);
 class xmlErrorVec : public std::vector<xmlError> {
 public:
   ~xmlErrorVec() {
-    reset();
+    clearErrors();
   }
 
   void reset() {
+    clearErrors();
+    xmlErrorVec().swap(*this);
+  }
+
+private:
+  void clearErrors() {
     for (int64_t i = 0; i < size(); i++) {
       xmlResetError(&at(i));
     }
-    clear();
   }
 };
 
@@ -1733,6 +1733,7 @@ struct LibXmlErrors final : RequestEventHandler {
   void requestInit() override {
     m_use_error = false;
     m_errors.reset();
+    xmlResetLastError();
     m_entity_loader_disabled = false;
     xmlParserInputBufferCreateFilenameDefault(hphp_libxml_input_buffer);
   }

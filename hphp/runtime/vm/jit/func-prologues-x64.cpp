@@ -41,7 +41,7 @@ void emitStackCheck(X64Assembler& a, int funcDepth, Offset pc) {
   using namespace reg;
   funcDepth += kStackCheckPadding * sizeof(Cell);
 
-  uint64_t stackMask = cellsToBytes(RuntimeOption::EvalVMStackElms) - 1;
+  int stackMask = cellsToBytes(RuntimeOption::EvalVMStackElms) - 1;
   a.    movq   (rVmSp, rAsm);  // copy to destroy
   a.    andq   (stackMask, rAsm);
   a.    subq   (funcDepth + Stack::sSurprisePageSize, rAsm);
@@ -66,14 +66,14 @@ TCA emitFuncGuard(X64Assembler& a, const Func* func) {
   assert(kScratchCrossTraceRegs.contains(rax));
   assert(kScratchCrossTraceRegs.contains(rdx));
 
-  const int kAlign = kX64CacheLineSize;
-  const int kAlignMask = kAlign - 1;
+  auto funcImm = Immed64(func);
+  const int kAlignMask = kCacheLineMask;
   int loBits = uintptr_t(a.frontier()) & kAlignMask;
   int delta, size;
 
   // Ensure the immediate is safely smashable
   // the immediate must not cross a qword boundary,
-  if (!deltaFits((intptr_t)func, sz::dword)) {
+  if (!funcImm.fits(sz::dword)) {
     size = 8;
     delta = loBits + kFuncMovImm;
   } else {
@@ -87,7 +87,7 @@ TCA emitFuncGuard(X64Assembler& a, const Func* func) {
   }
 
   TCA aStart DEBUG_ONLY = a.frontier();
-  if (!deltaFits((intptr_t)func, sz::dword)) {
+  if (!funcImm.fits(sz::dword)) {
     a.  loadq  (rStashedAR[AROFF(m_func)], rax);
     /*
       Although func doesnt fit in a signed 32-bit immediate, it may still
@@ -100,7 +100,7 @@ TCA emitFuncGuard(X64Assembler& a, const Func* func) {
     ((uint64_t*)a.frontier())[-1] = uintptr_t(func);
     a.  cmpq   (rax, rdx);
   } else {
-    a.  cmpq   (func, rStashedAR[AROFF(m_func)]);
+    a.  cmpq   (funcImm.l(), rStashedAR[AROFF(m_func)]);
   }
   a.    jnz    (tx->uniqueStubs.funcPrologueRedispatch);
 
@@ -122,70 +122,100 @@ constexpr auto kMaxParamsInitUnroll = 5;
 SrcKey emitPrologueWork(Func* func, int nPassed) {
   using namespace reg;
 
-  int numParams = func->numParams();
-  const Func::ParamInfoVec& paramInfo = func->params();
+  auto const numNonVariadicParams = func->numNonVariadicParams();
+  auto const& paramInfo = func->params();
 
   Offset entryOffset = func->getEntryForNumArgs(nPassed);
 
-  assert(IMPLIES(func->isGenerator(), nPassed == numParams));
-
   Asm a { mcg->code.main() };
 
-  if (tx->mode() == TransProflogue) {
+  if (tx->mode() == TransKind::Proflogue) {
     assert(func->shouldPGO());
     TransID transId  = tx->profData()->curTransID();
     auto counterAddr = tx->profData()->transCounterAddr(transId);
     a.movq(counterAddr, rAsm);
     a.decq(rAsm[0]);
+    tx->profData()->setProfiling(func->getFuncId());
   }
 
   // Note: you're not allowed to use rVmSp around here for anything in
-  // the nPassed == numParams case, because it might be junk if we
+  // the nPassed == numNonVariadicParams case, because it might be junk if we
   // came from emitMagicFuncPrologue.
 
-  if (nPassed > numParams) {
-    // Too many args; a weird case, so just callout. Stash ar
-    // somewhere callee-saved.
+  if (nPassed > numNonVariadicParams) {
+    // Too many args; a weird case, so call out to an appropriate helper.
+    // Stash ar somewhere callee-saved.
     if (false) { // typecheck
+      JIT::shuffleExtraArgsMayUseVV((ActRec*)nullptr);
+      JIT::shuffleExtraArgsVariadicAndVV((ActRec*)nullptr);
+      JIT::shuffleExtraArgsVariadic((ActRec*)nullptr);
       JIT::trimExtraArgs((ActRec*)nullptr);
     }
     a.    movq   (rStashedAR, argNumToRegName[0]);
-    emitCall(a, TCA(JIT::trimExtraArgs));
+
+    if (LIKELY(func->discardExtraArgs())) {
+      emitCall(a, TCA(JIT::trimExtraArgs));
+    } else if (func->attrs() & AttrMayUseVV) {
+      emitCall(a, func->hasVariadicCaptureParam()
+               ? TCA(JIT::shuffleExtraArgsVariadicAndVV)
+               : TCA(JIT::shuffleExtraArgsMayUseVV));
+    } else {
+      assert(func->hasVariadicCaptureParam());
+      emitCall(a, TCA(JIT::shuffleExtraArgsVariadic));
+    }
     // We'll fix rVmSp below.
-  } else if (nPassed < numParams) {
+  } else if (nPassed < numNonVariadicParams) {
     TRACE(1, "Only have %d of %d args; getting dvFunclet\n",
-          nPassed, numParams);
-    if (numParams - nPassed <= kMaxParamsInitUnroll) {
-      for (int i = nPassed; i < numParams; i++) {
-        int offset = (nPassed - i - 1) * sizeof(Cell);
+          nPassed, numNonVariadicParams);
+    if (numNonVariadicParams - nPassed <= kMaxParamsInitUnroll) {
+      for (int i = nPassed; i < numNonVariadicParams; i++) {
+        int offset = cellsToBytes(nPassed - i - 1);
         emitStoreTVType(a, KindOfUninit, rVmSp[offset + TVOFF(m_type)]);
+      }
+      if (func->hasVariadicCaptureParam()) {
+        int offset = cellsToBytes(nPassed - numNonVariadicParams - 1);
+        emitStoreTVType(a, KindOfArray, rVmSp[offset + TVOFF(m_type)]);
+        emitImmStoreq(a, staticEmptyArray(), rVmSp[offset + TVOFF(m_data)]);
       }
     } else {
       a.  emitImmReg(nPassed, rax);
-      // do { *(--rVmSp) = NULL; nPassed++; } while (nPassed < numParams);
+      // do {
+      //   *(--rVmSp) = NULL; nPassed++;
+      // } while (nPassed < numNonVariadicParams);
       // This should be an unusual case, so optimize for code density
       // rather than execution speed; i.e., don't unroll the loop.
       TCA loopTop = a.frontier();
-      a.    subq   (sizeof(Cell), rVmSp);
+      a.    subq   (int(sizeof(Cell)), rVmSp);
       a.    incl   (eax);
       emitStoreUninitNull(a, 0, rVmSp);
-      a.    cmpl   (numParams, eax);
+      a.    cmpl   (int(numNonVariadicParams), eax);
       a.    jl8    (loopTop);
+      if (func->hasVariadicCaptureParam()) {
+        emitStoreTVType(a, KindOfArray, rVmSp[-sizeof(Cell) + TVOFF(m_type)]);
+        emitImmStoreq(a, staticEmptyArray(),
+                      rVmSp[-sizeof(Cell) + TVOFF(m_data)]);
+      }
     }
+  } else if (func->hasVariadicCaptureParam()) {
+    assert(!func->isMagic());
+    int offset = cellsToBytes(-1);
+    emitStoreTVType(a, KindOfArray, rVmSp[offset + TVOFF(m_type)]);
+    emitImmStoreq(a, staticEmptyArray(), rVmSp[offset + TVOFF(m_data)]);
   }
 
-  // Entry point for numParams == nPassed is here.
+  // Entry point for numNonVariadicParams == nPassed is here. XXX:
+  // what about variadics!!!
   // Args are kosher. Frame linkage: set fp = ar.
   a.    movq   (rStashedAR, rVmFp);
 
-  int numLocals = numParams;
+  int numLocals = func->numParams();
   if (func->isClosureBody()) {
     // Closure object properties are the use vars followed by the
     // static locals (which are per-instance).
     int numUseVars = func->cls()->numDeclProperties() -
                      func->numStaticLocals();
 
-    emitLea(a, rVmFp[-cellsToBytes(numParams)], rVmSp);
+    emitLea(a, rVmFp[-cellsToBytes(numLocals)], rVmSp);
 
     PhysReg rClosure = rcx;
     a.  loadq(rVmFp[AROFF(m_this)], rClosure);
@@ -196,10 +226,10 @@ SrcKey emitPrologueWork(Func* func, int nPassed) {
 
     if (!(func->attrs() & AttrStatic)) {
       a.shrq(1, rAsm);
-      JccBlock<CC_BE> ifRealThis(a);
-      a.shlq(1, rAsm);
-      // XXX can objects be static?
-      emitIncRefCheckNonStatic(a, rAsm, KindOfObject);
+      ifThen(a, CC_NBE, [&] {
+        a.shlq(1, rAsm);
+        emitIncRefCheckNonStatic(a, rAsm, KindOfObject);
+      });
     }
 
     // Put in the correct context
@@ -230,12 +260,10 @@ SrcKey emitPrologueWork(Func* func, int nPassed) {
 
   // We're in the callee frame; initialize locals. Unroll the loop all
   // the way if there are a modest number of locals to update;
-  // otherwise, do it in a compact loop. If we're in a generator body,
-  // named locals will be initialized by UnpackCont so we can leave
-  // them alone here.
+  // otherwise, do it in a compact loop.
   int numUninitLocals = func->numLocals() - numLocals;
   assert(numUninitLocals >= 0);
-  if (numUninitLocals > 0 && !func->isGenerator()) {
+  if (numUninitLocals > 0) {
 
     // If there are too many locals, then emitting a loop to initialize locals
     // is more compact, rather than emitting a slew of movs inline.
@@ -256,14 +284,14 @@ SrcKey emitPrologueWork(Func* func, int nPassed) {
       // } while(++loopReg != loopEnd);
 
       emitStoreTVType(a, edx, rVmFp[loopReg]);
-      a.  addq   (sizeof(Cell), loopReg);
+      a.  addq   (int(sizeof(Cell)), loopReg);
       a.  cmpq   (loopEnd, loopReg);
       a.  jcc8   (CC_NE, topOfLoop);
     } else {
       PhysReg base;
       int disp, k;
       static_assert(KindOfUninit == 0, "");
-      if (numParams < func->numLocals()) {
+      if (func->numParams() < func->numLocals()) {
         a.xorl (eax, eax);
       }
       for (k = numLocals; k < func->numLocals(); ++k) {
@@ -274,27 +302,25 @@ SrcKey emitPrologueWork(Func* func, int nPassed) {
   }
 
   auto destPC = func->unit()->entry() + entryOffset;
-  SrcKey funcBody(func, destPC);
+  SrcKey funcBody(func, destPC, false);
 
   // Move rVmSp to the right place: just past all locals
   int frameCells = func->numSlotsInFrame();
-  if (func->isGenerator()) {
-    frameCells = 1;
-  } else {
-    emitLea(a, rVmFp[-cellsToBytes(frameCells)], rVmSp);
-  }
+  emitLea(a, rVmFp[-cellsToBytes(frameCells)], rVmSp);
 
   Fixup fixup(funcBody.offset() - func->base(), frameCells);
 
   // Emit warnings for any missing arguments
   if (!func->isCPPBuiltin()) {
-    for (int i = nPassed; i < numParams; ++i) {
+    for (int i = nPassed; i < numNonVariadicParams; ++i) {
       if (paramInfo[i].funcletOff() == InvalidAbsoluteOffset) {
-        a.  emitImmReg((intptr_t)func->name()->data(), argNumToRegName[0]);
-        a.  emitImmReg(numParams, argNumToRegName[1]);
-        a.  emitImmReg(i, argNumToRegName[2]);
-        emitCall(a, (TCA)raiseMissingArgument);
-        mcg->fixupMap().recordFixup(a.frontier(), fixup);
+        if (false) { // typecheck
+          JIT::raiseMissingArgument((const Func*) nullptr, 0);
+        }
+        a.  emitImmReg((intptr_t)func, argNumToRegName[0]);
+        a.  emitImmReg(i, argNumToRegName[1]);
+        emitCall(a, TCA(JIT::raiseMissingArgument));
+        mcg->recordSyncPoint(a.frontier(), fixup.m_pcOffset, fixup.m_spOffset);
         break;
       }
     }
@@ -303,18 +329,18 @@ SrcKey emitPrologueWork(Func* func, int nPassed) {
   // Check surprise flags in the same place as the interpreter: after
   // setting up the callee's frame but before executing any of its
   // code
-  emitCheckSurpriseFlagsEnter(mcg->code.main(), mcg->code.stubs(), false,
-                              mcg->fixupMap(), fixup);
+  emitCheckSurpriseFlagsEnter(mcg->code.main(), mcg->code.stubs(), fixup);
 
   if (func->isClosureBody() && func->cls()) {
-    int entry = nPassed <= numParams ? nPassed : numParams + 1;
+    int entry = nPassed <= numNonVariadicParams
+      ? nPassed : numNonVariadicParams + 1;
     // Relying on rStashedAR == rVmFp here
     a.    loadq   (rStashedAR[AROFF(m_func)], rax);
     a.    loadq   (rax[Func::prologueTableOff() + sizeof(TCA)*entry],
                    rax);
     a.    jmp     (rax);
   } else {
-    emitBindJmp(mcg->code.main(), mcg->code.stubs(), funcBody);
+    emitBindJmp(mcg->code.main(), mcg->code.unused(), funcBody);
   }
   return funcBody;
 }
@@ -325,20 +351,22 @@ SrcKey emitPrologueWork(Func* func, int nPassed) {
 
 TCA emitCallArrayPrologue(Func* func, DVFuncletsVec& dvs) {
   auto& mainCode = mcg->code.main();
-  auto& stubsCode = mcg->code.stubs();
+  auto& unusedCode = mcg->code.unused();
   Asm a { mainCode };
   TCA start = mainCode.frontier();
   if (dvs.size() == 1) {
-    a.  cmpl  (dvs[0].first, rVmFp[AROFF(m_numArgsAndGenCtorFlags)]);
-    emitBindJcc(mainCode, stubsCode, CC_LE, SrcKey(func, dvs[0].second));
-    emitBindJmp(mainCode, stubsCode, SrcKey(func, func->base()));
+    a.  cmpl  (dvs[0].first, rVmFp[AROFF(m_numArgsAndFlags)]);
+    emitBindJcc(mainCode, unusedCode, CC_LE,
+                SrcKey(func, dvs[0].second, false));
+    emitBindJmp(mainCode, unusedCode, SrcKey(func, func->base(), false));
   } else {
-    a.    loadl  (rVmFp[AROFF(m_numArgsAndGenCtorFlags)], reg::eax);
+    a.    loadl  (rVmFp[AROFF(m_numArgsAndFlags)], reg::eax);
     for (unsigned i = 0; i < dvs.size(); i++) {
       a.  cmpl   (dvs[i].first, reg::eax);
-      emitBindJcc(mainCode, stubsCode, CC_LE, SrcKey(func, dvs[i].second));
+      emitBindJcc(mainCode, unusedCode, CC_LE,
+                  SrcKey(func, dvs[i].second, false));
     }
-    emitBindJmp(mainCode, stubsCode, SrcKey(func, func->base()));
+    emitBindJmp(mainCode, unusedCode, SrcKey(func, func->base(), false));
   }
   return start;
 }
@@ -357,8 +385,9 @@ SrcKey emitFuncPrologue(Func* func, int nPassed, TCA& start) {
 SrcKey emitMagicFuncPrologue(Func* func, uint32_t nPassed, TCA& start) {
   assert(func->isMagic());
   assert(func->numParams() == 2);
+  assert(!func->hasVariadicCaptureParam());
   using namespace reg;
-  using MkPacked = HphpArray* (*)(uint32_t, const TypedValue*);
+  using MkPacked = ArrayData* (*)(uint32_t, const TypedValue*);
 
   Asm a { mcg->code.main() };
   Label not_magic_call;
@@ -414,11 +443,12 @@ SrcKey emitMagicFuncPrologue(Func* func, uint32_t nPassed, TCA& start) {
     a.  subq   (rVmSp, argNumToRegName[0]);
     a.  shrq   (0x4, argNumToRegName[0]);
     a.  movq   (rVmSp, argNumToRegName[1]);
-    emitCall(a, reinterpret_cast<CodeAddress>(MkPacked{HphpArray::MakePacked}));
+    emitCall(a, reinterpret_cast<CodeAddress>(
+      MkPacked{MixedArray::MakePacked}));
     callFixup = a.frontier();
   }
   if (nPassed != 2) {
-    a.  storel (2, rStashedAR[AROFF(m_numArgsAndGenCtorFlags)]);
+    a.  storel (2, rStashedAR[AROFF(m_numArgsAndFlags)]);
   }
   if (debug) { // "assertion": the emitPrologueWork path fixes up rVmSp.
     a.  movq   (0, rVmSp);
@@ -435,7 +465,7 @@ SrcKey emitMagicFuncPrologue(Func* func, uint32_t nPassed, TCA& start) {
   a.    storeq (rInvName, strTV[TVOFF(m_data)]);
   emitStoreTVType(a, KindOfArray, arrayTV[TVOFF(m_type)]);
   if (nPassed == 0) {
-    a.  storeq (HphpArray::GetStaticEmptyArray(), arrayTV[TVOFF(m_data)]);
+    emitImmStoreq(a, staticEmptyArray(), arrayTV[TVOFF(m_data)]);
   } else {
     a.  storeq (rax, arrayTV[TVOFF(m_data)]);
   }
@@ -447,10 +477,9 @@ SrcKey emitMagicFuncPrologue(Func* func, uint32_t nPassed, TCA& start) {
   if (nPassed == 2) skFuncBody = skFor2Args;
 
   if (RuntimeOption::HHProfServerEnabled && callFixup) {
-    mcg->fixupMap().recordFixup(
-      callFixup,
-      Fixup { skFuncBody.offset() - func->base(), func->numSlotsInFrame() }
-    );
+    mcg->recordSyncPoint(callFixup,
+                         skFuncBody.offset() - func->base(),
+                         func->numSlotsInFrame());
   }
 
   return skFuncBody;

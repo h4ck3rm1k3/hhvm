@@ -18,12 +18,16 @@
 
 #include <type_traits>
 #include <sstream>
+#include <cstring>
 
 #include "hphp/runtime/base/complex-types.h"
-#include "hphp/runtime/ext/ext_variable.h"
+#include "hphp/runtime/base/array-iterator.h"
 #include "hphp/runtime/vm/unit.h"
 #include "hphp/runtime/base/zend-string.h"
 #include "hphp/runtime/base/stats.h"
+#include "hphp/runtime/base/repo-auth-type-array.h"
+#include "hphp/runtime/base/repo-auth-type-codec.h"
+#include "hphp/runtime/vm/repo-global-data.h"
 #include "hphp/util/text-util.h"
 
 namespace HPHP {
@@ -137,17 +141,28 @@ int immSize(const Op* opcode, int idx) {
 #undef ARGTYPE
 #undef ARGTYPEVEC
   };
-  if (immType(*opcode, idx) == IVA || immType(*opcode, idx) == LA ||
+
+  if (immType(*opcode, idx) == IVA ||
+      immType(*opcode, idx) == LA ||
       immType(*opcode, idx) == IA) {
     intptr_t offset = 1;
     if (idx >= 1) offset += immSize(opcode, 0);
     if (idx >= 2) offset += immSize(opcode, 1);
     if (idx >= 3) offset += immSize(opcode, 2);
-    // variable size
-    unsigned char imm = *(unsigned char*)(opcode + offset);
+    unsigned char imm = *(const unsigned char*)(opcode + offset);
     // Low order bit set => 4-byte.
     return (imm & 0x1 ? sizeof(int32_t) : sizeof(unsigned char));
-  } else if (immIsVector(*opcode, idx)) {
+  }
+
+  if (immType(*opcode, idx) == RATA) {
+    intptr_t offset = 1;
+    if (idx >= 1) offset += immSize(opcode, 0);
+    if (idx >= 2) offset += immSize(opcode, 1);
+    if (idx >= 3) offset += immSize(opcode, 2);
+    return encodedRATSize(reinterpret_cast<PC>(opcode) + offset);
+  }
+
+  if (immIsVector(*opcode, idx)) {
     intptr_t offset = 1;
     if (idx >= 1) offset += immSize(opcode, 0);
     if (idx >= 2) offset += immSize(opcode, 1);
@@ -173,15 +188,16 @@ int immSize(const Op* opcode, int idx) {
     }
     return prefixes * sizeof(int32_t) +
       vecElemSz * *(int32_t*)((int8_t*)opcode + offset);
-  } else {
-    ArgType type = immType(*opcode, idx);
-    return (type >= 0) ? argTypeToSizes[type] : 0;
   }
+
+  ArgType type = immType(*opcode, idx);
+  return (type >= 0) ? argTypeToSizes[type] : 0;
 }
 
 bool immIsVector(Op opcode, int idx) {
   ArgType type = immType(opcode, idx);
-  return type == MA || type == BLA || type == SLA || type == ILA || type == VSA;
+  return type == MA || type == BLA || type == SLA || type == ILA ||
+    type == VSA;
 }
 
 bool hasImmVector(Op opcode) {
@@ -203,10 +219,11 @@ ArgUnion getImm(const Op* opcode, int idx) {
     p += immSize(opcode, cursor);
   }
   always_assert(cursor == idx);
-  ArgType type = immType(*opcode, idx);
+  auto const type = immType(*opcode, idx);
   if (type == IVA || type == LA || type == IA) {
     retval.u_IVA = decodeVariableSizeImm((const uint8_t**)&p);
   } else if (!immIsVector(*opcode, cursor)) {
+    always_assert(type != RATA);  // Decode RATAs with a different function.
     memcpy(&retval.bytes, p, immSize(opcode, idx));
   }
   always_assert(numImmediates(*opcode) > idx);
@@ -217,6 +234,7 @@ ArgUnion* getImmPtr(const Op* opcode, int idx) {
   assert(immType(*opcode, idx) != IVA);
   assert(immType(*opcode, idx) != LA);
   assert(immType(*opcode, idx) != IA);
+  assert(immType(*opcode, idx) != RATA);
   const Op* ptr = opcode + 1;
   for (int i = 0; i < idx; i++) {
     ptr += immSize(opcode, i);
@@ -278,36 +296,44 @@ int instrLen(const Op* opcode) {
 
 Offset* instrJumpOffset(const Op* instr) {
   static const int8_t jumpMask[] = {
-#define NA 0
-#define MA 0
-#define IVA 0
-#define I64A 0
-#define DA 0
-#define SA 0
-#define AA 0
-#define BA 1
-#define LA 0
-#define IA 0
-#define OA(x) 0
-#define VSA 0
-#define ONE(a) a
-#define TWO(a, b) (a + 2 * b)
-#define THREE(a, b, c) (a + 2 * b + 4 * c)
-#define FOUR(a, b, c, d) (a + 2 * b + 4 * c + 8 * d)
+#define IMM_NA 0
+#define IMM_MA 0
+#define IMM_IVA 0
+#define IMM_I64A 0
+#define IMM_DA 0
+#define IMM_SA 0
+#define IMM_AA 0
+#define IMM_RATA 0
+#define IMM_BA 1
+#define IMM_BLA 0  // these are jump offsets, but must be handled specially
+#define IMM_ILA 0
+#define IMM_SLA 0
+#define IMM_LA 0
+#define IMM_IA 0
+#define IMM_OA(x) 0
+#define IMM_VSA 0
+#define ONE(a) IMM_##a
+#define TWO(a, b) (IMM_##a + 2 * IMM_##b)
+#define THREE(a, b, c) (IMM_##a + 2 * IMM_##b + 4 * IMM_##c)
+#define FOUR(a, b, c, d) (IMM_##a + 2 * IMM_##b + 4 * IMM_##c + 8 * IMM_##d)
 #define O(name, imm, pop, push, flags) imm,
     OPCODES
-#undef NA
-#undef MA
-#undef IVA
-#undef I64A
-#undef DA
-#undef SA
-#undef AA
-#undef LA
-#undef IA
-#undef BA
-#undef OA
-#undef VSA
+#undef IMM_NA
+#undef IMM_MA
+#undef IMM_IVA
+#undef IMM_I64A
+#undef IMM_DA
+#undef IMM_SA
+#undef IMM_AA
+#undef IMM_RATA
+#undef IMM_LA
+#undef IMM_IA
+#undef IMM_BA
+#undef IMM_BLA
+#undef IMM_ILA
+#undef IMM_SLA
+#undef IMM_OA
+#undef IMM_VSA
 #undef ONE
 #undef TWO
 #undef THREE
@@ -315,12 +341,17 @@ Offset* instrJumpOffset(const Op* instr) {
 #undef O
   };
 
-  assert(!isSwitch(*instr));
+  assert(!isSwitch(*instr));  // BLA doesn't work here
 
   if (Op(*instr) == OpIterBreak) {
-    uint32_t veclen = *(uint32_t *)(instr + 1);
+    uint32_t veclen;
+    std::memcpy(&veclen, instr + 1, sizeof veclen);
     assert(veclen > 0);
-    Offset* target  = (Offset *)((uint32_t *)(instr + 1) + 2 * veclen + 1);
+    auto const target = const_cast<Offset*>(
+      reinterpret_cast<const Offset*>(
+        reinterpret_cast<const uint32_t*>(instr + 1) + 2 * veclen + 1
+      )
+    );
     return target;
   }
 
@@ -330,12 +361,12 @@ Offset* instrJumpOffset(const Op* instr) {
   }
   int immNum;
   switch (mask) {
-    case 0: return nullptr;
-    case 1: immNum = 0; break;
-    case 2: immNum = 1; break;
-    case 4: immNum = 2; break;
-    case 8: immNum = 3; break;
-    default: assert(false); return nullptr;
+  case 0: return nullptr;
+  case 1: immNum = 0; break;
+  case 2: immNum = 1; break;
+  case 4: immNum = 2; break;
+  case 8: immNum = 3; break;
+  default: assert(false); return nullptr;
   }
 
   return &getImmPtr(instr, immNum)->u_BA;
@@ -800,6 +831,20 @@ std::string instrToString(const Op* it, const Unit* u /* = NULL */) {
   PC iStart = reinterpret_cast<PC>(it);
   Op op = *it;
   ++it;
+
+  auto readRATA = [&] {
+    if (!u) {
+      auto const pc = reinterpret_cast<const unsigned char*>(it);
+      it += encodedRATSize(pc);
+      out << " <RepoAuthType>";
+      return;
+    }
+    auto pc = reinterpret_cast<const unsigned char*>(it);
+    auto const rat = decodeRAT(u, pc);
+    it = reinterpret_cast<const Op*>(pc);
+    out << ' ' << show(rat);
+  };
+
   switch (op) {
 
 #define READ(t) out << " " << *((t*)&*it); it += sizeof(t)
@@ -860,9 +905,8 @@ std::string instrToString(const Op* it, const Unit* u /* = NULL */) {
         if (memberCodeImmIsString(MemberCode(immVal)) && u) {           \
           const StringData* str = u->lookupLitstrId(imm);               \
           int len = str->size();                                        \
-          char* escaped = string_addslashes(str->data(), len);          \
-          out << '"' << escaped << '"';                                 \
-          free(escaped);                                                \
+          String escaped = string_addslashes(str->data(), len);         \
+          out << '"' << escaped.data() << '"';                          \
         } else {                                                        \
           out << imm;                                                   \
         }                                                               \
@@ -947,6 +991,7 @@ std::string instrToString(const Op* it, const Unit* u /* = NULL */) {
 #define H_BA READOFF()
 #define H_OA(type) READOA(type)
 #define H_SA READLITSTR(" ")
+#define H_RATA readRATA()
 #define H_AA                                                  \
   if (u) {                                                    \
     out << " ";                                               \
@@ -1025,18 +1070,6 @@ static const char* InitPropOp_names[] = {
 #undef INITPROP_OP
 };
 
-static const char* AssertTOp_names[] = {
-#define ASSERTT_OP(op) #op,
-  ASSERTT_OPS
-#undef ASSERTT_OP
-};
-
-static const char* AssertObjOp_names[] = {
-#define ASSERTOBJ_OP(op) #op,
-  ASSERTOBJ_OPS
-#undef ASSERTOBJ_OP
-};
-
 static const char* FatalOp_names[] = {
 #define FATAL_OP(op) #op,
   FATAL_OPS
@@ -1059,6 +1092,18 @@ static const char* BareThisOp_names[] = {
 #define BARETHIS_OP(x) #x,
   BARETHIS_OPS
 #undef BARETHIS_OP
+};
+
+static const char* SilenceOp_names[] = {
+#define SILENCE_OP(x) #x,
+  SILENCE_OPS
+#undef SILENCE_OP
+};
+
+static const char* OODeclExistsOp_names[] = {
+#define OO_DECL_EXISTS_OP(x) #x,
+  OO_DECL_EXISTS_OPS
+#undef OO_DECL_EXISTS_OP
 };
 
 template<class T, size_t Sz>
@@ -1103,12 +1148,12 @@ template<class T> folly::Optional<T> nameToSubop(const char* str) {
 
 X(InitPropOp)
 X(IsTypeOp)
-X(AssertTOp)
-X(AssertObjOp)
 X(FatalOp)
 X(SetOpOp)
 X(IncDecOp)
 X(BareThisOp)
+X(SilenceOp)
+X(OODeclExistsOp)
 
 #undef X
 
@@ -1116,8 +1161,10 @@ X(BareThisOp)
 
 bool instrIsNonCallControlFlow(Op opcode) {
   if (!instrIsControlFlow(opcode) || isFCallStar(opcode)) return false;
+
   switch (opcode) {
     case OpContEnter:
+    case OpContRaise:
     case OpFCallBuiltin:
     case OpIncl:
     case OpInclOnce:
@@ -1301,4 +1348,3 @@ const MInstrInfo& getMInstrInfo(Op op) {
 
 ///////////////////////////////////////////////////////////////////////////////
 }
-

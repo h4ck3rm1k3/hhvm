@@ -51,7 +51,7 @@ void EnvConstants::requestExit() {
 GlobalNameValueTableWrapper::GlobalNameValueTableWrapper(
   NameValueTable* tab) : NameValueTableWrapper(tab) {
 
-  Variant arr(HphpArray::GetStaticEmptyArray());
+  Variant arr(staticEmptyArray());
 #define X(s,v) tab->set(makeStaticString(#s), v.asTypedValue());
 
   X(argc,                 init_null_variant);
@@ -63,8 +63,8 @@ GlobalNameValueTableWrapper::GlobalNameValueTableWrapper(
   X(_FILES,               arr);
   X(_ENV,                 arr);
   X(_REQUEST,             arr);
+  X(_SESSION,             arr);
   X(HTTP_RAW_POST_DATA,   init_null_variant);
-  X(http_response_header, init_null_variant);
 #undef X
 
   g_variables = this;

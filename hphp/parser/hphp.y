@@ -28,14 +28,14 @@
 #define YYRHSLOC(Rhs, K) ((Rhs)[K])
 #define YYLLOC_DEFAULT(Current, Rhs, N)                                 \
   do                                                                    \
-    if (YYID (N)) {                                                     \
+    if (N) {                                                            \
       (Current).first(YYRHSLOC (Rhs, 1));                               \
       (Current).last (YYRHSLOC (Rhs, N));                               \
     } else {                                                            \
       (Current).line0 = (Current).line1 = YYRHSLOC (Rhs, 0).line1;      \
       (Current).char0 = (Current).char1 = YYRHSLOC (Rhs, 0).char1;      \
     }                                                                   \
-  while (YYID (0));                                                     \
+  while (0);                                                            \
   _p->setRuleLocation(&Current);
 
 #define YYCOPY(To, From, Count)                  \
@@ -48,7 +48,7 @@
       YYSTACK_FREE (From);                       \
     }                                            \
   }                                              \
-  while (YYID (0))
+  while (0)
 
 #define YYCOPY_RESET(To, From, Count)           \
   do                                            \
@@ -62,7 +62,7 @@
         YYSTACK_FREE (From);                    \
       }                                         \
     }                                           \
-  while (YYID (0))
+  while (0)
 
 #define YYTOKEN_RESET(From, Count)              \
   do                                            \
@@ -75,7 +75,7 @@
         YYSTACK_FREE (From);                    \
       }                                         \
     }                                           \
-  while (YYID (0))
+  while (0)
 
 # define YYSTACK_RELOCATE_RESET(Stack_alloc, Stack)                     \
   do                                                                    \
@@ -86,7 +86,7 @@
       yynewbytes = yystacksize * sizeof (*Stack) + YYSTACK_GAP_MAXIMUM; \
       yyptr += yynewbytes / sizeof (*yyptr);                            \
     }                                                                   \
-  while (YYID (0))
+  while (0)
 
 #define YYSTACK_CLEANUP                         \
   YYTOKEN_RESET (yyvs, yystacksize);            \
@@ -134,21 +134,6 @@ static void scalar_file(Parser *_p, Token &out) {
 static void scalar_line(Parser *_p, Token &out) {
   Token line; line.setText("__LINE__");
   _p->onScalar(out, T_LINE, line);
-}
-
-///////////////////////////////////////////////////////////////////////////////
-// converting constant declaration to "define(name, value);"
-// TODO: get rid of this, or pass in more info, task 3491019.
-
-static void on_constant(Parser *_p, Token &out, Token &name, Token &value) {
-  Token sname;   _p->onScalar(sname, T_CONSTANT_ENCAPSED_STRING, name);
-
-  Token fname;   fname.setText("define");
-  Token params1; _p->onCallParam(params1, NULL, sname, 0);
-  Token params2; _p->onCallParam(params2, &params1, value, 0);
-  Token call;    _p->onCall(call, 0, fname, params2, 0);
-
-  _p->onExpStatement(out, call);
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -549,6 +534,16 @@ static void only_in_hh_syntax(Parser *_p) {
   }
 }
 
+static void validate_hh_variadic_variant(Parser* _p,
+                                         Token& userAttrs, Token& typehint,
+                                         Token* mod) {
+  if (!userAttrs.text().empty() || !typehint.text().empty() ||
+     (mod && !mod->text().empty())) {
+    HPHP_PARSER_ERROR("Variadic '...' should be followed by a '$variable'", _p);
+  }
+  only_in_hh_syntax(_p);
+}
+
 // Shapes may not have leading integers in key names, considered as a
 // parse time error.  This is because at runtime they are currently
 // hphp arrays, which will treat leading integer keys as numbers.
@@ -570,16 +565,18 @@ static int yylex(YYSTYPE *token, HPHP::Location *loc, Parser *_p) {
 
 %expect 2
 %define api.pure
+%lex-param {HPHP::HPHP_PARSER_NS::Parser *_p}
 %parse-param {HPHP::HPHP_PARSER_NS::Parser *_p}
 
 %left T_INCLUDE T_INCLUDE_ONCE T_EVAL T_REQUIRE T_REQUIRE_ONCE
 %right T_LAMBDA_ARROW
 %left ','
+%nonassoc "..."
 %left T_LOGICAL_OR
 %left T_LOGICAL_XOR
 %left T_LOGICAL_AND
 %right T_PRINT
-%left '=' T_PLUS_EQUAL T_MINUS_EQUAL T_MUL_EQUAL T_DIV_EQUAL T_CONCAT_EQUAL T_MOD_EQUAL T_AND_EQUAL T_OR_EQUAL T_XOR_EQUAL T_SL_EQUAL T_SR_EQUAL
+%left '=' T_PLUS_EQUAL T_MINUS_EQUAL T_MUL_EQUAL T_DIV_EQUAL T_CONCAT_EQUAL T_MOD_EQUAL T_AND_EQUAL T_OR_EQUAL T_XOR_EQUAL T_SL_EQUAL T_SR_EQUAL T_POW_EQUAL
 %left '?' ':'
 %left T_BOOLEAN_OR
 %left T_BOOLEAN_AND
@@ -594,6 +591,7 @@ static int yylex(YYSTYPE *token, HPHP::Location *loc, Parser *_p) {
 %right '!'
 %nonassoc T_INSTANCEOF
 %right '~' T_INC T_DEC T_INT_CAST T_DOUBLE_CAST T_STRING_CAST T_ARRAY_CAST T_OBJECT_CAST T_BOOL_CAST T_UNSET_CAST '@'
+%right T_POW
 %right '['
 
 %nonassoc T_NEW T_CLONE
@@ -688,10 +686,10 @@ static int yylex(YYSTYPE *token, HPHP::Location *loc, Parser *_p) {
 %token T_XHP_REQUIRED
 
 %token T_TRAIT
+%token T_ELLIPSIS "..."
 %token T_INSTEADOF
 %token T_TRAIT_C
 
-%token T_VARARG
 %token T_HH_ERROR
 %token T_FINALLY
 
@@ -711,7 +709,6 @@ static int yylex(YYSTYPE *token, HPHP::Location *loc, Parser *_p) {
 %token T_COMPILER_HALT_OFFSET
 %right T_AWAIT
 %token T_ASYNC
-%token T_TUPLE
 
 %right T_FROM
 %token T_WHERE
@@ -764,6 +761,10 @@ top_statement:
   | T_NAMESPACE '{'                    { _p->onNamespaceStart("");}
     top_statement_list '}'             { _p->onNamespaceEnd(); $$ = $4;}
   | T_USE use_declarations ';'         { _p->nns(); $$.reset();}
+  | T_USE T_FUNCTION
+    use_fn_declarations ';'            { _p->nns(); $$.reset();}
+  | T_USE T_CONST
+    use_const_declarations ';'         { _p->nns(); $$.reset();}
   | constant_declaration ';'           { _p->nns();
                                          _p->finishStatement($$, $1); $$ = 1;}
 ;
@@ -775,7 +776,6 @@ ident:
   | T_XHP_CHILDREN                     { $$ = $1;}
   | T_XHP_REQUIRED                     { $$ = $1;}
   | T_XHP_ENUM                         { $$ = $1;}
-  | T_TUPLE                            { $$ = $1;}
   | T_WHERE                            { $$ = $1;}
   | T_JOIN                             { $$ = $1;}
   | T_ON                               { $$ = $1;}
@@ -796,12 +796,41 @@ use_declarations:
     use_declaration                    { }
   | use_declaration                    { }
 ;
+
+use_fn_declarations:
+    use_fn_declaration ','
+    use_fn_declaration                 { }
+  | use_fn_declaration                 { }
+;
+
+use_const_declarations:
+    use_const_declaration ','
+    use_const_declaration              { }
+  | use_const_declaration              { }
+;
+
 use_declaration:
     namespace_name                     { _p->onUse($1.text(),"");}
   | T_NS_SEPARATOR namespace_name      { _p->onUse($2.text(),"");}
   | namespace_name T_AS ident          { _p->onUse($1.text(),$3.text());}
   | T_NS_SEPARATOR namespace_name
     T_AS ident                         { _p->onUse($2.text(),$4.text());}
+;
+
+use_fn_declaration:
+    namespace_name                     { _p->onUseFunction($1.text(),"");}
+  | T_NS_SEPARATOR namespace_name      { _p->onUseFunction($2.text(),"");}
+  | namespace_name T_AS ident          { _p->onUseFunction($1.text(),$3.text());}
+  | T_NS_SEPARATOR namespace_name
+    T_AS ident                         { _p->onUseFunction($2.text(),$4.text());}
+;
+
+use_const_declaration:
+    namespace_name                     { _p->onUseConst($1.text(),"");}
+  | T_NS_SEPARATOR namespace_name      { _p->onUseConst($2.text(),"");}
+  | namespace_name T_AS ident          { _p->onUseConst($1.text(),$3.text());}
+  | T_NS_SEPARATOR namespace_name
+    T_AS ident                         { _p->onUseConst($2.text(),$4.text());}
 ;
 
 namespace_name:
@@ -838,11 +867,11 @@ class_namespace_string_typeargs:
 constant_declaration:
     constant_declaration ','
     hh_name_with_type
-    '=' static_scalar                  { $3.setText(_p->nsDecl($3.text()));
-                                         on_constant(_p,$$,$3,$5);}
+    '=' static_expr                    { $3.setText(_p->nsDecl($3.text()));
+                                         _p->onConst($$,$3,$5);}
   | T_CONST hh_name_with_type '='
-    static_scalar                      { $2.setText(_p->nsDecl($2.text()));
-                                         on_constant(_p,$$,$2,$4);}
+    static_expr                        { $2.setText(_p->nsDecl($2.text()));
+                                         _p->onConst($$,$2,$4);}
 ;
 
 inner_statement_list:
@@ -1169,9 +1198,9 @@ declare_statement:
 ;
 
 declare_list:
-    ident '=' static_scalar
+    ident '=' static_expr
   | declare_list ','
-    ident '=' static_scalar
+    ident '=' static_expr
 ;
 
 switch_case_list:
@@ -1214,12 +1243,33 @@ new_else_single:
 ;
 
 method_parameter_list:
-    non_empty_method_parameter_list
-    ',' T_VARARG                       { $$ = $1;}
+    non_empty_method_parameter_list ','
+    optional_user_attributes
+    parameter_modifiers
+    hh_type_opt "..." T_VARIABLE
+                                      { _p->onVariadicParam($$,&$1,$5,$7,false,
+                                                            &$3,&$4); }
+  | non_empty_method_parameter_list ','
+    optional_user_attributes
+    parameter_modifiers
+    hh_type_opt "..."
+                                      { validate_hh_variadic_variant(
+                                          _p, $3, $5, &$4);
+                                        $$ = $1; }
   | non_empty_method_parameter_list
-    hh_possible_comma                  { $$ = $1;}
-  | T_VARARG                           { $$.reset();}
-  |                                    { $$.reset();}
+    hh_possible_comma                 { $$ = $1;}
+  | optional_user_attributes
+    parameter_modifiers
+    hh_type_opt "..." T_VARIABLE
+                                      { _p->onVariadicParam($$,NULL,$3,$5,false,
+                                                            &$1,&$2); }
+  | optional_user_attributes
+    parameter_modifiers
+    hh_type_opt "..."
+                                      { validate_hh_variadic_variant(
+                                          _p, $1, $3, &$2);
+                                        $$.reset(); }
+  |                                   { $$.reset(); }
 ;
 
 non_empty_method_parameter_list:
@@ -1234,12 +1284,12 @@ non_empty_method_parameter_list:
   | optional_user_attributes
     parameter_modifiers
     hh_type_opt '&' T_VARIABLE
-    '=' static_scalar                  { _p->onParam($$,NULL,$3,$5,1,
+    '=' static_expr                    { _p->onParam($$,NULL,$3,$5,1,
                                                      &$7,&$1,&$2);}
   | optional_user_attributes
     parameter_modifiers
     hh_type_opt T_VARIABLE
-    '=' static_scalar                  { _p->onParam($$,NULL,$3,$4,0,
+    '=' static_expr                    { _p->onParam($$,NULL,$3,$4,0,
                                                      &$6,&$1,&$2);}
   | non_empty_method_parameter_list ','
     optional_user_attributes
@@ -1255,58 +1305,75 @@ non_empty_method_parameter_list:
     optional_user_attributes
     parameter_modifiers
     hh_type_opt '&' T_VARIABLE
-    '=' static_scalar                  { _p->onParam($$,&$1,$5,$7,1,
+    '=' static_expr                    { _p->onParam($$,&$1,$5,$7,1,
                                                      &$9,&$3,&$4);}
   | non_empty_method_parameter_list ','
     optional_user_attributes
     parameter_modifiers
     hh_type_opt T_VARIABLE
-    '=' static_scalar                  { _p->onParam($$,&$1,$5,$6,0,
+    '=' static_expr                    { _p->onParam($$,&$1,$5,$6,0,
                                                      &$8,&$3,&$4);}
 ;
 
 parameter_list:
     non_empty_parameter_list ','
-    T_VARARG                           { $$ = $1;}
+    optional_user_attributes
+    hh_type_opt "..." T_VARIABLE
+                                      { _p->onVariadicParam($$,&$1,$4,$6,
+                                        false,&$3,NULL); }
+  | non_empty_parameter_list ','
+    optional_user_attributes
+    hh_type_opt "..."
+                                      { validate_hh_variadic_variant(
+                                          _p, $3, $4, NULL);
+                                        $$ = $1; }
   | non_empty_parameter_list
-    hh_possible_comma                  { $$ = $1;}
-  | T_VARARG                           { $$.reset();}
-  |                                    { $$.reset();}
+    hh_possible_comma                 { $$ = $1;}
+  | optional_user_attributes
+    hh_type_opt "..." T_VARIABLE
+                                      { _p->onVariadicParam($$,NULL,$2,$4,
+                                                            false,&$1,NULL); }
+  | optional_user_attributes
+    hh_type_opt "..."
+                                      { validate_hh_variadic_variant(
+                                          _p, $1, $2, NULL);
+                                        $$.reset(); }
+  |                                   { $$.reset();}
 ;
 
 non_empty_parameter_list:
     optional_user_attributes
-    hh_type_opt T_VARIABLE             { _p->onParam($$,NULL,$2,$3,0,
-                                                     NULL,&$1,NULL);}
+    hh_type_opt T_VARIABLE             { _p->onParam($$,NULL,$2,$3,false,
+                                                     NULL,&$1,NULL); }
   | optional_user_attributes
-    hh_type_opt '&' T_VARIABLE         { _p->onParam($$,NULL,$2,$4,1,
-                                                     NULL,&$1,NULL);}
+    hh_type_opt '&' T_VARIABLE         { _p->onParam($$,NULL,$2,$4,true,
+                                                     NULL,&$1,NULL); }
   | optional_user_attributes
     hh_type_opt '&' T_VARIABLE
-    '=' static_scalar                  { _p->onParam($$,NULL,$2,$4,1,
-                                                     &$6,&$1,NULL);}
+    '=' static_expr                    { _p->onParam($$,NULL,$2,$4,true,
+                                                     &$6,&$1,NULL); }
   | optional_user_attributes
     hh_type_opt T_VARIABLE
-    '=' static_scalar                  { _p->onParam($$,NULL,$2,$3,0,
-                                                     &$5,&$1,NULL);}
+    '=' static_expr                    { _p->onParam($$,NULL,$2,$3,false,
+                                                     &$5,&$1,NULL); }
   | non_empty_parameter_list ','
     optional_user_attributes
-    hh_type_opt T_VARIABLE             { _p->onParam($$,&$1,$4,$5,0,
-                                                     NULL,&$3,NULL);}
+    hh_type_opt T_VARIABLE             { _p->onParam($$,&$1,$4,$5,false,
+                                                     NULL,&$3,NULL); }
   | non_empty_parameter_list ','
     optional_user_attributes
-    hh_type_opt '&' T_VARIABLE         { _p->onParam($$,&$1,$4,$6,1,
-                                                     NULL,&$3,NULL);}
+    hh_type_opt '&' T_VARIABLE         { _p->onParam($$,&$1,$4,$6,true,
+                                                     NULL,&$3,NULL); }
   | non_empty_parameter_list ','
     optional_user_attributes
     hh_type_opt '&' T_VARIABLE
-    '=' static_scalar                  { _p->onParam($$,&$1,$4,$6,1,
-                                                     &$8,&$3,NULL);}
+    '=' static_expr                    { _p->onParam($$,&$1,$4,$6,true,
+                                                     &$8,&$3,NULL); }
   | non_empty_parameter_list ','
     optional_user_attributes
     hh_type_opt T_VARIABLE
-    '=' static_scalar                  { _p->onParam($$,&$1,$4,$5,0,
-                                                     &$7,&$3,NULL);}
+    '=' static_expr                    { _p->onParam($$,&$1,$4,$5,false,
+                                                     &$7,&$3,NULL); }
 ;
 
 function_call_parameter_list:
@@ -1336,9 +1403,9 @@ global_var:
 static_var_list:
     static_var_list ',' T_VARIABLE     { _p->onStaticVariable($$,&$1,$3,0);}
   | static_var_list ',' T_VARIABLE
-    '=' static_scalar                  { _p->onStaticVariable($$,&$1,$3,&$5);}
+    '=' static_expr                    { _p->onStaticVariable($$,&$1,$3,&$5);}
   | T_VARIABLE                         { _p->onStaticVariable($$,0,$1,0);}
-  | T_VARIABLE '=' static_scalar       { _p->onStaticVariable($$,0,$1,&$3);}
+  | T_VARIABLE '=' static_expr         { _p->onStaticVariable($$,0,$1,&$3);}
 ;
 
 class_statement_list:
@@ -1451,6 +1518,7 @@ xhp_attribute_decl_type:
   | T_VAR                              { $$ = 6;}
   | T_XHP_ENUM '{'
     xhp_attribute_enum '}'             { $$ = $3; $$ = 7;}
+  | T_CALLABLE                         { $$ = 9; }
 ;
 
 xhp_attribute_enum:
@@ -1460,7 +1528,7 @@ xhp_attribute_enum:
 ;
 
 xhp_attribute_default:
-    '=' static_scalar                  { $$ = $2;}
+    '=' static_expr                    { $$ = $2;}
   |                                    { scalar_null(_p, $$);}
 ;
 
@@ -1561,14 +1629,15 @@ class_variable_declaration:
     class_variable_declaration ','
     T_VARIABLE                         { _p->onClassVariable($$,&$1,$3,0);}
   | class_variable_declaration ','
-    T_VARIABLE '=' static_scalar       { _p->onClassVariable($$,&$1,$3,&$5);}
+    T_VARIABLE '=' static_expr         { _p->onClassVariable($$,&$1,$3,&$5);}
   | T_VARIABLE                         { _p->onClassVariable($$,0,$1,0);}
-  | T_VARIABLE '=' static_scalar       { _p->onClassVariable($$,0,$1,&$3);}
+  | T_VARIABLE '=' static_expr         { _p->onClassVariable($$,0,$1,&$3);}
 ;
 class_constant_declaration:
     class_constant_declaration ','
-    hh_name_with_type '=' static_scalar { _p->onClassConstant($$,&$1,$3,$5);}
-  | T_CONST hh_name_with_type '=' static_scalar { _p->onClassConstant($$,0,$2,$4);}
+    hh_name_with_type '=' static_expr   { _p->onClassConstant($$,&$1,$3,$5);}
+  | T_CONST hh_name_with_type '='
+    static_expr                         { _p->onClassConstant($$,0,$2,$4);}
 ;
 
 expr_with_parens:
@@ -1644,6 +1713,7 @@ expr_no_variable:
   | variable T_XOR_EQUAL expr          { BEXP($$,$1,$3,T_XOR_EQUAL);}
   | variable T_SL_EQUAL expr           { BEXP($$,$1,$3,T_SL_EQUAL);}
   | variable T_SR_EQUAL expr           { BEXP($$,$1,$3,T_SR_EQUAL);}
+  | variable T_POW_EQUAL expr          { BEXP($$,$1,$3,T_POW_EQUAL);}
   | variable T_INC                     { UEXP($$,$1,T_INC,0);}
   | T_INC variable                     { UEXP($$,$2,T_INC,1);}
   | variable T_DEC                     { UEXP($$,$1,T_DEC,0);}
@@ -1661,6 +1731,7 @@ expr_no_variable:
   | expr '-' expr                      { BEXP($$,$1,$3,'-');}
   | expr '*' expr                      { BEXP($$,$1,$3,'*');}
   | expr '/' expr                      { BEXP($$,$1,$3,'/');}
+  | expr T_POW expr                    { BEXP($$,$1,$3,T_POW);}
   | expr '%' expr                      { BEXP($$,$1,$3,'%');}
   | expr T_SL expr                     { BEXP($$,$1,$3,T_SL);}
   | expr T_SR expr                     { BEXP($$,$1,$3,T_SR);}
@@ -1799,10 +1870,10 @@ non_empty_static_shape_pair_list:
     non_empty_static_shape_pair_list ','
       shape_keyname
       T_DOUBLE_ARROW
-      static_scalar                   { _p->onArrayPair($$,&$1,&$3,$5,0); }
+      static_expr                     { _p->onArrayPair($$,&$1,&$3,$5,0); }
   | shape_keyname
       T_DOUBLE_ARROW
-      static_scalar                   { _p->onArrayPair($$,  0,&$1,$3,0); }
+      static_expr                     { _p->onArrayPair($$,  0,&$1,$3,0); }
 ;
 
 shape_pair_list:
@@ -1850,6 +1921,8 @@ dim_expr:
 dim_expr_base:
     array_literal                      { $$ = $1;}
   | class_constant                     { $$ = $1;}
+  | T_CONSTANT_ENCAPSED_STRING         { _p->onScalar($$,
+                                         T_CONSTANT_ENCAPSED_STRING, $1); }
   | '(' expr_no_variable ')'           { $$ = $2;}
 ;
 
@@ -2177,13 +2250,59 @@ static_scalar:
   | '-' static_scalar                  { UEXP($$,$2,'-',1);}
   | T_ARRAY '('
     static_array_pair_list ')'         { _p->onArray($$,$3,T_ARRAY); }
-  | T_TUPLE '('
-    static_array_pair_list ')'         { _p->onArray($$,$3,T_ARRAY); }
   | '[' static_array_pair_list ']'     { _p->onArray($$,$2,T_ARRAY); }
   | T_SHAPE '('
     static_shape_pair_list ')'         { _p->onArray($$,$3,T_ARRAY); }
   | static_class_constant              { $$ = $1;}
   | static_collection_literal          { $$ = $1;}
+;
+
+static_expr:
+    static_scalar                      { $$ = $1;}
+  | '(' static_expr ')'                { $$ = $2;}
+  | static_expr T_BOOLEAN_OR
+    static_expr                        { BEXP($$,$1,$3,T_BOOLEAN_OR);}
+  | static_expr T_BOOLEAN_AND
+    static_expr                        { BEXP($$,$1,$3,T_BOOLEAN_AND);}
+  | static_expr T_LOGICAL_OR
+    static_expr                        { BEXP($$,$1,$3,T_LOGICAL_OR);}
+  | static_expr T_LOGICAL_AND
+    static_expr                        { BEXP($$,$1,$3,T_LOGICAL_AND);}
+  | static_expr T_LOGICAL_XOR
+    static_expr                        { BEXP($$,$1,$3,T_LOGICAL_XOR);}
+  | static_expr '|' static_expr        { BEXP($$,$1,$3,'|');}
+  | static_expr '&' static_expr        { BEXP($$,$1,$3,'&');}
+  | static_expr '^' static_expr        { BEXP($$,$1,$3,'^');}
+  | static_expr '.' static_expr        { BEXP($$,$1,$3,'.');}
+  | static_expr '+' static_expr        { BEXP($$,$1,$3,'+');}
+  | static_expr '-' static_expr        { BEXP($$,$1,$3,'-');}
+  | static_expr '*' static_expr        { BEXP($$,$1,$3,'*');}
+  | static_expr '/' static_expr        { BEXP($$,$1,$3,'/');}
+  | static_expr '%' static_expr        { BEXP($$,$1,$3,'%');}
+  | static_expr T_SL static_expr       { BEXP($$,$1,$3,T_SL);}
+  | static_expr T_SR static_expr       { BEXP($$,$1,$3,T_SR);}
+  | '!' static_expr                    { UEXP($$,$2,'!',1);}
+  | '~' static_expr                    { UEXP($$,$2,'~',1);}
+  | static_expr T_IS_IDENTICAL
+    static_expr                        { BEXP($$,$1,$3,T_IS_IDENTICAL);}
+  | static_expr T_IS_NOT_IDENTICAL
+    static_expr                        { BEXP($$,$1,$3,T_IS_NOT_IDENTICAL);}
+  | static_expr T_IS_EQUAL
+    static_expr                        { BEXP($$,$1,$3,T_IS_EQUAL);}
+  | static_expr T_IS_NOT_EQUAL
+    static_expr                        { BEXP($$,$1,$3,T_IS_NOT_EQUAL);}
+  | static_expr '<' static_scalar      { BEXP($$,$1,$3,'<');}
+  | static_expr T_IS_SMALLER_OR_EQUAL
+    static_expr                        { BEXP($$,$1,$3,
+                                              T_IS_SMALLER_OR_EQUAL);}
+  | static_expr '>' static_scalar      { BEXP($$,$1,$3,'>');}
+  | static_expr
+    T_IS_GREATER_OR_EQUAL
+    static_expr                        { BEXP($$,$1,$3,
+                                              T_IS_GREATER_OR_EQUAL);}
+  | static_expr '?' static_expr ':'
+    static_expr                        { _p->onQOp($$, $1, &$3, $5);}
+  | static_expr '?' ':' static_expr    { _p->onQOp($$, $1,   0, $4);}
 ;
 
 static_class_constant:
@@ -2226,13 +2345,13 @@ hh_possible_comma:
 
 non_empty_static_array_pair_list:
     non_empty_static_array_pair_list
-    ',' static_scalar T_DOUBLE_ARROW
-    static_scalar                      { _p->onArrayPair($$,&$1,&$3,$5,0);}
+    ',' static_expr T_DOUBLE_ARROW
+    static_expr                        { _p->onArrayPair($$,&$1,&$3,$5,0);}
   | non_empty_static_array_pair_list
-    ',' static_scalar                  { _p->onArrayPair($$,&$1,  0,$3,0);}
-  | static_scalar T_DOUBLE_ARROW
-    static_scalar                      { _p->onArrayPair($$,  0,&$1,$3,0);}
-  | static_scalar                      { _p->onArrayPair($$,  0,  0,$1,0);}
+    ',' static_expr                    { _p->onArrayPair($$,&$1,  0,$3,0);}
+  | static_expr T_DOUBLE_ARROW
+    static_expr                        { _p->onArrayPair($$,  0,&$1,$3,0);}
+  | static_expr                        { _p->onArrayPair($$,  0,  0,$1,0);}
 ;
 
 common_scalar_ae:
@@ -2259,8 +2378,6 @@ static_scalar_ae:
   | '+' static_numeric_scalar_ae       { UEXP($$,$2,'+',1);}
   | '-' static_numeric_scalar_ae       { UEXP($$,$2,'-',1);}
   | T_ARRAY '('
-    static_array_pair_list_ae ')'      { _p->onArray($$,$3,T_ARRAY);}
-  | T_TUPLE '('
     static_array_pair_list_ae ')'      { _p->onArray($$,$3,T_ARRAY);}
   | '[' static_array_pair_list_ae ']'  { _p->onArray($$,$2,T_ARRAY);}
   | T_SHAPE '('
@@ -2535,13 +2652,13 @@ static_collection_init:
 ;
 non_empty_static_collection_init:
     non_empty_static_collection_init
-    ',' static_scalar T_DOUBLE_ARROW
-    static_scalar                      { _p->onCollectionPair($$,&$1,&$3,$5);}
+    ',' static_expr T_DOUBLE_ARROW
+    static_expr                        { _p->onCollectionPair($$,&$1,&$3,$5);}
   | non_empty_static_collection_init
-    ',' static_scalar                  { _p->onCollectionPair($$,&$1,  0,$3);}
-  | static_scalar T_DOUBLE_ARROW
-    static_scalar                      { _p->onCollectionPair($$,  0,&$1,$3);}
-  | static_scalar                      { _p->onCollectionPair($$,  0,  0,$1);}
+    ',' static_expr                    { _p->onCollectionPair($$,&$1,  0,$3);}
+  | static_expr T_DOUBLE_ARROW
+    static_expr                        { _p->onCollectionPair($$,  0,&$1,$3);}
+  | static_expr                        { _p->onCollectionPair($$,  0,  0,$1);}
 ;
 
 encaps_list:
@@ -2647,9 +2764,9 @@ hh_type_list:
 ;
 
 hh_func_type_list:
-    hh_type_list ',' T_VARARG          { $$ = $1; }
+  hh_type_list ',' T_ELLIPSIS          { $$ = $1; }
   | hh_type_list                       { $$ = $1; }
-  | T_VARARG                           { $$.reset(); }
+  | T_ELLIPSIS                         { $$.reset(); }
   |                                    { $$.reset(); }
 ;
 

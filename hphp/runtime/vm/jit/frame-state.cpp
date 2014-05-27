@@ -27,17 +27,14 @@ TRACE_SET_MOD(hhir);
 namespace HPHP {
 namespace JIT {
 
-FrameState::FrameState(IRUnit& unit)
-  : FrameState(unit, unit.entry()->front().marker())
-{
-}
-
 FrameState::FrameState(IRUnit& unit, BCMarker marker)
-  : FrameState(unit, marker.spOff, marker.func)
+  : FrameState(unit, marker.spOff(), marker.func(), marker.func()->numLocals())
 {
+  assert(!marker.isDummy());
 }
 
-FrameState::FrameState(IRUnit& unit, Offset initialSpOffset, const Func* func)
+FrameState::FrameState(IRUnit& unit, Offset initialSpOffset, const Func* func,
+                       uint32_t numLocals)
   : m_unit(unit)
   , m_curFunc(func)
   , m_spValue(nullptr)
@@ -47,17 +44,14 @@ FrameState::FrameState(IRUnit& unit, Offset initialSpOffset, const Func* func)
   , m_frameSpansCall(false)
   , m_stackDeficit(0)
   , m_evalStack()
-  , m_locals(func->numLocals())
+  , m_locals(numLocals)
   , m_enableCse(false)
   , m_snapshots()
 {
 }
 
-FrameState::~FrameState() {
-}
-
 void FrameState::update(const IRInstruction* inst) {
-  FTRACE(3, "FrameState::update processing {}\n", *inst);
+  ITRACE(3, "FrameState::update processing {}\n", *inst);
 
   if (auto* taken = inst->taken()) {
     // When we're building the IR, we append a conditional jump after
@@ -75,13 +69,14 @@ void FrameState::update(const IRInstruction* inst) {
 
   switch (opc) {
   case DefInlineFP:    trackDefInlineFP(inst);  break;
-  case InlineReturn:   trackInlineReturn(inst); break;
+  case InlineReturn:   trackInlineReturn(); break;
 
   case Call:
     m_spValue = inst->dst();
     m_frameSpansCall = true;
-    // A call pops the ActRec and pushes a return value.
-    m_spOffset -= kNumActRecCells;
+    // A call pops the ActRec and the arguments, and then pushes a
+    // return value.
+    m_spOffset -= kNumActRecCells + inst->extra<Call>()->numParams;
     m_spOffset += 1;
     assert(m_spOffset >= 0);
     clearCse();
@@ -105,7 +100,7 @@ void FrameState::update(const IRInstruction* inst) {
     m_fpValue = inst->dst();
     break;
 
-  case ReDefGeneratorSP:
+  case ReDefResumableSP:
     m_spValue = inst->dst();
     break;
 
@@ -186,6 +181,11 @@ void FrameState::update(const IRInstruction* inst) {
       }
     }
   }
+
+  // Save state for each block at the end.
+  if (inst->isTerminal()) {
+    save(inst->block());
+  }
 }
 
 void FrameState::getLocalEffects(const IRInstruction* inst,
@@ -197,8 +197,9 @@ void FrameState::getLocalEffects(const IRInstruction* inst,
   };
 
   auto killedCallLocals = false;
-  if ((inst->is(CallArray) && inst->extra<CallArrayData>()->destroyLocals) ||
-      (inst->is(Call, CallBuiltin) && inst->extra<CallData>()->destroyLocals)) {
+  if ((inst->is(CallArray) && inst->extra<CallArray>()->destroyLocals) ||
+      (inst->is(Call) && inst->extra<Call>()->destroyLocals) ||
+      (inst->is(CallBuiltin) && inst->extra<CallBuiltin>()->destroyLocals)) {
     clearLocals(hook);
     killedCallLocals = true;
   }
@@ -223,6 +224,17 @@ void FrameState::getLocalEffects(const IRInstruction* inst,
       hook.setLocalValue(inst->extra<LocalId>()->locId, inst->src(1));
       break;
 
+    case LdGbl: {
+      auto const type = inst->typeParam().relaxToGuardable();
+      hook.setLocalType(inst->extra<LdGbl>()->locId, type);
+      break;
+    }
+    case StGbl: {
+      auto const type = inst->src(1)->type().relaxToGuardable();
+      hook.setLocalType(inst->extra<StGbl>()->locId, type);
+      break;
+    }
+
     case LdLoc:
       hook.setLocalValue(inst->extra<LdLoc>()->locId, inst->dst());
       break;
@@ -232,6 +244,10 @@ void FrameState::getLocalEffects(const IRInstruction* inst,
     case CheckLoc:
       hook.refineLocalType(inst->extra<LocalId>()->locId, inst->typeParam(),
                            inst->dst());
+      break;
+
+    case TrackLoc:
+      hook.setLocalValue(inst->extra<LocalId>()->locId, inst->src(0));
       break;
 
     case CheckType:
@@ -402,7 +418,7 @@ void FrameState::startBlock(Block* block) {
   auto it = m_snapshots.find(block);
   if (it != m_snapshots.end()) {
     load(it->second);
-    FTRACE(4, "Loading state for B{}: {}\n", block->id(), show(*this));
+    ITRACE(4, "Loading state for B{}: {}\n", block->id(), show(*this));
     m_inlineSavedStates = it->second.inlineSavedStates;
     m_snapshots.erase(it);
   }
@@ -413,6 +429,9 @@ void FrameState::finishBlock(Block* block) {
 
   if (!block->back().isTerminal()) {
     save(block->next());
+  }
+  if (m_building) {
+    save(block);
   }
 }
 
@@ -442,11 +461,11 @@ FrameState::Snapshot FrameState::createSnapshot() const {
  * existing snapshot.
  */
 void FrameState::save(Block* block) {
-  FTRACE(4, "Saving state for B{}: {}\n", block->id(), show(*this));
+  ITRACE(4, "Saving state for B{}: {}\n", block->id(), show(*this));
   auto it = m_snapshots.find(block);
   if (it != m_snapshots.end()) {
     merge(it->second);
-    FTRACE(4, "Merged state: {}\n", show(*this));
+    ITRACE(4, "Merged state: {}\n", show(*this));
   } else {
     auto& snapshot = m_snapshots[block] = createSnapshot();
     snapshot.inlineSavedStates = m_inlineSavedStates;
@@ -481,6 +500,12 @@ bool FrameState::compatible(Block* block) {
   // values flowing in and insert phis or exits as needed.
 
   return true;
+}
+
+const FrameState::LocalVec& FrameState::localsForBlock(Block* b) const {
+  auto bit = m_snapshots.find(b);
+  assert(bit != m_snapshots.end());
+  return bit->second.locals;
 }
 
 void FrameState::load(Snapshot& state) {
@@ -525,7 +550,19 @@ void FrameState::merge(Snapshot& state) {
     // preserve local values if they're the same in both states,
     // This would be the place to insert phi nodes (jmps+deflabels) if we want
     // to avoid clearing state, which triggers a downstream reload.
-    if (local.value != m_locals[i].value) local.value = nullptr;
+    if (local.value != m_locals[i].value) {
+      // try to merge SSATmps for the local if one of them came from
+      // a passthrough instruction with the other as the source.
+      auto isParent = [](SSATmp* parent, SSATmp* child) -> bool {
+        return child && child->inst()->isPassthrough() &&
+               child->inst()->getPassthroughValue() == parent;
+      };
+      if (isParent(m_locals[i].value, local.value)) {
+        local.value = m_locals[i].value;
+      } else if (!isParent(local.value, m_locals[i].value)) {
+        local.value = nullptr;
+      }
+    }
     if (local.typeSource != m_locals[i].typeSource) local.typeSource = nullptr;
 
     local.type = Type::unionOf(local.type, m_locals[i].type);
@@ -559,7 +596,7 @@ void FrameState::trackDefInlineFP(const IRInstruction* inst) {
 
   auto const stackValues = collectStackValues(m_spValue, m_spOffset);
   for (DEBUG_ONLY auto& val : stackValues) {
-    FTRACE(4, "    marking caller stack value available: {}\n",
+    ITRACE(4, "    marking caller stack value available: {}\n",
            val->toString());
   }
 
@@ -581,7 +618,7 @@ void FrameState::trackDefInlineFP(const IRInstruction* inst) {
   m_locals.resize(target->numLocals());
 }
 
-void FrameState::trackInlineReturn(const IRInstruction* inst) {
+void FrameState::trackInlineReturn() {
   assert(m_inlineSavedStates.size());
   assert(m_inlineSavedStates.back().inlineSavedStates.empty());
   load(m_inlineSavedStates.back());
@@ -607,13 +644,14 @@ void FrameState::clearCse() {
 }
 
 SSATmp* FrameState::cseLookup(IRInstruction* inst,
-                                const folly::Optional<IdomVector>& idoms) {
+                              Block* srcBlock,
+                              const folly::Optional<IdomVector>& idoms) {
   auto tmp = cseHashTable(inst)->lookup(inst);
   if (tmp && idoms) {
     // During a reoptimize pass, we need to make sure that any values
     // we want to reuse for CSE are only reused in blocks dominated by
     // the block that defines it.
-    if (!dominates(tmp->inst()->block(), inst->block(), *idoms)) {
+    if (!dominates(tmp->inst()->block(), srcBlock, *idoms)) {
       return nullptr;
     }
   }
@@ -621,6 +659,13 @@ SSATmp* FrameState::cseLookup(IRInstruction* inst,
 }
 
 void FrameState::clear() {
+  // A previous run of reoptimize could've legitimately exited the trace in an
+  // inlined callee. If that happened, just pop all the saved states to return
+  // to the top-level func.
+  while (inlineDepth()) {
+    trackInlineReturn();
+  }
+
   clearCse();
   clearLocals(*this);
   m_frameSpansCall = false;
@@ -661,22 +706,13 @@ void FrameState::setLocalValue(uint32_t id, SSATmp* value) {
 void FrameState::refineLocalType(uint32_t id, Type type, SSATmp* typeSource) {
   always_assert(id < m_locals.size());
   auto& local = m_locals[id];
-  if (type.isBoxed() && local.type.isBoxed()) {
-    // It's OK for the old and new inner types of boxed values not to
-    // intersect, since the inner type is really just a prediction.
-    FTRACE(2, "updating local {}'s inner type: {} -> {}\n",
-           id, local.type, type);
-    local.type = type;
-  } else {
-    auto const result = local.type & type;
-    always_assert_log(
-      result != Type::Bottom,
-      [&] {
-        return folly::format("Bad new type for local {}: {} & {} = {}",
-                             id, local.type, type, result).str();
-      });
-    local.type = local.type & type;
-  }
+  Type newType = refineType(local.type, type);
+  ITRACE(2, "updating local {}'s type: {} -> {}\n",
+         id, local.type, newType);
+  always_assert_flog(newType != Type::Bottom,
+                     "Bad new type for local {}: {} & {} = {}",
+                     id, local.type, type, newType);
+  local.type = newType;
   local.typeSource = typeSource;
 }
 
@@ -736,7 +772,7 @@ void FrameState::dropLocalInnerType(uint32_t id, unsigned inlineIdx) {
 std::string show(const FrameState& state) {
   return folly::format("func: {}, bcOff: {}, spOff: {}{}{}",
                        state.func()->fullName()->data(),
-                       state.marker().bcOff,
+                       state.marker().bcOff(),
                        state.spOffset(),
                        state.thisAvailable() ? ", thisAvailable" : "",
                        state.frameSpansCall() ? ", frameSpansCall" : ""

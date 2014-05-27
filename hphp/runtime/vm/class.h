@@ -20,9 +20,11 @@
 #include <boost/range/iterator_range.hpp>
 
 #include "hphp/util/fixed-vector.h"
+#include "hphp/util/low-ptr.h"
 #include "hphp/util/range.h"
 
 #include "hphp/runtime/base/types.h"
+#include "hphp/runtime/base/type-string.h"
 #include "hphp/runtime/base/typed-value.h"
 #include "hphp/runtime/base/rds.h"
 #include "hphp/runtime/base/repo-auth-type.h"
@@ -36,7 +38,7 @@ namespace HPHP {
 
 class ClassInfo;
 class ClassInfoVM;
-class HphpArray;
+class MixedArray;
 class ObjectData;
 struct HhbcExtClassInfo;
 class Func;
@@ -48,20 +50,18 @@ class NamedEntity;
 class PreClass;
 namespace Native { struct NativeDataInfo; }
 
-typedef hphp_hash_set<const StringData*, string_data_hash,
+typedef hphp_hash_set<LowStringPtr,
+                      string_data_hash,
                       string_data_isame> TraitNameSet;
-typedef hphp_hash_set<const Class*, pointer_hash<Class> > ClassSet;
 
 /*
  * User attributes on various runtime structures are stored in this
  * map, currently.
  */
-typedef hphp_hash_map<
-  const StringData*,
-  TypedValue,
-  string_data_hash,
-  string_data_isame
-> UserAttributeMap;
+typedef hphp_hash_map<LowStringPtr,
+                      TypedValue,
+                      string_data_hash,
+                      string_data_isame> UserAttributeMap;
 
 using BuiltinCtorFunction = ObjectData* (*)(Class*);
 using BuiltinDtorFunction = void (*)(ObjectData*, const Class*);
@@ -114,11 +114,9 @@ using BuiltinDtorFunction = void (*)(ObjectData*, const Class*);
  *    threads are trying to load the same unit.
  *
  */
-class PreClass : public AtomicCountable {
+struct PreClass : AtomicCountable {
   friend class PreClassEmitter;
-  friend class Peephole;
 
- public:
   enum Hoistable {
     NotHoistable,
     Mergeable,
@@ -141,9 +139,9 @@ class PreClass : public AtomicCountable {
 
     PreClass* preClass() const { return m_preClass; }
     const StringData* name() const { return m_name; }
-    const String& nameRef() const { return *(String*)&m_name; }
+    StrNR nameStr() const { return StrNR(m_name); }
     const StringData* mangledName() const { return m_mangledName; }
-    const String& mangledNameRef() const { return *(String*)(&m_mangledName); }
+    StrNR mangledNameRef() const { return StrNR(m_mangledName); }
     Attr attrs() const { return m_attrs; }
     const StringData* typeConstraint() const { return m_typeConstraint; }
     RepoAuthType repoAuthType() const { return m_repoAuthType; }
@@ -152,11 +150,11 @@ class PreClass : public AtomicCountable {
 
   private:
     PreClass* m_preClass;
-    const StringData* m_name;
-    const StringData* m_mangledName;
+    LowStringPtr m_name;
+    LowStringPtr m_mangledName;
     Attr m_attrs;
-    const StringData* m_typeConstraint;
-    const StringData* m_docComment;
+    LowStringPtr m_typeConstraint;
+    LowStringPtr m_docComment;
     TypedValue m_val;
     RepoAuthType m_repoAuthType;
   };
@@ -171,24 +169,24 @@ class PreClass : public AtomicCountable {
 
     PreClass* preClass() const { return m_preClass; }
     const StringData* name() const { return m_name; }
-    const String& nameRef() const { return *(String*)&m_name; }
+    StrNR nameStr() const { return StrNR(m_name); }
     const StringData* typeConstraint() const { return m_typeConstraint; }
     const TypedValue& val() const { return m_val; }
     const StringData* phpCode() const { return m_phpCode; }
 
   private:
     PreClass* m_preClass;
-    const StringData* m_name;
-    const StringData* m_typeConstraint;
+    LowStringPtr m_name;
+    LowStringPtr m_typeConstraint;
     TypedValue m_val;
-    const StringData* m_phpCode;
+    LowStringPtr m_phpCode;
   };
 
   class TraitPrecRule {
    public:
     TraitPrecRule()
-      : m_methodName(0)
-      , m_selectedTraitName(0)
+      : m_methodName(nullptr)
+      , m_selectedTraitName(nullptr)
     {}
 
     TraitPrecRule(const StringData* selectedTraitName,
@@ -212,17 +210,17 @@ class PreClass : public AtomicCountable {
     }
 
    private:
-    const StringData*  m_methodName;
-    const StringData*  m_selectedTraitName;
-    TraitNameSet       m_otherTraitNames;
+    LowStringPtr m_methodName;
+    LowStringPtr m_selectedTraitName;
+    TraitNameSet m_otherTraitNames;
   };
 
   class TraitAliasRule {
    public:
     TraitAliasRule()
-      : m_traitName(0)
-      , m_origMethodName(0)
-      , m_newMethodName(0)
+      : m_traitName(nullptr)
+      , m_origMethodName(nullptr)
+      , m_newMethodName(nullptr)
       , m_modifiers(AttrNone)
     {}
 
@@ -245,10 +243,10 @@ class PreClass : public AtomicCountable {
     }
 
    private:
-    const StringData* m_traitName;
-    const StringData* m_origMethodName;
-    const StringData* m_newMethodName;
-    Attr              m_modifiers;
+    LowStringPtr m_traitName;
+    LowStringPtr m_origMethodName;
+    LowStringPtr m_newMethodName;
+    Attr         m_modifiers;
   };
 
   struct TraitRequirement {
@@ -292,8 +290,8 @@ class PreClass : public AtomicCountable {
     uintptr_t m_word;
   };
 
-  typedef FixedVector<const StringData*> InterfaceVec;
-  typedef FixedVector<const StringData*> UsedTraitVec;
+  typedef FixedVector<LowStringPtr> InterfaceVec;
+  typedef FixedVector<LowStringPtr> UsedTraitVec;
   typedef FixedVector<TraitRequirement> TraitRequirementsVec;
   typedef FixedVector<TraitPrecRule> TraitPrecRuleVec;
   typedef FixedVector<TraitAliasRule> TraitAliasRuleVec;
@@ -309,11 +307,11 @@ class PreClass : public AtomicCountable {
   int line2() const { return m_line2; }
   Offset getOffset() const { return m_offset; }
   const StringData* name() const { return m_name; }
-  const String& nameRef() const { return *(String*)(&m_name); }
+  StrNR nameStr() const { return StrNR(m_name); }
   Attr attrs() const { return m_attrs; }
   static Offset attrsOffset() { return offsetof(PreClass, m_attrs); }
   const StringData* parent() const { return m_parent; }
-  const String& parentRef() const { return *(String*)(&m_parent); }
+  StrNR parentStr() const { return StrNR(m_parent); }
   const StringData* docComment() const { return m_docComment; }
   Id id() const { return m_id; }
   const InterfaceVec& interfaces() const { return m_interfaces; }
@@ -415,9 +413,9 @@ private:
   int32_t m_builtinODOffset{0};
   Attr m_attrs;
   Hoistable m_hoistable;
-  const StringData* m_name;
-  const StringData* m_parent;
-  const StringData* m_docComment;
+  LowStringPtr m_name;
+  LowStringPtr m_parent;
+  LowStringPtr m_docComment;
   BuiltinCtorFunction m_instanceCtor = nullptr;
   InterfaceVec m_interfaces;
   UsedTraitVec m_usedTraits;
@@ -440,6 +438,24 @@ typedef AtomicSmartPtr<Class> ClassPtr;
  * request context.
  *
  * See PreClass for more on the distinction.
+ *
+ * The method table is allocated at negative offset from the start
+ * of the Class object, and the method slot is used as the -ve offset
+ * from the object to index into the method table.
+ *
+ *                                 +------------+
+ * Func Slot n (offset -(n+1)) --> |            |
+ *                                      ....
+ *                                 |            |
+ *                                 +------------+
+ * Func Slot 1 (offset -2) -->     |            |
+ *                                 +------------+
+ * Func Slot 0 (offset -1) -->     |            |
+ * Class*     --------------->     +------------+
+ *                                 |            |
+ *                                     ....
+ *                                 |            |
+ *                                 +------------+
  */
 struct Class : AtomicCountable {
   enum class Avail {
@@ -451,12 +467,12 @@ struct Class : AtomicCountable {
   struct Prop {
     // m_name is "" for inaccessible properties (i.e. private properties
     // declared by parents).
-    const StringData* m_name;
-    const StringData* m_mangledName;
-    const StringData* m_originalMangledName;
-    Class* m_class; // First parent class that declares this property.
+    LowStringPtr m_name;
+    LowStringPtr m_mangledName;
+    LowStringPtr m_originalMangledName;
+    LowClassPtr m_class; // First parent class that declares this property.
     Attr m_attrs;
-    const StringData* m_typeConstraint;
+    LowStringPtr m_typeConstraint;
 
     /*
      * When built in RepoAuthoritative mode, this is a control-flow
@@ -465,28 +481,29 @@ struct Class : AtomicCountable {
      */
     RepoAuthType m_repoAuthType;
 
-    const StringData* m_docComment;
+    LowStringPtr m_docComment;
     int m_idx;
   };
 
   struct SProp {
-    const StringData* m_name;
+    LowStringPtr m_name;
     Attr m_attrs;
-    const StringData* m_typeConstraint;
-    const StringData* m_docComment;
-    Class* m_class; // Most derived class that declared this property.
+    LowStringPtr m_typeConstraint;
+    LowStringPtr m_docComment;
+    LowClassPtr m_class; // Most derived class that declared this property.
     TypedValue m_val; // Used if (m_class == this).
     RepoAuthType m_repoAuthType;
     int m_idx;
   };
 
   struct Const {
-    Class* m_class; // Most derived class that declared this constant.
-    const StringData* m_name;
+    LowClassPtr m_class; // Most derived class that declared this constant.
+    LowStringPtr m_name;
     TypedValue m_val;
-    const StringData* m_phpCode;
-    const StringData* m_typeConstraint;
-    const String& nameRef() const { return *(String*)&m_name; }
+    LowStringPtr m_phpCode;
+    LowStringPtr m_typeConstraint;
+    const StringData* name() const { return m_name; }
+    StrNR nameStr() const { return StrNR(m_name); }
   };
 
   class PropInitVec {
@@ -517,13 +534,13 @@ struct Class : AtomicCountable {
   };
 
   typedef std::vector<const Func*> InitVec;
-  typedef std::vector<std::pair<const StringData*, const StringData*> >
-          TraitAliasVec;
-  typedef IndexedStringMap<Class*,true,int> InterfaceMap;
-  typedef IndexedStringMap<Func*,false,Slot> MethodMap;
+  typedef std::vector<std::pair<LowStringPtr, LowStringPtr>> TraitAliasVec;
+  typedef IndexedStringMap<LowClassPtr, true, int> InterfaceMap;
+  typedef FixedStringMap<Slot, false, Slot> MethodMap;
+  typedef FixedStringMapBuilder<Func*, Slot, false, Slot> MethodMapBuilder;
 
   /* If set, runs during setMethods() */
-  static void (*MethodCreateHook)(Class* cls, MethodMap::Builder& builder);
+  static void (*MethodCreateHook)(Class* cls, MethodMapBuilder& builder);
 
   /*
    * Allocate a new Class object.
@@ -532,6 +549,14 @@ struct Class : AtomicCountable {
    * some phase changes before that (see destroy().)
    */
   static Class* newClass(PreClass* preClass, Class* parent);
+
+  /*
+   * Load used traits of PreClass 'preClass', and append the trait Class*'s
+   * to 'usedTraits'. Returns an estimate of the method count of all used
+   * traits.
+   */
+  static unsigned loadUsedTraits(PreClass* preClass,
+                                 std::vector<ClassPtr>& usedTraits);
 
   /*
    * destroy() is called when a Class becomes unreachable. This may happen
@@ -596,7 +621,7 @@ struct Class : AtomicCountable {
     return false;
   }
   bool ifaceofDirect(const StringData* name) const {
-    return m_interfaces.lookupDefault(name, nullptr) != nullptr;
+    return m_interfaces.contains(name);
   }
 
   /*
@@ -611,24 +636,14 @@ struct Class : AtomicCountable {
   Class* parent() const {
     return m_parent.get();
   }
-  const String& nameRef() const {
-    return m_preClass->nameRef();
+  StrNR nameStr() const {
+    return m_preClass->nameStr();
   }
-  const String& parentRef() const {
-    return m_preClass->parentRef();
+  StrNR parentStr() const {
+    return m_preClass->parentStr();
   }
 
-  Func* const* methods() const { return m_methods.accessList(); }
   size_t numMethods() const { return m_methods.size(); }
-  typedef IterRange<Func*const*> MethodRange;
-  MethodRange methodRange() const {
-    return MethodRange(methods(), methods() + numMethods());
-  }
-  typedef IterRange<Func**> MutableMethodRange;
-  MutableMethodRange mutableMethodRange() {
-    return MutableMethodRange(m_methods.mutableAccessList(),
-                              m_methods.mutableAccessList() + m_methods.size());
-  }
   const SProp* staticProperties() const
     { return m_staticProperties.accessList(); }
   size_t numStaticProperties() const { return m_staticProperties.size(); }
@@ -656,21 +671,17 @@ struct Class : AtomicCountable {
     return offsetof(Class, m_propDataCache);
   }
 
-  TypedValue* getSPropData() const;
-  static constexpr size_t spropdataOff() {
-    return offsetof(Class, m_propSDataCache);
-  }
+  TypedValue* getSPropData(Slot index) const;
 
   bool hasDeepInitProps() const { return m_hasDeepInitProps; }
   bool needInitialization() const { return m_needInitialization; }
-  bool hasInitMethods() const { return m_hasInitMethods; }
   bool callsCustomInstanceInit() const { return m_callsCustomInstanceInit; }
   const InterfaceMap& allInterfaces() const { return m_interfaces; }
   // See comment for m_usedTraits
   const std::vector<ClassPtr>& usedTraitClasses() const {
     return m_usedTraits;
   }
-  const TraitAliasVec& traitAliases();
+  const TraitAliasVec& traitAliases(); // not const for memoization
   const InitVec& pinitVec() const { return m_pinitVec; }
   const PropInitVec& declPropInit() const { return m_declPropInit; }
 
@@ -708,8 +719,20 @@ struct Class : AtomicCountable {
   Slot traitsBeginIdx() const { return m_traitsBeginIdx; }
   Slot traitsEndIdx() const   { return m_traitsEndIdx; }
 
+  void setMethod(Slot idx, Func* func) {
+    Func** funcVec = (Func**)this;
+    funcVec[-((int32_t)idx + 1)] = func;
+  }
+
+  Func* getMethod(Slot idx) const {
+    Func** funcVec = (Func**)this;
+    return funcVec[-((int32_t)idx + 1)];
+  }
+
   Func* lookupMethod(const StringData* methName) const {
-    return m_methods.lookupDefault(methName, nullptr);
+    Slot* idx = m_methods.find(methName);
+    if (!idx) return nullptr;
+    return getMethod(*idx);
   }
 
   bool isPersistent() const { return m_attrCopy & AttrPersistent; }
@@ -751,7 +774,7 @@ struct Class : AtomicCountable {
    *
    * Returns nullptr if this class has no constant of the given name.
    */
-  Cell* cnsNameToTV(const StringData* name, Slot& slot) const;
+  const Cell* cnsNameToTV(const StringData* name, Slot& slot) const;
 
   /*
    * Provide the current runtime type of this class constant.  This
@@ -759,49 +782,59 @@ struct Class : AtomicCountable {
    */
   DataType clsCnsType(const StringData* clsCnsName) const;
 
-  /*
-   * Tracing interface.  (Returns the set of static properties for the
-   * Tracer.)
+  /**
+   * RDS Class* handle.
    */
-  void getChildren(std::vector<TypedValue*>& out);
-
-  void initialize() const;
-  void initPropHandle() const;
+  void setClassHandle(RDS::Link<Class*> link) const;
   RDS::Handle classHandle() const { return m_cachedClass.handle(); }
-  void setClassHandle(RDS::Link<Class*> link) const {
-    assert(!m_cachedClass.bound());
-    m_cachedClass = link;
-  }
-  RDS::Handle propHandle() const { return m_propDataCache.handle(); }
-  void initSPropHandle() const;
-  RDS::Handle sPropHandle() const { return m_propSDataCache.handle(); }
-  void initProps() const;
-  TypedValue* initSProps() const;
+
   Class* getCached() const;
   void setCached();
 
-  void setInstanceBits();
-  void setInstanceBitsAndParents();
+  /**
+   * Property initialization.
+   */
+  void initialize() const;
+  void initProps() const;
+  void initSProps() const;
 
-  // Returns kInvalidSlot if we can't find this property.
+  void initPropHandle() const;
+  RDS::Handle propHandle() const { return m_propDataCache.handle(); }
+
+  bool needsInitSProps() const;
+  void initSPropHandles() const;
+  RDS::Handle sPropInitHandle() const { return m_sPropCacheInit.handle(); }
+  RDS::Handle sPropHandle(Slot index) const;
+
+  TypedValue getStaticPropInitVal(const SProp& prop);
+
+  /**
+   * Property accessors.
+   *
+   * Lookup methods return kInvalidSlot if the property is not found.
+   */
   Slot lookupDeclProp(const StringData* propName) const {
     return m_declProperties.findIndex(propName);
+  }
+  Slot lookupSProp(const StringData* sPropName) const {
+    return m_staticProperties.findIndex(sPropName);
   }
 
   Slot getDeclPropIndex(Class* ctx, const StringData* key,
                         bool& accessible) const;
 
+  Slot findSProp(Class* ctx, const StringData* sPropName,
+                 bool& visible, bool& accessible) const;
   TypedValue* getSProp(Class* ctx, const StringData* sPropName,
                        bool& visible, bool& accessible) const;
 
   static bool IsPropAccessible(const Prop& prop, Class* ctx);
 
-  // Returns kInvalidSlot if we can't find this static property.
-  Slot lookupSProp(const StringData* sPropName) const {
-    return m_staticProperties.findIndex(sPropName);
-  }
-
-  TypedValue getStaticPropInitVal(const SProp& prop);
+  /**
+   * Instance bits.
+   */
+  void setInstanceBits();
+  void setInstanceBitsAndParents();
 
   void getClassInfo(ClassInfoVM* ci);
 
@@ -820,13 +853,17 @@ struct Class : AtomicCountable {
   unsigned classVecLen() const {
     return m_classVecLen;
   }
-  const Class* const* classVec() const { return m_classVec; }
+  LowClassPtr const* classVec() const { return m_classVec; }
+
   static size_t preClassOff() { return offsetof(Class, m_preClass); }
   static size_t classVecOff() { return offsetof(Class, m_classVec); }
   static size_t classVecLenOff() { return offsetof(Class, m_classVecLen); }
   static Offset getMethodsOffset() { return offsetof(Class, m_methods); }
   static ptrdiff_t invokeFuncOff() { return offsetof(Class, m_invoke); }
   static size_t instanceBitsOff() { return offsetof(Class, m_instanceBits); }
+
+  /* Return pointer to start of malloced memory for 'this' */
+  Func** mallocPtrFromThis() const;
 
   static hphp_hash_map<const StringData*, const HhbcExtClassInfo*,
                        string_data_hash, string_data_isame> s_extClassHash;
@@ -850,16 +887,19 @@ private:
       , m_modifiers(modifiers)
     {}
 
-    Class* m_trait;
-    Func*  m_method;
-    Attr   m_modifiers;
+    LowClassPtr m_trait;
+    Func* m_method;
+    Attr m_modifiers;
   };
   typedef std::list<TraitMethod> TraitMethodList;
-  typedef hphp_hash_map<const StringData*, TraitMethodList, string_data_hash,
+  typedef hphp_hash_map<LowStringPtr,
+                        TraitMethodList,
+                        string_data_hash,
                         string_data_isame> MethodToTraitListMap;
 
 private:
-  Class(PreClass* preClass, Class* parent, unsigned classVecLen);
+  Class(PreClass* preClass, Class* parent, std::vector<ClassPtr>&& usedTraits,
+        unsigned classVecLen, unsigned funcVecLen);
   ~Class();
 
 private:
@@ -871,12 +911,12 @@ private:
 
   void importTraitMethod(const TraitMethod&  traitMethod,
                          const StringData*   methName,
-                         MethodMap::Builder& curMethodMap);
+                         MethodMapBuilder& curMethodMap);
   Class* findSingleTraitWithMethod(const StringData* methName);
   void setImportTraitMethodModifiers(TraitMethodList& methList,
                                      Class*           traitCls,
                                      Attr             modifiers);
-  void importTraitMethods(MethodMap::Builder& curMethodMap);
+  void importTraitMethods(MethodMapBuilder& curMethodMap);
   void addTraitPropInitializers(bool staticProps);
   void applyTraitRules(MethodToTraitListMap& importMethToTraitMap);
   void applyTraitPrecRule(const PreClass::TraitPrecRule& rule,
@@ -916,7 +956,7 @@ private:
   void setInitializers();
   void setInterfaces();
   void setClassVec();
-  void setUsedTraits();
+  void setFuncVec(MethodMapBuilder& builder);
   void checkTraitConstraints() const;
   void checkTraitConstraintsRec(const std::vector<ClassPtr>& usedTraits,
                                 const StringData* recName) const;
@@ -990,8 +1030,20 @@ private:
   BuiltinDtorFunction m_instanceDtor{nullptr};
   Func* m_dtor;
   MethodMap m_methods;
-  mutable RDS::Link<TypedValue*> m_propSDataCache{RDS::kInvalidHandle};
+
+  // Static properties are stored in RDS.  There are three phases of sprop
+  // initialization:
+  // 1. The array of links is itself allocated on Class creation.
+  // 2. The links are bound either when codegen needs the handle value, or when
+  //    initSProps() is called in any request.  Afterwards, m_sPropCacheInit is
+  //    bound, defaulting to false.
+  // 3. The RDS value at m_sPropCacheInit is set to true when initSProps() is
+  //    called, and the values are actually initialized.
+  mutable RDS::Link<TypedValue>* m_sPropCache{nullptr};
+  mutable RDS::Link<bool> m_sPropCacheInit{RDS::kInvalidHandle};
+
   unsigned m_classVecLen;
+  unsigned m_funcVecLen;
   /*
    * Each ObjectData is created with enough trailing space to directly store
    * the vector of declared properties. To look up a property by name and
@@ -1008,7 +1060,7 @@ private:
   unsigned m_needInitialization : 1;      // requires initialization,
                                           // due to [ps]init or simply
                                           // having static members
-  unsigned m_hasInitMethods : 1;          // any __[ps]init() methods?
+  unsigned m_completelyUnused : 1;        // keep things in the same place
   unsigned m_callsCustomInstanceInit : 1; // should we always call __init__
                                           // on new instances?
   unsigned m_hasDeepInitProps : 1;
@@ -1016,7 +1068,7 @@ private:
 
   // Vector of Class pointers that encodes the inheritance hierarchy,
   // including this Class as the last element.
-  Class* m_classVec[1]; // Dynamically sized; must come last.
+  LowClassPtr m_classVec[1]; // Dynamically sized; must come last.
 };
 
 inline bool isTrait(const Class* cls) {
@@ -1029,7 +1081,14 @@ inline bool isNormalClass(const Class* cls ) {
   return !(cls->attrs() & (AttrTrait | AttrInterface));
 }
 
-enum class ClassKind { Class, Interface, Trait };
+enum class ClassKind {
+  Class = AttrNone,
+  Interface = AttrInterface,
+  Trait = AttrTrait
+};
+inline Attr classKindAsAttr(ClassKind kind) {
+  return static_cast<Attr>(kind);
+}
 
 /*
  * Returns whether a class is persistent *and* has a persistent RDS
@@ -1040,10 +1099,19 @@ enum class ClassKind { Class, Interface, Trait };
  * we had to allocate the handle before we loaded the class.
  */
 inline bool classHasPersistentRDS(const Class* cls) {
-  return (RuntimeOption::RepoAuthoritative &&
-          cls &&
+  return (cls &&
           RDS::isPersistentHandle(cls->classHandle()));
 }
+
+/*
+ * Returns that class that "owns" f. This will normally be
+ * f->cls(), but for Funcs with static locals, f may have
+ * been cloned into a derived class.
+ *
+ * May only be called when RuntimeOption::EvalPerfDataMap
+ * is true.
+ */
+const Class* getOwningClassForFunc(const Func* f);
 
 } // HPHP
 

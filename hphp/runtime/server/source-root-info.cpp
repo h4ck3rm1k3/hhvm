@@ -21,6 +21,8 @@
 #include "hphp/runtime/server/transport.h"
 #include "hphp/runtime/debugger/debugger.h"
 #include "hphp/runtime/base/tv-arith.h"
+#include "hphp/runtime/base/php-globals.h"
+#include "hphp/runtime/base/config.h"
 
 using std::map;
 
@@ -126,16 +128,17 @@ void SourceRootInfo::createFromUserConfig() {
 
   std::string confpath = std::string(homePath.c_str()) +
     RuntimeOption::SandboxConfFile;
+  IniSetting::Map ini = IniSetting::Map::object;
   Hdf config, serverVars;
   String sp, lp, alp, userOverride;
   try {
-    config.open(confpath);
-    userOverride = config["user_override"].get();
+  Config::Parse(confpath, ini, config);
+    userOverride = Config::Get(ini, config["user_override"]);
     Hdf sboxConf = config[m_sandbox.c_str()];
     if (sboxConf.exists()) {
-      sp = sboxConf["path"].get();
-      lp = sboxConf["log"].get();
-      alp = sboxConf["accesslog"].get();
+      sp = Config::Get(ini, sboxConf["path"]);
+      lp = Config::Get(ini, sboxConf["log"]);
+      alp = Config::Get(ini, sboxConf["accesslog"]);
       serverVars = sboxConf["ServerVars"];
     }
   } catch (HdfException &e) {
@@ -144,7 +147,7 @@ void SourceRootInfo::createFromUserConfig() {
   }
   if (serverVars.exists()) {
     for (Hdf hdf = serverVars.firstChild(); hdf.exists(); hdf = hdf.next()) {
-      m_serverVars.set(String(hdf.getName()), String(hdf.getString()));
+      m_serverVars.set(String(hdf.getName()), String(Config::GetString(ini, hdf)));
     }
   }
   if (!userOverride.empty()) {
@@ -200,8 +203,8 @@ void SourceRootInfo::handleError(Transport *t) {
 
 ///////////////////////////////////////////////////////////////////////////////
 
-void SourceRootInfo::setServerVariables(Array& server) const {
-  if (!sandboxOn()) return;
+Array SourceRootInfo::setServerVariables(Array server) const {
+  if (!sandboxOn()) return std::move(server);
   for (auto it = RuntimeOption::SandboxServerVariables.begin();
        it != RuntimeOption::SandboxServerVariables.end();
        ++it) {
@@ -212,6 +215,8 @@ void SourceRootInfo::setServerVariables(Array& server) const {
   if (!m_serverVars.empty()) {
     server += m_serverVars;
   }
+
+  return std::move(server);
 }
 
 Eval::DSandboxInfo SourceRootInfo::getSandboxInfo() const {
@@ -266,9 +271,7 @@ const StaticString
   s_PHP_ROOT("PHP_ROOT");
 
 std::string& SourceRootInfo::initPhpRoot() {
-  GlobalVariables *g = get_global_variables();
-  const Variant& server = g->get(s_SERVER);
-  const Variant& v = server.toArray().rvalAt(s_PHP_ROOT);
+  auto v = php_global(s_SERVER).toArray().rvalAt(s_PHP_ROOT);
   if (v.isString()) {
     *s_phproot.getCheck() = std::string(v.asCStrRef().data()) + "/";
   } else {

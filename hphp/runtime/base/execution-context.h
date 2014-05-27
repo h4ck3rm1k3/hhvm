@@ -29,23 +29,20 @@
 #include "hphp/runtime/server/transport.h"
 #include "hphp/runtime/server/virtual-host.h"
 #include "hphp/runtime/base/string-buffer.h"
-#include "hphp/runtime/base/hphp-array.h"
+#include "hphp/runtime/base/mixed-array.h"
+#include "hphp/runtime/base/apc-handle.h"
 #include "hphp/runtime/vm/func.h"
 #include "hphp/runtime/vm/bytecode.h"
 #include "hphp/util/lock.h"
 #include "hphp/util/thread-local.h"
 
-#define PHP_OUTPUT_HANDLER_START  (1<<0)
-#define PHP_OUTPUT_HANDLER_CONT   (1<<1)
-#define PHP_OUTPUT_HANDLER_END    (1<<2)
-
 namespace vixl { class Simulator; }
 
 namespace HPHP {
-struct c_Continuation;
 struct RequestEventHandler;
 struct EventHook;
 struct PCFilter;
+struct Resumable;
 namespace Eval { struct PhpFile; }
 namespace JIT { struct Translator; }
 }
@@ -215,6 +212,7 @@ public:
   void write(const char *s, int len);
   void write(const char *s) { write(s, strlen(s));}
   void writeStdout(const char *s, int len);
+  size_t getStdoutBytesWritten() const;
 
   typedef void (*PFUNC_STDOUT)(const char *s, int len, void *data);
   void setStdout(PFUNC_STDOUT func, void *data);
@@ -226,7 +224,7 @@ public:
   String obCopyContents();
   String obDetachContents();
   int obGetContentLength();
-  void obClean();
+  void obClean(int handler_flag);
   bool obFlush();
   void obFlushAll();
   bool obEnd();
@@ -290,6 +288,7 @@ public:
    */
   String getenv(const String& name) const;
   void setenv(const String& name, const String& value);
+  void unsetenv(const String& name);
   Array getEnvs() const { return m_envs; }
 
   String getTimeZone() const { return m_timezone;}
@@ -310,6 +309,10 @@ public:
   const String& getSandboxId() const { return m_sandboxId; }
   void setSandboxId(const String& sandboxId) { m_sandboxId = sandboxId; }
 
+  // This has to appear before m_userErrorHandlers since C++ destructs objects
+  // from last declared to first declared. If it was after, we would destroy
+  // the property table before the error handlers ran.
+  std::unordered_map<const ObjectData*,ArrayNoDtor> dynPropTable;
 private:
   class OutputBuffer {
   public:
@@ -331,6 +334,7 @@ private:
   int m_protectedLevel;
   PFUNC_STDOUT m_stdout;
   void *m_stdoutData;
+  size_t m_stdoutBytesWritten;
   String m_rawPostData;
 
   // request handlers
@@ -382,8 +386,8 @@ public:
   void requestInit();
   void requestExit();
 
-  static void fillContinuationVars(
-    ActRec* origFp, const Func* origFunc, ActRec* genFp, const Func* genFunc);
+  static void fillResumableVars(const Func* func, ActRec* origFp,
+                                   ActRec* genFp);
   void pushLocalsAndIterators(const Func* f, int nparams = 0);
   void enqueueAPCHandle(APCHandle* handle);
 
@@ -448,7 +452,10 @@ private:
 OPCODES
 #undef O
 
-  void classExistsImpl(IOP_ARGS, Attr typeAttr);
+  void contEnterImpl(IOP_ARGS);
+  void asyncSuspendE(IOP_ARGS, int32_t iters);
+  void asyncSuspendR(IOP_ARGS);
+  void ret(IOP_ARGS);
   void fPushObjMethodImpl(
       Class* cls, StringData* name, ObjectData* obj, int numArgs);
   ActRec* fPushFuncImpl(const Func* func, int numArgs);
@@ -457,8 +464,6 @@ public:
   typedef hphp_hash_map<const StringData*, ClassInfo::ConstantInfo*,
                         string_data_hash, string_data_same> ConstInfoMap;
   ConstInfoMap m_constInfo;
-
-  std::unordered_map<const ObjectData*,ArrayNoDtor> dynPropTable;
 
   const Func* lookupMethodCtx(const Class* cls,
                                         const StringData* methodName,
@@ -555,7 +560,7 @@ public:
   void invokeUnit(TypedValue* retval, Unit* unit);
   Unit* compileEvalString(StringData* code,
                                 const char* evalFilename = nullptr);
-  const String& createFunction(const String& args, const String& code);
+  StrNR createFunction(const String& args, const String& code);
   bool evalPHPDebugger(TypedValue* retval, StringData *code, int frame);
   void enterDebuggerDummyEnv();
   void exitDebuggerDummyEnv();
@@ -574,6 +579,7 @@ public:
                          Offset* prevPc = nullptr,
                          TypedValue** prevSp = nullptr,
                          bool* fromVMEntry = nullptr);
+  void nullOutReturningActRecs();
   Array debugBacktrace(bool skip = false,
                        bool withSelf = false,
                        bool withThis = false,
@@ -581,7 +587,8 @@ public:
                        bool ignoreArgs = false,
                        int limit = 0);
   VarEnv* getVarEnv(int frame = 0);
-  void setVar(StringData* name, TypedValue* v, bool ref);
+  void setVar(StringData* name, const TypedValue* v);
+  void bindVar(StringData* name, TypedValue* v);
   Array getLocalDefinedVariables(int frame);
   PCFilter* m_breakPointFilter;
   PCFilter* m_lastLocFilter;
@@ -594,17 +601,27 @@ public:
   int getLastErrorLine() const { return m_lastErrorLine; }
 
 private:
-  void enterVMAtFunc(ActRec* enterFnAr);
+  enum class StackArgsState { // tells prepareFuncEntry how much work to do
+    // the stack may contain more arguments than the function expects
+    Untrimmed,
+    // the stack has already been trimmed of any extra arguments, which
+    // have been teleported away into ExtraArgs and/or a variadic param
+    Trimmed
+  };
+  void enterVMAtAsyncFunc(ActRec* enterFnAr, Resumable* resumable,
+                          ObjectData* exception);
+  void enterVMAtFunc(ActRec* enterFnAr, StackArgsState stk);
   void enterVMAtCurPC();
-  void enterVM(ActRec* ar);
+  void enterVM(ActRec* ar, StackArgsState stackTrimmed,
+               Resumable* resumable = nullptr, ObjectData* exception = nullptr);
   void doFPushCuf(IOP_ARGS, bool forward, bool safe);
   template <bool forwarding>
   void pushClsMethodImpl(Class* cls, StringData* name,
                          ObjectData* obj, int numArgs);
-  void prepareFuncEntry(ActRec* ar, PC& pc);
-  bool prepareArrayArgs(ActRec* ar, const Variant& arrayArgs);
+  void prepareFuncEntry(ActRec* ar, PC& pc, StackArgsState stk);
+  void shuffleMagicArgs(ActRec* ar);
+  void shuffleExtraStackArgs(ActRec* ar);
   void recordCodeCoverage(PC pc);
-  bool isReturnHelper(uintptr_t address);
   void switchModeForDebugger();
   int m_coverPrevLine;
   Unit* m_coverPrevUnit;
@@ -613,7 +630,6 @@ private:
   int m_lastErrorLine;
 public:
   void resetCoverageCounters();
-  void shuffleMagicArgs(ActRec* ar);
   void syncGdbState();
   enum InvokeFlags {
     InvokeNormal = 0,
@@ -635,9 +651,6 @@ public:
     invokeFunc(retval, ctx.func, args_, ctx.this_, ctx.cls, varEnv,
                ctx.invName);
   }
-  void invokeFuncCleanupHelper(TypedValue* retval,
-                               ActRec* ar,
-                               int numArgsPushed);
   void invokeFuncFew(TypedValue* retval,
                      const Func* f,
                      void* thisOrCls,
@@ -659,15 +672,16 @@ public:
                   ctx.cls ? (char*)ctx.cls + 1 : nullptr,
                   ctx.invName, argc, argv);
   }
-  void invokeContFunc(const Func* f,
-                      ObjectData* this_,
-                      Cell* param = nullptr);
+  void resumeAsyncFunc(Resumable* resumable, ObjectData* freeObj,
+                       const Cell& awaitResult);
+  void resumeAsyncFuncThrow(Resumable* resumable, ObjectData* freeObj,
+                            ObjectData* exception);
+
   // VM ClassInfo support
   StringIMap<AtomicSmartPtr<MethodInfoVM> > m_functionInfos;
   StringIMap<AtomicSmartPtr<ClassInfoVM> >  m_classInfos;
   StringIMap<AtomicSmartPtr<ClassInfoVM> >  m_interfaceInfos;
   StringIMap<AtomicSmartPtr<ClassInfoVM> >  m_traitInfos;
-  Array getUserFunctionsInfo();
   Array getConstantsInfo();
   const ClassInfo::MethodInfo* findFunctionInfo(const String& name);
   const ClassInfo* findClassInfo(const String& name);
@@ -681,18 +695,12 @@ public:
 OPCODES
 #undef O
   enum DispatchFlags {
-    LimitInstrs = 1 << 0,
-    BreakOnCtlFlow = 1 << 1,
-    Profile = 1 << 2
+    BreakOnCtlFlow = 1 << 0,
+    Profile        = 1 << 1
   };
   template <int dispatchFlags>
-  void dispatchImpl(int numInstrs);
+  void dispatchImpl();
   void dispatch();
-  // dispatchN() runs numInstrs instructions, or to program termination,
-  // whichever comes first. If the program terminates during execution, m_pc is
-  // set to null.
-  void dispatchN(int numInstrs);
-
   // dispatchBB() tries to run until a control-flow instruction has been run.
   void dispatchBB();
 

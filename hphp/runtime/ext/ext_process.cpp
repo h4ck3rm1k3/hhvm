@@ -895,9 +895,10 @@ Variant f_proc_open(const String& cmd, const Array& descriptorspec, VRefParam pi
   _exit(127);
 }
 
-bool f_proc_terminate(const Resource& process, int signal /* = 0 */) {
+bool f_proc_terminate(const Resource& process,
+                      int signal /* = SIGTERM */) {
   ChildProcess *proc = process.getTyped<ChildProcess>();
-  return kill(proc->child, signal <= 0 ? SIGTERM : signal) == 0;
+  return kill(proc->child, signal) == 0;
 }
 
 int64_t f_proc_close(const Resource& process) {
@@ -942,16 +943,16 @@ Array f_proc_get_status(const Resource& process) {
     running = false;
   }
 
-  ArrayInit ret(8);
-  ret.set(s_command,  proc->command);
-  ret.set(s_pid,      proc->child);
-  ret.set(s_running,  running);
-  ret.set(s_signaled, signaled);
-  ret.set(s_stopped,  stopped);
-  ret.set(s_exitcode, exitcode);
-  ret.set(s_termsig,  termsig);
-  ret.set(s_stopsig,  stopsig);
-  return ret.create();
+  return make_map_array(
+    s_command,  proc->command,
+    s_pid,      proc->child,
+    s_running,  running,
+    s_signaled, signaled,
+    s_stopped,  stopped,
+    s_exitcode, exitcode,
+    s_termsig,  termsig,
+    s_stopsig,  stopsig
+  );
 }
 
 bool f_proc_nice(int increment) {
@@ -970,8 +971,7 @@ const StaticString s_twosinglequotes("''");
 
 String f_escapeshellarg(const String& arg) {
   if (!arg.empty()) {
-    char *ret = string_escape_shell_arg(arg.c_str());
-    return String(ret, AttachString);
+    return string_escape_shell_arg(arg.c_str());
   } else if (!RuntimeOption::EnableHipHopSyntax) {
     return String(s_twosinglequotes);
   }
@@ -980,8 +980,7 @@ String f_escapeshellarg(const String& arg) {
 
 String f_escapeshellcmd(const String& command) {
   if (!command.empty()) {
-    char *ret = string_escape_shell_cmd(command.c_str());
-    return String(ret, AttachString);
+    return string_escape_shell_cmd(command.c_str());
   }
   return command;
 }

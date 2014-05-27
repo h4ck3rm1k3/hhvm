@@ -1,3 +1,26 @@
+NEXT
+ - Map: reserve()
+ - Set: retain(), reserve(), addAllKeysOf()
+ - {Set|ImmSet|Vector|ImmVector}::fromKeysOf()
+
+"Kanye West"
+  - Interfaces {Keyed}Container match arrays *and* collections, not iterables
+
+"Jay-Z"
+
+"Insane Poetry" 24-Apr-2014
+  - Support for PHP 5.6 variadic ...$args syntax for func declarations
+  - Open source HHMeasure, a simple and extensible microbenchmarking tool
+  - Added a new time-based sampling profiler (Project Xenon)
+  - Fix PCRE unicode handling
+  - Convert Zend compatibility layer and various extensions to HNI
+  - Encode execution mode (eager or resumed) into SrcKey
+  - Merge eager and resumed parts of async functions
+  - Rework various async / continuation bytecode instructions
+
+"House of PHPain" 1-Apr-2014
+  - Allow direct arg passing with up to 15 params (7 if at least one is a double)
+
 "Ghostface Killah" 17-Mar-2014
   - Remove "HipHop" from error messages
   - Add __IsFoldable user attribute for const-foldable functions
@@ -94,7 +117,7 @@
 "Beastie Boys" 6-Jan-2014
   - Support lex-time binary constants (eg. 0b10111)
   - StreamWrappers now support rmdir, mkdir, rename and unlink
-  - Miscellaneous Zend PHP compatibility fixes
+  - Miscellaneous PHP5 compatibility fixes
   - Default StatCache to off
   - Miscellaneous FastCGI fixes
   - Miscellaneous region compiler fixes

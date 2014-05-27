@@ -2,7 +2,7 @@
    +----------------------------------------------------------------------+
    | HipHop for PHP                                                       |
    +----------------------------------------------------------------------+
-   | Copyright (c) 2010-2013 Facebook, Inc. (http://www.facebook.com)     |
+   | Copyright (c) 2010-2014 Facebook, Inc. (http://www.facebook.com)     |
    +----------------------------------------------------------------------+
    | This source file is subject to version 3.01 of the PHP license,      |
    | that is bundled with this package in the file LICENSE, and is        |
@@ -13,8 +13,8 @@
    | license@php.net so we can mail you a copy immediately.               |
    +----------------------------------------------------------------------+
 */
-#ifndef incl_HPHP_TRANSLATOR_X64_INTERNAL_H_
-#define incl_HPHP_TRANSLATOR_X64_INTERNAL_H_
+#ifndef incl_HPHP_MC_GENERATOR_INTERNAL_H_
+#define incl_HPHP_MC_GENERATOR_INTERNAL_H_
 
 #include <boost/filesystem.hpp>
 #include <boost/utility/typed_in_place_factory.hpp>
@@ -53,31 +53,6 @@ struct Jcc32 {
   static void patch(X64Assembler& a, TCA site, TCA newDest) {
     a.patchJcc(site, newDest);
   }
-};
-
-// JccBlock --
-//   A raw condition-code block; assumes whatever comparison or ALU op
-//   that sets the Jcc has already executed.
-template <ConditionCode Jcc, typename J=Jcc8>
-struct JccBlock {
-  mutable X64Assembler* m_a;
-  TCA m_jcc;
-
-  explicit JccBlock(X64Assembler& a)
-    : m_a(&a) {
-    m_jcc = a.frontier();
-    J::branch(a, Jcc, m_a->frontier());
-  }
-
-  ~JccBlock() {
-    if (m_a) {
-      J::patch(*m_a, m_jcc, m_a->frontier());
-    }
-  }
-
-private:
-  JccBlock(const JccBlock&);
-  JccBlock& operator=(const JccBlock&);
 };
 
 // A CondBlock is an RAII structure for emitting conditional code. It
