@@ -1,3 +1,4 @@
+cmake_headers_destdir
 use_system_libzip
 use_system_libsqlite3
 use_system_lz4

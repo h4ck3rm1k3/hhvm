@@ -16,6 +16,8 @@ hhvm (3.1+20140526-1) UNRELEASED; urgency=low
 
   [ Faidon Liambotis ]
   * debian/patches:
+    - cmake_headers_destdir: fix build system bug that ignored DESTDIR
+      when installing development headers.
     - prefer_libedit_over_libreadline: workaround build system bug
       and prefer libedit over libreadline.
       before HHVM is built to run it for DFSG completeness reasons.
