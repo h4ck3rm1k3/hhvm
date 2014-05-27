@@ -5,7 +5,7 @@
 export LDFLAGS='-Wl,--as-needed'
 
 %:
-	dh $@
+	dh $@ --parallel
 
 override_dh_auto_build:
 	# rerun flex/bison to regenerate their output
