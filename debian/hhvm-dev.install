@@ -1,0 +1,4 @@
+usr/bin/hphpize
+usr/lib/hphp/CMake/*
+usr/lib/hphp/hphpize/*
+usr/include/hphp/*
