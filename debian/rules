@@ -9,8 +9,8 @@ export LDFLAGS='-Wl,--as-needed'
 
 override_dh_auto_build:
 	# rerun flex/bison to regenerate their output
-	./hphp/parser/make-lexer.sh
-	./hphp/parser/make-parser.sh
+	#./hphp/parser/make-lexer.sh
+	#./hphp/parser/make-parser.sh
 	dh_auto_build
 
 override_dh_auto_configure:
