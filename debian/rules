@@ -19,4 +19,10 @@ override_dh_auto_configure:
 		-DFREETYPE_INCLUDE_DIRS=/usr/include/freetype2/ \
 		-DCMAKE_INSTALL_PREFIX=/usr
 
-.PHONY: override_dh_auto_build override_dh_auto_configure
+ifeq (,$(findstring nocheck,$(DEB_BUILD_OPTIONS)))
+override_dh_auto_test:
+	hphp/hhvm/hhvm hphp/test/run -m jit quick
+	hphp/hhvm/hhvm hphp/test/run -m interp quick
+endif
+
+.PHONY: override_dh_auto_build override_dh_auto_configure override_dh_auto_test
