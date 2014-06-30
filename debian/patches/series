@@ -1,9 +1,7 @@
-cmake_headers_destdir
 use_system_libzip
 use_system_libsqlite3
 use_system_lz4
 use_system_double_conversion
 remove_libpam
 fix_freetype_include
-prefer_libedit_over_libreadline
 typos
