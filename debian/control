@@ -76,6 +76,25 @@ Description: HipHop Virtual Machine, a JIT replacement for PHP
  over a 5x reduction in memory consumption for Facebook compared with the
  Zend PHP 5.2 engine + APC.
 
+Package: hhvm-dbg
+Architecture: amd64
+Depends: hhvm (= ${binary:Version}), ${misc:Depends}
+Section: debug
+Priority: extra
+Description: HipHop Virtual Machine, a JIT replacement for PHP
+ HHVM is a new open-source virtual machine designed for executing programs
+ written in PHP. HHVM uses a just-in-time (JIT) compilation approach to
+ achieve superior performance while maintaining the flexibility that PHP
+ developers are accustomed to.
+ .
+ For the majority of your programs HHVM should be a drop-in replacement for
+ the usual PHP interpreter/engine. To date, HHVM (and its predecessor HPHPc
+ before it) has realized over a 9x increase in web request throughput and
+ over a 5x reduction in memory consumption for Facebook compared with the
+ Zend PHP 5.2 engine + APC.
+ .
+ This package provides the debugging symbols for HHVM.
+
 Package: hhvm-dev
 Architecture: amd64
 Depends: ${misc:Depends}, cmake
