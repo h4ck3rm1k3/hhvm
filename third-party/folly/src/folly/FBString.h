@@ -20,60 +20,14 @@
 #ifndef FOLLY_BASE_FBSTRING_H_
 #define FOLLY_BASE_FBSTRING_H_
 
-/**
-   fbstring's behavior can be configured via two macro definitions, as
-   follows. Normally, fbstring does not write a '\0' at the end of
-   each string whenever it changes the underlying characters. Instead,
-   it lazily writes the '\0' whenever either c_str() or data()
-   called.
-
-   This is standard-compliant behavior and may save costs in some
-   circumstances. However, it may be surprising to some client code
-   because c_str() and data() are const member functions (fbstring
-   uses the "mutable" storage class for its own state).
-
-   In order to appease client code that expects fbstring to be
-   zero-terminated at all times, if the preprocessor symbol
-   FBSTRING_CONSERVATIVE is defined, fbstring does exactly that,
-   i.e. it goes the extra mile to guarantee a '\0' is always planted
-   at the end of its data.
-
-   On the contrary, if the desire is to debug faulty client code that
-   unduly assumes the '\0' is present, fbstring plants a '^' (i.e.,
-   emphatically NOT a zero) at the end of each string if
-   FBSTRING_PERVERSE is defined. (Calling c_str() or data() still
-   writes the '\0', of course.)
-
-   The preprocessor symbols FBSTRING_PERVERSE and
-   FBSTRING_CONSERVATIVE cannot be defined simultaneously. This is
-   enforced during preprocessing.
-*/
-
-//#define FBSTRING_PERVERSE
-//#define FBSTRING_CONSERVATIVE
-
-#ifdef FBSTRING_PERVERSE
-#ifdef FBSTRING_CONSERVATIVE
-#error Cannot define both FBSTRING_PERVERSE and FBSTRING_CONSERVATIVE.
-#endif
-#endif
-
 #include <atomic>
 #include <limits>
 #include <type_traits>
-#include <algorithm>
 
-// libc++ doesn't provide this header
-#ifndef _LIBCPP_VERSION
 // This file appears in two locations: inside fbcode and in the
 // libstdc++ source code (when embedding fbstring as std::string).
-// To aid in this schizophrenic use, two macros are defined in
-// c++config.h:
-//   _LIBSTDCXX_FBSTRING - Set inside libstdc++.  This is useful to
-//      gate use inside fbcode v. libstdc++
-#include <bits/c++config.h>
-#endif
-
+// To aid in this schizophrenic use, _LIBSTDCXX_FBSTRING is defined in
+// libstdc++'s c++config.h, to gate use inside fbcode v. libstdc++.
 #ifdef _LIBSTDCXX_FBSTRING
 
 #pragma GCC system_header
@@ -90,17 +44,28 @@
 
 #else // !_LIBSTDCXX_FBSTRING
 
+#include "folly/Portability.h"
+
+// libc++ doesn't provide this header, nor does msvc
+#ifdef FOLLY_HAVE_BITS_CXXCONFIG_H
+#include <bits/c++config.h>
+#endif
+
 #include <string>
 #include <cstring>
 #include <cassert>
+#include <algorithm>
 
 #include "folly/Traits.h"
 #include "folly/Malloc.h"
 #include "folly/Hash.h"
+#include "folly/ScopeGuard.h"
 
+#if FOLLY_HAVE_DEPRECATED_ASSOC
 #ifdef _GLIBCXX_SYMVER
 #include <ext/hash_set>
 #include <ext/hash_map>
+#endif
 #endif
 
 #endif
@@ -335,9 +300,12 @@ public:
     assert(&rhs != this);
     // Simplest case first: small strings are bitblitted
     if (rhs.category() == isSmall) {
-      assert(offsetof(MediumLarge, data_) == 0);
-      assert(offsetof(MediumLarge, size_) == sizeof(ml_.data_));
-      assert(offsetof(MediumLarge, capacity_) == 2 * sizeof(ml_.data_));
+      static_assert(offsetof(MediumLarge, data_) == 0,
+          "fbstring layout failure");
+      static_assert(offsetof(MediumLarge, size_) == sizeof(ml_.data_),
+          "fbstring layout failure");
+      static_assert(offsetof(MediumLarge, capacity_) == 2 * sizeof(ml_.data_),
+          "fbstring layout failure");
       const size_t size = rhs.smallSize();
       if (size == 0) {
         ml_.capacity_ = rhs.ml_.capacity_;
@@ -393,13 +361,25 @@ public:
   // so just disable it on this function.
   fbstring_core(const Char *const data, const size_t size)
       FBSTRING_DISABLE_ADDRESS_SANITIZER {
+#ifndef NDEBUG
+#ifndef _LIBSTDCXX_FBSTRING
+    SCOPE_EXIT {
+      assert(this->size() == size);
+      assert(memcmp(this->data(), data, size * sizeof(Char)) == 0);
+    };
+#endif
+#endif
+
     // Simplest case first: small strings are bitblitted
     if (size <= maxSmallSize) {
       // Layout is: Char* data_, size_t size_, size_t capacity_
-      /*static_*/assert(sizeof(*this) == sizeof(Char*) + 2 * sizeof(size_t));
-      /*static_*/assert(sizeof(Char*) == sizeof(size_t));
+      static_assert(sizeof(*this) == sizeof(Char*) + 2 * sizeof(size_t),
+          "fbstring has unexpected size");
+      static_assert(sizeof(Char*) == sizeof(size_t),
+          "fbstring size assumption violation");
       // sizeof(size_t) must be a power of 2
-      /*static_*/assert((sizeof(size_t) & (sizeof(size_t) - 1)) == 0);
+      static_assert((sizeof(size_t) & (sizeof(size_t) - 1)) == 0,
+          "fbstring size assumption violation");
 
       // If data is aligned, use fast word-wise copying. Otherwise,
       // use conservative memcpy.
@@ -424,6 +404,7 @@ public:
         }
       }
       setSmallSize(size);
+      return;
     } else if (size <= maxMediumSize) {
       // Medium strings are allocated normally. Don't forget to
       // allocate one extra Char for the terminating null.
@@ -441,8 +422,6 @@ public:
       ml_.capacity_ = effectiveCapacity | isLarge;
     }
     writeTerminator();
-    assert(this->size() == size);
-    assert(memcmp(this->data(), data, size * sizeof(Char)) == 0);
   }
 
   ~fbstring_core() noexcept {
@@ -522,31 +501,12 @@ public:
 
   const Char * c_str() const {
     auto const c = category();
-#ifdef FBSTRING_PERVERSE
-    if (c == isSmall) {
-      assert(small_[smallSize()] == TERMINATOR || smallSize() == maxSmallSize
-             || small_[smallSize()] == '\0');
-      small_[smallSize()] = '\0';
-      return small_;
-    }
-    assert(c == isMedium || c == isLarge);
-    assert(ml_.data_[ml_.size_] == TERMINATOR || ml_.data_[ml_.size_] == '\0');
-    ml_.data_[ml_.size_] = '\0';
-#elif defined(FBSTRING_CONSERVATIVE)
     if (c == isSmall) {
       assert(small_[smallSize()] == '\0');
       return small_;
     }
     assert(c == isMedium || c == isLarge);
     assert(ml_.data_[ml_.size_] == '\0');
-#else
-    if (c == isSmall) {
-      small_[smallSize()] = '\0';
-      return small_;
-    }
-    assert(c == isMedium || c == isLarge);
-    ml_.data_[ml_.size_] = '\0';
-#endif
     return ml_.data_;
   }
 
@@ -560,6 +520,7 @@ public:
       // handling.
       assert(ml_.size_ >= delta);
       ml_.size_ -= delta;
+      writeTerminator();
     } else {
       assert(ml_.size_ >= delta);
       // Shared large string, must make unique. This is because of the
@@ -569,9 +530,7 @@ public:
         fbstring_core(ml_.data_, ml_.size_ - delta).swap(*this);
       }
       // No need to write the terminator.
-      return;
     }
-    writeTerminator();
   }
 
   void reserve(size_t minCapacity) {
@@ -676,7 +635,6 @@ public:
       newSz = sz + delta;
       if (newSz <= maxSmallSize) {
         setSmallSize(newSz);
-        writeTerminator();
         return small_ + sz;
       }
       reserve(newSz);
@@ -702,9 +660,8 @@ public:
     if (category() == isSmall) {
       sz = smallSize();
       if (sz < maxSmallSize) {
-        setSmallSize(sz + 1);
         small_[sz] = c;
-        writeTerminator();
+        setSmallSize(sz + 1);
         return;
       }
       reserve(maxSmallSize * 2);
@@ -745,23 +702,15 @@ public:
     return category() == isLarge && RefCounted::refs(ml_.data_) > 1;
   }
 
-#ifdef FBSTRING_PERVERSE
-  enum { TERMINATOR = '^' };
-#else
-  enum { TERMINATOR = '\0' };
-#endif
-
   void writeTerminator() {
-#if defined(FBSTRING_PERVERSE) || defined(FBSTRING_CONSERVATIVE)
     if (category() == isSmall) {
       const auto s = smallSize();
       if (s != maxSmallSize) {
-        small_[s] = TERMINATOR;
+        small_[s] = '\0';
       }
     } else {
-      ml_.data_[ml_.size_] = TERMINATOR;
+      ml_.data_[ml_.size_] = '\0';
     }
-#endif
   }
 
 private:
@@ -846,8 +795,8 @@ private:
   };
 
   union {
-    mutable Char small_[sizeof(MediumLarge) / sizeof(Char)];
-    mutable MediumLarge ml_;
+    Char small_[sizeof(MediumLarge) / sizeof(Char)];
+    MediumLarge ml_;
   };
 
   enum {
@@ -886,6 +835,7 @@ private:
     // small_[maxSmallSize].
     assert(s <= maxSmallSize);
     small_[maxSmallSize] = maxSmallSize - s;
+    writeTerminator();
   }
 };
 
@@ -979,7 +929,7 @@ class basic_fbstring {
       size() <= max_size() &&
       capacity() <= max_size() &&
       size() <= capacity() &&
-      (begin()[size()] == Storage::TERMINATOR || begin()[size()] == '\0');
+      begin()[size()] == '\0';
   }
 
   struct Invariant;
@@ -1062,11 +1012,9 @@ public:
   /* implicit */ basic_fbstring(const value_type* s, const A& a = A())
       : store_(s, s
           ? traits_type::length(s)
-          : [] {
-              std::__throw_logic_error(
-                "basic_fbstring: null pointer initializer not valid");
-              return 0;
-            }()) {
+          : (std::__throw_logic_error(
+                "basic_fbstring: null pointer initializer not valid"),
+             0)) {
   }
 
   basic_fbstring(const value_type* s, size_type n, const A& a = A())
@@ -1295,14 +1243,10 @@ public:
 
   // C++11 21.4.5 element access:
   const_reference operator[](size_type pos) const {
-    return *(c_str() + pos);
+    return *(begin() + pos);
   }
 
   reference operator[](size_type pos) {
-    if (pos == size()) {
-      // Just call c_str() to make sure '\0' is present
-      c_str();
-    }
     return *(begin() + pos);
   }
 
@@ -2478,6 +2422,8 @@ struct hash< ::folly::fbstring> {
 
 }
 
+#ifndef _LIBSTDCXX_FBSTRING
+#if FOLLY_HAVE_DEPRECATED_ASSOC
 #if defined(_GLIBCXX_SYMVER) && !defined(__BIONIC__)
 namespace __gnu_cxx {
 
@@ -2497,6 +2443,9 @@ struct hash< ::folly::fbstring> {
 
 }
 #endif // _GLIBCXX_SYMVER && !__BIONIC__
+#endif // FOLLY_HAVE_DEPRECATED_ASSOC
+#endif // _LIBSTDCXX_FBSTRING
+
 #endif // _LIBSTDCXX_FBSTRING
 
 #pragma GCC diagnostic pop

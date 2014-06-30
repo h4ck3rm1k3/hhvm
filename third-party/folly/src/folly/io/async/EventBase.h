@@ -146,11 +146,14 @@ class EventBase : private boost::noncopyable, public TimeoutManager {
   /**
    * Wait for some events to become active, run them, then return.
    *
+   * When EVLOOP_NONBLOCK is set in flags, the loop won't block if there
+   * are not any events to process.
+   *
    * This is useful for callers that want to run the loop manually.
    *
    * Returns the same result as loop().
    */
-  bool loopOnce();
+  bool loopOnce(int flags = 0);
 
   /**
    * Runs the event loop.
@@ -239,6 +242,18 @@ class EventBase : private boost::noncopyable, public TimeoutManager {
   void runInLoop(const Cob& c, bool thisIteration = false);
 
   void runInLoop(Cob&& c, bool thisIteration = false);
+
+  /**
+   * Adds the given callback to a queue of things run before destruction
+   * of current EventBase.
+   *
+   * This allows users of EventBase that run in it, but don't control it,
+   * to be notified before EventBase gets destructed.
+   *
+   * Note: will be called from the thread that invoked EventBase destructor,
+   *       before the final run of loop callbacks.
+   */
+  void runOnDestruction(LoopCallback* callback);
 
   /**
    * Run the specified function in the EventBase's thread.
@@ -344,6 +359,8 @@ class EventBase : private boost::noncopyable, public TimeoutManager {
   void waitUntilRunning();
 
   int getNotificationQueueSize() const;
+
+  void setMaxReadAtOnce(uint32_t maxAtOnce);
 
   /**
    * Verify that current thread is the EventBase thread, if the EventBase is
@@ -488,7 +505,7 @@ class EventBase : private boost::noncopyable, public TimeoutManager {
   typedef LoopCallback::List LoopCallbackList;
   class FunctionRunner;
 
-  bool loopBody(bool once = false);
+  bool loopBody(int flags = 0);
 
   // executes any callbacks queued by runInLoop(); returns false if none found
   bool runLoopCallbacks(bool setContext = true);
@@ -498,6 +515,7 @@ class EventBase : private boost::noncopyable, public TimeoutManager {
   CobTimeout::List pendingCobTimeouts_;
 
   LoopCallbackList loopCallbacks_;
+  LoopCallbackList onDestructionCallbacks_;
 
   // This will be null most of the time, but point to currentCallbacks
   // if we are in the middle of running loop callbacks, such that

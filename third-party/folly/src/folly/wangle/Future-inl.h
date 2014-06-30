@@ -17,6 +17,7 @@
 #pragma once
 
 #include "detail.h"
+#include <folly/LifoSem.h>
 
 namespace folly { namespace wangle {
 
@@ -31,7 +32,7 @@ struct isFuture<Future<T> > {
 };
 
 template <class T>
-Future<T>::Future(Future<T>&& other) : obj_(other.obj_) {
+Future<T>::Future(Future<T>&& other) noexcept : obj_(other.obj_) {
   other.obj_ = nullptr;
 }
 
@@ -44,11 +45,7 @@ Future<T>& Future<T>::operator=(Future<T>&& other) {
 template <class T>
 Future<T>::~Future() {
   if (obj_) {
-    if (obj_->ready()) {
-      delete obj_;
-    } else {
-      setContinuation([](Try<T>&&) {}); // detach
-    }
+    setCallback_([](Try<T>&&) {}); // detach
   }
 }
 
@@ -60,9 +57,9 @@ void Future<T>::throwIfInvalid() const {
 
 template <class T>
 template <class F>
-void Future<T>::setContinuation(F&& func) {
+void Future<T>::setCallback_(F&& func) {
   throwIfInvalid();
-  obj_->setContinuation(std::move(func));
+  obj_->setCallback_(std::move(func));
   obj_ = nullptr;
 }
 
@@ -115,7 +112,7 @@ Future<T>::then(F&& func) {
      in some circumstances, but I think it should be explicit not implicit
      in the destruction of the Future used to create it.
      */
-  setContinuation(
+  setCallback_(
     [p, funcm](Try<T>&& t) mutable {
       p->fulfil([&]() {
           return (*funcm)(std::move(t));
@@ -142,12 +139,12 @@ Future<T>::then(F&& func) {
   // grab the Future now before we lose our handle on the Promise
   auto f = p->getFuture();
 
-  setContinuation(
+  setCallback_(
     [p, funcm](Try<T>&& t) mutable {
       try {
         auto f2 = (*funcm)(std::move(t));
         // that didn't throw, now we can steal p
-        f2.setContinuation([p](Try<B>&& b) mutable {
+        f2.setCallback_([p](Try<B>&& b) mutable {
             p->fulfilTry(std::move(b));
           });
       } catch (...) {
@@ -186,36 +183,9 @@ Try<T>& Future<T>::getTry() {
 
 template <class T>
 template <typename Executor>
-inline Future<T> Future<T>::via(Executor* executor) {
+inline Later<T> Future<T>::via(Executor* executor) {
   throwIfInvalid();
-
-  folly::MoveWrapper<Promise<T>> p;
-  auto f = p->getFuture();
-
-  setContinuation([executor, p](Try<T>&& t) mutable {
-      folly::MoveWrapper<Try<T>> tt(std::move(t));
-      executor->add([p, tt]() mutable {
-          p->fulfilTry(std::move(*tt));
-        });
-    });
-
-  return f;
-}
-
-template <class T>
-template <typename Executor>
-inline void Future<T>::executeWith(
-    Executor* executor, Promise<T>&& cont_promise) {
-  throwIfInvalid();
-
-  folly::MoveWrapper<Promise<T>> p(std::move(cont_promise));
-
-  setContinuation([executor, p](Try<T>&& t) mutable {
-      folly::MoveWrapper<Try<T>> tt(std::move(t));
-      executor->add([p, tt]() mutable {
-          p->fulfilTry(std::move(*tt));
-        });
-    });
+  return Later<T>(std::move(*this)).via(executor);
 }
 
 template <class T>
@@ -279,6 +249,25 @@ makeFuture(E const& e) {
   return std::move(f);
 }
 
+template <class T>
+Future<T> makeFuture(Try<T>&& t) {
+  try {
+    return makeFuture<T>(std::move(t.value()));
+  } catch (...) {
+    return makeFuture<T>(std::current_exception());
+  }
+}
+
+template <>
+inline Future<void> makeFuture(Try<void>&& t) {
+  try {
+    t.throwIfFailed();
+    return makeFuture();
+  } catch (...) {
+    return makeFuture<void>(std::current_exception());
+  }
+}
+
 // when (variadic)
 
 template <typename... Fs>
@@ -307,8 +296,9 @@ whenAll(InputIterator first, InputIterator last)
     typename std::iterator_traits<InputIterator>::value_type::value_type T;
 
   auto n = std::distance(first, last);
-  if (n == 0)
-    return makeFuture<std::vector<Try<T>>>({});
+  if (n == 0) {
+    return makeFuture(std::vector<Try<T>>());
+  }
 
   auto ctx = new detail::WhenAllContext<T>();
 
@@ -319,7 +309,7 @@ whenAll(InputIterator first, InputIterator last)
 
   for (size_t i = 0; first != last; ++first, ++i) {
      auto& f = *first;
-     f.setContinuation([ctx, i](Try<T>&& t) {
+     f.setCallback_([ctx, i](Try<T>&& t) {
          ctx->results[i] = std::move(t);
          if (++ctx->count == ctx->total) {
            ctx->p.setValue(std::move(ctx->results));
@@ -346,7 +336,7 @@ whenAny(InputIterator first, InputIterator last) {
 
   for (size_t i = 0; first != last; first++, i++) {
     auto& f = *first;
-    f.setContinuation([i, ctx](Try<T>&& t) {
+    f.setCallback_([i, ctx](Try<T>&& t) {
       if (!ctx->done.exchange(true)) {
         ctx->p.setValue(std::make_pair(i, std::move(t)));
       }
@@ -400,6 +390,67 @@ whenN(InputIterator first, InputIterator last, size_t n) {
   }
 
   return ctx->p.getFuture();
+}
+
+template <typename T>
+Future<T>
+waitWithSemaphore(Future<T>&& f) {
+  LifoSem sem;
+  auto done = f.then([&](Try<T> &&t) {
+    sem.post();
+    return std::move(t.value());
+  });
+  sem.wait();
+  return done;
+}
+
+template<>
+inline Future<void> waitWithSemaphore<void>(Future<void>&& f) {
+  LifoSem sem;
+  auto done = f.then([&](Try<void> &&t) {
+    sem.post();
+    t.value();
+  });
+  sem.wait();
+  return done;
+}
+
+template <typename T, class Duration>
+Future<T>
+waitWithSemaphore(Future<T>&& f, Duration timeout) {
+  auto sem = std::make_shared<LifoSem>();
+  auto done = f.then([sem](Try<T> &&t) {
+    sem->post();
+    return std::move(t.value());
+  });
+  std::thread t([sem, timeout](){
+    std::this_thread::sleep_for(timeout);
+    sem->shutdown();
+    });
+  t.detach();
+  try {
+    sem->wait();
+  } catch (ShutdownSemError & ign) { }
+  return done;
+}
+
+template <class Duration>
+Future<void>
+waitWithSemaphore(Future<void>&& f, Duration timeout) {
+  auto sem = std::make_shared<LifoSem>();
+  auto done = f.then([sem](Try<void> &&t) {
+    sem->post();
+    t.value();
+  });
+  std::thread t([sem, timeout](){
+    std::this_thread::sleep_for(timeout);
+    sem->shutdown();
+    });
+  t.detach();
+  try {
+    sem->wait();
+  } catch (ShutdownSemError & ign) { }
+  return done;
 }
 
 }}

@@ -54,7 +54,7 @@ public:
 
   void close() {
     closeImpl();
-    rebindproc = Variant();
+    rebindproc.unset();
   }
 
 private:
@@ -625,6 +625,16 @@ bool f_ldap_modify(const Resource& link, const String& dn, const Array& entry) {
 
 bool f_ldap_bind(const Resource& link, const String& bind_rdn /* = null_string */,
                  const String& bind_password /* = null_string */) {
+
+  if (memchr(bind_rdn.data(), '\0', bind_rdn.size()) != nullptr) {
+    raise_warning("DN contains a null byte");
+    return false;
+  }
+  if (memchr(bind_password.data(), '\0', bind_password.size()) != nullptr) {
+    raise_warning("Password contains a null byte");
+    return false;
+  }
+
   int rc;
   LdapLink *ld = link.getTyped<LdapLink>();
   if ((rc = ldap_bind_s(ld->link, (char*)bind_rdn.data(),
@@ -642,7 +652,7 @@ bool f_ldap_set_rebind_proc(const Resource& link, const Variant& callback) {
   if (callback.isString() && callback.toString().empty()) {
     /* unregister rebind procedure */
     if (!ld->rebindproc.isNull()) {
-      ld->rebindproc = Variant();
+      ld->rebindproc.unset();
       ldap_set_rebind_proc(ld->link, NULL, NULL);
     }
     return true;
@@ -658,7 +668,7 @@ bool f_ldap_set_rebind_proc(const Resource& link, const Variant& callback) {
   if (ld->rebindproc.isNull()) {
     ldap_set_rebind_proc(ld->link, _ldap_rebind_proc, (void *)link.get());
   } else {
-    ld->rebindproc = Variant();
+    ld->rebindproc.unset();
   }
 
   ld->rebindproc = callback;
@@ -1030,7 +1040,7 @@ Variant f_ldap_get_entries(const Resource& link, const Resource& result) {
   Array ret;
   ret.set(s_count, num_entries);
   if (num_entries == 0) {
-    return uninit_null();
+    return init_null();
   }
 
   LDAPMessage *ldap_result_entry = ldap_first_entry(ldap, res->data);
@@ -1208,14 +1218,14 @@ bool f_ldap_parse_result(const Resource& link, const Resource& result, VRefParam
   referrals = arr;
 
   if (lerrmsg == NULL) {
-    errmsg = empty_string;
+    errmsg = empty_string_variant();
   } else {
     errmsg = String(lerrmsg, CopyString);
     ldap_memfree(lerrmsg);
   }
 
   if (lmatcheddn == NULL) {
-    matcheddn = empty_string;
+    matcheddn = empty_string_variant();
   } else {
     matcheddn = String(lmatcheddn, CopyString);
     ldap_memfree(lmatcheddn);

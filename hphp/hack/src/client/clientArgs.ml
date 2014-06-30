@@ -11,12 +11,12 @@
 open ClientCommand
 open ClientEnv
 
-let rec guess_root start recursion_limit : Path.path option =
+let rec guess_root config start recursion_limit : Path.path option =
   let fs_root = Path.mk_path "/" in
   if Path.equal start fs_root then None
-  else if Wwwroot.is_www_directory start then Some start
+  else if Wwwroot.is_www_directory ~config start then Some start
   else if recursion_limit <= 0 then None
-  else guess_root (Path.parent start) (recursion_limit - 1)
+  else guess_root config (Path.parent start) (recursion_limit - 1)
 
 let parse_command () =
   if Array.length Sys.argv < 2
@@ -35,22 +35,23 @@ let parse_without_command options usage command =
   let args = ref [] in
   Arg.parse (Arg.align options) (fun x -> args := x::!args) usage;
   match List.rev !args with
-  | x::rest when x = command -> rest
+  | x::rest when (String.lowercase x) = (String.lowercase command) -> rest
   | args -> args
 
-let get_root path_opt =
+let get_root ?(config=".hhconfig") path_opt =
   let root =
     match path_opt with
     | None ->
-      (match guess_root (Path.mk_path ".") 50 with
+      (match guess_root config (Path.mk_path ".") 50 with
       | Some path -> path
       | None ->
         Printf.fprintf stderr
-        "Error: not a www tree (or any of the parent directories): %s\n"
+        "Error: could not find a valid root containing %s in this directory or any of the parent directories: %s\n"
+        config
         (Path.string_of_path (Path.mk_path "."));
         exit 1;)
     | Some p -> Path.mk_path p
-  in Wwwroot.assert_www_directory root;
+  in Wwwroot.assert_www_directory ~config root;
   root
 
 let parse_check_args cmd =
@@ -110,8 +111,6 @@ let parse_check_args cmd =
       " (mode) show the types for file specified";
     "--type-at-pos", Arg.String (fun x -> set_mode (MODE_TYPE_AT_POS x) ()),
       " (mode) show type at a given position in file [filename:line:character]";
-    "--skip", Arg.Unit (set_mode MODE_SKIP),
-      " (mode) unsafe! ignore any existing errors";
     "--list-files", Arg.Unit (set_mode MODE_LIST_FILES),
       " (mode) list files with errors";
     "--auto-complete", Arg.Unit (set_mode MODE_AUTO_COMPLETE),
@@ -130,7 +129,13 @@ let parse_check_args cmd =
       "";
     "--outline", Arg.Unit (set_mode MODE_OUTLINE),
       " (mode) prints an outline of the text on stdin";
-    "--version", Arg.Unit (set_mode MODE_VERSION),
+    "--inheritance-children", Arg.String (fun x -> set_mode (MODE_METHOD_JUMP_CHILDREN x) ()),
+      " (mode) prints a list of all related classes or methods to the given class";
+    "--inheritance-ancestors", Arg.String (fun x -> set_mode (MODE_METHOD_JUMP_ANCESTORS x) ()),
+      " (mode) prints a list of all related classes or methods to the given class";
+    "--show", Arg.String (fun x -> set_mode (MODE_SHOW x) ()),
+      " (mode) show human-readable type info for the given name; output is not meant for machine parsing";
+     "--version", Arg.Unit (set_mode MODE_VERSION),
       " (mode) show version and exit\n";
 
     (* flags *)
@@ -160,8 +165,6 @@ let parse_check_args cmd =
       " (deprecated) equivalent to --from check_trunk";
     "--save-state", Arg.String (fun x -> set_mode (MODE_SAVE_STATE x) ()),
       " <file> debug mode (do not use)";
-    "--show", Arg.String (fun x -> set_mode (MODE_SHOW x) ()),
-      " debug mode (do not use)";
   ] in
   let args = parse_without_command options usage "check" in
 
@@ -280,6 +283,7 @@ let parse_build_args () =
       Generates build files\n"
       Sys.argv.(0) in
   let steps = ref None in
+  let no_steps = ref None in
   let verbose = ref false in
   let serial = ref false in
   let test_dir = ref None in
@@ -294,6 +298,9 @@ let parse_build_args () =
     "--steps", Arg.String (fun x ->
       steps := Some (Str.split (Str.regexp ",") x)),
     " comma-separated list of build steps to run";
+    "--no-steps", Arg.String (fun x ->
+      no_steps := Some (Str.split (Str.regexp ",") x)),
+    " comma-separated list of build steps not to run";
     "--no-run-scripts", Arg.Clear run_scripts,
     " don't run unported arc build scripts";
     "--serial", Arg.Set serial,
@@ -324,6 +331,7 @@ let parse_build_args () =
   CBuild { ServerMsg.
            root = root;
            steps = !steps;
+           no_steps = !no_steps;
            run_scripts = !run_scripts;
            serial = !serial;
            test_dir = !test_dir;
@@ -349,7 +357,7 @@ let parse_prolog_args () =
     | [x] -> get_root (Some x)
     | _ -> Printf.printf "%s\n" usage; exit 2
   in
-  CProlog { ClientProlog. 
+  CProlog { ClientProlog.
            root;
          }
 

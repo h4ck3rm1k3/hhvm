@@ -51,12 +51,16 @@ namespace folly {
 
 BenchmarkSuspender::NanosecondsSpent BenchmarkSuspender::nsSpent;
 
-typedef function<uint64_t(unsigned int)> BenchmarkFun;
+typedef function<detail::TimeIterPair(unsigned int)> BenchmarkFun;
 static vector<tuple<const char*, const char*, BenchmarkFun>> benchmarks;
 
 // Add the global baseline
 BENCHMARK(globalBenchmarkBaseline) {
+#ifdef _MSC_VER
+  _ReadWriteBarrier();
+#else
   asm volatile("");
+#endif
 }
 
 void detail::addBenchmarkImpl(const char* file, const char* name,
@@ -210,7 +214,7 @@ static double runBenchmarkGetNSPerIteration(const BenchmarkFun& fun,
   // the clock resolution is worse than that, it will be larger. In
   // essence we're aiming at making the quantization noise 0.01%.
   static const auto minNanoseconds =
-    max(FLAGS_bm_min_usec * 1000UL,
+    max<uint64_t>(FLAGS_bm_min_usec * 1000UL,
         min<uint64_t>(resolutionInNs * 100000, 1000000000ULL));
 
   // We do measurements in several epochs and take the minimum, to
@@ -227,13 +231,14 @@ static double runBenchmarkGetNSPerIteration(const BenchmarkFun& fun,
 
   for (; actualEpochs < epochs; ++actualEpochs) {
     for (unsigned int n = FLAGS_bm_min_iters; n < (1UL << 30); n *= 2) {
-      auto const nsecs = fun(n);
-      if (nsecs < minNanoseconds) {
+      auto const nsecsAndIter = fun(n);
+      if (nsecsAndIter.first < minNanoseconds) {
         continue;
       }
       // We got an accurate enough timing, done. But only save if
       // smaller than the current result.
-      epochResults[actualEpochs] = max(0.0, double(nsecs) / n - globalBaseline);
+      epochResults[actualEpochs] = max(0.0, double(nsecsAndIter.first) /
+                                       nsecsAndIter.second - globalBaseline);
       // Done with the current epoch, we got a meaningful timing.
       break;
     }

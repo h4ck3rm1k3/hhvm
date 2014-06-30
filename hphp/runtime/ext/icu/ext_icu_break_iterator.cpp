@@ -27,7 +27,7 @@ inline Object ibi_create(const char *funcname,
   auto bi = func(Locale::createFromName(locale.c_str()), error);
   if (U_FAILURE(error)) {
     s_intl_error->setError(error, "%s: error creating BreakIterator", funcname);
-    return null_object;
+    return Object();
   }
 
   return IntlBreakIterator::newInstance(bi);
@@ -109,7 +109,7 @@ static int64_t HHVM_METHOD(IntlBreakIterator, getErrorCode) {
 }
 
 static String HHVM_METHOD(IntlBreakIterator, getErrorMessage) {
-  FETCH_BI(data, this_, empty_string);
+  FETCH_BI(data, this_, empty_string());
   return data->getErrorMessage();
 }
 
@@ -134,14 +134,14 @@ static Variant HHVM_METHOD(IntlBreakIterator, getLocale, int64_t locale_type) {
 
 static Object HHVM_METHOD(IntlBreakIterator, getPartsIterator,
                           const String& key_type) {
-  throw NotImplementedException("IntlBreakIterator::getPartsIterator");
+  throw_not_implemented("IntlBreakIterator::getPartsIterator");
 }
 
 static Variant HHVM_METHOD(IntlBreakIterator, getText) {
   FETCH_BI(data, this_, false);
   auto text = data->text();
   if (text.empty()) {
-    return uninit_null();
+    return init_null();
   }
   return text;
 }
@@ -252,7 +252,7 @@ static int64_t HHVM_METHOD(IntlCodePointBreakIterator, getLastCodePoint) {
 static void HHVM_METHOD(IntlRuleBasedBreakIterator, __construct,
                         const String& rules, bool compiled /*=false*/) {
   s_intl_error->clearError();
-  auto data = Native::data<IntlBreakIterator>(this_.get());
+  auto data = Native::data<IntlBreakIterator>(this_);
   if (compiled) {
 #if U_ICU_VERSION_MAJOR_NUM * 100 + U_ICU_VERSION_MINOR_NUM >= 408
     UErrorCode error = U_ZERO_ERROR;
@@ -352,7 +352,7 @@ static Variant HHVM_METHOD(IntlRuleBasedBreakIterator, getBinaryRules) {
 //////////////////////////////////////////////////////////////////////////////
 
 static Object HHVM_METHOD(IntlPartsIterator, getBreakIterator) {
-  throw NotImplementedException("IntlPartsIterator::getBreakIterator");
+  throw_not_implemented("IntlPartsIterator::getBreakIterator");
 }
 
 //////////////////////////////////////////////////////////////////////////////

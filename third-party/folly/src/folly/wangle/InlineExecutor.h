@@ -19,6 +19,9 @@
 
 namespace folly { namespace wangle {
 
+  /// When work is "queued", execute it immediately inline.
+  /// Usually when you think you want this, you actually want a
+  /// QueuedImmediateExecutor.
   class InlineExecutor : public Executor {
    public:
     void add(std::function<void()>&& f) override {

@@ -31,6 +31,7 @@
 #include "hphp/util/low-ptr.h"
 #include "hphp/util/mutex.h"
 #include "hphp/util/thread-local.h"
+#include "hphp/runtime/base/attr.h"
 #include "hphp/runtime/base/datatype.h"
 #include "hphp/runtime/base/macros.h"
 #include "hphp/runtime/base/memory-manager.h"
@@ -59,7 +60,14 @@ extern const VarNR NEGINF_varNR;
 extern const VarNR NAN_varNR;
 extern const String null_string;
 extern const Array null_array;
-extern const Array empty_array;
+extern const Array empty_array_ref;
+extern const StaticString array_string; // String("Array")
+
+// Use empty_string() if you're returning String
+// Use empty_string_variant() if you're returning Variant
+// Or use these if you need to pass by const reference:
+extern const StaticString empty_string_ref; // const StaticString&
+extern const Variant empty_string_variant_ref; // const Variant&
 
 class StringData;
 class ArrayData;
@@ -188,20 +196,7 @@ typedef const char * litstr; /* literal string */
 
 typedef const class VRefParamValue    &VRefParam;
 typedef const class RefResultValue    &RefResult;
-typedef const class VariantStrongBind &CVarStrongBind;
-typedef const class VariantWithRefBind&CVarWithRefBind;
 
-inline CVarStrongBind
-strongBind(const Variant& v)     { return *(VariantStrongBind*)&v; }
-inline CVarStrongBind
-strongBind(RefResult v)   { return *(VariantStrongBind*)&v; }
-inline CVarWithRefBind
-withRefBind(const Variant& v)    { return *(VariantWithRefBind*)&v; }
-
-inline const Variant&
-variant(CVarStrongBind v) { return *(Variant*)&v; }
-inline const Variant&
-variant(CVarWithRefBind v){ return *(Variant*)&v; }
 inline const Variant&
 variant(RefResult v)      { return *(Variant*)&v; }
 inline const Variant&
@@ -307,88 +302,6 @@ typedef uint32_t FuncId;
 constexpr FuncId InvalidFuncId = FuncId(-1LL);
 constexpr FuncId DummyFuncId = FuncId(-2LL);
 typedef hphp_hash_set<FuncId> FuncIdSet;
-
-/*
- * Special types that are not relevant to the runtime as a whole.
- * The order for public/protected/private matters in numerous places.
- *
- * Attr unions are directly stored as integers in .hhbc repositories, so
- * incompatible changes here require a schema version bump.
- *
- * AttrTrait on a method means that the method is NOT a constructor,
- * even though it may look like one
- *
- * AttrNoOverride (WholeProgram only) on a class means its not extended
- * and on a method means that no extending class defines the method.
- *
- * AttrVariadicByRef indicates a function is a builtin that takes
- * variadic arguments, where the arguments are either by ref or
- * optionally by ref.  (It is equivalent to having ClassInfo's
- * (RefVariableArguments | MixedVariableArguments).)
- *
- * AttrMayUseVV indicates that a function may need to use a VarEnv or
- * varargs (aka extraArgs) at run time.
- *
- * AttrPhpLeafFn indicates a function does not make any explicit calls
- * to other php functions.  It may still call other user-level
- * functions via re-entry (e.g. for destructors or autoload), and it
- * may make calls to builtins using FCallBuiltin.
- *
- * AttrBuiltin is set on builtin functions - whether c++ or php
- *
- * AttrAllowOverride is set on builtin functions that can be replaced
- *   by user implementations
- *
- * AttrSkipFrame is set to indicate that the frame should be ignored
- *   when searching for the context (eg array_map evaluates its
- *   callback in the context of its caller).
- *
- * AttrInterceptable is only valid in RepoAuthoritative mode, and
- * indicates a function can be used with fb_rename_function (even if
- * JitEnableRenameFunction is false) and can be used with
- * fb_intercept.  (Note: we could split this into two bits, since you
- * can technically pessimize less for fb_intercept than you need to
- * for fb_rename_function, but we haven't done so at this point.)
- */
-enum Attr {
-  AttrNone          = 0,         // class  property  method  //
-  AttrReference     = (1 <<  0), //                     X    //
-  AttrPublic        = (1 <<  1), //            X        X    //
-  AttrProtected     = (1 <<  2), //            X        X    //
-  AttrPrivate       = (1 <<  3), //            X        X    //
-  AttrStatic        = (1 <<  4), //            X        X    //
-  AttrAbstract      = (1 <<  5), //    X                X    //
-  AttrFinal         = (1 <<  6), //    X                X    //
-  AttrInterface     = (1 <<  7), //    X                     //
-  AttrPhpLeafFn     = (1 <<  7), //                     X    //
-  AttrTrait         = (1 <<  8), //    X                X    //
-  AttrNoInjection   = (1 <<  9), //                     X    //
-  AttrUnique        = (1 << 10), //    X                X    //
-  AttrInterceptable = (1 << 11), //                     X    //
-  AttrNoExpandTrait = (1 << 12), //    X                     //
-  AttrNoOverride    = (1 << 13), //    X                X    //
-  AttrClone         = (1 << 14), //                     X    //
-  AttrVariadicByRef = (1 << 15), //                     X    //
-  AttrMayUseVV      = (1 << 16), //                     X    //
-  AttrPersistent    = (1 << 17), //    X                X    //
-  AttrDeepInit      = (1 << 18), //            X             //
-  AttrHot           = (1 << 19), //                     X    //
-  AttrBuiltin       = (1 << 20), //    X                X    //
-  AttrAllowOverride = (1 << 21), //                     X    //
-  AttrSkipFrame     = (1 << 22), //                     X    //
-  AttrNative        = (1 << 23), //                     X    //
-  AttrHPHPSpecific  = (1 << 25), //                     X    //
-  AttrIsFoldable    = (1 << 26), //                     X    //
-  AttrNoFCallBuiltin= (1 << 27), //                     X    //
-  AttrVariadicParam = (1 << 28), //                     X    //
-};
-
-inline Attr operator|(Attr a, Attr b) { return Attr((int)a | (int)b); }
-
-inline const char* attrToVisibilityStr(Attr attr) {
-  return (attr & AttrPrivate)   ? "private"   :
-         (attr & AttrProtected) ? "protected" : "public";
-}
 
 ///////////////////////////////////////////////////////////////////////////////
 }

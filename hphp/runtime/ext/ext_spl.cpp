@@ -25,6 +25,7 @@
 #include "hphp/runtime/base/glob-stream-wrapper.h"
 #include "hphp/runtime/base/stream-wrapper-registry.h"
 #include "hphp/runtime/base/request-event-handler.h"
+#include "hphp/runtime/base/autoload-handler.h"
 
 #include "hphp/system/systemlib.h"
 #include "hphp/util/string-vsnprintf.h"
@@ -155,6 +156,11 @@ Variant f_class_implements(const Variant& obj, bool autoload /* = true */) {
   if (obj.isString()) {
     cls = Unit::getClass(obj.getStringData(), autoload);
     if (!cls) {
+      String err = "class_implements(): Class %s does not exist";
+      if (autoload) {
+        err += " and could not be loaded";
+      }
+      raise_warning(err.c_str(), obj.toString().c_str());
       return false;
     }
   } else if (obj.isObject()) {
@@ -175,6 +181,11 @@ Variant f_class_parents(const Variant& obj, bool autoload /* = true */) {
   if (obj.isString()) {
     cls = Unit::getClass(obj.getStringData(), autoload);
     if (!cls) {
+      String err = "class_parents(): Class %s does not exist";
+      if (autoload) {
+        err += " and could not be loaded";
+      }
+      raise_warning(err.c_str(), obj.toString().c_str());
       return false;
     }
   } else if (obj.isObject()) {
@@ -355,7 +366,7 @@ static T* getDir(const Object& dir_iter) {
 }
 
 static Variant HHVM_METHOD(DirectoryIterator, hh_readdir) {
-  auto dir = getDir<Directory>(this_);
+  auto dir = getDir<Directory>(ObjNR(this_).asObject());
 
   if (auto array_dir = dynamic_cast<ArrayDirectory*>(dir)) {
     auto prop = this_->o_realProp("dirName", 0, s_directory_iterator);
@@ -366,7 +377,7 @@ static Variant HHVM_METHOD(DirectoryIterator, hh_readdir) {
 }
 
 static int64_t HHVM_METHOD(GlobIterator, count) {
-  return getDir<ArrayDirectory>(this_)->size();
+  return getDir<ArrayDirectory>(ObjNR(this_).asObject())->size();
 }
 
 ///////////////////////////////////////////////////////////////////////////////

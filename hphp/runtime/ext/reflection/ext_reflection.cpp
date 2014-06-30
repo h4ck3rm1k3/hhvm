@@ -25,6 +25,7 @@
 #include "hphp/runtime/base/class-info.h"
 #include "hphp/runtime/base/runtime-option.h"
 #include "hphp/runtime/base/string-util.h"
+#include "hphp/runtime/base/mixed-array.h"
 #include "hphp/runtime/vm/runtime-type-profiler.h"
 #include "hphp/runtime/vm/jit/translator-inline.h"
 #include "hphp/parser/parser.h"
@@ -34,8 +35,6 @@
 #include "hphp/runtime/vm/native-data.h"
 
 namespace HPHP {
-
-using JIT::VMRegAnchor;
 
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -127,19 +126,19 @@ const Func* get_method_func(const Class* cls, const String& meth_name) {
 }
 
 Variant default_arg_from_php_code(const Func::ParamInfo& fpi,
-                                         const Func* func) {
+                                  const Func* func) {
   assert(fpi.hasDefaultValue());
   if (fpi.hasScalarDefaultValue()) {
     // Most of the time the default value is scalar, so we can
     // avoid evaling in the common case
-    return tvAsVariant((TypedValue*)&fpi.defaultValue());
+    return tvAsVariant((TypedValue*)&fpi.defaultValue);
   } else {
     // Eval PHP code to get default value. Note that access of
     // undefined class constants can cause the eval() to
     // fatal. Zend lets such fatals propagate, so don't bother catching
     // exceptions here.
     return g_context->getEvaledArg(
-      fpi.phpCode(),
+      fpi.phpCode,
       func->cls() ? func->cls()->nameStr() : func->nameStr()
     );
   }
@@ -152,13 +151,19 @@ Array HHVM_FUNCTION(hphp_get_extension_info, const String& name) {
 
   ret.set(s_name,      name);
   ret.set(s_version,   ext ? ext->getVersion() : "");
-  ret.set(s_info,      empty_string);
+  ret.set(s_info,      empty_string_variant_ref);
   ret.set(s_ini,       Array::Create());
   ret.set(s_constants, Array::Create());
   ret.set(s_functions, Array::Create());
   ret.set(s_classes,   Array::Create());
 
   return ret;
+}
+
+// TODO(ptc) This is horse--...play and should go somewhere else
+Array HHVM_FUNCTION(hphp_miarray) {
+  auto ad = MixedArray::MakeReserveIntMap(10);
+  return Array::attach(ad);
 }
 
 int get_modifiers(Attr attrs, bool cls) {
@@ -364,7 +369,10 @@ Object HHVM_FUNCTION(hphp_create_object_without_constructor,
 
 Variant HHVM_FUNCTION(hphp_get_property, const Object& obj, const String& cls,
                                          const String& prop) {
-  return obj->o_get(prop, true /* error */, cls);
+  /* It's possible to get a ReflectionProperty for a property which
+   * no longer exists.  Silentyly fail to match PHP5 behavior
+   */
+  return obj->o_get(prop, false /* error */, cls);
 }
 
 void HHVM_FUNCTION(hphp_set_property, const Object& obj, const String& cls,
@@ -389,7 +397,7 @@ Variant HHVM_FUNCTION(hphp_get_static_property, const String& cls,
   VMRegAnchor _;
   bool visible, accessible;
   TypedValue* tv = class_->getSProp(
-    force ? class_ : arGetContextClass(g_context->getFP()),
+    force ? class_ : arGetContextClass(vmfp()),
     prop.get(), visible, accessible
   );
   if (tv == nullptr) {
@@ -414,7 +422,7 @@ void HHVM_FUNCTION(hphp_set_static_property, const String& cls,
   VMRegAnchor _;
   bool visible, accessible;
   TypedValue* tv = class_->getSProp(
-    force ? class_ : arGetContextClass(g_context->getFP()),
+    force ? class_ : arGetContextClass(vmfp()),
     prop.get(), visible, accessible
   );
   if (tv == nullptr) {
@@ -430,7 +438,7 @@ void HHVM_FUNCTION(hphp_set_static_property, const String& cls,
 
 String HHVM_FUNCTION(hphp_get_original_class_name, const String& name) {
   Class* cls = Unit::loadClass(name.get());
-  if (!cls) return empty_string;
+  if (!cls) return empty_string();
   return cls->nameStr();
 }
 
@@ -572,28 +580,28 @@ static Array get_function_param_info(const Func* func) {
     param.set(s_name, name);
 
     auto const nonExtendedConstraint =
-      fpi.typeConstraint().hasConstraint() &&
-      !fpi.typeConstraint().isExtended();
-    auto const type = nonExtendedConstraint ? fpi.typeConstraint().typeName()
-      : empty_string.get();
+      fpi.typeConstraint.hasConstraint() &&
+      !fpi.typeConstraint.isExtended();
+    auto const type = nonExtendedConstraint ? fpi.typeConstraint.typeName()
+      : staticEmptyString();
 
     param.set(s_type, VarNR(type));
-    const StringData* typeHint = fpi.userType() ?
-      fpi.userType() : empty_string.get();
+    const StringData* typeHint = fpi.userType ?
+      fpi.userType : staticEmptyString();
     param.set(s_type_hint, VarNR(typeHint));
     param.set(s_function, VarNR(func->name()));
     if (func->preClass()) {
       param.set(s_class, VarNR(func->cls() ? func->cls()->name() :
                                func->preClass()->name()));
     }
-    if (!nonExtendedConstraint || fpi.typeConstraint().isNullable()) {
+    if (!nonExtendedConstraint || fpi.typeConstraint.isNullable()) {
       param.set(s_nullable, true_varNR);
     }
 
-    if (fpi.phpCode()) {
+    if (fpi.phpCode) {
       Variant v = default_arg_from_php_code(fpi, func);
       param.set(s_default, v);
-      param.set(s_defaultText, VarNR(fpi.phpCode()));
+      param.set(s_defaultText, VarNR(fpi.phpCode));
     } else if (auto mi = func->methInfo()) {
       auto p = mi->parameters[i];
       auto defText = p->valueText;
@@ -628,8 +636,8 @@ static Array get_function_param_info(const Func* func) {
     }
     {
       Array userAttrs = Array::Create();
-      for (auto it = fpi.userAttributes().begin();
-           it != fpi.userAttributes().end(); ++it) {
+      for (auto it = fpi.userAttributes.begin();
+           it != fpi.userAttributes.end(); ++it) {
         userAttrs.set(StrNR(it->first), tvAsCVarRef(&it->second));
       }
       param.set(s_attributes, VarNR(userAttrs));
@@ -853,7 +861,7 @@ const StaticString s_ReflectionClassHandle("ReflectionClassHandle");
 // helper for __construct
 static String HHVM_METHOD(ReflectionClass, __init, const String& name) {
   auto const cls = Unit::loadClass(name.get());
-  if (!cls) return empty_string;
+  if (!cls) return empty_string();
   ReflectionClassHandle::Get(this_)->setClass(cls);
   return cls->nameStr();
 }
@@ -1082,7 +1090,7 @@ static void addClassConstantNames(const Class* cls, c_Set* st, size_t limit) {
   const Class::Const* consts = cls->constants();
   for (size_t i = 0; i < numConsts; i++) {
     if (consts[i].m_class == cls) {
-      st->add(const_cast<StringData*>(consts[i].name()));
+      st->add(const_cast<StringData*>(consts[i].m_name.get()));
     }
   }
   if ((st->size() < limit) && cls->parent()) {
@@ -1101,6 +1109,10 @@ static Array HHVM_METHOD(ReflectionClass, getOrderedConstants) {
   auto const cls = ReflectionClassHandle::GetClassFor(this_);
 
   size_t numConsts = cls->numConstants();
+  if (!numConsts) {
+    return Array::Create();
+  }
+
   c_Set* st;
   Object o = st = NEWOBJ(c_Set)();
   st->reserve(numConsts);
@@ -1222,7 +1234,7 @@ static Array HHVM_METHOD(ReflectionClass, getDynamicPropertyInfos,
   auto obj_data = obj.get();
   assert(obj_data->getVMClass() == cls);
   if (!obj_data->hasDynProps()) {
-    return empty_array;
+    return empty_array();
   }
 
   auto const dynPropArray = obj_data->dynPropArray().get();
@@ -1252,6 +1264,7 @@ class ReflectionExtension : public Extension {
     HHVM_FE(hphp_create_object);
     HHVM_FE(hphp_create_object_without_constructor);
     HHVM_FE(hphp_get_extension_info);
+    HHVM_FE(hphp_miarray);
     HHVM_FE(hphp_get_original_class_name);
     HHVM_FE(hphp_get_property);
     HHVM_FE(hphp_get_static_property);
@@ -1476,7 +1489,7 @@ Array get_class_info(const String& name) {
 
   Array ret;
   ret.set(s_name,      VarNR(cls->name()));
-  ret.set(s_extension, empty_string);
+  ret.set(s_extension, empty_string_variant_ref);
   ret.set(s_parent,    VarNR(cls->parentStr()));
 
   // interfaces
@@ -1642,7 +1655,7 @@ Array get_class_info(const String& name) {
       if (consts[i].m_class == cls) {
         Cell value = cls->clsCnsGet(consts[i].m_name);
         assert(value.m_type != KindOfUninit);
-        arr.set(consts[i].nameStr(), cellAsCVarRef(value));
+        arr.set(StrNR(consts[i].m_name), cellAsCVarRef(value));
       }
     }
 

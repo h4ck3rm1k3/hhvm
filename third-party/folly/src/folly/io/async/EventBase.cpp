@@ -20,6 +20,7 @@
 
 #include "folly/io/async/EventBase.h"
 
+#include "folly/ThreadName.h"
 #include "folly/io/async/NotificationQueue.h"
 
 #include <boost/static_assert.hpp>
@@ -143,6 +144,10 @@ EventBase::EventBase()
   , startWork_(0)
   , observer_(nullptr)
   , observerSampleCount_(0) {
+  if (UNLIKELY(evb_ == nullptr)) {
+    LOG(ERROR) << "EventBase(): Failed to init event base.";
+    folly::throwSystemError("error in EventBase::EventBase()");
+  }
   VLOG(5) << "EventBase(): Created.";
   initNotificationQueue();
   RequestContext::getStaticContext();
@@ -164,11 +169,22 @@ EventBase::EventBase(event_base* evb)
   , startWork_(0)
   , observer_(nullptr)
   , observerSampleCount_(0) {
+  if (UNLIKELY(evb_ == nullptr)) {
+    LOG(ERROR) << "EventBase(): Pass nullptr as event base.";
+    throw std::invalid_argument("EventBase(): event base cannot be nullptr");
+  }
   initNotificationQueue();
   RequestContext::getStaticContext();
 }
 
 EventBase::~EventBase() {
+  // Call all destruction callbacks, before we start cleaning up our state.
+  while (!onDestructionCallbacks_.empty()) {
+    LoopCallback* callback = &onDestructionCallbacks_.front();
+    onDestructionCallbacks_.pop_front();
+    callback->runLoopCallback();
+  }
+
   // Delete any unfired CobTimeout objects, so that we don't leak memory
   // (Note that we don't fire them.  The caller is responsible for cleaning up
   // its own data structures if it destroys the EventBase with unfired events
@@ -188,6 +204,10 @@ EventBase::~EventBase() {
 
 int EventBase::getNotificationQueueSize() const {
   return queue_->size();
+}
+
+void EventBase::setMaxReadAtOnce(uint32_t maxAtOnce) {
+  fnRunner_->setMaxReadAtOnce(maxAtOnce);
 }
 
 // Set smoothing coefficient for loop load average; input is # of milliseconds
@@ -226,23 +246,22 @@ bool EventBase::loop() {
   return loopBody();
 }
 
-bool EventBase::loopOnce() {
-  return loopBody(true);
+bool EventBase::loopOnce(int flags) {
+  return loopBody(flags | EVLOOP_ONCE);
 }
 
-bool EventBase::loopBody(bool once) {
+bool EventBase::loopBody(int flags) {
   VLOG(5) << "EventBase(): Starting loop.";
   int res = 0;
   bool ranLoopCallbacks;
-  int nonBlocking;
+  bool blocking = !(flags & EVLOOP_NONBLOCK);
+  bool once = (flags & EVLOOP_ONCE);
 
   loopThread_.store(pthread_self(), std::memory_order_release);
 
-#if (__GLIBC__ >= 2) && (__GLIBC_MINOR__ >= 12)
   if (!name_.empty()) {
-    pthread_setname_np(pthread_self(), name_.c_str());
+    setThreadName(name_);
   }
-#endif
 
   auto prev = std::chrono::steady_clock::now();
   int64_t idleStart = std::chrono::duration_cast<std::chrono::microseconds>(
@@ -254,8 +273,11 @@ bool EventBase::loopBody(bool once) {
 
     // nobody can add loop callbacks from within this thread if
     // we don't have to handle anything to start with...
-    nonBlocking = (loopCallbacks_.empty() ? 0 : EVLOOP_NONBLOCK);
-    res = event_base_loop(evb_, EVLOOP_ONCE | nonBlocking);
+    if (blocking && loopCallbacks_.empty()) {
+      res = event_base_loop(evb_, EVLOOP_ONCE);
+    } else {
+      res = event_base_loop(evb_, EVLOOP_ONCE | EVLOOP_NONBLOCK);
+    }
     ranLoopCallbacks = runLoopCallbacks();
 
     int64_t busy = std::chrono::duration_cast<std::chrono::microseconds>(
@@ -432,6 +454,12 @@ void EventBase::runInLoop(Cob&& cob, bool thisIteration) {
   } else {
     loopCallbacks_.push_back(*wrapper);
   }
+}
+
+void EventBase::runOnDestruction(LoopCallback* callback) {
+  DCHECK(isInEventBaseThread());
+  callback->cancelLoopCallback();
+  onDestructionCallbacks_.push_back(*callback);
 }
 
 bool EventBase::runInEventBaseThread(void (*fn)(void*), void* arg) {
@@ -668,12 +696,11 @@ void EventBase::cancelTimeout(AsyncTimeout* obj) {
 void EventBase::setName(const std::string& name) {
   assert(isInEventBaseThread());
   name_ = name;
-#if (__GLIBC__ >= 2) && (__GLIBC_MINOR__ >= 12)
+
   if (isRunning()) {
-    pthread_setname_np(loopThread_.load(std::memory_order_relaxed),
-                       name_.c_str());
+    setThreadName(loopThread_.load(std::memory_order_relaxed),
+                  name_);
   }
-#endif
 }
 
 const std::string& EventBase::getName() {

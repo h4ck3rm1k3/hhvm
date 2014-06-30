@@ -67,11 +67,13 @@ struct BCMarker {
                                 m_sk.getFuncId() == DummyFuncId; }
   bool hasFunc() const { return valid() && !isDummy(); }
 
-  SrcKey sk() const { assert(valid()); return m_sk; }
-  const Func* func() const { assert(hasFunc()); return m_sk.func(); }
-  Offset bcOff() const { assert(valid()); return m_sk.offset(); }
-  bool resumed() const { assert(valid()); return m_sk.resumed(); }
-  int32_t spOff() const { assert(valid()); return m_spOff; }
+  SrcKey      sk()          const { assert(valid());   return m_sk;           }
+  const Func* func()        const { assert(hasFunc()); return m_sk.func();    }
+  Offset      bcOff()       const { assert(valid());   return m_sk.offset();  }
+  bool        resumed()     const { assert(valid());   return m_sk.resumed(); }
+  int32_t     spOff()       const { assert(valid());   return m_spOff;        }
+  TransID     profTransId() const { assert(valid());   return m_profTransID;  }
+
   void setSpOff(int32_t sp) { assert(valid()); m_spOff = sp; }
 };
 
@@ -358,6 +360,9 @@ struct IRInstruction {
   bool isTerminal() const;
   bool hasEdges() const { return JIT::hasEdges(op()); }
   bool isPassthrough() const;
+  bool isFramePassthrough() const;
+  static SSATmp* framePassthroughRoot(SSATmp* ssa);
+  static SSATmp* frameCommonRoot(SSATmp* fp1, SSATmp* fp2);
   SSATmp* getPassthroughValue() const;
   bool killsSources() const;
   bool killsSource(int srcNo) const;

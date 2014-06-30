@@ -93,7 +93,8 @@
 #include "hphp/runtime/vm/as-shared.h"
 #include "hphp/runtime/vm/unit.h"
 #include "hphp/runtime/vm/hhbc.h"
-#include "hphp/runtime/vm/preclass-emit.h"
+#include "hphp/runtime/vm/func-emitter.h"
+#include "hphp/runtime/vm/preclass-emitter.h"
 #include "hphp/runtime/base/builtin-functions.h"
 #include "hphp/system/systemlib.h"
 
@@ -639,13 +640,13 @@ struct AsmState : private boost::noncopyable {
     for (std::vector<Id>::const_iterator it = label.dvInits.begin();
         it != label.dvInits.end();
         ++it) {
-      fe->setParamFuncletOff(*it, label.target);
+      fe->params[*it].funcletOff = label.target;
     }
 
     for (std::vector<size_t>::const_iterator it = label.ehFaults.begin();
         it != label.ehFaults.end();
         ++it) {
-      fe->ehtab()[*it].m_fault = label.target;
+      fe->ehtab[*it].m_fault = label.target;
     }
 
     for (Label::CatchesMap::const_iterator it = label.ehCatches.begin();
@@ -655,7 +656,7 @@ struct AsmState : private boost::noncopyable {
       for (std::vector<size_t>::const_iterator idx_it = it->second.begin();
           idx_it != it->second.end();
           ++idx_it) {
-        fe->ehtab()[*idx_it].m_catches.push_back(
+        fe->ehtab[*idx_it].m_catches.push_back(
           std::make_pair(exId, label.target));
       }
     }
@@ -687,12 +688,10 @@ struct AsmState : private boost::noncopyable {
     // Stack depth should be 0 at the end of a function body
     enforceStackDepth(0);
 
-    fe->setMaxStackCells(
-      fe->numLocals() +
-        fe->numIterators() * kNumIterCells +
-        stackHighWater +
-        fdescHighWater /* in units of cells already */
-    );
+    fe->maxStackCells = fe->numLocals() +
+                        fe->numIterators() * kNumIterCells +
+                        stackHighWater +
+                        fdescHighWater; // in units of cells already
     fe->finish(ue->bcPos(), false);
     ue->recordFunction(fe);
 
@@ -1443,7 +1442,7 @@ void parse_fault(AsmState& as, int nestLevel) {
   eh.m_past = as.ue->bcPos();
   eh.m_iterId = iterId;
 
-  as.addLabelEHFault(label, as.fe->ehtab().size() - 1);
+  as.addLabelEHFault(label, as.fe->ehtab.size() - 1);
 }
 
 /*
@@ -1489,7 +1488,7 @@ void parse_catch(AsmState& as, int nestLevel) {
   for (size_t i = 0; i < catches.size(); ++i) {
     as.addLabelEHCatch(catches[i].first,
                        catches[i].second,
-                       as.fe->ehtab().size() - 1);
+                       as.fe->ehtab.size() - 1);
   }
 }
 
@@ -1628,10 +1627,13 @@ void parse_parameter_list(AsmState& as) {
         as.error("expecting '...'");
       }
       as.in.expectWs(')');
-      as.fe->setAttrs(as.fe->attrs() | AttrMayUseVV);
+      as.fe->attrs |= AttrMayUseVV;
       break;
     }
-    if (ch == '&') { param.setRef(true); ch = as.in.getc(); }
+    if (ch == '&') {
+      param.byRef = true;
+      ch = as.in.getc();
+    }
     if (ch != '$') {
       as.error("function parameters must have a $ prefix");
     }
@@ -1649,13 +1651,13 @@ void parse_parameter_list(AsmState& as) {
       if (!as.in.readword(label)) {
         as.error("expected label name for dv-initializer");
       }
-      as.addLabelDVInit(label, as.fe->numParams());
+      as.addLabelDVInit(label, as.fe->params.size());
 
       as.in.skipWhitespace();
       ch = as.in.getc();
       if (ch == '(') {
         String str = parse_long_string(as);
-        param.setPhpCode(makeStaticString(str));
+        param.phpCode = makeStaticString(str);
         TypedValue tv;
         tvWriteUninit(&tv);
         if (str.size() == 4) {
@@ -1668,7 +1670,7 @@ void parse_parameter_list(AsmState& as) {
           tv = make_tv<KindOfBoolean>(false);
         }
         if (tv.m_type != KindOfUninit) {
-          param.setDefaultValue(tv);
+          param.defaultValue = tv;
         }
         as.in.expectWs(')');
         as.in.skipWhitespace();
@@ -1696,13 +1698,13 @@ void parse_function_flags(AsmState& as) {
     if (!as.in.readword(flag)) break;
 
     if (flag == "isGenerator") {
-      as.fe->setIsGenerator(true);
+      as.fe->isGenerator = true;
     } else if (flag == "isAsync") {
-      as.fe->setIsAsync(true);
+      as.fe->isAsync = true;
     } else if (flag == "isClosureBody") {
-      as.fe->setIsClosureBody(true);
+      as.fe->isClosureBody = true;
     } else if (flag == "isPairGenerator") {
-      as.fe->setIsPairGenerator(true);
+      as.fe->isPairGenerator = true;
     } else {
       as.error("Unexpected function flag \"" + flag + "\"");
     }
@@ -1827,8 +1829,8 @@ void parse_property(AsmState& as) {
 
   TypedValue tvInit = parse_member_tv_initializer(as);
   as.pce->addProperty(makeStaticString(name),
-                      attrs, empty_string.get(),
-                      empty_string.get(),
+                      attrs, staticEmptyString(),
+                      staticEmptyString(),
                       &tvInit,
                       RepoAuthType{});
 }
@@ -1847,8 +1849,8 @@ void parse_constant(AsmState& as) {
 
   TypedValue tvInit = parse_member_tv_initializer(as);
   as.pce->addConstant(makeStaticString(name),
-                      empty_string.get(), &tvInit,
-                      empty_string.get());
+                      staticEmptyString(), &tvInit,
+                      staticEmptyString());
 }
 
 /*
@@ -2049,7 +2051,7 @@ void parse_class(AsmState& as) {
                as.ue->bcPos(),
                attrs,
                makeStaticString(parentName),
-               empty_string.get());
+               staticEmptyString());
   for (size_t i = 0; i < ifaces.size(); ++i) {
     as.pce->addInterface(makeStaticString(ifaces[i]));
   }
@@ -2180,7 +2182,7 @@ UnitEmitter* assemble_string(const char* code, int codeLen,
     ue->emitOp(OpFatal);
     ue->emitByte(static_cast<uint8_t>(FatalOp::Runtime));
     FuncEmitter* fe = ue->getMain();
-    fe->setMaxStackCells(1);
+    fe->maxStackCells = 1;
     // XXX line numbers are bogus
     fe->finish(ue->bcPos(), false);
     ue->recordFunction(fe);

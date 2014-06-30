@@ -47,6 +47,7 @@ struct ArrayData {
     kEmptyKind,   // The singleton static empty array
     kNvtwKind,    // NameValueTableWrapper
     kProxyKind,   // ProxyArray
+    kIntMapKind,  // IntMapArray, int keys, maybe holes, similar to MixedArray
     kNumKinds     // insert new values before kNumKinds.
   };
 
@@ -142,10 +143,13 @@ public:
    * Specific kind querying operators.
    */
   bool isPacked() const { return m_kind == kPackedKind; }
-  bool isMixed() const { return m_kind == kMixedKind; }
+  // All logic should treat kMixedKind the same as kIntMapKind except
+  // for logic specific to kIntMapKind in which case use isIntMapArray()
+  bool isMixed() const { return m_kind == kMixedKind || m_kind == kIntMapKind; }
   bool isSharedArray() const { return m_kind == kSharedKind; }
   bool isNameValueTableWrapper() const { return m_kind == kNvtwKind; }
   bool isProxyArray() const { return m_kind == kProxyKind; }
+  bool isIntMapArray() const { return m_kind == kIntMapKind; }
 
   /*
    * Returns whether or not this array contains "vector-like" data.
@@ -403,6 +407,12 @@ protected:
   friend struct PackedArray;
   friend struct EmptyArray;
   friend struct MixedArray;
+  friend class BaseVector;
+  friend class c_Vector;
+  friend class c_ImmVector;
+  friend class BaseMap;
+  friend class c_Map;
+  friend class c_ImmMap;
   // The following fields are blocked into unions with qwords so we
   // can combine the stores when initializing arrays.  (gcc won't do
   // this on its own.)
@@ -414,10 +424,11 @@ protected:
           UNUSED uint8_t m_unused0;
           ArrayKind m_kind;
         };
-        // Packed arrays overlay their capacity with the kind field.
-        // kPackedKind is zero, and aliases the top byte of
-        // m_packedCap, so it won't influence the capacity.
-        uint32_t m_packedCap;
+        // Packed arrays overlay their encoded capacity with the kind field.
+        // kPackedKind is zero, and aliases the top byte of m_packedCapCode,
+        // so it won't influence the encoded capacity. For details on the
+        // encoding see the definition of packedCapToCode().
+        uint32_t m_packedCapCode;
       };
       uint32_t m_size;
     };
@@ -444,7 +455,7 @@ extern std::aligned_storage<
  * that can be used whenever an empty array is needed.  It has
  * kEmptyKind and uses the functions in empty-array.cpp.
  */
-inline ArrayData* staticEmptyArray() {
+ALWAYS_INLINE ArrayData* staticEmptyArray() {
   void* vp = &s_theEmptyArray;
   return static_cast<ArrayData*>(vp);
 }

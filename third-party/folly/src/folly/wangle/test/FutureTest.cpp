@@ -15,10 +15,12 @@
  */
 
 #include <algorithm>
+#include <atomic>
 #include <folly/small_vector.h>
 #include <gtest/gtest.h>
 #include <memory>
 #include <string>
+#include <thread>
 #include <type_traits>
 #include <unistd.h>
 #include "folly/wangle/Executor.h"
@@ -151,6 +153,12 @@ TEST(Future, isReady) {
   EXPECT_TRUE(f.isReady());
   }
 
+TEST(Future, futureNotReady) {
+  Promise<int> p;
+  Future<int> f = p.getFuture();
+  EXPECT_THROW(f.value(), eggs_t);
+}
+
 TEST(Future, hasException) {
   EXPECT_TRUE(makeFuture<int>(eggs).getTry().hasException());
   EXPECT_FALSE(makeFuture(42).getTry().hasException());
@@ -271,18 +279,18 @@ TEST(Future, finish) {
   Promise<int> p;
   auto f = p.getFuture().then([x](Try<int>&& t) { *x = t.value(); });
 
-  // The continuation hasn't executed
+  // The callback hasn't executed
   EXPECT_EQ(0, *x);
 
-  // The continuation has a reference to x
+  // The callback has a reference to x
   EXPECT_EQ(2, x.use_count());
 
   p.setValue(42);
 
-  // the continuation has executed
+  // the callback has executed
   EXPECT_EQ(42, *x);
 
-  // the continuation has been destructed
+  // the callback has been destructed
   // and has released its reference to x
   EXPECT_EQ(1, x.use_count());
 }
@@ -620,4 +628,116 @@ TEST(Future, throwIfFailed) {
     .then([=](Try<int>&& t) {
       EXPECT_NO_THROW(t.throwIfFailed());
     });
+}
+
+TEST(Future, waitWithSemaphoreImmediate) {
+  waitWithSemaphore(makeFuture());
+  auto done = waitWithSemaphore(makeFuture(42)).value();
+  EXPECT_EQ(42, done);
+
+  vector<int> v{1,2,3};
+  auto done_v = waitWithSemaphore(makeFuture(v)).value();
+  EXPECT_EQ(v.size(), done_v.size());
+  EXPECT_EQ(v, done_v);
+
+  vector<Future<void>> v_f;
+  v_f.push_back(makeFuture());
+  v_f.push_back(makeFuture());
+  auto done_v_f = waitWithSemaphore(whenAll(v_f.begin(), v_f.end())).value();
+  EXPECT_EQ(2, done_v_f.size());
+
+  vector<Future<bool>> v_fb;
+  v_fb.push_back(makeFuture(true));
+  v_fb.push_back(makeFuture(false));
+  auto fut = whenAll(v_fb.begin(), v_fb.end());
+  auto done_v_fb = std::move(waitWithSemaphore(std::move(fut)).value());
+  EXPECT_EQ(2, done_v_fb.size());
+}
+
+TEST(Future, waitWithSemaphore) {
+  Promise<int> p;
+  Future<int> f = p.getFuture();
+  std::atomic<bool> flag{false};
+  std::atomic<int> result{1};
+  std::atomic<std::thread::id> id;
+
+  std::thread t([&](Future<int>&& tf){
+      auto n = tf.then([&](Try<int> && t) {
+          id = std::this_thread::get_id();
+          return t.value();
+        });
+      flag = true;
+      result.store(waitWithSemaphore(std::move(n)).value());
+      LOG(INFO) << result;
+    },
+    std::move(f)
+    );
+  while(!flag){}
+  EXPECT_EQ(result.load(), 1);
+  p.setValue(42);
+  t.join();
+  // validate that the callback ended up executing in this thread, which
+  // is more to ensure that this test actually tests what it should
+  EXPECT_EQ(id, std::this_thread::get_id());
+  EXPECT_EQ(result.load(), 42);
+}
+
+TEST(Future, waitWithSemaphoreForTime) {
+ {
+  Promise<int> p;
+  Future<int> f = p.getFuture();
+  auto t = waitWithSemaphore(std::move(f),
+    std::chrono::microseconds(1));
+  EXPECT_FALSE(t.isReady());
+  p.setValue(1);
+  EXPECT_TRUE(t.isReady());
+ }
+ {
+  Promise<int> p;
+  Future<int> f = p.getFuture();
+  p.setValue(1);
+  auto t = waitWithSemaphore(std::move(f),
+    std::chrono::milliseconds(1));
+  EXPECT_TRUE(t.isReady());
+ }
+ {
+  vector<Future<bool>> v_fb;
+  v_fb.push_back(makeFuture(true));
+  v_fb.push_back(makeFuture(false));
+  auto f = whenAll(v_fb.begin(), v_fb.end());
+  auto t = waitWithSemaphore(std::move(f),
+    std::chrono::milliseconds(1));
+  EXPECT_TRUE(t.isReady());
+  EXPECT_EQ(2, t.value().size());
+ }
+ {
+  vector<Future<bool>> v_fb;
+  Promise<bool> p1;
+  Promise<bool> p2;
+  v_fb.push_back(p1.getFuture());
+  v_fb.push_back(p2.getFuture());
+  auto f = whenAll(v_fb.begin(), v_fb.end());
+  auto t = waitWithSemaphore(std::move(f),
+    std::chrono::milliseconds(1));
+  EXPECT_FALSE(t.isReady());
+  p1.setValue(true);
+  EXPECT_FALSE(t.isReady());
+  p2.setValue(true);
+  EXPECT_TRUE(t.isReady());
+ }
+ {
+  Promise<int> p;
+  Future<int> f = p.getFuture();
+  auto begin = std::chrono::system_clock::now();
+  auto t = waitWithSemaphore(std::move(f),
+    std::chrono::milliseconds(1));
+  auto end = std::chrono::system_clock::now();
+  EXPECT_TRUE( end - begin < std::chrono::milliseconds(2));
+  EXPECT_FALSE(t.isReady());
+ }
+ {
+  auto t = waitWithSemaphore(makeFuture(),
+    std::chrono::milliseconds(1));
+  EXPECT_TRUE(t.isReady());
+ }
 }

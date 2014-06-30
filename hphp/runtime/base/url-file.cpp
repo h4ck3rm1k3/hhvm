@@ -105,12 +105,12 @@ bool UrlFile::open(const String& input_url, const String& mode) {
                         m_response, pHeaders, &responseHeaders);
   }
 
-  m_responseHeaders = Array();
+  m_responseHeaders.reset();
   for (unsigned int i = 0; i < responseHeaders.size(); i++) {
     m_responseHeaders.append(responseHeaders[i]);
   }
-  JIT::VMRegAnchor vra;
-  ActRec* fp = g_context->getFP();
+  VMRegAnchor vra;
+  ActRec* fp = vmfp();
   while (fp->skipFrame()) {
     fp = g_context->getPrevVMState(fp);
   }

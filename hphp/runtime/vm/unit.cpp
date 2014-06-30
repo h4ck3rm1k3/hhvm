@@ -16,42 +16,43 @@
 
 #include "hphp/runtime/vm/unit.h"
 
-#include "hphp/compiler/option.h"
-
-#include "hphp/parser/parser.h"
-
-#include "hphp/runtime/base/file-repository.h"
-#include "hphp/runtime/base/rds.h"
-#include "hphp/runtime/base/stats.h"
-#include "hphp/runtime/base/strings.h"
-
-#include "hphp/runtime/ext/std/ext_std_variable.h"
-#include "hphp/runtime/vm/blob-helper.h"
-#include "hphp/runtime/vm/bytecode.h"
-#include "hphp/runtime/vm/disas.h"
-#include "hphp/runtime/vm/func-inline.h"
-#include "hphp/runtime/vm/repo.h"
-#include "hphp/runtime/vm/treadmill.h"
-#include "hphp/runtime/vm/unit-util.h"
-
-#include "hphp/runtime/vm/jit/mc-generator.h"
-#include "hphp/runtime/vm/jit/translator-inline.h"
-
-#include "hphp/runtime/vm/verifier/check.h"
-
-#include "hphp/util/atomic.h"
-#include "hphp/runtime/base/file-util.h"
-#include "hphp/util/lock.h"
-#include "hphp/util/read-only-arena.h"
-
-#include "folly/Memory.h"
-#include "folly/ScopeGuard.h"
-
 #include <boost/algorithm/string.hpp>
 #include <sys/mman.h>
 #include <tbb/concurrent_unordered_map.h>
 #include <iostream>
 #include <iomanip>
+
+#include "hphp/util/atomic.h"
+#include "hphp/util/lock.h"
+#include "hphp/util/read-only-arena.h"
+#include "hphp/parser/parser.h"
+
+#include "hphp/runtime/server/source-root-info.h"
+
+#include "hphp/runtime/base/unit-cache.h"
+#include "hphp/runtime/base/rds.h"
+#include "hphp/runtime/base/stats.h"
+#include "hphp/runtime/base/strings.h"
+#include "hphp/runtime/base/autoload-handler.h"
+#include "hphp/runtime/base/file-util.h"
+
+#include "hphp/runtime/ext/std/ext_std_variable.h"
+#include "hphp/runtime/vm/blob-helper.h"
+#include "hphp/runtime/vm/bytecode.h"
+#include "hphp/runtime/vm/disas.h"
+#include "hphp/runtime/vm/func-emitter.h"
+#include "hphp/runtime/vm/func-inline.h"
+#include "hphp/runtime/vm/repo.h"
+#include "hphp/runtime/vm/treadmill.h"
+#include "hphp/runtime/vm/unit-util.h"
+#include "hphp/runtime/vm/jit/mc-generator.h"
+#include "hphp/runtime/vm/jit/translator-inline.h"
+#include "hphp/runtime/vm/verifier/check.h"
+
+#include "hphp/compiler/option.h"
+
+#include "folly/Memory.h"
+#include "folly/ScopeGuard.h"
 
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
@@ -480,12 +481,11 @@ class FrameRestore {
  public:
   explicit FrameRestore(const PreClass* preClass) {
     auto const ec = g_context.getNoCheck();
-    ActRec* fp = ec->getFP();
-    PC pc = ec->getPC();
+    ActRec* fp = vmfp();
+    PC pc = vmpc();
 
-    if (ec->m_stack.top() &&
-        (!fp || fp->m_func->unit() != preClass->unit())) {
-      m_top = ec->m_stack.top();
+    if (vmsp() && (!fp || fp->m_func->unit() != preClass->unit())) {
+      m_top = vmsp();
       m_fp = fp;
       m_pc = pc;
 
@@ -497,7 +497,7 @@ class FrameRestore {
         stack has been setup. So dont do anything if m_stack.top()
         is NULL
       */
-      ActRec &tmp = *ec->m_stack.allocA();
+      ActRec &tmp = *vmStack().allocA();
       tmp.m_sfp = fp;
       tmp.m_savedRip = 0;
       tmp.m_func = preClass->unit()->getMain();
@@ -507,8 +507,8 @@ class FrameRestore {
       tmp.setThis(nullptr);
       tmp.m_varEnv = 0;
       tmp.initNumArgs(0);
-      ec->m_fp = &tmp;
-      ec->m_pc = preClass->unit()->at(preClass->getOffset());
+      vmfp() = &tmp;
+      vmpc() = preClass->unit()->at(preClass->getOffset());
       ec->pushLocalsAndIterators(tmp.m_func);
     } else {
       m_top = nullptr;
@@ -517,11 +517,10 @@ class FrameRestore {
     }
   }
   ~FrameRestore() {
-    auto const ec = g_context.getNoCheck();
     if (m_top) {
-      ec->m_stack.top() = m_top;
-      ec->m_fp = m_fp;
-      ec->m_pc = m_pc;
+      vmsp() = m_top;
+      vmfp() = m_fp;
+      vmpc() = m_pc;
     }
   }
  private:
@@ -672,42 +671,7 @@ bool Unit::aliasClass(Class* original, const StringData* alias) {
   return true;
 }
 
-void Unit::defTypeAlias(Id id) {
-  assert(id < m_typeAliases.size());
-  auto thisType = &m_typeAliases[id];
-  auto nameList = GetNamedEntity(thisType->name);
-  const StringData* typeName = thisType->value;
-
-  /*
-   * Check if this name already was defined as a type alias, and if so
-   * make sure it is compatible.
-   */
-  if (auto current = nameList->getCachedTypeAlias()) {
-    if (thisType->kind != current->kind ||
-        thisType->nullable != current->nullable ||
-        Unit::lookupClass(typeName) != current->klass) {
-      raise_error("The type %s is already defined to an incompatible type",
-                  thisType->name->data());
-     }
-    return;
-  }
-
-  // There might also be a class with this name already.
-  if (nameList->getCachedClass()) {
-    raise_error("The name %s is already defined as a class",
-                thisType->name->data());
-    return;
-  }
-
-  // TODO(#2103214): persistent type alias support
-  if (!nameList->m_cachedTypeAlias.bound()) {
-    auto rdsMode = (thisType->attrs & AttrPersistent)
-      ? RDS::Mode::Persistent : RDS::Mode::Normal;
-    nameList->m_cachedTypeAlias.bind(rdsMode);
-    RDS::recordRds(nameList->m_cachedTypeAlias.handle(),
-                   sizeof(TypeAliasReq),
-                   "TypeAlias", typeName->data());
-  }
+static TypeAliasReq resolveTypeAlias(const TypeAlias* thisType) {
   /*
    * If this type alias is a KindOfObject and the name on the right
    * hand side was another type alias, we will bind the name to the
@@ -721,13 +685,10 @@ void Unit::defTypeAlias(Id id) {
    */
 
   if (thisType->kind != KindOfObject) {
-    nameList->setCachedTypeAlias(
-      TypeAliasReq { thisType->kind,
-                     thisType->nullable,
-                     nullptr,
-                     thisType->name }
-    );
-    return;
+    return TypeAliasReq { thisType->kind,
+                          thisType->nullable,
+                          nullptr,
+                          thisType->name };
   }
 
   /*
@@ -744,49 +705,98 @@ void Unit::defTypeAlias(Id id) {
    * do our due diligence here.
    */
 
-  auto targetNE = GetNamedEntity(typeName);
+  const StringData* typeName = thisType->value;
+  auto targetNE = Unit::GetNamedEntity(typeName);
 
   if (auto klass = Unit::lookupClass(targetNE)) {
-    nameList->setCachedTypeAlias(
-      TypeAliasReq { KindOfObject,
-                     thisType->nullable,
-                     klass,
-                     thisType->name }
-    );
-    return;
+    return TypeAliasReq { KindOfObject,
+                          thisType->nullable,
+                          klass,
+                          thisType->name };
   }
 
   if (auto targetTd = targetNE->getCachedTypeAlias()) {
-    nameList->setCachedTypeAlias(
-      TypeAliasReq { targetTd->kind,
-                     thisType->nullable || targetTd->nullable,
-                     targetTd->klass,
-                     thisType->name }
-    );
-    return;
+    return TypeAliasReq { targetTd->kind,
+                          thisType->nullable || targetTd->nullable,
+                          targetTd->klass,
+                          thisType->name };
   }
 
   if (auto klass = Unit::loadClass(typeName)) {
-    nameList->setCachedTypeAlias(
-      TypeAliasReq { KindOfObject,
-                     thisType->nullable,
-                     klass,
-                     thisType->name }
-    );
-    return;
+    return TypeAliasReq { KindOfObject,
+                          thisType->nullable,
+                          klass,
+                          thisType->name };
   }
 
   if (auto targetTd = getTypeAliasWithAutoload(targetNE, typeName)) {
-    nameList->setCachedTypeAlias(
-      TypeAliasReq { targetTd->kind,
-                     thisType->nullable || targetTd->nullable,
-                     targetTd->klass,
-                     thisType->name }
-    );
+    return TypeAliasReq { targetTd->kind,
+                          thisType->nullable || targetTd->nullable,
+                          targetTd->klass,
+                          thisType->name };
+  }
+
+  return TypeAliasReq { KindOfInvalid,
+                        false,
+                        nullptr,
+                        nullptr };
+}
+
+void Unit::defTypeAlias(Id id) {
+  assert(id < m_typeAliases.size());
+  auto thisType = &m_typeAliases[id];
+  auto nameList = GetNamedEntity(thisType->name);
+  const StringData* typeName = thisType->value;
+
+  /*
+   * Check if this name already was defined as a type alias, and if so
+   * make sure it is compatible.
+   */
+  if (auto current = nameList->getCachedTypeAlias()) {
+    auto raiseIncompatible = [&] {
+      raise_error("The type %s is already defined to an incompatible type",
+                  thisType->name->data());
+    };
+    if (thisType->attrs & AttrPersistent) {
+      // We may have cached the fully resolved type in a previous request.
+      auto resolved = resolveTypeAlias(thisType);
+      if (resolved.kind != current->kind ||
+          resolved.nullable != current->nullable ||
+          resolved.klass != current->klass) {
+        raiseIncompatible();
+      }
+      return;
+    }
+    if (thisType->kind != current->kind ||
+        thisType->nullable != current->nullable ||
+        Unit::lookupClass(typeName) != current->klass) {
+      raiseIncompatible();
+    }
     return;
   }
 
-  raise_error("Unknown type or class %s", typeName->data());
+  // There might also be a class with this name already.
+  if (nameList->getCachedClass()) {
+    raise_error("The name %s is already defined as a class",
+                thisType->name->data());
+    return;
+  }
+
+  if (!nameList->m_cachedTypeAlias.bound()) {
+    auto rdsMode = (thisType->attrs & AttrPersistent)
+      ? RDS::Mode::Persistent : RDS::Mode::Normal;
+    nameList->m_cachedTypeAlias.bind(rdsMode);
+    RDS::recordRds(nameList->m_cachedTypeAlias.handle(),
+                   sizeof(TypeAliasReq),
+                   "TypeAlias", typeName->data());
+  }
+
+  auto resolved = resolveTypeAlias(thisType);
+  if (resolved.kind == KindOfInvalid) {
+    raise_error("Unknown type or class %s", typeName->data());
+    return;
+  }
+  nameList->setCachedTypeAlias(resolved);
 }
 
 void Unit::renameFunc(const StringData* oldName, const StringData* newName) {
@@ -820,7 +830,7 @@ Class* Unit::loadClass(const NamedEntity* ne,
 
 Class* Unit::loadMissingClass(const NamedEntity* ne,
                               const StringData* name) {
-  JIT::VMRegAnchor _;
+  VMRegAnchor _;
   AutoloadHandler::s_instance->invokeHandler(
     StrNR(const_cast<StringData*>(name)));
   return Unit::lookupClass(ne);
@@ -941,10 +951,11 @@ void Unit::initialMerge() {
               break;
             case UnitMergeKindReqDoc: {
               StringData* s = (StringData*)((char*)obj - (int)k);
-              auto const efile = g_context->lookupIncludeRoot(s,
-                InclOpFlags::DocRoot, nullptr, this);
-              assert(efile);
-              Unit* unit = efile->unit();
+              auto const unit = lookupUnit(
+                SourceRootInfo::RelativeToPhpRoot(StrNR(s)).get(),
+                "",
+                nullptr /* initial_opt */
+              );
               unit->initialMerge();
               m_mergeInfo->mergeableObj(ix) = (void*)((char*)unit + (int)k);
               break;
@@ -1434,7 +1445,7 @@ void Unit::mergeImpl(void* tcbase, UnitMergeInfo* mi) {
               Stats::inc(Stats::PseudoMain_Reentered);
               TypedValue ret;
               VarEnv* ve = nullptr;
-              ActRec* fp = g_context->m_fp;
+              ActRec* fp = vmfp();
               if (!fp) {
                 ve = g_context->m_globalVarEnv;
               } else {
@@ -1657,9 +1668,8 @@ void Unit::prettyPrint(std::ostream& out, PrintOpts opts) const {
   const auto* it = &m_bc[startOffset];
   int prevLineNum = -1;
   while (it < &m_bc[stopOffset]) {
-    assert(funcIt == funcMap.end() ||
-      funcIt->first >= offsetOf(it));
     if (opts.showFuncs) {
+      assert(funcIt == funcMap.end() || funcIt->first >= offsetOf(it));
       if (funcIt != funcMap.end() &&
           funcIt->first == offsetOf(it)) {
         out.put('\n');
@@ -2163,7 +2173,7 @@ void UnitEmitter::addTrivialPseudoMain() {
   emitOp(OpInt);
   emitInt64(1);
   emitOp(OpRetC);
-  mfe->setMaxStackCells(1);
+  mfe->maxStackCells = 1;
   mfe->finish(bcPos(), false);
   recordFunction(mfe);
 
@@ -2373,11 +2383,11 @@ void UnitEmitter::recordSourceLocation(const Location* sLoc, Offset start) {
 }
 
 void UnitEmitter::recordFunction(FuncEmitter* fe) {
-  m_feTab.push_back(std::make_pair(fe->past(), fe));
+  m_feTab.push_back(std::make_pair(fe->past, fe));
 }
 
 Func* UnitEmitter::newFunc(const FuncEmitter* fe, Unit& unit,
-                           Id id, PreClass* preClass, int line1, int line2,
+                           PreClass* preClass, int line1, int line2,
                            Offset base, Offset past,
                            const StringData* name, Attr attrs, bool top,
                            const StringData* docComment, int numParams,
@@ -2385,7 +2395,7 @@ Func* UnitEmitter::newFunc(const FuncEmitter* fe, Unit& unit,
   Func* f = new (Func::allocFuncMem(name, numParams,
                                     needsNextClonedClosure,
                                     !preClass))
-    Func(unit, id, preClass, line1, line2, base, past, name,
+    Func(unit, preClass, line1, line2, base, past, name,
          attrs, top, docComment, numParams);
   m_fMap[fe] = f;
   return f;
@@ -2651,7 +2661,7 @@ Unit* UnitEmitter::create() {
   }
   u->m_lineToOffsetRangeVecMap = createLineToOffsetMap(m_sourceLocTab, m_bclen);
   for (size_t i = 0; i < m_feTab.size(); ++i) {
-    assert(m_feTab[i].second->past() == m_feTab[i].first);
+    assert(m_feTab[i].second->past == m_feTab[i].first);
     assert(m_fMap.find(m_feTab[i].second) != m_fMap.end());
     u->m_funcTable.push_back(
       FuncEntry(m_feTab[i].first, m_fMap.find(m_feTab[i].second)->second));

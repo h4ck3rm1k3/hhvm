@@ -274,7 +274,7 @@ String c_XMLReader::read_string_func(xmlreader_read_char_t internal_function) {
     xmlFree(retchar);
     return ret;
   } else {
-    return empty_string;
+    return empty_string();
   }
 }
 
@@ -317,7 +317,7 @@ Variant c_XMLReader::string_func_string_arg(String value, xmlreader_read_one_cha
     xmlFree(retchar);
     return ret;
   } else {
-    return uninit_null();
+    return init_null();
   }
 }
 
@@ -335,7 +335,7 @@ Variant c_XMLReader::t_getattributeno(int64_t index) {
     xmlFree(retchar);
     return ret;
   } else {
-    return uninit_null();
+    return init_null();
   }
 }
 
@@ -357,7 +357,7 @@ Variant c_XMLReader::t_getattributens(const String& name, const String& namespac
     xmlFree(retchar);
     return ret;
   } else {
-    return uninit_null();
+    return init_null();
   }
 }
 
@@ -503,37 +503,52 @@ bool c_XMLReader::t_setrelaxngschemasource(const String& source) {
 
 ///////////////////////////////////////////////////////////////////////////////
 
-struct PropertyAccessor {
+struct XMLPropertyAccessor {
   const char *name;
   int (*getter_int)(xmlTextReaderPtr);
   const xmlChar* (*getter_char)(xmlTextReaderPtr);
   int return_type;
 };
 
-class PropertyAccessorMap : private hphp_const_char_imap<PropertyAccessor*> {
+class XMLPropertyAccessorMap :
+      private hphp_const_char_map<XMLPropertyAccessor*> {
 public:
-  explicit PropertyAccessorMap(PropertyAccessor* props,
-                               PropertyAccessorMap *base = nullptr) {
+  explicit XMLPropertyAccessorMap(XMLPropertyAccessor* props,
+                                  XMLPropertyAccessorMap *base = nullptr) {
     if (base) {
       *this = *base;
     }
-    for (PropertyAccessor *p = props; p->name; p++) {
+    for (XMLPropertyAccessor *p = props; p->name; p++) {
       (*this)[p->name] = p;
+      m_imap[p->name] = p;
     }
   }
 
-  PropertyAccessor* get(const Variant& name) {
+  XMLPropertyAccessor* get(const Variant& name) {
     if (name.isString()) {
-      const_iterator iter = find(name.toString().data());
+      const char* name_data = name.toString().data();
+      const_iterator iter = find(name_data);
+      const_iterator iiter = m_imap.find(name_data);
       if (iter != end()) {
         return iter->second;
+      } else if (iiter != end()) {
+        raise_warning("Accessing XMLReader::$%s with the incorrect casing",
+                      name_data);
+        return iiter->second;
       }
     }
     return NULL;
   }
+private:
+  // Previously, this class was backed by an imap. This led to a lot of
+  // code relying on accessing properties that were improperly cased.
+  // Since removing this functionality could cause a lot of functionality
+  // to break, instead we continue to allow access case-insensitively, but
+  // with a warning
+  hphp_const_char_imap<XMLPropertyAccessor*> m_imap;
 };
 
-static PropertyAccessor xmlreader_properties[] = {
+static XMLPropertyAccessor xmlreader_properties[] = {
   { "attributeCount", xmlTextReaderAttributeCount, NULL, KindOfInt64 },
   { "baseURI", NULL, xmlTextReaderConstBaseUri, KindOfString },
   { "depth", xmlTextReaderDepth, NULL, KindOfInt64 },
@@ -551,17 +566,17 @@ static PropertyAccessor xmlreader_properties[] = {
   { NULL, NULL, NULL }
 };
 
-static PropertyAccessorMap xmlreader_properties_map
-((PropertyAccessor*)xmlreader_properties);
+static XMLPropertyAccessorMap xmlreader_properties_map
+((XMLPropertyAccessor*)xmlreader_properties);
 
 Variant c_XMLReader::t___get(Variant name) {
   const xmlChar *retchar = NULL;
   int retint = 0;
 
-  PropertyAccessor *propertyMap = xmlreader_properties_map.get(name);
+  XMLPropertyAccessor *propertyMap = xmlreader_properties_map.get(name);
   if (!propertyMap) {
     raiseUndefProp(name.getStringData());
-    return uninit_null();
+    return init_null();
   }
 
   if (m_ptr) {
@@ -577,7 +592,7 @@ Variant c_XMLReader::t___get(Variant name) {
       if (retchar) {
         return String((char*)retchar, CopyString);
       } else {
-        return empty_string;
+        return empty_string_variant();
       }
     case KindOfBoolean:
       return (retint ? true : false);
@@ -586,9 +601,9 @@ Variant c_XMLReader::t___get(Variant name) {
       return retint;
 
     default:
-      return uninit_null();
+      return init_null();
   }
-  return uninit_null();
+  return init_null();
 }
 
 Variant c_XMLReader::t_expand(const Object& basenode /* = null */) {
@@ -628,7 +643,7 @@ Variant c_XMLReader::t_expand(const Object& basenode /* = null */) {
 }
 
 Variant c_XMLReader::t___destruct() {
-  return uninit_null();
+  return init_null();
 }
 
 ///////////////////////////////////////////////////////////////////////////////

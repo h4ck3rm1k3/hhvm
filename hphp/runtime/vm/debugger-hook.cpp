@@ -19,8 +19,9 @@
 #include "hphp/runtime/debugger/break_point.h"
 #include "hphp/runtime/debugger/debugger.h"
 #include "hphp/runtime/debugger/debugger_proxy.h"
-#include "hphp/runtime/base/file-repository.h"
+#include "hphp/runtime/base/unit-cache.h"
 #include "hphp/runtime/ext/ext_generator.h"
+#include "hphp/runtime/vm/unit.h"
 #include "hphp/util/logger.h"
 
 namespace HPHP {
@@ -157,13 +158,14 @@ static void addBreakPointInUnit(Eval::BreakPointInfoPtr bp, Unit* unit) {
 }
 
 static void addBreakPointsInFile(Eval::DebuggerProxy* proxy,
-                                 Eval::PhpFile* efile) {
+                                 Unit* unit) {
   std::vector<Eval::BreakPointInfoPtr> bps;
   proxy->getBreakPoints(bps);
   for (unsigned int i = 0; i < bps.size(); i++) {
     Eval::BreakPointInfoPtr bp = bps[i];
-    if (Eval::BreakPointInfo::MatchFile(bp->m_file, efile->getFileName())) {
-      addBreakPointInUnit(bp, efile->unit());
+    if (Eval::BreakPointInfo::MatchFile(bp->m_file,
+                                        unit->filepath()->data())) {
+      addBreakPointInUnit(bp, unit);
     }
   }
 }
@@ -171,7 +173,7 @@ static void addBreakPointsInFile(Eval::DebuggerProxy* proxy,
 static void addBreakPointFuncEntry(const Func* f) {
   // we are in a generator, skip CreateCont / RetC / PopC opcodes
   auto base = f->isGenerator()
-    ? (f->isAsync() ? bad_value<Offset>() : c_Generator::userBase(f))
+    ? BaseGenerator::userBase(f)
     : f->base();
   auto pc = f->unit()->at(base);
 
@@ -274,10 +276,10 @@ void phpDebuggerEvalHook(const Func* f) {
 }
 
 // Called by the VM when a file is loaded.
-void phpDebuggerFileLoadHook(Eval::PhpFile* efile) {
+void phpDebuggerFileLoadHook(Unit* unit) {
   Eval::DebuggerProxyPtr proxy = Eval::Debugger::GetProxy();
   if (proxy == nullptr) return;
-  addBreakPointsInFile(proxy.get(), efile);
+  addBreakPointsInFile(proxy.get(), unit);
 }
 
 // Called by the VM when a class definition is loaded.
@@ -334,14 +336,13 @@ void phpSetBreakPoints(Eval::DebuggerProxy* proxy) {
     }
     auto fileName = bp->m_file;
     if (!fileName.empty()) {
-      for (auto it = g_context->m_evaledFiles.begin();
-           it != g_context->m_evaledFiles.end();
-           ++it) {
-        auto efile = it->second;
-        if (!Eval::BreakPointInfo::MatchFile(fileName, efile->getFileName())) {
+      for (auto& kv : g_context->m_evaledFiles) {
+        auto const unit = kv.second;
+        if (!Eval::BreakPointInfo::MatchFile(fileName,
+                                             unit->filepath()->data())) {
           continue;
         }
-        addBreakPointInUnit(bp, efile->unit());
+        addBreakPointInUnit(bp, unit);
         break;
       }
       continue;

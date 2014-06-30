@@ -49,9 +49,11 @@ bool ini_on_update(const folly::dynamic& value, Array& p);
 bool ini_on_update(const folly::dynamic& value, std::set<std::string>& p);
 folly::dynamic ini_get(bool& p);
 folly::dynamic ini_get(double& p);
+folly::dynamic ini_get(char& p);
 folly::dynamic ini_get(int16_t& p);
 folly::dynamic ini_get(int32_t& p);
 folly::dynamic ini_get(int64_t& p);
+folly::dynamic ini_get(unsigned char& p);
 folly::dynamic ini_get(uint16_t& p);
 folly::dynamic ini_get(uint32_t& p);
 folly::dynamic ini_get(uint64_t& p);
@@ -158,6 +160,11 @@ public:
   static bool SetUser(const std::string& name, const folly::dynamic& value,
                       FollyDynamic);
   static bool SetUser(const String& name, const Variant& value);
+
+  /**
+   * Get the mode for a setting
+   */
+  static bool GetMode(const std::string& name, Mode& mode);
 
   template<class T>
   struct SetAndGet {

@@ -100,10 +100,10 @@ static bool check_cmd(const char *cmd) {
       }
     }
     if (!allow) {
-      String file = g_context->getContainingFileName();
+      auto const file = g_context->getContainingFileName();
       int line = g_context->getLine();
       Logger::Warning("Command %s is not in the whitelist, called at %s:%d",
-                      cmd_tmp, file.data(), line);
+                      cmd_tmp, file->data(), line);
       if (!RuntimeOption::WhitelistExecWarningOnly) {
         return false;
       }
@@ -442,20 +442,25 @@ private:
   FILE *m_proc;
 };
 
-String f_shell_exec(const String& cmd) {
+Variant f_shell_exec(const String& cmd) {
   ShellExecContext ctx;
   FILE *fp = ctx.exec(cmd.c_str());
-  if (!fp) return "";
+  if (!fp) return init_null();
   StringBuffer sbuf;
   sbuf.read(fp);
-  return sbuf.detach();
+  auto ret = sbuf.detach();
+  if (ret.empty() && !RuntimeOption::EnableHipHopSyntax) {
+    // Match php5
+    return init_null();
+  }
+  return ret;
 }
 
 String f_exec(const String& command, VRefParam output /* = null */,
               VRefParam return_var /* = null */) {
   ShellExecContext ctx;
   FILE *fp = ctx.exec(command.c_str());
-  if (!fp) return "";
+  if (!fp) return empty_string();
   StringBuffer sbuf;
   sbuf.read(fp);
 
@@ -492,7 +497,7 @@ void f_passthru(const String& command, VRefParam return_var /* = null */) {
     if (len == -1 && errno == EINTR) continue;
     if (len <= 0) break; // break on error or EOF
     buffer[len] = '\0';
-    echo(String(buffer, len, CopyString));
+    g_context->write(String(buffer, len, CopyString));
   }
   int ret = ctx.exit();
   if (WIFEXITED(ret)) ret = WEXITSTATUS(ret);
@@ -502,7 +507,7 @@ void f_passthru(const String& command, VRefParam return_var /* = null */) {
 String f_system(const String& command, VRefParam return_var /* = null */) {
   ShellExecContext ctx;
   FILE *fp = ctx.exec(command.c_str());
-  if (!fp) return "";
+  if (!fp) return empty_string();
   StringBuffer sbuf;
   if (fp) {
     sbuf.read(fp);
@@ -517,9 +522,10 @@ String f_system(const String& command, VRefParam return_var /* = null */) {
     count--; // remove explode()'s last empty line
   }
 
+  auto& ectx = *g_context;
   for (int i = 0; i < count; i++) {
-    echo(lines[i].toString());
-    echo("\n");
+    ectx.write(lines[i].toString());
+    ectx.write("\n");
   }
   if (!count || lines.empty()) {
     return String();

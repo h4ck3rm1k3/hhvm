@@ -93,21 +93,21 @@ InterruptSite::InterruptSite(bool hardBreakPoint, const Variant& error)
   TRACE(2, "InterruptSite::InterruptSite\n");
 #define bail_on(c) if (c) { return; }
   auto const context = g_context.getNoCheck();
-  ActRec *fp = context->getFP();
+  ActRec *fp = vmfp();
   bail_on(!fp);
   if (hardBreakPoint && fp->skipFrame()) {
     // for hard breakpoint, the fp is for an extension function,
     // so we need to construct the site on the caller
     fp = context->getPrevVMState(fp, &m_offset);
   } else {
-    auto const *pc = context->getPC();
+    auto const *pc = vmpc();
     auto f = fp->m_func;
     bail_on(!f);
     m_unit = f->unit();
     bail_on(!m_unit);
     m_offset = m_unit->offsetOf(pc);
     auto base = f->isGenerator()
-      ? (f->isAsync() ? bad_value<Offset>() : c_Generator::userBase(f))
+      ? BaseGenerator::userBase(f)
       : f->base();
     if (m_offset == base) {
       m_funcEntry = true;

@@ -29,9 +29,23 @@ namespace HPHP { namespace JIT {
 struct SSATmp;
 struct IRUnit;
 
+enum RelaxGuardsFlags {
+  RelaxNormal =      0,
+  RelaxSimple = 1 << 0,
+  RelaxReflow = 1 << 1,
+};
+
 IRInstruction* guardForLocal(uint32_t locId, SSATmp* fp);
 bool shouldHHIRRelaxGuards();
-bool relaxGuards(IRUnit&, const GuardConstraints& guards, bool simple = false);
+
+/*
+ * Given a possibly null SSATmp*, determine if the type of that tmp may be
+ * loosened by guard relaxation.
+ */
+bool typeMightRelax(const SSATmp* tmp);
+
+bool relaxGuards(IRUnit&, const GuardConstraints& guards,
+                 RelaxGuardsFlags flags);
 
 typedef std::function<void(const RegionDesc::Location&, Type)> VisitGuardFn;
 void visitGuards(IRUnit&, const VisitGuardFn& func);
@@ -41,6 +55,7 @@ Type relaxType(Type t, TypeConstraint cat);
 void incCategory(DataTypeCategory& c);
 TypeConstraint relaxConstraint(const TypeConstraint origTc,
                                const Type knownType, const Type toRelax);
+TypeConstraint applyConstraint(TypeConstraint origTc, TypeConstraint newTc);
 
 } }
 

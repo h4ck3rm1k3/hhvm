@@ -20,12 +20,13 @@
 #include "hphp/compiler/expression/expression.h"
 #include "hphp/compiler/statement/statement.h"
 #include "hphp/compiler/statement/use_trait_statement.h"
-#include "hphp/compiler/statement/trait_require_statement.h"
+#include "hphp/compiler/statement/class_require_statement.h"
 #include "hphp/compiler/statement/trait_prec_statement.h"
 #include "hphp/compiler/statement/trait_alias_statement.h"
 #include "hphp/compiler/statement/typedef_statement.h"
 
 #include "hphp/runtime/vm/func.h"
+#include "hphp/runtime/vm/func-emitter.h"
 #include "hphp/runtime/vm/unit.h"
 #include "hphp/util/hash.h"
 
@@ -454,9 +455,13 @@ public:
   void fixReturnType(Emitter& e, FunctionCallPtr fn,
                      Func* builtinFunc = nullptr);
 
-  void visitListAssignmentLHS(Emitter& e, ExpressionPtr exp,
+  void listAssignmentVisitLHS(Emitter& e, ExpressionPtr exp,
                               IndexChain& indexChain,
                               std::vector<IndexChain*>& chainList);
+  void listAssignmentAssignElements(Emitter& e,
+                                    std::vector<IndexChain*>& indexChains,
+                                    std::function<void()> emitSrc);
+
   void visitIfCondition(ExpressionPtr cond, Emitter& e, Label& tru, Label& fals,
                         bool truFallthrough);
   const SymbolicStack& getEvalStack() const { return m_evalStack; }
@@ -485,7 +490,7 @@ public:
   void setPrevOpcode(Op op) { m_prevOpcode = op; }
   Op getPrevOpcode() const { return m_prevOpcode; }
   bool currentPositionIsReachable() {
-    return (m_ue.bcPos() == m_curFunc->base()
+    return (m_ue.bcPos() == m_curFunc->base
             || isJumpTarget(m_ue.bcPos())
             || (instrFlags(getPrevOpcode()) & TF) == 0);
   }
@@ -743,7 +748,7 @@ public:
                           bool top);
   void fillFuncEmitterParams(FuncEmitter* fe,
                              ExpressionListPtr params,
-                             bool builtin = false);
+                             bool coerce_params = false);
   void emitMethodPrologue(Emitter& e, MethodStatementPtr meth);
   void emitMethod(MethodStatementPtr meth);
   void emitConstMethodCallNoParams(Emitter& e, string name);
@@ -784,8 +789,9 @@ public:
   void emitTypedef(Emitter& e, TypedefStatementPtr);
   void emitForeachListAssignment(Emitter& e,
                                  ListAssignmentPtr la,
-                                 int vLocalId);
+                                 std::function<void()> emitSrc);
   void emitForeach(Emitter& e, ForEachStatementPtr fe);
+  void emitForeachAwaitAs(Emitter& e, ForEachStatementPtr fe);
   void emitRestoreErrorReporting(Emitter& e, Id oldLevelLoc);
   void emitMakeUnitFatal(Emitter& e,
                          const char* msg,

@@ -28,7 +28,7 @@ template <typename T> struct isLater;
 /*
  * Since wangle primitives (promise/future) are not thread safe, it is difficult
  * to build complex asynchronous workflows. A Later allows you to build such a
- * workflow before actually launching it so that continuations can be set in a
+ * workflow before actually launching it so that callbacks can be set in a
  * threadsafe manner.
  *
  * The interface to add additional work is the same as future: a then() method
@@ -71,6 +71,11 @@ class Later {
             class = typename std::enable_if<std::is_void<U>::value>::type,
             class = typename std::enable_if<std::is_same<T, U>::value>::type>
   Later();
+
+  /*
+   * Lift a Future into a Later
+   */
+  /* implicit */ Later(Future<T>&& f);
 
   /*
    * This constructor is used to build an asynchronous workflow that takes a

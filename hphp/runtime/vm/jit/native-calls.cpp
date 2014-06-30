@@ -27,6 +27,7 @@
 #include "hphp/runtime/vm/jit/arg-group.h"
 #include "hphp/runtime/ext/asio/async_function_wait_handle.h"
 #include "hphp/runtime/ext/asio/static_wait_handle.h"
+#include "hphp/runtime/ext/ext_array.h"
 
 namespace HPHP {  namespace JIT { namespace NativeCalls {
 
@@ -161,17 +162,19 @@ static CallMap s_callMap {
     {ConcatStr4,         concat_s4, DSSA, SSync,
                            {{SSA, 0}, {SSA, 1}, {SSA, 2}, {SSA, 3}}},
 
-    {AddElemStrKey,      addElemStringKeyHelper, DSSA, SNone,
+    {AddElemStrKey,      addElemStringKeyHelper, DSSA, SSync,
                            {{SSA, 0}, {SSA, 1}, {TV, 2}}},
-    {AddElemIntKey,      addElemIntKeyHelper, DSSA, SNone,
+    {AddElemIntKey,      addElemIntKeyHelper, DSSA, SSync,
                            {{SSA, 0}, {SSA, 1}, {TV, 2}}},
-    {AddNewElem,         &MixedArray::AddNewElemC, DSSA, SNone,
+    {AddNewElem,         addNewElemHelper, DSSA, SSync,
                            {{SSA, 0}, {TV, 1}}},
     {ArrayAdd,           arrayAdd, DSSA, SSync, {{SSA, 0}, {SSA, 1}}},
     {Box,                boxValue, DSSA, SNone, {{TV, 0}}},
+    {Clone,              &ObjectData::clone, DSSA, SSync, {{SSA, 0}}},
     {NewArray,           MixedArray::MakeReserve, DSSA, SNone, {{SSA, 0}}},
-    {Clone,              &ObjectData::clone, DSSA, SSync,
-                           {{SSA, 0}}},
+    {NewMixedArray,      MixedArray::MakeReserveMixed, DSSA, SNone, {{SSA, 0}}},
+    {NewLikeArray,       MixedArray::MakeReserveLike, DSSA, SNone,
+                           {{SSA, 0}, {SSA, 1}}},
     {NewPackedArray,     MixedArray::MakePacked, DSSA, SNone,
                            {{SSA, 0}, {SSA, 1}}},
     {NewCol,             newColHelper, DSSA, SSync, {{SSA, 0}, {SSA, 1}}},
@@ -183,6 +186,10 @@ static CallMap s_callMap {
                            {{SSA, 0}}},
     {CustomInstanceInit, &ObjectData::callCustomInstanceInit,
                            DSSA, SSync, {{SSA, 0}}},
+    {InitProps,          &Class::initProps, DNone, SSync,
+                           {{extra(&ClassData::cls)}}},
+    {InitSProps,         &Class::initSProps, DNone, SSync,
+                           {{extra(&ClassData::cls)}}},
     {LdClsCtor,          loadClassCtor, DSSA, SSync,
                            {{SSA, 0}}},
     {LookupClsRDSHandle, lookupClsRDSHandle, DSSA, SNone, {{SSA, 0}}},
@@ -247,7 +254,7 @@ static CallMap s_callMap {
                            {{SSA, 0}, {SSA, 1}, {SSA, 2}}},
 
     /* Generator support helpers */
-    {CreateCont,         &c_Generator::Create, DSSA, SNone,
+    {CreateCont,         &c_Generator::Create<false>, DSSA, SNone,
                            {{SSA, 0}, {SSA, 1}, {SSA, 2}, {SSA, 3}}},
 
     /* Async function support helpers */
@@ -255,6 +262,10 @@ static CallMap s_callMap {
                            {{SSA, 0}, {SSA, 1}, {SSA, 2}, {SSA, 3}, {SSA, 4}}},
     {CreateSSWH,         &c_StaticWaitHandle::CreateSucceededVM, DSSA, SNone,
                            {{TV, 0}}},
+    {AFWHPrepareChild,   &c_AsyncFunctionWaitHandle::PrepareChild, DSSA, SSync,
+                           {{SSA, 0}, {SSA, 1}}},
+    {BWHUnblockChain,    &c_BlockableWaitHandle::UnblockChain, DSSA, SNone,
+                           {{SSA, 0}}},
 
     /* MInstrTranslator helpers */
     {BaseG,    fssa(0), DSSA, SSync, {{TV, 1}, {SSA, 2}}},
@@ -350,13 +361,21 @@ static CallMap s_callMap {
     {DbgAssertPtr, assertTv, DNone, SNone, {{SSA, 0}}},
 
     /* surprise flag support */
-    {SurpriseHook, &EventHook::CheckSurprise, DNone, SSync, {}},
-    {FunctionExitSurpriseHook, &EventHook::onFunctionExitJit, DNone, SSync,
-                               {{SSA, 0}, {TV, 1}}},
+    {SurpriseHook,        &EventHook::CheckSurprise, DNone, SSync, {}},
+    {FunctionSuspendHook, &EventHook::onFunctionSuspend, DNone, SSync,
+                            {{SSA, 0}, {SSA, 1}}},
+    {FunctionReturnHook,  &EventHook::onFunctionReturnJit, DNone, SSync,
+                            {{SSA, 0}, {TV, 1}}},
 
     /* silence operator support */
     {ZeroErrorLevel, &zero_error_level, DSSA, SNone, {}},
     {RestoreErrorLevel, &restore_error_level, DNone, SNone, {{SSA, 0}}},
+
+    // count($mixed)
+    {Count, &countHelper, DSSA, SSync, {{TV, 0}}},
+
+    // count($array)
+    {CountArray, &ArrayData::size, DSSA, SNone, {{SSA, 0}}},
 };
 
 ArgGroup CallInfo::toArgGroup(const RegAllocInfo& regs,

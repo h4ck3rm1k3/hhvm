@@ -20,6 +20,7 @@
 #include "hphp/runtime/base/zend-math.h"
 
 #include "hphp/util/lock.h"
+#include "hphp/util/overflow.h"
 #include <math.h>
 #include <monetary.h>
 
@@ -480,7 +481,7 @@ String string_replace(const char *s, int len, int start, int length,
   assert(s);
   assert(replacement);
   if (!string_substr_check(len, start, length, false)) {
-    return empty_string;
+    return empty_string();
   }
 
   String retString(len + len_repl - length, ReserveString);
@@ -510,6 +511,9 @@ String string_replace(const char *input, int len,
                       int &count, bool case_sensitive) {
   assert(input);
   assert(search && len_search);
+  assert(len >= 0);
+  assert(len_search >= 0);
+  assert(len_replace >= 0);
 
   if (len == 0) {
     return String();
@@ -539,10 +543,24 @@ String string_replace(const char *input, int len,
     return String(); // not found
   }
 
-  int reserve = len + (len_replace - len_search) * count;
-  if ((reserve - len) / count != (len_replace - len_search)) {
-    raise_error("String too large");
+  int reserve;
+
+  // Make sure the new size of the string wouldn't overflow int32_t. Don't
+  // bother if the replacement wouldn't make the string longer.
+  if (len_replace > len_search) {
+    auto raise = [&] { raise_error("String too large"); };
+    if (mul_overflow(len_replace - len_search, count)) {
+      raise();
+    }
+    int diff = (len_replace - len_search) * count;
+    if (add_overflow(len, diff)) {
+      raise();
+    }
+    reserve = len + diff;
+  } else {
+    reserve = len + (len_replace - len_search) * count;
   }
+
   String retString(reserve, ReserveString);
   char *ret = retString.bufferSlice().ptr;
   char *p = ret;
@@ -1184,7 +1202,7 @@ String string_numeric_to_base(const Variant& value, int base) {
 
   assert(string_validate_base(base));
   if ((!value.isInteger() && !value.isDouble())) {
-    return empty_string;
+    return empty_string();
   }
 
   if (value.isDouble()) {
@@ -1195,7 +1213,7 @@ String string_numeric_to_base(const Variant& value, int base) {
     /* Don't try to convert +/- infinity */
     if (fvalue == HUGE_VAL || fvalue == -HUGE_VAL) {
       raise_warning("Number too large");
-      return empty_string;
+      return empty_string();
     }
 
     end = ptr = buf + sizeof(buf) - 1;
@@ -1316,6 +1334,8 @@ String string_uudecode(const char *src, int src_len) {
     }
 
     while (s < ee) {
+      if (s + 4 > e) goto err;
+
       *p++ = PHP_UU_DEC(*s) << 2 | PHP_UU_DEC(*(s + 1)) >> 4;
       *p++ = PHP_UU_DEC(*(s + 1)) << 4 | PHP_UU_DEC(*(s + 2)) >> 2;
       *p++ = PHP_UU_DEC(*(s + 2)) << 6 | PHP_UU_DEC(*(s + 3));

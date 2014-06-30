@@ -37,7 +37,7 @@ struct KeyAccessor {
   bool isInt(ElmT elm) const { return elm.hasIntKey(); }
   bool isStr(ElmT elm) const { return elm.hasStrKey(); }
   int64_t getInt(ElmT elm) const { return elm.ikey; }
-  StringData* getStr(ElmT elm) const { return elm.key; }
+  StringData* getStr(ElmT elm) const { return elm.skey; }
   Variant getValue(ElmT elm) const {
     if (isInt(elm)) {
       return getInt(elm);
@@ -121,15 +121,14 @@ done:
  * handles rebuilding the hash. Also, if resetKeys is true, postSort() will
  * renumber the keys 0 thru n-1.
  */
-void MixedArray::postSort(bool resetKeys) {
+void MixedArray::postSort(bool resetKeys) {   // nothrow guarantee
   assert(m_size > 0);
   auto const ht = hashTab();
   initHash(ht, hashSize());
-  m_hLoad = 0;
   if (resetKeys) {
     for (uint32_t pos = 0; pos < m_used; ++pos) {
       auto& e = data()[pos];
-      if (e.hasStrKey()) decRefStr(e.key);
+      if (e.hasStrKey()) decRefStr(e.skey);
       e.setIntKey(pos);
       ht[pos] = pos;
     }
@@ -144,7 +143,6 @@ void MixedArray::postSort(bool resetKeys) {
       *ei = pos;
     }
   }
-  m_hLoad = m_size;
 }
 
 ArrayData* MixedArray::EscalateForSort(ArrayData* ad) {
@@ -238,7 +236,7 @@ void MixedArray::Asort(ArrayData* ad, int sort_flags, bool ascending) {
       return true;                                              \
     }                                                           \
     CallCtx ctx;                                                \
-    JIT::CallerFrame cf;                                        \
+    CallerFrame cf;                                             \
     vm_decode_function(cmp_function, cf(), false, ctx);         \
     if (!ctx.func) {                                            \
       return false;                                             \

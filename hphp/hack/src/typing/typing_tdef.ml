@@ -19,30 +19,28 @@ module TUtils = Typing_utils
 (* Expanding type definition *)
 (*****************************************************************************)
 
-let rec expand_typedef seen env r x argl =
+let rec expand_typedef_ ?force_expand:(force_expand=false) seen env r x argl =
   let pos = Reason.to_pos r in
   let env, tdef = Typing_env.get_typedef env x in
   let tdef = match tdef with None -> assert false | Some x -> x in
-  let tdef =
-    match tdef with
-    | Env.Typedef.Error -> raise Ignore
-    | Env.Typedef.Ok x -> x
-  in
-  let visibility, tparaml, tcstr, expanded_ty = tdef in
-  let should_expand =
+  match tdef with
+    | Env.Typedef.Error -> env, (r, Tany), pos
+    | Env.Typedef.Ok tdef ->
+  let visibility, tparaml, tcstr, expanded_ty, tdef_pos = tdef in
+  let should_expand = force_expand ||
     match visibility with
-    | Env.Typedef.Private fn ->
-        fn = env.Env.genv.Env.file
+    | Env.Typedef.Private ->
+        Pos.filename tdef_pos = env.Env.genv.Env.file
     | Env.Typedef.Public -> true
   in
   if List.length tparaml <> List.length argl
   then begin
     let n = List.length tparaml in
     let n = string_of_int n in
-    error pos ("The type "^x^" expects "^n^" parameters");
+    Errors.type_param_arity pos x n
   end;
   let subst = ref SMap.empty in
-  List.iter2 begin fun ((_, param), _) ty ->
+  Utils.iter2_shortest begin fun ((_, param), _) ty ->
     subst := SMap.add param ty !subst
   end tparaml argl;
   let env, expanded_ty =
@@ -61,8 +59,12 @@ let rec expand_typedef seen env r x argl =
       env, (r, Tabstract ((pos, x), argl, tcstr))
     end
   in
-  check_typedef seen env expanded_ty;
-  env, (r, snd expanded_ty)
+  Errors.try_with_error
+    (fun () ->
+      check_typedef seen env expanded_ty;
+      env, (r, snd expanded_ty), tdef_pos
+    )
+    (fun () -> env, (r, Tany), tdef_pos)
 
 and check_typedef seen env (r, t) =
   match t with
@@ -88,11 +90,10 @@ and check_typedef seen env (r, t) =
   | Tfun fty ->
       check_fun_typedef seen env fty
   | Tapply ((p, x), argl) when Typing_env.is_typedef env x ->
-      if SSet.mem x seen
-      then error p "Cyclic typedef"
+      if seen = x
+      then Errors.cyclic_typedef p
       else
-        let seen = SSet.add x seen in
-        let env, ty = expand_typedef seen env r x argl in
+        let env, ty, _ = expand_typedef_ seen env r x argl in
         check_typedef seen env ty
   | Tabstract (_, tyl, cstr) ->
       check_typedef_list seen env tyl;
@@ -130,6 +131,20 @@ and check_typedef_tparam seen env (_, x) =
 and check_typedef_opt seen env = function
   | None -> ()
   | Some x -> check_typedef seen env x
+
+let expand_typedef env r x argl =
+  let env, t, _ = expand_typedef_ x env r x argl
+  in env, t
+
+(* Expand a typedef, smashing abstraction and collecting a trail
+ * of where the typedefs come from. *)
+let rec force_expand_typedef_ trail env = function
+  | r, Tapply ((_, x), argl) when Typing_env.is_typedef env x ->
+    let env, t, pos = expand_typedef_ ~force_expand:true x env r x argl in
+    (* We need to keep expanding until we hit something that isn't a typedef *)
+    force_expand_typedef_ (pos::trail) env t
+  | r, t -> env, (r, t), List.rev trail
+let force_expand_typedef = force_expand_typedef_ []
 
 (*****************************************************************************)
 (*****************************************************************************)

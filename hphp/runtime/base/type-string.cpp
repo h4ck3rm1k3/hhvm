@@ -29,7 +29,7 @@
 namespace HPHP {
 
 const String null_string = String();
-const StaticString empty_string("");
+const StaticString empty_string_ref("");
 
 ///////////////////////////////////////////////////////////////////////////////
 // statics
@@ -125,12 +125,23 @@ String::String(int64_t n) {
   m_px->setRefCount(1);
 }
 
-StringData* buildStringData(double n) {
-  char *buf;
-
+void formatPhpDblStr(char **pbuf, double n) {
   if (n == 0.0) n = 0.0; // so to avoid "-0" output
-  vspprintf(&buf, 0, "%.*G", 14, n);
+  vspprintf(pbuf, 0, "%.*G", 14, n);
+}
+
+StringData* buildStringData(double n) {
+  char *buf = nullptr;
+  formatPhpDblStr(&buf, n);
   return StringData::Make(buf, AttachString);
+}
+
+std::string convDblToStrWithPhpFormat(double n) {
+  char *buf = nullptr;
+  formatPhpDblStr(&buf, n);
+  std::string retVal(buf);
+  free(buf);
+  return retVal;
 }
 
 String::String(double n) {
@@ -267,6 +278,12 @@ String &String::operator=(const String& str) {
   return *this;
 }
 
+String &String::operator=(const StaticString& str) {
+  if (m_px) decRefStr(m_px);
+  m_px = str.m_px;
+  return *this;
+}
+
 String &String::operator=(const Variant& var) {
   return operator=(var.toString());
 }
@@ -368,7 +385,7 @@ String operator+(const String & lhs, const String & rhs) {
 // conversions
 
 VarNR String::toKey() const {
-  if (!m_px) return VarNR(empty_string);
+  if (!m_px) return VarNR(staticEmptyString());
   int64_t n = 0;
   if (m_px->isStrictlyInteger(n)) {
     return VarNR(n);
@@ -567,11 +584,6 @@ StaticString::StaticString(std::string s) {
   m_px = makeStaticString(s.c_str(), s.size());
 }
 
-StaticString::StaticString(const StaticString &str) {
-  assert(str.m_px->isStatic());
-  m_px = str.m_px;
-}
-
 StaticString& StaticString::operator=(const StaticString &str) {
   // Assignment to a StaticString is ignored. Generated code
   // should never use a StaticString on the left-hand side of
@@ -619,7 +631,7 @@ String getDataTypeString(DataType t) {
       assert(false);
       break;
   }
-  return empty_string;
+  return empty_string();
 }
 
 //////////////////////////////////////////////////////////////////////////////

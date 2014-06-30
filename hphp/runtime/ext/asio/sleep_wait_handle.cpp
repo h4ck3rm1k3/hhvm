@@ -30,6 +30,14 @@ namespace {
   StaticString s_sleep("<sleep>");
 }
 
+void c_SleepWaitHandle::ti_setoncreatecallback(const Variant& callback) {
+  AsioSession::Get()->setOnSleepCreateCallback(callback);
+}
+
+void c_SleepWaitHandle::ti_setonsuccesscallback(const Variant& callback) {
+  AsioSession::Get()->setOnSleepSuccessCallback(callback);
+}
+
 Object c_SleepWaitHandle::ti_create(int64_t usecs) {
   if (UNLIKELY(usecs < 0)) {
     Object e(SystemLib::AllocInvalidArgumentExceptionObject(
@@ -49,10 +57,16 @@ void c_SleepWaitHandle::initialize(int64_t usecs) {
     std::chrono::microseconds(usecs);
 
   incRefCount();
-  AsioSession::Get()->getSleepEventQueue().push(this);
+
+  auto session = AsioSession::Get();
+  session->getSleepEventQueue().push(this);
 
   if (isInContext()) {
     registerToContext();
+  }
+
+  if (UNLIKELY(session->hasOnSleepCreateCallback())) {
+    session->onSleepCreate(this);
   }
 }
 
@@ -63,9 +77,15 @@ void c_SleepWaitHandle::process() {
     unregisterFromContext();
   }
 
+  auto const parentChain = getFirstParent();
   setState(STATE_SUCCEEDED);
   tvWriteNull(&m_resultOrException);
-  done();
+  c_BlockableWaitHandle::UnblockChain(parentChain);
+
+  auto session = AsioSession::Get();
+  if (UNLIKELY(session->hasOnSleepSuccessCallback())) {
+    session->onSleepSuccess(this);
+  }
 }
 
 String c_SleepWaitHandle::getName() {
@@ -104,12 +124,12 @@ void c_SleepWaitHandle::exitContext(context_idx_t ctx_idx) {
 
 void c_SleepWaitHandle::registerToContext() {
   AsioContext *ctx = getContext();
-  m_index = ctx->registerTo<c_SleepWaitHandle>(ctx->getSleepEvents(), this);
+  m_ctxVecIndex = ctx->registerTo(ctx->getSleepEvents(), this);
 }
 
 void c_SleepWaitHandle::unregisterFromContext() {
   AsioContext *ctx = getContext();
-  ctx->unregisterFrom<c_SleepWaitHandle>(ctx->getSleepEvents(), m_index);
+  ctx->unregisterFrom(ctx->getSleepEvents(), m_ctxVecIndex);
 }
 
 ///////////////////////////////////////////////////////////////////////////////

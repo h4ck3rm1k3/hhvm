@@ -80,17 +80,17 @@ std::string array_string(SArray arr) {
   return str.str();
 }
 
-std::string local_string(borrowed_ptr<const php::Local> loc) {
-  return loc->name
-    ? folly::to<std::string>("$", loc->name->data())
-    : folly::to<std::string>("$<unnamed:", loc->id, ">");
-};
-
 }
 
 //////////////////////////////////////////////////////////////////////
 
 namespace php {
+
+std::string local_string(borrowed_ptr<const php::Local> loc) {
+  return loc->name
+    ? folly::to<std::string>("$", loc->name->data())
+    : folly::to<std::string>("$<unnamed:", loc->id, ">");
+};
 
 std::string show(const Block& block) {
   std::string ret;
@@ -510,20 +510,20 @@ std::string show(Type t) {
     break;
   case DataTag::Obj:
     switch (t.m_data.dobj.type) {
-    case ClsTag::Exact:
+    case DObj::Exact:
       folly::toAppend("=", show(t.m_data.dobj.cls), &ret);
       break;
-    case ClsTag::Sub:
+    case DObj::Sub:
       folly::toAppend("<=", show(t.m_data.dobj.cls), &ret);
       break;
     }
     break;
   case DataTag::Cls:
     switch (t.m_data.dcls.type) {
-    case ClsTag::Exact:
+    case DCls::Exact:
       folly::toAppend("=", show(t.m_data.dcls.cls), &ret);
       break;
-    case ClsTag::Sub:
+    case DCls::Sub:
       folly::toAppend("<=", show(t.m_data.dcls.cls), &ret);
       break;
     }

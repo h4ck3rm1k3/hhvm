@@ -31,10 +31,6 @@
 #include <unwind.h>
 #include <unordered_set>
 
-#include <boost/bind.hpp>
-#include <boost/utility/typed_in_place_factory.hpp>
-#include <boost/range/adaptors.hpp>
-#include <boost/scoped_ptr.hpp>
 #include <algorithm>
 #include <exception>
 #include <memory>
@@ -44,6 +40,7 @@
 #include "folly/String.h"
 
 #include "hphp/util/abi-cxx.h"
+#include "hphp/util/disasm.h"
 #include "hphp/util/bitops.h"
 #include "hphp/util/debug.h"
 #include "hphp/util/maphuge.h"
@@ -72,7 +69,6 @@
 #include "hphp/runtime/ext/ext_function.h"
 #include "hphp/runtime/vm/debug/debug.h"
 #include "hphp/runtime/base/stats.h"
-#include "hphp/runtime/vm/pendq.h"
 #include "hphp/runtime/vm/srckey.h"
 #include "hphp/runtime/vm/treadmill.h"
 #include "hphp/runtime/vm/repo.h"
@@ -87,7 +83,6 @@
 #include "hphp/runtime/vm/jit/region-selection.h"
 #include "hphp/runtime/vm/jit/srcdb.h"
 #include "hphp/runtime/base/rds.h"
-#include "hphp/runtime/vm/jit/tracelet.h"
 #include "hphp/runtime/vm/jit/translator-inline.h"
 #include "hphp/runtime/vm/jit/code-gen.h"
 #include "hphp/runtime/vm/jit/service-requests-inline.h"
@@ -137,9 +132,6 @@ static __thread size_t s_initialTCSize;
 // The global MCGenerator object.
 MCGenerator* mcg;
 
-// Register dirtiness: thread-private.
-__thread VMRegState tl_regState = VMRegState::CLEAN;
-
 CppCall MCGenerator::getDtorCall(DataType type) {
   switch (type) {
   case BitwiseKindOfString:
@@ -179,7 +171,7 @@ void MCGenerator::invalidateFuncProfSrcKeys(const Func* func) {
 
 TCA MCGenerator::retranslate(const TranslArgs& args) {
   SrcRec* sr = m_tx.getSrcDB().find(args.m_sk);
-
+  always_assert(sr);
   bool locked = sr->tryLock();
   SCOPE_EXIT {
     if (locked) sr->freeLock();
@@ -211,7 +203,7 @@ TCA MCGenerator::retranslate(const TranslArgs& args) {
 
 TCA MCGenerator::retranslateOpt(TransID transId, bool align) {
   LeaseHolder writer(Translator::WriteLease());
-  if (!writer || !shouldTranslate()) return nullptr;
+  if (!writer) return nullptr;
   if (isDebuggerAttachedProcess()) return nullptr;
 
   TRACE(1, "retranslateOpt: transId = %u\n", transId);
@@ -309,8 +301,8 @@ MCGenerator::numTranslations(SrcKey sk) const {
 static void populateLiveContext(RegionContext& ctx) {
   typedef RegionDesc::Location L;
 
-  const ActRec*     const fp {g_context->getFP()};
-  const TypedValue* const sp {g_context->getStack().top()};
+  const ActRec*     const fp {vmfp()};
+  const TypedValue* const sp {vmsp()};
 
   for (uint32_t i = 0; i < fp->m_func->numLocals(); ++i) {
     ctx.liveTypes.push_back(
@@ -380,9 +372,11 @@ MCGenerator::createTranslation(const TranslArgs& args) {
 
   // We put retranslate requests at the end of our slab to more frequently
   //   allow conditional jump fall-throughs
-  TCA astart = code.main().frontier();
-  TCA stubstart = code.stubs().frontier();
-  TCA req = emitServiceReq(code.stubs(), REQ_RETRANSLATE, sk.offset());
+  TCA astart          = code.main().frontier();
+  TCA realColdStart   = code.realCold().frontier();
+  TCA realFrozenStart = code.realFrozen().frontier();
+  TCA req = emitServiceReq(code.cold(), REQ_RETRANSLATE,
+                           sk.offset(), TransFlags().packed);
   SKTRACE(1, sk, "inserting anchor translation for (%p,%d) at %p\n",
           sk.unit(), sk.offset(), req);
   SrcRec* sr = m_tx.getSrcRec(sk);
@@ -390,12 +384,14 @@ MCGenerator::createTranslation(const TranslArgs& args) {
   sr->setAnchorTranslation(req);
 
   size_t asize = code.main().frontier() - astart;
-  size_t stubsize = code.stubs().frontier() - stubstart;
+  size_t realColdSize   = code.realCold().frontier()   - realColdStart;
+  size_t realFrozenSize = code.realFrozen().frontier() - realFrozenStart;
   assert(asize == 0);
-  if (stubsize && RuntimeOption::EvalDumpTCAnchors) {
-    TransRec tr(sk, sk.unit()->md5(), sk.func()->fullName()->data(),
+  if (realColdSize && RuntimeOption::EvalDumpTCAnchors) {
+    TransRec tr(sk,
                 TransKind::Anchor,
-                astart, asize, stubstart, stubsize);
+                astart, asize, realColdStart, realColdSize,
+                realFrozenStart, realFrozenSize);
     m_tx.addTranslation(tr);
     if (RuntimeOption::EvalJitUseVtuneAPI) {
       reportTraceletToVtune(sk.unit(), sk.func(), tr);
@@ -405,7 +401,7 @@ MCGenerator::createTranslation(const TranslArgs& args) {
       m_tx.profData()->addTransNonProf(TransKind::Anchor, sk);
     }
     assert(!m_tx.isTransDBEnabled() ||
-           m_tx.getTransRec(stubstart)->kind == TransKind::Anchor);
+           m_tx.getTransRec(realColdStart)->kind == TransKind::Anchor);
   }
 
   return retranslate(args);
@@ -447,44 +443,14 @@ MCGenerator::translate(const TranslArgs& args) {
   }
 
   TCA start = code.main().frontier();
-
-  if (RuntimeOption::EvalJitDryRuns &&
-      (m_tx.mode() == TransKind::Live || m_tx.mode() == TransKind::Profile)) {
-    auto const useRegion =
-      RuntimeOption::EvalJitRegionSelector == "tracelet";
-    always_assert(useRegion ||
-                  RuntimeOption::EvalJitRegionSelector == "");
-
-    auto dryArgs = args;
-
-    dryArgs.dryRun(!useRegion);
-    {
-      // First, run translateWork with the tracelet region selector. If
-      // useRegion == false, the generated code will be thrown away at the end.
-      OPTION_GUARD(EvalJitRegionSelector, "tracelet");
-      OPTION_GUARD(EvalHHIRRelaxGuards, true);
-      OPTION_GUARD(EvalHHBCRelaxGuards, false);
-      translateWork(dryArgs);
-    }
-
-    dryArgs.dryRun(useRegion);
-    {
-      // Now translate with analyze(), throwing away the generated code if
-      // useRegion == true.
-      OPTION_GUARD(EvalJitRegionSelector, "");
-      OPTION_GUARD(EvalHHIRRelaxGuards, false);
-      OPTION_GUARD(EvalHHBCRelaxGuards, true);
-      translateWork(dryArgs);
-    }
-  } else {
-    translateWork(args);
-  }
+  translateWork(args);
 
   if (args.m_setFuncBody) {
     func->setFuncBody(start);
   }
   SKTRACE(1, args.m_sk, "translate moved head from %p to %p\n",
           getTopTranslation(args.m_sk), start);
+
   return start;
 }
 
@@ -586,13 +552,14 @@ MCGenerator::checkCachedPrologue(const Func* func, int paramIdx,
 static void interp_set_regs(ActRec* ar, Cell* sp, Offset pcOff) {
   assert(tl_regState == VMRegState::DIRTY);
   tl_regState = VMRegState::CLEAN;
-  vmfp() = (Cell*)ar;
+  vmfp() = ar;
   vmsp() = sp;
   vmpc() = ar->unit()->at(pcOff);
 }
 
 TCA
-MCGenerator::getFuncPrologue(Func* func, int nPassed, ActRec* ar) {
+MCGenerator::getFuncPrologue(Func* func, int nPassed, ActRec* ar,
+                             bool ignoreTCLimit) {
   func->validate();
   TRACE(1, "funcPrologue %s(%d)\n", func->fullName()->data(), nPassed);
   int const numParams = func->numNonVariadicParams();
@@ -620,7 +587,8 @@ MCGenerator::getFuncPrologue(Func* func, int nPassed, ActRec* ar) {
   }
 
   LeaseHolder writer(Translator::WriteLease());
-  if (!writer || !shouldTranslate()) return nullptr;
+  if (!writer) return nullptr;
+  if (!ignoreTCLimit && !shouldTranslate()) return nullptr;
 
   // Double check the prologue array now that we have the write lease
   // in case another thread snuck in and set the prologue already.
@@ -652,14 +620,15 @@ MCGenerator::getFuncPrologue(Func* func, int nPassed, ActRec* ar) {
   // prologues, this is just a possible prologue.
   TCA aStart    = code.main().frontier();
   TCA start     = aStart;
-  TCA stubStart = code.stubs().frontier();
+  TCA realColdStart   = mcg->code.realCold().frontier();
+  TCA realFrozenStart = mcg->code.realFrozen().frontier();
 
   auto const skFuncBody = [&] {
-    assert(m_pendingFixups.empty());
-    auto ret = backEnd().emitFuncPrologue(code.main(), code.stubs(), func,
+    assert(m_fixups.empty());
+    auto ret = backEnd().emitFuncPrologue(code.main(), code.cold(), func,
                                           funcIsMagic, nPassed,
                                           start, aStart);
-    processPendingFixups();
+    m_fixups.process();
     return ret;
   }();
 
@@ -671,10 +640,11 @@ MCGenerator::getFuncPrologue(Func* func, int nPassed, ActRec* ar) {
 
   assert(m_tx.mode() == TransKind::Prologue ||
          m_tx.mode() == TransKind::Proflogue);
-  TransRec tr(skFuncBody, func->unit()->md5(),
-              skFuncBody.func()->fullName()->data(),
-              m_tx.mode(), aStart, code.main().frontier() - aStart,
-              stubStart, code.stubs().frontier() - stubStart);
+  TransRec tr(skFuncBody,
+              m_tx.mode(),
+              aStart,          code.main().frontier()       - aStart,
+              realColdStart,   code.realCold().frontier()   - realColdStart,
+              realFrozenStart, code.realFrozen().frontier() - realFrozenStart);
   m_tx.addTranslation(tr);
   if (RuntimeOption::EvalJitUseVtuneAPI) {
     reportTraceletToVtune(func->unit(), func, tr);
@@ -707,7 +677,8 @@ TCA MCGenerator::regeneratePrologue(TransID prologueTransId,
   func->resetPrologue(nArgs);
   m_tx.setMode(TransKind::Prologue);
   SCOPE_EXIT { m_tx.setMode(TransKind::Invalid); };
-  TCA start = getFuncPrologue(func, nArgs);
+  TCA start = getFuncPrologue(func, nArgs, nullptr /* ActRec */,
+                              true /* ignoreTCLimit */);
   func->setPrologue(nArgs, start);
 
   // Smash callers of the old prologue with the address of the new one.
@@ -734,7 +705,7 @@ TCA MCGenerator::regeneratePrologue(TransID prologueTransId,
     auto paramInfo = func->params()[nArgs];
     if (paramInfo.hasDefaultValue()) {
       m_tx.setMode(TransKind::Optimize);
-      SrcKey  funcletSK(func, paramInfo.funcletOff(), false);
+      SrcKey  funcletSK(func, paramInfo.funcletOff, false);
       TransID funcletTransId = m_tx.profData()->dvFuncletTransId(func, nArgs);
       if (funcletTransId != kInvalidTransID) {
         invalidateSrcKey(funcletSK);
@@ -802,12 +773,14 @@ TCA MCGenerator::regeneratePrologues(Func* func, SrcKey triggerSk) {
  *   u:dest from toSmash.
  */
 TCA
-MCGenerator::bindJmp(TCA toSmash, SrcKey destSk,
-                     ServiceRequest req, bool& smashed) {
-  TCA tDest = getTranslation(TranslArgs(destSk, false));
+MCGenerator::bindJmp(TCA toSmash, SrcKey destSk, ServiceRequest req,
+                     TransFlags trflags, bool& smashed) {
+  TCA tDest = getTranslation(TranslArgs(destSk, false).flags(trflags));
   if (!tDest) return nullptr;
+
   LeaseHolder writer(Translator::WriteLease());
   if (!writer) return tDest;
+
   SrcRec* sr = m_tx.getSrcRec(destSk);
   // The top translation may have changed while we waited for the
   // write lease, so read it again.  If it was replaced with a new
@@ -891,8 +864,8 @@ MCGenerator::bindJmpccFirst(TCA toSmash,
 
   auto& cb = code.blockFor(toSmash);
   Asm as { cb };
-  // Its not clear where chainFrom should go to if as is astubs
-  assert(&cb != &code.stubs());
+  // Its not clear where the IncomingBranch should go to if cb is code.frozen()
+  assert(&cb != &code.frozen());
 
   // XXX Use of kJmp*Len here is a layering violation.
   using namespace X64;
@@ -916,8 +889,10 @@ MCGenerator::bindJmpccFirst(TCA toSmash,
     return tDest;
   }
 
-  TCA stub = emitEphemeralServiceReq(code.unused(), getFreeStub(code.unused()),
-                                     REQ_BIND_JMPCC_SECOND, toSmash,
+  TCA stub = emitEphemeralServiceReq(code.frozen(),
+                                     getFreeStub(code.frozen(), nullptr),
+                                     REQ_BIND_JMPCC_SECOND,
+                                     RipRelative(toSmash),
                                      offWillDefer, cc);
 
   smashed = true;
@@ -963,37 +938,6 @@ MCGenerator::bindJmpccSecond(TCA toSmash, const Offset off,
     }
   }
   return branch;
-}
-
-void MCGenerator::emitResolvedDeps(const ChangeMap& resolvedDeps) {
-  for (const auto dep : resolvedDeps) {
-    m_tx.irTrans()->assertType(dep.first, dep.second->rtt);
-  }
-}
-
-void
-MCGenerator::checkRefs(SrcKey sk,
-                       const RefDeps& refDeps,
-                       SrcRec& fail) {
-  if (refDeps.size() == 0) {
-    return;
-  }
-
-  // Set up guards for each pushed ActRec that we've made reffiness
-  // assumptions about
-  for (RefDeps::ArMap::const_iterator it = refDeps.m_arMap.begin();
-       it != refDeps.m_arMap.end(); ++it) {
-    // Be careful! The actual Func might have fewer refs than the number
-    // of args we're passing. To forestall this, we always prepare at
-    // least 64 bits in the Func, and always fill out the refBitVec
-    // to a multiple of 64 bits
-
-    int entryArDelta = it->first;
-
-    m_tx.irTrans()->hhbcTrans().guardRefs(entryArDelta,
-                                          it->second.m_mask,
-                                          it->second.m_vals);
-  }
 }
 
 namespace {
@@ -1060,11 +1004,11 @@ MCGenerator::enterTC(TCA start, void* data) {
     // recognizes, or we luck out and the leaseholder exits.
     while (!start) {
       TRACE(2, "enterTC forwarding BB to interpreter\n");
-      g_context->m_pc = sk.unit()->at(sk.offset());
+      vmpc() = sk.unit()->at(sk.offset());
       INC_TPC(interp_bb);
       g_context->dispatchBB();
-      PC newPc = g_context->getPC();
-      if (!newPc) { g_context->m_fp = 0; return; }
+      PC newPc = vmpc();
+      if (!newPc) { vmfp() = 0; return; }
       sk = SrcKey(liveFunc(), newPc, liveResumed());
       start = getTranslation(TranslArgs(sk, true));
     }
@@ -1087,7 +1031,7 @@ MCGenerator::enterTC(TCA start, void* data) {
     }
 
     mcg->backEnd().enterTCHelper(start, info);
-    assert(g_context->m_stack.isValidAddress((uintptr_t)vmsp()));
+    assert(isValidVMStackAddress(vmRegsUnsafe().stack.top()));
 
     tl_regState = VMRegState::CLEAN; // Careful: pc isn't sync'ed yet.
     TRACE(1, "enterTC: %p fp%p sp%p } return\n", start,
@@ -1173,6 +1117,7 @@ bool MCGenerator::handleServiceRequest(TReqInfo& info,
         if (!isImmutable) dest = backEnd().funcPrologueToGuard(dest, func);
 
         if (backEnd().callTarget(toSmash) != dest) {
+          assert(backEnd().callTarget(toSmash));
           TRACE(2, "enterTC: bindCall smash %p -> %p\n", toSmash, dest);
           backEnd().smashCall(toSmash, dest);
           smashed = true;
@@ -1221,10 +1166,12 @@ bool MCGenerator::handleServiceRequest(TReqInfo& info,
     TCA toSmash = (TCA)args[0];
     auto ai = static_cast<SrcKey::AtomicInt>(args[1]);
     sk = SrcKey::fromAtomicInt(ai);
+    TransFlags trflags{args[2]};
+
     if (requestNum == REQ_BIND_SIDE_EXIT) {
       SKTRACE(3, sk, "side exit taken!\n");
     }
-    start = bindJmp(toSmash, sk, requestNum, smashed);
+    start = bindJmp(toSmash, sk, requestNum, trflags, smashed);
   } break;
 
   case REQ_BIND_JMPCC_FIRST: {
@@ -1260,13 +1207,14 @@ bool MCGenerator::handleServiceRequest(TReqInfo& info,
   case REQ_RETRANSLATE: {
     INC_TPC(retranslate);
     sk = SrcKey(liveFunc(), (Offset)args[0], liveResumed());
-    start = retranslate(TranslArgs(sk, true));
+    auto trflags = TransFlags(args[1]);
+    start = retranslate(TranslArgs(sk, true).flags(trflags));
     SKTRACE(2, sk, "retranslated @%p\n", start);
   } break;
 
   case REQ_INTERPRET: {
     Offset off = args[0];
-    g_context->m_pc = liveUnit()->at(off);
+    vmpc() = liveUnit()->at(off);
     /*
      * We know the compilation unit has not changed; basic blocks do
      * not span files. I claim even exceptions do not violate this
@@ -1276,8 +1224,8 @@ bool MCGenerator::handleServiceRequest(TReqInfo& info,
     // dispatch until BB ends
     INC_TPC(interp_bb);
     g_context->dispatchBB();
-    PC newPc = g_context->getPC();
-    if (!newPc) { g_context->m_fp = 0; return false; }
+    PC newPc = vmpc();
+    if (!newPc) { vmfp() = 0; return false; }
     SrcKey newSk(liveFunc(), newPc, liveResumed());
     SKTRACE(5, newSk, "interp: exit\n");
     sk = newSk;
@@ -1289,7 +1237,7 @@ bool MCGenerator::handleServiceRequest(TReqInfo& info,
     // getting to the destination's translation, if any.
     ActRec* ar = (ActRec*)args[0];
     ActRec* caller = (ActRec*)args[1];
-    assert((Cell*) caller == vmfp());
+    assert(caller == vmfp());
     Unit* destUnit = caller->m_func->unit();
     // Set PC so logging code in getTranslation doesn't get confused.
     vmpc() = destUnit->at(caller->m_func->base() + ar->m_soff);
@@ -1303,7 +1251,7 @@ bool MCGenerator::handleServiceRequest(TReqInfo& info,
 
   case REQ_RESUME: {
     if (UNLIKELY(vmpc() == 0)) {
-      g_context->m_fp = 0;
+      vmfp() = 0;
       return false;
     }
     SrcKey dest(liveFunc(), vmpc(), liveResumed());
@@ -1341,6 +1289,7 @@ bool MCGenerator::handleServiceRequest(TReqInfo& info,
     not_reached();
   }
 
+  assert(start != TCA(0xbee5face));
   if (smashed && info.stubAddr) {
     Treadmill::enqueue(FreeRequestStubTrigger(info.stubAddr));
   }
@@ -1386,21 +1335,24 @@ MCGenerator::freeRequestStub(TCA stub) {
    * (FreeRequestStubTrigger) retries
    */
   if (!writer) return false;
-  assert(code.unused().contains(stub));
+  assert(code.frozen().contains(stub));
   m_freeStubs.push(stub);
   return true;
 }
 
-TCA MCGenerator::getFreeStub(CodeBlock& unused) {
+TCA MCGenerator::getFreeStub(CodeBlock& frozen, CodeGenFixups* fixups) {
   TCA ret = m_freeStubs.maybePop();
   if (ret) {
-    Stats::inc(Stats::Astubs_Reused);
+    Stats::inc(Stats::Astub_Reused);
     always_assert(m_freeStubs.m_list == nullptr ||
-                  code.unused().contains(TCA(m_freeStubs.m_list)));
+                  code.isValidCodeAddress(TCA(m_freeStubs.m_list)));
     TRACE(1, "recycle stub %p\n", ret);
+    if (fixups) {
+      fixups->m_reusedStubs.emplace_back(ret);
+    }
   } else {
-    ret = unused.frontier();
-    Stats::inc(Stats::Astubs_New);
+    ret = frozen.frontier();
+    Stats::inc(Stats::Astub_New);
     TRACE(1, "alloc new stub %p\n", ret);
   }
   return ret;
@@ -1549,8 +1501,8 @@ MCGenerator::reachedTranslationLimit(SrcKey sk,
           SKTRACE(2, sk, "%zd: Anchor\n", i);
         } else {
           SKTRACE(2, sk, "%zd: guards {\n", i);
-          for (unsigned j = 0; j < rec->dependencies.size(); ++j) {
-            TRACE(2, rec->dependencies[j]);
+          for (unsigned j = 0; j < rec->guards.size(); ++j) {
+            FTRACE(2, "{}\n", rec->guards[j]);
           }
           SKTRACE(2, sk, "%zd } guards\n", i);
         }
@@ -1564,145 +1516,99 @@ MCGenerator::reachedTranslationLimit(SrcKey sk,
 }
 
 void
-MCGenerator::emitGuardChecks(SrcKey sk,
-                             const ChangeMap& resolvedDeps,
-                             const ChangeMap& dependencies,
-                             const RefDeps& refDeps,
-                             SrcRec& fail) {
-  if (Trace::moduleEnabled(Trace::stats, 2)) {
-    emitIncStat(code.main(), Stats::TraceletGuard_enter);
-  }
-
-  m_tx.irTrans()->hhbcTrans().emitRB(RBTypeTraceletGuards, sk);
-  bool checkOuterTypeOnly = m_tx.mode() != TransKind::Profile;
-  for (auto const& dep : dependencies) {
-    /*
-     * In some cases, we may have relaxed a guard to be the same as
-     * something we knew from static analysis (in resolvedDeps)---in
-     * this case skip emitting it.
-     *
-     * Note: this could probably also check whether we knew something
-     * /better/ from static analysis than what we are trying to guard
-     * on.  This code is on its way out and the tracelet region
-     * selector doesn't have these issues, though, so we haven't tried
-     * that here.
-     */
-    auto const it = resolvedDeps.find(dep.first);
-    if (it != end(resolvedDeps)) {
-      if (it->second->rtt == dep.second->rtt) {
-        continue;
-      }
-    }
-    m_tx.irTrans()->checkType(dep.first, dep.second->rtt, checkOuterTypeOnly);
-  }
-
-  checkRefs(sk, refDeps, fail);
-
-  if (Trace::moduleEnabled(Trace::stats, 2)) {
-    emitIncStat(code.main(), Stats::TraceletGuard_execute);
-  }
-}
-
-
-void dumpTranslationInfo(const Tracelet& t, TCA postGuards) {
-  if (!debug) return;
-
-  SrcKey sk = t.m_sk;
-  DEBUG_ONLY auto unit = sk.unit();
-
-  TRACE(3, "----------------------------------------------\n");
-  TRACE(3, "  Translating from file %s:%d %s at %p:\n",
-        unit->filepath()->data(),
-        unit->getLineNumber(sk.offset()),
-        sk.func()->name()->data(),
-        postGuards);
-  TRACE(3, "  preconds:\n");
-  TRACE(3, "    types:\n");
-  for (DepMap::const_iterator i = t.m_dependencies.begin();
-       i != t.m_dependencies.end(); ++i) {
-    TRACE(3, "      %-5s\n", i->second->pretty().c_str());
-  }
-  if (t.m_refDeps.size() != 0) {
-    TRACE(3, "    refs:\n");
-    for (RefDeps::ArMap::const_iterator i = t.m_refDeps.m_arMap.begin();
-        i != t.m_refDeps.m_arMap.end();
-        ++i) {
-      TRACE(3, "      (ActRec %" PRId64 " : %-5s)\n", i->first,
-        i->second.pretty().c_str());
-    }
-  }
-  TRACE(3, "  postconds:\n");
-  for (ChangeMap::const_iterator i = t.m_changes.begin();
-       i != t.m_changes.end(); ++i) {
-    TRACE(3, "    %-5s\n", i->second->pretty().c_str());
-  }
-  for (auto ni = t.m_instrStream.first; ni; ni = ni->next) {
-    TRACE(3, "  %6d: %s\n", ni->source.offset(),
-      instrToString((Op*)ni->pc()).c_str());
-    if (ni->breaksTracelet) break;
-  }
-  TRACE(3, "----------------------------------------------\n");
-  if (Trace::moduleEnabled(Trace::mcg, 5)) {
-    // prettyStack() expects to use vmpc(). Leave it in the state we
-    // found it since this code is debug-only, and we don't want behavior
-    // to vary across the optimized/debug builds.
-    PC oldPC = vmpc();
-    vmpc() = unit->at(sk.offset());
-    TRACE(3, g_context->prettyStack(std::string(" mcg ")));
-    vmpc() = oldPC;
-    TRACE(3, "----------------------------------------------\n");
-  }
-}
-
-void
 MCGenerator::recordSyncPoint(CodeAddress frontier, Offset pcOff, Offset spOff) {
-  m_pendingFixups.push_back(PendingFixup(frontier, Fixup(pcOff, spOff)));
+  m_fixups.m_pendingFixups.push_back(
+    PendingFixup(frontier, Fixup(pcOff, spOff)));
 }
 
 void
-MCGenerator::processPendingFixups() {
+CodeGenFixups::process() {
   for (uint i = 0; i < m_pendingFixups.size(); i++) {
     TCA tca = m_pendingFixups[i].m_tca;
-    assert(isValidCodeAddress(tca));
-    m_fixupMap.recordFixup(tca, m_pendingFixups[i].m_fixup);
+    assert(mcg->isValidCodeAddress(tca));
+    mcg->fixupMap().recordFixup(tca, m_pendingFixups[i].m_fixup);
   }
   m_pendingFixups.clear();
+
+  for (auto const& pair : m_pendingCatchTraces) {
+    mcg->catchTraceMap().insert(pair.first, pair.second);
+  }
+  m_pendingCatchTraces.clear();
+
+  for (auto const& elm : m_pendingJmpTransIDs) {
+    mcg->getJmpToTransIDMap().insert(elm);
+  }
+  m_pendingJmpTransIDs.clear();
+  /*
+   * Currently these are only used by the relocator,
+   * so there's nothing left to do here.
+   *
+   * Once we try to relocate live code, we'll need to
+   * store compact forms of these for later.
+   */
+  m_reusedStubs.clear();
+  m_addressImmediates.clear();
+  m_codePointers.clear();
+  m_bcMap.clear();
+  m_alignFixups.clear();
 }
 
+void CodeGenFixups::clear() {
+  m_pendingFixups.clear();
+  m_pendingCatchTraces.clear();
+  m_pendingJmpTransIDs.clear();
+  m_reusedStubs.clear();
+  m_addressImmediates.clear();
+  m_codePointers.clear();
+  m_bcMap.clear();
+  m_alignFixups.clear();
+}
+
+bool CodeGenFixups::empty() const {
+  return
+    m_pendingFixups.empty() &&
+    m_pendingCatchTraces.empty() &&
+    m_pendingJmpTransIDs.empty() &&
+    m_reusedStubs.empty() &&
+    m_addressImmediates.empty() &&
+    m_codePointers.empty() &&
+    m_bcMap.empty() &&
+    m_alignFixups.empty();
+}
 
 void
 MCGenerator::translateWork(const TranslArgs& args) {
   Timer _t(Timer::translate);
   auto sk = args.m_sk;
-  std::unique_ptr<Tracelet> tp;
 
   SKTRACE(1, sk, "translateWork\n");
   assert(m_tx.getSrcDB().find(sk));
 
   TCA        start             = code.main().frontier();
-  TCA        stubStart         = code.stubs().frontier();
+  TCA        coldStart         = code.cold().frontier();
+  TCA        realColdStart     = code.realCold().frontier();
+  TCA DEBUG_ONLY frozenStart   = code.frozen().frontier();
+  TCA        realFrozenStart   = code.realFrozen().frontier();
   SrcRec&    srcRec            = *m_tx.getSrcRec(sk);
   TransKind  transKindToRecord = TransKind::Interp;
   UndoMarker undoA(code.main());
-  UndoMarker undoAstubs(code.stubs());
+  UndoMarker undoAcold(code.cold());
+  UndoMarker undoAfrozen(code.frozen());
   UndoMarker undoGlobalData(code.data());
 
   auto resetState = [&] {
     undoA.undo();
-    undoAstubs.undo();
+    undoAcold.undo();
+    undoAfrozen.undo();
     undoGlobalData.undo();
-    m_pendingFixups.clear();
-    m_pendingCatchTraces.clear();
-    m_bcMap.clear();
+    m_fixups.clear();
     srcRec.clearInProgressTailJumps();
   };
 
   auto assertCleanState = [&] {
     assert(code.main().frontier() == start);
-    assert(code.stubs().frontier() == stubStart);
-    assert(m_pendingFixups.empty());
-    assert(m_pendingCatchTraces.empty());
-    assert(m_bcMap.empty());
+    assert(code.frozen().frontier() == frozenStart);
+    assert(m_fixups.empty());
     assert(srcRec.inProgressTailJumps().empty());
   };
 
@@ -1725,27 +1631,11 @@ MCGenerator::translateWork(const TranslArgs& args) {
     } else {
       assert(m_tx.mode() == TransKind::Profile ||
              m_tx.mode() == TransKind::Live);
-      tp = m_tx.analyze(sk);
       RegionContext rContext { sk.func(), sk.offset(), liveSpOff(),
                                sk.resumed() };
       FTRACE(2, "populating live context for region\n");
       populateLiveContext(rContext);
-      region = selectRegion(rContext, tp.get(), m_tx.mode());
-
-      if (RuntimeOption::EvalJitCompareRegions &&
-          RuntimeOption::EvalJitRegionSelector == "tracelet") {
-        // Re-analyze with guard relaxation on
-        OPTION_GUARD(EvalHHBCRelaxGuards, 1);
-        OPTION_GUARD(EvalHHIRRelaxGuards, 0);
-        auto legacyRegion = selectTraceletLegacy(rContext.spOffset,
-                                                 *m_tx.analyze(sk));
-        if (!region) {
-          Trace::ftraceRelease("{:-^60}\nCouldn't select tracelet region "
-                               "for:\n{}", "", show(*legacyRegion));
-        } else {
-          diffRegions(*region, *legacyRegion);
-        }
-      }
+      region = selectRegion(rContext, m_tx.mode());
     }
 
     Translator::TranslateResult result = Translator::Retry;
@@ -1767,77 +1657,69 @@ MCGenerator::translateWork(const TranslArgs& args) {
     while (result == Translator::Retry) {
       m_tx.traceStart(transContext);
 
-      // Try translating a region if we have one, then fall back to using the
-      // Tracelet.
-      if (region) {
-        try {
-          assertCleanState();
-          result = m_tx.translateRegion(*region, bcControlFlow, regionInterps);
-
-          // If we're profiling, grab the postconditions so we can
-          // use them in region selection whenever we decide to retranslate.
-          if (m_tx.mode() == TransKind::Profile &&
-              result == Translator::Success &&
-              RuntimeOption::EvalJitPGOUsePostConditions) {
-            pconds = m_tx.irTrans()->hhbcTrans().irBuilder().getKnownTypes();
-          }
-
-          FTRACE(2, "translateRegion finished with result {}\n",
-                 Translator::translateResultName(result));
-        } catch (ControlFlowFailedExc& cfe) {
-          FTRACE(2, "translateRegion with control flow failed: '{}'\n",
-                 cfe.what());
-          always_assert(bcControlFlow &&
-            "control flow translation failed, but control flow not enabled");
-          bcControlFlow = false;
-          result = Translator::Retry;
-        } catch (const std::exception& e) {
-          FTRACE(1, "translateRegion failed with '{}'\n", e.what());
-          result = Translator::Failure;
-        }
-        if (result == Translator::Failure) {
-          m_tx.traceFree();
-          m_tx.traceStart(transContext);
-          resetState();
-        }
+      if (!region) {
+        m_tx.setMode(TransKind::Interp);
+        m_tx.traceFree();
+        break;
       }
-      if (!region || result == Translator::Failure) {
-        // If the region translator failed for an Optimize
-        // translation, it's OK to do a Live translation for the
-        // function entry.  We lazily create the tracelet here in this
-        // case.
+
+      try {
+        assertCleanState();
+        result = m_tx.translateRegion(*region, bcControlFlow,
+                                      regionInterps, args.m_flags);
+
+        // If we're profiling, grab the postconditions so we can
+        // use them in region selection whenever we decide to retranslate.
+        if (m_tx.mode() == TransKind::Profile &&
+            result == Translator::Success &&
+            RuntimeOption::EvalJitPGOUsePostConditions) {
+          pconds = m_tx.irTrans()->hhbcTrans().unit().postConditions();
+        }
+
+        FTRACE(2, "translateRegion finished with result {}\n",
+               Translator::translateResultName(result));
+      } catch (ControlFlowFailedExc& cfe) {
+        FTRACE(2, "translateRegion with control flow failed: '{}'\n",
+               cfe.what());
+        always_assert(bcControlFlow &&
+                      "control flow translation failed, but control flow not "
+                      "enabled");
+        bcControlFlow = false;
+        result = Translator::Retry;
+      } catch (const std::exception& e) {
+        FTRACE(1, "translateRegion failed with '{}'\n", e.what());
+        result = Translator::Failure;
+      }
+
+      if (result != Translator::Success) {
+        // Translation failed or will be retried. Free resources for this
+        // trace, rollback the translation cache frontiers, and discard any
+        // pending fixups.
+        resetState();
+      }
+
+      if (result == Translator::Failure) {
+        // If the region translator failed for an Optimize translation, it's OK
+        // to do a Live translation for the function entry. Otherwise, fall
+        // back to Interp.
         if (m_tx.mode() == TransKind::Optimize) {
           if (sk.getFuncId() == liveFunc()->getFuncId() &&
               liveUnit()->contains(vmpc()) &&
               sk.offset() == liveUnit()->offsetOf(vmpc()) &&
               sk.resumed() == liveResumed()) {
             m_tx.setMode(TransKind::Live);
-            tp = m_tx.analyze(sk);
+            RegionContext rContext { sk.func(), sk.offset(), liveSpOff(),
+                sk.resumed() };
+            FTRACE(2, "populating live context for region after failed optimize"
+                   "translation\n");
+            populateLiveContext(rContext);
+            region = selectRegion(rContext, m_tx.mode());
           } else {
-            m_tx.setMode(TransKind::Interp);
-            m_tx.traceFree();
-            break;
+            region.reset();
           }
         }
-        FTRACE(1, "trying translateTracelet\n");
-        assertCleanState();
-        result = translateTracelet(*tp);
-
-        // If we're profiling, grab the postconditions so we can
-        // use them in region selection whenever we decide to
-        // retranslate.
-        if (m_tx.mode() == TransKind::Profile &&
-            result == Translator::Success &&
-            RuntimeOption::EvalJitPGOUsePostConditions) {
-          pconds = m_tx.irTrans()->hhbcTrans().irBuilder().getKnownTypes();
-        }
       }
 
-      if (result != Translator::Success) {
-        // Translation failed. Free resources for this trace, rollback the
-        // translation cache frontiers, and discard any pending fixups.
-        resetState();
-      }
       m_tx.traceFree();
     }
 
@@ -1857,39 +1739,35 @@ MCGenerator::translateWork(const TranslArgs& args) {
   if (transKindToRecord == TransKind::Interp) {
     assertCleanState();
     FTRACE(1, "emitting dispatchBB interp request for failed translation\n");
-    mcg->backEnd().emitInterpReq(code.main(), code.stubs(), sk);
+    mcg->backEnd().emitInterpReq(code.main(), code.cold(), sk);
     // Fall through.
   }
 
-  processPendingFixups();
-  processPendingCatchTraces();
-
-  TransRec tr(sk, sk.unit()->md5(), sk.func()->fullName()->data(),
-              transKindToRecord, tp.get(), start,
-              code.main().frontier() - start, stubStart,
-              code.stubs().frontier() - stubStart,
-              m_bcMap);
-  m_tx.addTranslation(tr);
-  if (RuntimeOption::EvalJitUseVtuneAPI) {
-    reportTraceletToVtune(sk.unit(), sk.func(), tr);
-  }
-  m_bcMap.clear();
-
   recordGdbTranslation(sk, sk.func(), code.main(), start,
                        false, false);
-  recordGdbTranslation(sk, sk.func(), code.stubs(), stubStart,
+  recordGdbTranslation(sk, sk.func(), code.cold(), coldStart,
                        false, false);
   if (RuntimeOption::EvalJitPGO) {
     if (transKindToRecord == TransKind::Profile) {
-      if (!region) {
-        assert(tp);
-        region = selectTraceletLegacy(liveSpOff(), *tp);
-      }
+      always_assert(region);
       m_tx.profData()->addTransProfile(region, pconds);
     } else {
       m_tx.profData()->addTransNonProf(transKindToRecord, sk);
     }
   }
+
+  TransRec tr(sk, transKindToRecord,
+              start,           code.main().frontier()       - start,
+              realColdStart,   code.realCold().frontier()   - realColdStart,
+              realFrozenStart, code.realFrozen().frontier() - realFrozenStart,
+              region, m_fixups.m_bcMap);
+  m_tx.addTranslation(tr);
+  if (RuntimeOption::EvalJitUseVtuneAPI) {
+    reportTraceletToVtune(sk.unit(), sk.func(), tr);
+  }
+
+  m_fixups.process();
+
   // SrcRec::newTranslation() makes this code reachable. Do this last;
   // otherwise there's some chance of hitting in the reader threads whose
   // metadata is not yet visible.
@@ -1900,178 +1778,6 @@ MCGenerator::translateWork(const TranslArgs& args) {
   if (Trace::moduleEnabledRelease(Trace::tcspace, 1)) {
     Trace::traceRelease("%s", getUsage().c_str());
   }
-}
-
-Translator::TranslateResult
-MCGenerator::translateTracelet(Tracelet& t) {
-  if (RuntimeOption::EvalJitRegionSelector != "") {
-    // In order to properly simulate a post-Tracelet world, refuse to translate
-    // Tracelets when a region selector is active.
-    return Translator::Failure;
-  }
-
-  Timer _t(Timer::translateTracelet);
-
-  FTRACE(2, "attempting to translate tracelet:\n{}\n", t.toString());
-  const SrcKey &sk = t.m_sk;
-  SrcRec& srcRec = *m_tx.getSrcRec(sk);
-  HhbcTranslator& ht = m_tx.irTrans()->hhbcTrans();
-  bool profilingFunc = false;
-
-  assert(srcRec.inProgressTailJumps().size() == 0);
-  try {
-    emitResolvedDeps(t.m_resolvedDeps);
-    {
-      emitGuardChecks(sk, t.m_resolvedDeps,
-        t.m_dependencies, t.m_refDeps, srcRec);
-
-      dumpTranslationInfo(t, code.main().frontier());
-
-      // after guards, add a counter for the translation if requested
-      if (RuntimeOption::EvalJitTransCounters) {
-        ht.emitIncTransCounter();
-      }
-
-      if (m_tx.mode() == TransKind::Profile) {
-        profilingFunc = true;
-        if (t.func()->isEntry(sk.offset())) {
-          ht.emitCheckCold(m_tx.profData()->curTransID());
-        } else {
-          ht.emitIncProfCounter(m_tx.profData()->curTransID());
-        }
-      }
-
-      ht.emitRB(RBTypeTraceletBody, t.m_sk);
-      emitIncStat(code.main(), Stats::Instr_TC, t.m_numOpcodes);
-    }
-
-    // Profiling on function entry.
-    if (t.m_sk.offset() == t.func()->base()) {
-      ht.profileFunctionEntry("Normal");
-    }
-
-    /*
-     * Profiling on the shapes of tracelets that are whole functions.
-     * (These are the things we might consider trying to support
-     * inlining.)
-     */
-    [&]{
-      static const bool enabled = Stats::enabledAny() &&
-                                  getenv("HHVM_STATS_FUNCSHAPE");
-      if (!enabled) return;
-      if (t.m_sk.offset() != t.func()->base()) return;
-      if (auto last = t.m_instrStream.last) {
-        if (last->op() != OpRetC && last->op() != OpRetV &&
-            last->op() != OpCreateCont) {
-          return;
-        }
-      }
-      ht.profileSmallFunctionShape(traceletShape(t));
-    }();
-
-    Timer irGenTimer(Timer::translateTracelet_irGeneration);
-    // Translate each instruction in the tracelet
-    for (auto* ni = t.m_instrStream.first; ni && !ht.hasExit();
-         ni = ni->next) {
-      ht.setBcOff(ni->source.offset(),
-                  ni->breaksTracelet && !ht.isInlining());
-      if (isAlwaysNop(ni->op())) ni->noOp = true;
-
-      try {
-        SKTRACE(1, ni->source, "HHIR: translateInstr\n");
-        assert(!(m_tx.mode() ==
-               TransKind::Profile && ni->outputPredicted && ni->next));
-        m_tx.irTrans()->translateInstr(*ni);
-      } catch (FailedIRGen& fcg) {
-        always_assert(!ni->interp);
-        ni->interp = true;
-        FTRACE(1, "HHIR: RETRY Translation {}: will interpOne BC instr {} "
-               "after failing to generate ir: {} \n\n",
-               m_tx.getCurrentTransID(), ni->toString(), fcg.what());
-        return Translator::Retry;
-      }
-      assert(ni->source.offset() >= t.func()->base());
-      // We sometimes leave the tail of a truncated tracelet in place to aid
-      // analysis, but breaksTracelet is authoritative.
-      if (ni->breaksTracelet || m_tx.irTrans()->hhbcTrans().hasExit()) break;
-    }
-    m_tx.traceEnd();
-    irGenTimer.end();
-
-    try {
-      traceCodeGen();
-      TRACE(1, "HHIR: SUCCEEDED to generate code for Translation %d\n\n\n",
-            m_tx.getCurrentTransID());
-      if (profilingFunc) m_tx.profData()->setProfiling(t.func()->getFuncId());
-      return Translator::Success;
-    } catch (FailedCodeGen& fcg) {
-      // Code-gen failed. Search for the bytecode instruction that caused the
-      // problem, flag it to be interpreted, and retranslate the tracelet.
-      SrcKey sk{fcg.vmFunc, fcg.bcOff, fcg.resumed};
-
-      for (auto ni = t.m_instrStream.first; ni; ni = ni->next) {
-        if (ni->source == sk) {
-          always_assert_log(
-            !ni->interp,
-            [&] {
-              std::ostringstream oss;
-              oss << folly::format("code generation failed with {}\n",
-                                   fcg.what());
-              print(oss, m_tx.irTrans()->hhbcTrans().unit());
-              return oss.str();
-            });
-
-          ni->interp = true;
-          FTRACE(1, "HHIR: RETRY Translation {}: will interpOne BC instr {} "
-                 "after failing to code-gen \n\n",
-                 m_tx.getCurrentTransID(), ni->toString(), fcg.what());
-          return Translator::Retry;
-        }
-      }
-      throw fcg;
-    } catch (const DataBlockFull& dbFull) {
-      if (dbFull.name == "hot") {
-        always_assert_flog(tx().useAHot(), "data block = {}\nmessage: {}\n",
-                           dbFull.name, dbFull.what());
-        tx().setUseAHot(false);
-        // We can't return Retry here because the code block selection
-        // will still say hot.
-        return Translator::Failure;
-      }
-      throw dbFull;
-    }
-  } catch (FailedCodeGen& fcg) {
-    TRACE(1, "HHIR: FAILED to generate code for Translation %d "
-          "@ %s:%d (%s)\n", m_tx.getCurrentTransID(),
-          fcg.file, fcg.line, fcg.func);
-    // HHIR:TODO Remove extra TRACE and adjust tools
-    TRACE(1, "HHIR: FAILED to translate @ %s:%d (%s)\n",
-          fcg.file, fcg.line, fcg.func);
-  } catch (FailedIRGen& x) {
-    TRACE(1, "HHIR: FAILED to translate @ %s:%d (%s)\n",
-          x.file, x.line, x.func);
-  } catch (const FailedAssertion& fa) {
-    fa.print();
-    StackTraceNoHeap::AddExtraLogging(
-      "Assertion failure",
-      folly::format("{}\n\nActive Unit:\n{}\n",
-                    fa.summary, ht.unit().toString()).str());
-    abort();
-  } catch (const FailedTraceGen& e) {
-    FTRACE(1, "HHIR: FAILED to translate whole unit: {}\n",
-           e.what());
-  } catch (const DataBlockFull& dbFull) {
-    FTRACE(1, "HHIR: FAILED due to full data block: {}\n", dbFull.name);
-    if (dbFull.name == "hot") {
-      assert(tx().useAHot());
-      tx().setUseAHot(false);
-    } else {
-      always_assert_flog(0, "data block = {}\nmessage: {}\n",
-                         dbFull.name, dbFull.what());
-    }
-  }
-
-  return Translator::Failure;
 }
 
 void MCGenerator::traceCodeGen() {
@@ -2085,14 +1791,21 @@ void MCGenerator::traceCodeGen() {
 
   finishPass(" after initial translation ", kIRLevel);
 
-  optimize(unit, ht.irBuilder(), m_tx.mode());
-  finishPass(" after optimizing ", kOptLevel);
+  // Task #4075847: enable optimizations with loops
+  if (!(RuntimeOption::EvalJitLoops && m_tx.mode() == TransKind::Optimize)) {
+    optimize(unit, ht.irBuilder(), m_tx.mode());
+    finishPass(" after optimizing ", kOptLevel);
+  }
+  if (m_tx.mode() == TransKind::Profile &&
+      RuntimeOption::EvalJitPGOUsePostConditions) {
+    unit.collectPostConditions();
+  }
 
   auto regs = allocateRegs(unit);
   assert(checkRegisters(unit, regs)); // calls checkCfg internally.
 
   recordBCInstr(OpTraceletGuard, code.main(), code.main().frontier(), false);
-  genCode(unit, &m_bcMap, this, regs);
+  genCode(unit, this, regs);
 
   m_numHHIRTrans++;
 }
@@ -2130,14 +1843,7 @@ void MCGenerator::initUniqueStubs() {
 
 void MCGenerator::registerCatchBlock(CTCA ip, TCA block) {
   FTRACE(1, "registerCatchBlock: afterCall: {} block: {}\n", ip, block);
-  m_pendingCatchTraces.emplace_back(ip, block);
-}
-
-void MCGenerator::processPendingCatchTraces() {
-  for (auto const& pair : m_pendingCatchTraces) {
-    m_catchTraceMap.insert(pair.first, pair.second);
-  }
-  m_pendingCatchTraces.clear();
+  m_fixups.m_pendingCatchTraces.emplace_back(ip, block);
 }
 
 folly::Optional<TCA> MCGenerator::getCatchTrace(CTCA ip) const {
@@ -2155,8 +1861,6 @@ void MCGenerator::codeEmittedThisRequest(size_t& requestEntry,
 void MCGenerator::requestInit() {
   tl_regState = VMRegState::CLEAN;
   Timer::RequestInit();
-  PendQ::drain();
-  m_tx.requestResetHighLevelTranslator();
   Treadmill::startRequest();
   memset(&s_perfCounters, 0, sizeof(s_perfCounters));
   Stats::init();
@@ -2171,7 +1875,6 @@ void MCGenerator::requestExit() {
             " kept, %15" PRId64 " grabbed\n",
             Process::GetThreadIdForTrace(), Translator::WriteLease().m_hintKept,
             Translator::WriteLease().m_hintGrabbed);
-  PendQ::drain();
   Treadmill::finishRequest();
   Stats::dump();
   Stats::clear();
@@ -2219,18 +1922,18 @@ MCGenerator::~MCGenerator() {
 }
 
 static Debug::TCRange rangeFrom(const CodeBlock& cb, const TCA addr,
-                                bool isAstubs) {
+                                bool isAcold) {
   assert(cb.contains(addr));
-  return Debug::TCRange(addr, cb.frontier(), isAstubs);
+  return Debug::TCRange(addr, cb.frontier(), isAcold);
 }
 
 void MCGenerator::recordBCInstr(uint32_t op,
                                 const CodeBlock& cb,
                                 const TCA addr,
-                                bool stubs) {
+                                bool cold) {
   if (addr != cb.frontier()) {
     m_debugInfo.recordBCInstr(Debug::TCRange(addr, cb.frontier(),
-                                             stubs), op);
+                                             cold), op);
   }
 }
 
@@ -2243,7 +1946,7 @@ void MCGenerator::recordGdbTranslation(SrcKey sk,
   if (start != cb.frontier()) {
     assert(Translator::WriteLease().amOwner());
     if (!RuntimeOption::EvalJitNoGdb) {
-      m_debugInfo.recordTracelet(rangeFrom(cb, start, &cb == &code.stubs()),
+      m_debugInfo.recordTracelet(rangeFrom(cb, start, &cb == &code.cold()),
                                  srcFunc,
                                  reinterpret_cast<const Op*>(
                                    srcFunc->unit() ?
@@ -2252,7 +1955,7 @@ void MCGenerator::recordGdbTranslation(SrcKey sk,
                                  exit, inPrologue);
     }
     if (RuntimeOption::EvalPerfPidMap) {
-      m_debugInfo.recordPerfMap(rangeFrom(cb, start, &cb == &code.stubs()),
+      m_debugInfo.recordPerfMap(rangeFrom(cb, start, &cb == &code.cold()),
                                 srcFunc, exit, inPrologue);
     }
   }
@@ -2261,7 +1964,7 @@ void MCGenerator::recordGdbTranslation(SrcKey sk,
 void MCGenerator::recordGdbStub(const CodeBlock& cb,
                                 const TCA start, const char* name) {
   if (!RuntimeOption::EvalJitNoGdb) {
-    m_debugInfo.recordStub(rangeFrom(cb, start, &cb == &code.stubs()),
+    m_debugInfo.recordStub(rangeFrom(cb, start, &cb == &code.cold()),
                            name);
   }
 }
@@ -2281,6 +1984,13 @@ std::string MCGenerator::getUsage() {
   code.forEachBlock([&](const char* name, const CodeBlock& a) {
     addRow(std::string("code.") + name, a.used(), a.capacity());
   });
+  // Report code.stubs usage = code.cold + code.frozen usage, so
+  // ODS doesn't break.
+  auto const stubsUsed = code.realCold().used() + code.realFrozen().used();
+  auto const stubsCapacity = code.realCold().capacity() +
+    code.realFrozen().capacity();
+  addRow(std::string("code.stubs"), stubsUsed, stubsCapacity);
+
   addRow("data", code.data().used(), code.data().capacity());
   addRow("RDS", RDS::usedBytes(),
          RuntimeOption::EvalJitTargetCacheSize * 3 / 4);
@@ -2312,6 +2022,7 @@ bool MCGenerator::addDbgGuards(const Unit* unit) {
   if (!locked) {
     return false;
   }
+  assert(mcg->cgFixups().empty());
   struct timespec tsBegin, tsEnd;
   HPHP::Timer::GetMonotonicTime(tsBegin);
   // Doc says even find _could_ invalidate iterator, in pactice it should
@@ -2329,6 +2040,7 @@ bool MCGenerator::addDbgGuards(const Unit* unit) {
       addDbgGuardImpl(sk, sr);
     }
   }
+  mcg->cgFixups().process();
   Translator::WriteLease().drop();
   HPHP::Timer::GetMonotonicTime(tsEnd);
   int64_t elapsed = gettime_diff_us(tsBegin, tsEnd);
@@ -2360,11 +2072,13 @@ bool MCGenerator::addDbgGuard(const Func* func, Offset offset, bool resumed) {
   if (!locked) {
     return false;
   }
+  assert(mcg->cgFixups().empty());
   {
     if (SrcRec* sr = m_tx.getSrcDB().find(sk)) {
       addDbgGuardImpl(sk, sr);
     }
   }
+  mcg->cgFixups().process();
   Translator::WriteLease().drop();
   return true;
 }
@@ -2376,24 +2090,33 @@ bool MCGenerator::dumpTCCode(const char* filename) {
   if (F == nullptr) return false;                               \
   SCOPE_EXIT{ fclose(F); };
 
+  OPEN_FILE(ahotFile,       "_ahot");
   OPEN_FILE(aFile,          "_a");
   OPEN_FILE(aprofFile,      "_aprof");
-  OPEN_FILE(astubFile,      "_astub");
+  OPEN_FILE(acoldFile,      "_acold");
+  OPEN_FILE(afrozenFile,    "_afrozen");
   OPEN_FILE(helperAddrFile, "_helpers_addrs.txt");
 
 #undef OPEN_FILE
 
-  // dump starting from the trampolines; this assumes CodeCache places
-  // trampolines before the translation cache
-  size_t count = code.main().frontier() - code.trampolines().base();
-  bool result = (fwrite(code.trampolines().base(), 1, count, aFile) == count);
+  // dump starting from the hot region
+  size_t count = code.hot().used();
+  bool result = (fwrite(code.hot().base(), 1, count, ahotFile) == count);
+  if (result) {
+    count = code.main().used();
+    result = (fwrite(code.main().base(), 1, count, aFile) == count);
+  }
   if (result) {
     count = code.prof().used();
     result = (fwrite(code.prof().base(), 1, count, aprofFile) == count);
   }
   if (result) {
-    count = code.stubs().used();
-    result = (fwrite(code.stubs().base(), 1, count, astubFile) == count);
+    count = code.cold().used();
+    result = (fwrite(code.cold().base(), 1, count, acoldFile) == count);
+  }
+  if (result) {
+    count = code.frozen().used();
+    result = (fwrite(code.frozen().base(), 1, count, afrozenFile) == count);
   }
   if (result) {
     for (auto const& pair : m_trampolineMap) {
@@ -2430,17 +2153,23 @@ bool MCGenerator::dumpTCData() {
   if (!tcDataFile) return false;
 
   if (!gzprintf(tcDataFile,
-                "repo_schema     = %s\n"
-                "a.base          = %p\n"
-                "a.frontier      = %p\n"
-                "aprof.base      = %p\n"
-                "aprof.frontier  = %p\n"
-                "astubs.base     = %p\n"
-                "astubs.frontier = %p\n\n",
+                "repo_schema      = %s\n"
+                "ahot.base        = %p\n"
+                "ahot.frontier    = %p\n"
+                "a.base           = %p\n"
+                "a.frontier       = %p\n"
+                "aprof.base       = %p\n"
+                "aprof.frontier   = %p\n"
+                "acold.base       = %p\n"
+                "acold.frontier   = %p\n"
+                "afrozen.base     = %p\n"
+                "afrozen.frontier = %p\n\n",
                 kRepoSchemaId,
-                code.trampolines().base(), code.main().frontier(),
+                code.hot().base(), code.hot().frontier(),
+                code.main().base(), code.main().frontier(),
                 code.prof().base(), code.prof().frontier(),
-                code.stubs().base(), code.unused().frontier())) {
+                code.cold().base(), code.cold().frontier(),
+                code.frozen().base(), code.frozen().frontier())) {
     return false;
   }
 
@@ -2452,7 +2181,7 @@ bool MCGenerator::dumpTCData() {
   for (TransID t = 0; t < m_tx.getCurrentTransID(); t++) {
     if (gzputs(tcDataFile,
                m_tx.getTransRec(t)->print(m_tx.getTransCounter(t)).c_str()) ==
-         -1) {
+        -1) {
       return false;
     }
   }
@@ -2483,7 +2212,35 @@ void MCGenerator::setJmpTransID(TCA jmp) {
 
   TransID transId = m_tx.profData()->curTransID();
   FTRACE(5, "setJmpTransID: adding {} => {}\n", jmp, transId);
-  m_jmpToTransID[jmp] = transId;
+  m_fixups.m_pendingJmpTransIDs.emplace_back(jmp, transId);
+}
+
+void RelocationInfo::recordAddress(TCA src, TCA dest, int range) {
+  assert(m_destSize == size_t(-1) || dest - m_dest >= m_destSize);
+  m_destSize = dest - m_dest;
+  m_adjustedAddresses.emplace(src, std::make_pair(dest, range));
+}
+
+TCA RelocationInfo::adjustedAddressAfter(TCA addr) const {
+  if (size_t(addr - m_start) > size_t(m_end - m_start)) {
+    return nullptr;
+  }
+
+  auto it = m_adjustedAddresses.find(addr);
+  if (it == m_adjustedAddresses.end()) return nullptr;
+
+  return it->second.first + it->second.second;
+}
+
+TCA RelocationInfo::adjustedAddressBefore(TCA addr) const {
+  if (size_t(addr - m_start) > size_t(m_end - m_start)) {
+    return nullptr;
+  }
+
+  auto it = m_adjustedAddresses.find(addr);
+  if (it == m_adjustedAddresses.end()) return nullptr;
+
+  return it->second.first;
 }
 
 void

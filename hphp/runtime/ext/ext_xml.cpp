@@ -339,7 +339,7 @@ static Variant xml_call_handler(XmlParser *parser, const Variant& handler,
     }
     return retval;
   }
-  return uninit_null();
+  return init_null();
 }
 
 static void _xml_add_to_info(XmlParser *parser, const String& nameStr) {
@@ -390,7 +390,7 @@ void _xml_endElementHandler(void *userData, const XML_Char *name) {
         tag.set(s_tag, tag_name.substr(parser->toffset));
         tag.set(s_type, s_close);
         tag.set(s_level, parser->level);
-        parser->data.toArrRef().append(tag.create());
+        parser->data.toArrRef().append(tag.toArray());
       }
       parser->lastwasopen = 0;
     }
@@ -460,7 +460,11 @@ void _xml_characterDataHandler(void *userData, const XML_Char *s, int len) {
           String mytype;
 
           auto curtag = parser->data.toArrRef().pop();
-          SCOPE_EXIT { parser->data.toArrRef().append(curtag); };
+          SCOPE_EXIT {
+            try {
+              parser->data.toArrRef().append(curtag);
+            } catch (...) {}
+          };
 
           if (curtag.toArrRef().exists(s_type)) {
             mytype = curtag.toArrRef().rvalAt(s_type).toString();
@@ -714,7 +718,7 @@ int64_t f_xml_parse(const Resource& parser, const String& data, bool is_final /*
 int64_t f_xml_parse_into_struct(const Resource& parser, const String& data, VRefParam values,
                             VRefParam index /* = null */) {
   int ret;
-  JIT::VMRegAnchor _;
+  VMRegAnchor _;
   XmlParser * p = parser.getTyped<XmlParser>();
   values = Array::Create();
   p->data.assignRef(values);

@@ -121,12 +121,57 @@ struct Value {
     return pendingIncs.empty() && realCount == 0 && !fromLoad;
   }
 
-  /* Merge other's state with this state. fromLoad and realCount must match
-   * between the two. pendingIncs is truncated to the size of the smaller of
-   * the two, then the sets at each index are merged. */
-  void merge(const Value& other) {
-    always_assert(fromLoad == other.fromLoad);
-    always_assert(realCount == other.realCount);
+  /*
+   * Merge other's state with this state.
+   *
+   * Precondition:
+   * If realCounts do not match, the lesser value must be fromLoad.  The idea
+   * is that fromLoad allows us to make more aggressive assumptions, so we
+   * shouldn't have both a higher count and fromLoad.
+   *
+   * For an example of where this is OK, consider:
+   *
+   * B0:
+   *  t1 = LdLoc<0>
+   *       IncRef t1
+   *       DecRef t2
+   *       JmpNZ B2
+   * B1:
+   *       IncRef t1
+   *       SpillStack t1
+   *       TakeStack t1
+   *       DecRef t1
+   * B2:
+   *       ...
+   *
+   * The count of t1 at B2 will be 1 if coming from B0, and 0 if coming from
+   * B1, due to the SpillStack.  However, the TakeStack marks t1 as fromLoad,
+   * which lets us know that there's at least one surviving reference, so we
+   * can move forward assuming the max of the two.
+   *
+   * Postconditions:
+   * 1. realCount becomes the max of the incoming value;
+   * 2. fromLoad is set if either incoming value has it;
+   * 3. pendingIncs is truncated to the size of the smaller of the two, then
+   *    the sets at each index are merged. The two can differ when a value's
+   *    count is observed in one branch of a conditional but not the other, and
+   *    it's safe because any differences are resolved in mergeStates().
+   */
+  void merge(const Value& other, const IRUnit& unit) {
+    auto showFailure = [&] {
+      return folly::format(
+        "Failed to merge values in unit:\n{}\n{}\n{}\n",
+        show(*this), show(other), unit
+      ).str();
+    };
+
+    always_assert_log(
+      IMPLIES(realCount > other.realCount, other.fromLoad) &&
+      IMPLIES(realCount < other.realCount, fromLoad),
+      showFailure);
+
+    fromLoad = fromLoad || other.fromLoad;
+    realCount = std::max(realCount, other.realCount);
 
     auto minSize = std::min(pendingIncs.size(), other.pendingIncs.size());
     pendingIncs.resize(minSize);
@@ -162,7 +207,7 @@ struct Value {
   /* fromLoad represents whether or not the value came from a load
    * instruction. This optimization is based on the idea of producing and
    * consuming references, and most of our load instructions sometimes produce
-   * a reference and sometimes don't. Rather that splitting up all the loads
+   * a reference and sometimes don't. Rather than splitting up all the loads
    * into two flavors, we allow consumption of a value from a load even if
    * there appear to be no live references. */
   bool fromLoad;
@@ -280,18 +325,18 @@ struct FrameStack {
   }
 
   /* Map from the instruction defining the frame to a Frame object. */
-  smart::hash_map<const IRInstruction*, Frame> live;
+  smart::flat_map<const IRInstruction*, Frame> live;
 
   /* Similar to live, but for frames that have been popped. We keep track of
    * these because we often refer to a LdThis from an inlined function after
    * it's returned. */
-  smart::hash_map<const IRInstruction*, Frame> dead;
+  smart::flat_map<const IRInstruction*, Frame> dead;
 
   /* Frames that have been pushed but not activated. */
   smart::vector<Frame> preLive;
 };
 
-typedef smart::hash_map<SSATmp*, SSATmp*> CanonMap;
+typedef smart::flat_map<SSATmp*, SSATmp*> CanonMap;
 
 /*
  * State holds all the information we care about during the analysis pass, and
@@ -300,7 +345,7 @@ typedef smart::hash_map<SSATmp*, SSATmp*> CanonMap;
 struct State {
   /* values maps from live SSATmps to the currently known state about the
    * value. */
-  smart::hash_map<SSATmp*, Value> values;
+  smart::flat_map<SSATmp*, Value> values;
 
   /* canon keeps track of values that have been through passthrough
    * instructions, like CheckType and AssertType. */
@@ -353,6 +398,11 @@ struct IncomingState {
   IncomingState(const Block* f, const State& s)
     : from(f)
     , state(s)
+  {}
+
+  IncomingState(const Block* f, State&& s)
+    : from(f)
+    , state(std::move(s))
   {}
 
   const Block* from;
@@ -484,18 +534,8 @@ struct SinkPointAnalyzer : private LocalStateHook {
       }
       m_inst = nullptr;
 
-      // Propagate current state to the next block, if one exists. If we have a
-      // taken branch, that information will be propagated in processInst().
       auto* next = block->next();
       auto* taken = block->taken();
-      if (next) {
-        ITRACE(3, "propagating B{}'s state to next - B{}\n",
-               m_block->id(), next->id());
-        Indent _i;
-        FTRACE(3, "{}", show(m_state));
-        m_savedStates[next].emplace_back(block, m_state);
-      }
-
       if (!next && !taken) {
         // This block is terminal. Ensure that all live references have been
         // accounted for.
@@ -519,6 +559,16 @@ struct SinkPointAnalyzer : private LocalStateHook {
                             valState.second.optDelta() == 0,
                             showFailure);
         }
+      }
+
+      // Propagate current state to the next block, if one exists. If we have a
+      // taken branch, that information will be propagated in processInst().
+      if (next) {
+        ITRACE(3, "propagating B{}'s state to next - B{}\n",
+               m_block->id(), next->id());
+        Indent _i;
+        FTRACE(3, "{}", show(m_state));
+        m_savedStates[next].emplace_back(block, std::move(m_state));
       }
       FTRACE(3, "\n");
 
@@ -566,7 +616,7 @@ struct SinkPointAnalyzer : private LocalStateHook {
      * was optimized away because the branch turned into a Nop).
      */
     if (states.size() == 1 && !m_block->front().is(DefLabel)) {
-      return states.front().state;
+      return std::move(states.front().state);
     }
 
     auto const& firstFrames = states.front().state.frames;
@@ -621,7 +671,7 @@ struct SinkPointAnalyzer : private LocalStateHook {
     // Now, we build a map from values to their merged incoming state and which
     // blocks provide information about the value.
     smart::hash_map<SSATmp*, IncomingValue> mergedValues;
-    for (auto& inState : states) {
+    for (auto const& inState : states) {
       if (inState.state.frames != firstFrames) {
         if (RuntimeOption::EvalHHIRBytecodeControlFlow) {
           throw ControlFlowFailedExc(__FILE__, __LINE__);
@@ -638,7 +688,7 @@ struct SinkPointAnalyzer : private LocalStateHook {
         const bool existed = mergedValues.count(value);
         auto& mergedState = mergedValues[value];
         if (existed) {
-          mergedState.value.merge(inPair.second);
+          mergedState.value.merge(inPair.second, m_unit);
         } else {
           mergedState.value = inPair.second;
         }
@@ -862,12 +912,12 @@ struct SinkPointAnalyzer : private LocalStateHook {
                // Make sure it's not a RetCtrl from Ret{C,V}
                (!m_inst->is(RetCtrl) ||
                 m_inst->extra<RetCtrlData>()->suspendingResumed) &&
-               // The EndCatch in FunctionExitSurpriseHook's catch block is
+               // The EndCatch in Function{Suspend,Return}Hook's catch block is
                // special: it happens after locals and $this have been
                // decreffed, so we don't want to do the normal cleanup
                !(m_inst->is(EndCatch) &&
                  m_block->preds().front().inst()
-                   ->is(FunctionExitSurpriseHook) &&
+                   ->is(FunctionSuspendHook, FunctionReturnHook) &&
                  !m_block->preds().front().inst()
                    ->extra<RetCtrlData>()->suspendingResumed)) {
       // When leaving a trace, we need to account for all live references in
@@ -876,13 +926,9 @@ struct SinkPointAnalyzer : private LocalStateHook {
       consumeAllFrames();
     } else if (m_inst->is(GenericRetDecRefs, NativeImpl)) {
       consumeAllLocals();
-    } else if (m_inst->is(CreateCont)) {
-      consumeAllLocals();
+    } else if (m_inst->is(CreateCont, CreateAFWH)) {
       consumeInputs();
-      defineOutputs();
-    } else if (m_inst->is(CreateAFWH)) {
       consumeAllLocals();
-      consumeInputs();
       auto frame = frameRoot(m_inst->src(0)->inst());
       consumeFrame(m_state.frames.live.at(frame));
       defineOutputs();
@@ -1006,31 +1052,28 @@ struct SinkPointAnalyzer : private LocalStateHook {
       }
     }
 
-    // SpillStack and Call may have some of their sources replaced with None,
-    // to indicate that the value doesn't need to be stored again. We still
-    // want to trace down the original source to track its refcount state, and
-    // we do so by scanning all currently tracked values from LdStacks.
-    auto ldStacksLazy = folly::lazy([&]{
-      auto* spill = m_inst->is(SpillStack) ? m_inst : m_inst->src(0)->inst();
-      assert(spill->is(SpillStack));
-      return collectLdStacks(spill->src(0));
-    });
-
     ITRACE(3, "consuming normal inputs\n");
     for (uint32_t i = 0; i < m_inst->numSrcs(); ++i) {
       Indent _i;
-      auto* src = m_inst->src(i);
+      auto src = m_inst->src(i);
 
       if (src->isA(Type::StkPtr) && src->inst()->is(SpillFrame) &&
-                 !m_inst->is(DefInlineFP, DefInlineSP,
-                             Call, CallArray, ContEnter)) {
-        // If the StkPtr being consumed points to a pre-live ActRec, observe
-        // its $this pointer since many of our helper functions decref it.
-        auto* this_ = src->inst()->src(2);
-        if (this_->isA(Type::Obj)) {
-          auto const sinkPoint = SinkPoint(m_ids.before(m_inst), this_, false);
-          this_ = canonical(this_);
-          observeValue(this_, m_state.values[this_], sinkPoint);
+          !m_inst->is(DefInlineFP,
+                      Call,
+                      CallArray,
+                      ContEnter)) {
+        bool const beginInlDefSP = m_inst->is(ReDefSP) &&
+                                     m_inst->src(1)->inst()->is(DefInlineFP);
+        if (!beginInlDefSP) {
+          // If the StkPtr being consumed points to a pre-live ActRec, observe
+          // its $this pointer since many of our helper functions decref it.
+          auto this_ = src->inst()->src(2);
+          if (this_->isA(Type::Obj)) {
+            auto const sinkPoint = SinkPoint(m_ids.before(m_inst), this_,
+              false);
+            this_ = canonical(this_);
+            observeValue(this_, m_state.values[this_], sinkPoint);
+          }
         }
       }
 
@@ -1049,22 +1092,6 @@ struct SinkPointAnalyzer : private LocalStateHook {
     ITRACE(3, "getting local effects from FrameState\n");
     Indent _i;
     m_frameState.getLocalEffects(m_inst, *this);
-  }
-
-  /* For all LdStack instructions from the given sp, build a map from stack
-   * offset to value. Used above in consumeInputs. */
-  smart::hash_map<int32_t, SSATmp*> collectLdStacks(SSATmp* sp) {
-    smart::hash_map<int32_t, SSATmp*> ret;
-
-    for (auto const& pair : m_state.values) {
-      auto* inst = pair.first->inst();
-      if (inst->is(LdStack) && inst->src(0) == sp) {
-        auto const offset = inst->extra<LdStack>()->offset;
-        ret[offset] = inst->dst();
-      }
-    }
-
-    return ret;
   }
 
   /*

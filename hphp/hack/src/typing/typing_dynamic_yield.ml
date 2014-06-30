@@ -41,8 +41,10 @@ let rec decl env methods =
         (* Fail silently, since we're in an early stage. A later check will assert
          * that yieldFoo() has the right type *)
         let env, base_ty =
-          try check_yield_types env ft.ft_pos ft.ft_ret
-          with _ -> (env, (Reason.Rwitness ft.ft_pos, Tany)) in
+          Errors.try_
+            (fun () -> check_yield_types env ft.ft_pos ft.ft_ret)
+            (fun _ -> (env, (Reason.Rwitness ft.ft_pos, Tany)))
+        in
         (* Define genFoo(), which is Awaitable<T> if yieldFoo() is Awaitable<T>
          * If yieldFoo() is Tany, then genFoo() is Awaitable<Tany> *)
         let gen_name = "gen"^base in
@@ -180,9 +182,6 @@ let check_yield_visibility env c =
   if not uses_dy_directly then List.iter begin fun m ->
     match (parse_yield_name (snd m.m_name), m.m_visibility) with
       | (Some _, Private) ->
-          error_l [
-            fst m.m_name,
-            "DynamicYield cannot see private methods in subclasses"
-         ]
+          Errors.dynamic_yield_private (fst m.m_name)
       | _ -> ()
   end c.c_methods

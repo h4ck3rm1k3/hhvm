@@ -29,17 +29,12 @@ PhysReg forceAlloc(const SSATmp& tmp) {
   auto inst = tmp.inst();
   auto opc = inst->op();
 
-  // Note that the point of StashResumableSP is to save a StkPtr
-  // somewhere other than rVmSp.  (TODO(#2288359): make rbx not
-  // special.)
-  if (opc != StashResumableSP && tmp.isA(Type::StkPtr)) {
+  if (tmp.isA(Type::StkPtr)) {
     assert(opc == DefSP ||
            opc == ReDefSP ||
-           opc == ReDefResumableSP ||
-           opc == PassSP ||
-           opc == DefInlineSP ||
            opc == Call ||
            opc == CallArray ||
+           opc == ContEnter ||
            opc == SpillStack ||
            opc == SpillFrame ||
            opc == CufIterSpillFrame ||
@@ -51,6 +46,7 @@ PhysReg forceAlloc(const SSATmp& tmp) {
            opc == GuardStk ||
            opc == AssertStk ||
            opc == CastStk ||
+           opc == CastStkIntToDbl ||
            opc == CoerceStk ||
            opc == SideExitGuardStk  ||
            MInstrEffects::supported(opc));
@@ -83,6 +79,7 @@ struct ConstSrcTable {
 
 #define NA
 #define S(...)       i++;
+#define AK(kind)     i++;
 #define C(type)      table[op][i++] = true;
 #define CStr         table[op][i++] = true;
 #define SNumInt      i++;
@@ -99,6 +96,7 @@ struct ConstSrcTable {
 #undef NA
 #undef SAny
 #undef S
+#undef AK
 #undef C
 #undef CStr
 #undef SNum

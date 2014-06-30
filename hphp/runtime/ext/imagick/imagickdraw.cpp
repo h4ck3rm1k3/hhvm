@@ -119,7 +119,7 @@ static bool HHVM_METHOD(ImagickDraw, composite,
                         const Object compositeWand) {
   auto wand = getDrawingWandResource(this_);
   Object compositeWandObj(compositeWand);
-  auto magick = getMagickWandResource(compositeWandObj);
+  auto magick = getMagickWandResource(compositeWandObj.get());
   auto status = DrawComposite(wand->getWand(), (CompositeOperator)compose,
                               x, y, width, height, magick->getWand());
   if (status == MagickFalse) {
@@ -613,7 +613,7 @@ static bool HHVM_METHOD(ImagickDraw, setClipUnits,
 static bool HHVM_METHOD(ImagickDraw, setFillAlpha, double opacity) {
   auto wand = getDrawingWandResource(this_);
   DrawSetFillOpacity(wand->getWand(), opacity);
-  throw true;
+  return true;
 }
 
 static bool HHVM_METHOD(ImagickDraw, setFillColor,

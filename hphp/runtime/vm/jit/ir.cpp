@@ -21,7 +21,6 @@
 #include <forward_list>
 #include <sstream>
 #include <type_traits>
-#include <boost/algorithm/string.hpp>
 
 #include "folly/Format.h"
 #include "folly/Traits.h"
@@ -50,10 +49,11 @@ namespace {
 #define NF     0
 #define C      CanCSE
 #define E      Essential
-#define N      CallsNative
+#define Er     MayRaiseError
+#define N      CallsNative|MayRaiseError
+#define NNT    CallsNative
 #define PRc    ProducesRC
 #define CRc    ConsumesRC
-#define Er     MayRaiseError
 #define T      Terminal
 #define B      Branch
 #define P      Passthrough

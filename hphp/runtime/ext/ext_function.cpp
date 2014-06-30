@@ -20,6 +20,7 @@
 #include <algorithm>
 #include <vector>
 
+#include "hphp/runtime/base/autoload-handler.h"
 #include "hphp/runtime/ext/json/ext_json.h"
 #include "hphp/runtime/ext/ext_closure.h"
 #include "hphp/runtime/base/class-info.h"
@@ -33,8 +34,6 @@
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
 
-using HPHP::JIT::CallerFrame;
-using HPHP::JIT::EagerCallerFrame;
 using std::string;
 
 const StaticString
@@ -92,7 +91,7 @@ bool f_is_callable(const Variant& v, bool syntax /* = false */,
     if (arr.size() != 2 ||
         &clsname == &null_variant ||
         &mthname == &null_variant) {
-      name = String("Array");
+      name = array_string;
       return false;
     }
 
@@ -144,14 +143,14 @@ Variant f_call_user_func_array(const Variant& function, const Variant& params) {
 
 Variant f_check_user_func_async(const Variant& handles, int timeout /* = -1 */) {
   raise_error("%s is no longer supported", __func__);
-  return uninit_null();
+  return init_null();
 }
 
 Variant f_end_user_func_async(const Object& handle,
                               int default_strategy /*= k_GLOBAL_STATE_IGNORE*/,
                               const Variant& additional_strategies /* = null */) {
   raise_error("%s is no longer supported", __func__);
-  return uninit_null();
+  return init_null();
 }
 
 Variant f_forward_static_call_array(const Variant& function, const Array& params) {

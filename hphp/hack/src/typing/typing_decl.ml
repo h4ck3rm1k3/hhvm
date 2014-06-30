@@ -9,15 +9,6 @@
  *)
 
 (*****************************************************************************)
-(* Exception raised when an error was found in one of the parent classes.
- * We don't want a "normal" error because that would be too noisy for the user.
- * We would have the same error over and over again, just because the error
- * was found in class with many children.
- *)
-(*****************************************************************************)
-exception Propagate_parent_error
-
-(*****************************************************************************)
 (* Module used to declare the types.
  * For each class we want to build a complete type, that is the type of
  * the methods defined in the class plus everything that was inherited.
@@ -25,12 +16,35 @@ exception Propagate_parent_error
 (*****************************************************************************)
 open Utils
 open Typing_defs
-open Silent
 open Nast
 open Typing_deps
 
 module Env = Typing_env
 module DynamicYield = Typing_dynamic_yield
+
+(*****************************************************************************)
+(* Module used to track what classes are declared and which ones still need
+ * to be processed. The declaration phase happens in parallel. Because of that
+ * a worker needs to know if the type of a class is ready or if it needs to
+ * be recomputed. When ClassStatus.mem *class-name* returns true, we know
+ * the class has already been recomputed by a different worker.
+ * TypedefStatus is a similar mechanism for typedefs.
+ *)
+(*****************************************************************************)
+
+module ClassStatus = SharedMem.NoCache(struct
+  type t = unit
+  let prefix = Prefix.make()
+end)
+
+let is_class_ready class_name =
+  ClassStatus.mem class_name
+
+let report_class_ready class_name =
+  ClassStatus.add class_name ()
+
+let remove_classes class_set =
+  ClassStatus.remove_batch class_set
 
 (*****************************************************************************)
 (* Checking that the kind of a class is compatible with its parent
@@ -50,9 +64,7 @@ let check_extend_kind env parent_pos parent_kind child_pos child_kind c =
       (* What is dissallowed *)
       let parent = Ast.string_of_class_kind parent_kind in
       let child  = Ast.string_of_class_kind child_kind in
-      let msg1 = child_pos, child^" cannot extend "^parent in
-      let msg2 = parent_pos, "This is "^parent in
-      error_l [msg1; msg2]
+      Errors.wrong_extend_kind child_pos child parent_pos parent
   | _ -> ()
 
 
@@ -112,9 +124,6 @@ let get_class_parents_and_traits env class_nast =
     List.fold_left (get_class_parent_or_trait class_nast) acc class_nast.c_uses in
   env, parents, is_complete
 
-let error_trait_req pos req =
-  error pos ("Failure to satisfy trait requirement: "^(Utils.strip_ns req))
-
 (* for non-traits, check that each used trait's requirements have been
  * satisfied; for traits, accumulate the requirements so that we can
  * successfully check the bodies of trait methods *)
@@ -129,7 +138,7 @@ let merge_parent_trait_reqs class_nast impls
     | Some parent_type when (class_nast.c_kind != Ast.Ctrait) ->
       SSet.iter begin fun req ->
         if SMap.mem req impls then () (* requirement satisfied *)
-        else error_trait_req parent_pos req
+        else Errors.trait_req parent_pos req
       end parent_type.tc_req_ancestors;
       env, req_ancestors, req_ancestors_extends
     | Some parent_type ->
@@ -141,7 +150,7 @@ let merge_parent_trait_reqs class_nast impls
 let get_trait_req class_nast impls (env, requirements, req_extends) hint =
   let parent_pos, req = unpack_hint hint in
   if class_nast.c_kind != Ast.Ctrait && not (SMap.mem req impls) then
-    error_trait_req parent_pos req;
+    Errors.trait_req parent_pos req;
   let requirements = SSet.add req requirements in
   let req_extends = SSet.add req req_extends in
   let env, req_type = Env.get_class_dep env req in
@@ -179,13 +188,11 @@ let get_trait_requirements env class_nast impls =
 (*****************************************************************************)
 
 let ifun_decl nenv (f: Ast.fun_) =
-  try
-    let f = Naming.fun_ nenv f in
-    let cid = snd f.f_name in
-    Naming_heap.FunHeap.add cid f;
-    Typing.fun_decl f;
-    ()
-  with Ignore -> ()
+  let f = Naming.fun_ nenv f in
+  let cid = snd f.f_name in
+  Naming_heap.FunHeap.add cid f;
+  Typing.fun_decl f;
+  ()
 
 (*****************************************************************************)
 (* Section declaring the type of a class *)
@@ -197,19 +204,12 @@ type class_env = {
     all_classes: SSet.t SMap.t;
   }
 
-let error_cyclic stack pos =
-  let stack = SSet.fold (fun x y -> (Utils.strip_ns x)^" "^y) stack "" in
-  error pos ("Cyclic class definition : "^stack)
-
-let error_final ~parent ~child =
-  error_l [child, "You cannot override this method";
-           parent, "It was declared as final"]
-
 let check_if_cyclic class_env (pos, cid) =
   let stack = class_env.stack in
-  if SSet.mem cid stack
-  then error_cyclic stack pos;
-  ()
+  let is_cyclic = SSet.mem cid stack in
+  if is_cyclic
+  then Errors.cyclic_class_def stack pos;
+  is_cyclic
 
 let rec class_decl_if_missing_opt class_env = function
   | None -> ()
@@ -217,46 +217,37 @@ let rec class_decl_if_missing_opt class_env = function
 
 and class_decl_if_missing class_env c =
   let pos, cid as c_name = c.Ast.c_name in
-  check_if_cyclic class_env c_name;
-  if Naming_heap.ClassHeap.mem cid then () else
+  if check_if_cyclic class_env c_name
+  then ()
+  else begin
+    if Naming_heap.ClassHeap.mem cid then () else
     class_naming_and_decl class_env cid c
+  end
 
 and class_naming_and_decl class_env cid c =
-  try
-    let class_env = { class_env with stack = SSet.add cid class_env.stack } in
-    let c = Naming.class_ class_env.nenv c in
-    class_parents_decl class_env c;
-    class_decl c;
-    (* It is important to add the "named" ast (nast.ml) only
-     * AFTER we are done declaring the type type of the class.
-     * Otherwise there is a subtle race condition.
-     *
-     * Worker 1: looks up class A. Sees that class A needs
-     * to be recomputed, starts to recompute the type of A
-     *
-     * Worker 2: loops up class A, sees that the named Ast for
-     * A is there, deduces that the type has already been computed
-     * and could end up using an old version of the class type if
-     * Worker 1 didn't finish.
-     *
-     * This race doesn't occur if we set the named Ast for class A
-     * AFTER we are done declaring the type of A.
-     * The worst case scenario is both workers recompute the same type
-     * which is OK.
-     *)
-    Naming_heap.ClassHeap.add cid c;
-    Naming_heap.ClassStatus.add cid Naming_heap.Ok;
-  with
-  | Propagate_parent_error ->
-    (* There was an error while processing one of the parent classes.
-     * We want to remember that there is an error. But we don't want to show
-     * it to the user.
-     *)
-    Naming_heap.ClassStatus.add cid Naming_heap.Error;
-    (* No raise here *)
-  | e ->
-    Naming_heap.ClassStatus.add cid Naming_heap.Error;
-    raise e
+  let class_env = { class_env with stack = SSet.add cid class_env.stack } in
+  let c = Naming.class_ class_env.nenv c in
+  class_parents_decl class_env c;
+  class_decl c;
+  (* It is important to add the "named" ast (nast.ml) only
+   * AFTER we are done declaring the type type of the class.
+   * Otherwise there is a subtle race condition.
+   *
+   * Worker 1: looks up class A. Sees that class A needs
+   * to be recomputed, starts to recompute the type of A
+   *
+   * Worker 2: loops up class A, sees that the named Ast for
+   * A is there, deduces that the type has already been computed
+   * and could end up using an old version of the class type if
+   * Worker 1 didn't finish.
+   *
+   * This race doesn't occur if we set the named Ast for class A
+   * AFTER we are done declaring the type of A.
+   * The worst case scenario is both workers recompute the same type
+   * which is OK.
+   *)
+  Naming_heap.ClassHeap.add cid c;
+  report_class_ready cid
 
 and class_parents_decl class_env c =
   let class_hint = class_hint_decl class_env in
@@ -270,20 +261,13 @@ and class_parents_decl class_env c =
 and class_hint_decl class_env hint =
   match hint with
     | _, Happly ((p, cid), _)
-      when SMap.mem cid class_env.all_classes ->
-      (match Naming_heap.ClassStatus.get cid with
-      | Some Naming_heap.Ok ->
-          ()
-      | Some Naming_heap.Error ->
-          raise Propagate_parent_error
-      | None ->
-        (* We are supposed to redeclare the class *)
+      when SMap.mem cid class_env.all_classes && not (is_class_ready cid) ->
+      (* We are supposed to redeclare the class *)
         let files = SMap.find_unsafe cid class_env.all_classes in
         SSet.iter begin fun fn ->
           let class_opt = Parser_heap.find_class_in_file fn cid in
           class_decl_if_missing_opt class_env class_opt
         end files
-      )
     | _ ->
       (* This class lives in PHP land *)
       ()
@@ -294,9 +278,6 @@ and class_is_abstract c =
     | _ -> false
 
 and class_decl c =
-  try class_decl_ c with Ignore -> ()
-
-and class_decl_ c =
   let is_abstract = class_is_abstract c in
   let cls_pos, cls_name = c.c_name in
   let env = Typing_env.empty (Pos.filename cls_pos) in
@@ -372,6 +353,7 @@ and class_decl_ c =
     else dimpl
   in
   let env, tparams = lfold Typing.type_param env c.c_tparams in
+  let consts = Typing_enum.enum_class_decl_rewrite env impl consts in
   let tc = {
     tc_final = c.c_final;
     tc_abstract = is_abstract;
@@ -380,6 +362,7 @@ and class_decl_ c =
     tc_members_fully_known = ext_strict;
     tc_kind = c.c_kind;
     tc_name = snd c.c_name;
+    tc_pos = fst c.c_name;
     tc_tparams = tparams;
     tc_consts = consts;
     tc_cvars = cvars;
@@ -393,9 +376,6 @@ and class_decl_ c =
     tc_req_ancestors = req_ancestors;
     tc_req_ancestors_extends = req_ancestors_extends;
     tc_user_attributes = c.c_user_attributes;
-    tc_prefetch_classes = Env.get_prefetch_classes env;
-    tc_prefetch_funs = Env.get_prefetch_funs env;
-    tc_mtime = c.Nast.c_mtime;
   } in
   if Ast.Cnormal = c.c_kind then
     SMap.iter (method_check_trait_overrides c) m
@@ -422,30 +402,40 @@ and trait_exists env acc trait =
     | _ -> false
 
 and check_static_method obj method_name { ce_type = (reason_for_type, _); _ } =
-  if SMap.mem method_name obj && not !is_silent_mode
+  if SMap.mem method_name obj
   then begin
     let static_position = Reason.to_pos reason_for_type in
     let dyn_method = SMap.find_unsafe method_name obj in
     let dyn_position = Reason.to_pos (fst dyn_method.ce_type) in
-    let msg_static = "The function "^method_name^" is static" in
-    let msg_dynamic = "It is defined as dynamic here" in
-    error_l [static_position, msg_static; dyn_position, msg_dynamic]
+    Errors.static_dynamic static_position dyn_position method_name
   end
   else ()
 
-and constructor_decl env pcstr c =
-  match c.c_constructor, pcstr with
-    | None, Some cstr -> env, Some cstr
-    | Some m, Some { ce_final = true; ce_type = (r, _); _ } ->
-      error_final ~parent:(Reason.to_pos r) ~child:(fst m.m_name)
-    | Some m, _ ->
-      let env, ty = method_decl c env m in
-      let vis = visibility (snd c.c_name) m.m_visibility in
-      env, Some { ce_final = m.m_final; ce_override = false ;
-                  ce_visibility = vis; ce_type = ty;
-                  ce_origin = (snd c.c_name);
-                }
-    | None, _ -> env, None
+and constructor_decl env pcstr class_ =
+  match class_.c_constructor, pcstr with
+    | None, Some cstr ->
+        env, Some cstr
+    | Some method_, Some { ce_final = true; ce_type = (r, _); _ } ->
+      Errors.override_final ~parent:(Reason.to_pos r) ~child:(fst method_.m_name);
+      build_constructor env class_ method_
+    | Some method_, _ ->
+      build_constructor env class_ method_
+    | None, _ ->
+        env, None
+
+and build_constructor env class_ method_ =
+  let env, ty = method_decl class_ env method_ in
+  let _, class_name = class_.c_name in
+  let vis = visibility class_name method_.m_visibility in
+  let cstr = {
+    ce_final = method_.m_final;
+    ce_override = false ;
+    ce_synthesized = false;
+    ce_visibility = vis;
+    ce_type = ty;
+    ce_origin = class_name;
+  } in
+  env, Some cstr
 
 and class_const_decl c (env, acc) (h, id, e) =
   let env, ty =
@@ -476,23 +466,24 @@ and class_const_decl c (env, acc) (h, id, e) =
         )
       | Some h -> Typing_hint.hint env h
   in
-  let ce = { ce_final = true; ce_override = false;
+  let ce = { ce_final = true; ce_override = false; ce_synthesized = false;
              ce_visibility = Vpublic; ce_type = ty; ce_origin = (snd c.c_name);
            } in
   let acc = SMap.add (snd id) ce acc in
   env, acc
 
-(* Every class, interface, and trait implicitly defines ::class to
+(* Every class, interface, and trait implicitly defines a ::class to
  * allow accessing its fully qualified name as a string *)
 and class_class_decl class_id =
   let pos, name = class_id in
   let reason = Reason.Rclass_class (pos, name) in
   {
-    ce_final      = false;
-    ce_override   = false;
-    ce_visibility = Vpublic;
-    ce_type       = (reason, Tprim Tstring);
-    ce_origin     = name;
+    ce_final       = false;
+    ce_override    = false;
+    ce_synthesized = true;
+    ce_visibility  = Vpublic;
+    ce_type        = (reason, Tprim Tstring);
+    ce_origin      = name;
   }
 
 and class_var_decl c (env, acc) cv =
@@ -503,7 +494,7 @@ and class_var_decl c (env, acc) cv =
   in
   let id = snd cv.cv_id in
   let vis = visibility (snd c.c_name) cv.cv_visibility in
-  let ce = { ce_final = true; ce_override = false;
+  let ce = { ce_final = true; ce_override = false; ce_synthesized = false;
              ce_visibility = vis; ce_type = ty; ce_origin = (snd c.c_name);
            } in
   let acc = SMap.add id ce acc in
@@ -516,18 +507,18 @@ and static_class_var_decl c (env, acc) cv =
       | Some ty -> Typing_hint.hint env ty in
   let id = snd cv.cv_id in
   let vis = visibility (snd c.c_name) cv.cv_visibility in
-  let ce = { ce_final = true; ce_override = false;
+  let ce = { ce_final = true; ce_override = false; ce_synthesized = false;
              ce_visibility = vis; ce_type = ty; ce_origin = (snd c.c_name);
            }
   in
   let acc = SMap.add ("$"^id) ce acc in
-  if cv.cv_expr = None && not !is_silent_mode && (c.c_mode = Ast.Mstrict ||
+  if cv.cv_expr = None && (c.c_mode = Ast.Mstrict ||
       c.c_mode = Ast.Mpartial)
   then begin match cv.cv_type with
     | None
     | Some (_, Hmixed)
     | Some (_, Hoption _) -> ()
-    | _ -> error (fst cv.cv_id) "Please assign a value"
+    | _ -> Errors.missing_assign (fst cv.cv_id)
   end;
   env, acc
 
@@ -540,11 +531,11 @@ and method_decl c env m =
   let env, arity, params = Typing.make_params env true 0 m.m_params in
   let env, ret =
     match m.m_ret with
-    | None -> env, (Reason.Rwitness (fst m.m_name), Tany)
-    | Some ret -> Typing_hint.hint env ret in
+      | None -> env, (Reason.Rwitness (fst m.m_name), Tany)
+      | Some ret -> Typing_hint.hint env ret in
   let arity_max =
     if m.m_ddd then 1000 else
-    List.length m.m_params
+      List.length m.m_params
   in
   let env, tparams = lfold Typing.type_param env m.m_tparams in
   let ft = {
@@ -565,17 +556,16 @@ and method_check_override c m acc =
   let class_pos, class_id = c.c_name in
   let override = SMap.mem "Override" m.m_user_attributes in
   if m.m_visibility = Private && override then
-    error pos ((Utils.strip_ns class_id)^"::"^id
-               ^": combining private and override is nonsensical");
+    Errors.private_override pos class_id id;
   match SMap.get id acc with
-    | Some { ce_final = true; ce_type = (r, _); _ } when not !is_silent_mode ->
-      error_final ~parent:(Reason.to_pos r) ~child:pos
-    | Some _ -> false
+    | Some { ce_final = is_final; ce_type = (r, _); _ } ->
+      if is_final then
+        Errors.override_final ~parent:(Reason.to_pos r) ~child:pos;
+      false
     | None when override && c.c_kind = Ast.Ctrait -> true
     | None when override ->
-      error pos ((Utils.strip_ns class_id)^"::"^id^"() should be an override; \
-                    no non-private parent definition found \
-                    or overridden parent is defined in non-<?hh code")
+      Errors.should_be_override pos class_id id;
+      false
     | None -> false
 
 and method_decl_acc c (env, acc) m =
@@ -586,10 +576,10 @@ and method_decl_acc c (env, acc) m =
     match SMap.get id acc, m.m_visibility with
       | Some { ce_visibility = Vprotected _ as parent_vis; _ }, Protected ->
         parent_vis
-    | _ -> visibility (snd c.c_name) m.m_visibility
+      | _ -> visibility (snd c.c_name) m.m_visibility
   in
   let ce = {
-    ce_final = m.m_final; ce_override = check_override;
+    ce_final = m.m_final; ce_override = check_override; ce_synthesized = false;
     ce_visibility = vis; ce_type = ty; ce_origin = snd (c.c_name);
   } in
   let acc = SMap.add id ce acc in
@@ -597,15 +587,8 @@ and method_decl_acc c (env, acc) m =
 
 and method_check_trait_overrides c id method_ce =
   if method_ce.ce_override then
-    let c_pos, c_name = c.c_name in
-    let err_msg =
-      ("Method "^(Utils.strip_ns c_name)^"::"^id^" is should be an override \
-        per the declaring trait; no non-private parent definition found \
-        or overridden parent is defined in non-<?hh code")
-    in error_l [
-      c_pos, err_msg;
-      (Reason.to_pos (fst method_ce.ce_type)), "Declaration of "^id^"() is here"
-    ]
+    Errors.override_per_trait
+      c.c_name id (Reason.to_pos (fst method_ce.ce_type))
 
 (*****************************************************************************)
 (* Dealing with typedefs *)
@@ -620,43 +603,36 @@ let rec type_typedef_decl_if_missing nenv typedef =
 
 and type_typedef_naming_and_decl nenv tdef =
   let pos, tid = tdef.Ast.t_id in
-  try
-    let is_abstract =
-      match tdef.Ast.t_kind with
-      | Ast.Alias x -> false
-      | Ast.NewType x -> true
-    in
-    let params, tcstr, concrete_type =
-      Naming.typedef nenv tdef in
-    let decl = is_abstract, params, concrete_type in
-    let filename = Pos.filename pos in
-    let env = Typing_env.empty filename in
-    let env = Typing_env.set_mode env tdef.Ast.t_mode in
-    let env = Env.set_root env (Typing_deps.Dep.Class tid) in
-    let env, params = lfold Typing.type_param env params in
-    let env, concrete_type = Typing_hint.hint env concrete_type in
-    let env, tcstr =
-      match tcstr with
-      | None -> env, None
-      | Some constraint_type ->
-          let env, constraint_type = Typing_hint.hint env constraint_type in
-          let sub_type = Typing_ops.sub_type pos Reason.URnewtype_cstr in
-          let env = sub_type env constraint_type concrete_type in
-          env, Some constraint_type
-    in
-    let visibility =
-      if is_abstract
-      then Env.Typedef.Private filename
-      else Env.Typedef.Public
-    in
-    let tdecl = visibility, params, tcstr, concrete_type in
-    Env.add_typedef tid tdecl;
-    Naming_heap.TypedefHeap.add tid decl;
-    Naming_heap.TypedefStatus.add tid Naming_heap.Ok;
-  with e ->
-    Env.add_typedef_error tid;
-    Naming_heap.TypedefStatus.add tid Naming_heap.Error;
-    raise e
+  let is_abstract =
+    match tdef.Ast.t_kind with
+    | Ast.Alias x -> false
+    | Ast.NewType x -> true
+  in
+  let params, tcstr, concrete_type =
+    Naming.typedef nenv tdef in
+  let decl = is_abstract, params, concrete_type in
+  let filename = Pos.filename pos in
+  let env = Typing_env.empty filename in
+  let env = Typing_env.set_mode env tdef.Ast.t_mode in
+  let env = Env.set_root env (Typing_deps.Dep.Class tid) in
+  let env, params = lfold Typing.type_param env params in
+  let env, concrete_type = Typing_hint.hint env concrete_type in
+  let env, tcstr =
+    match tcstr with
+    | None -> env, None
+    | Some constraint_type ->
+        let env, constraint_type = Typing_hint.hint env constraint_type in
+        let sub_type = Typing_ops.sub_type pos Reason.URnewtype_cstr in
+        let env = sub_type env constraint_type concrete_type in
+        env, Some constraint_type
+  in
+  let visibility =
+    if is_abstract then Env.Typedef.Private else Env.Typedef.Public
+  in
+  let tdecl = visibility, params, tcstr, concrete_type, pos in
+  Env.add_typedef tid tdecl;
+  Naming_heap.TypedefHeap.add tid decl;
+  ()
 
 (*****************************************************************************)
 (* Global constants *)

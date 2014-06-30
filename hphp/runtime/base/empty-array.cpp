@@ -129,6 +129,7 @@ std::pair<ArrayData*,TypedValue*> EmptyArray::MakePackedInl(TypedValue tv) {
   auto const ad = static_cast<ArrayData*>(
     MM().objMallocLogged(sizeof(ArrayData) + cap * sizeof(TypedValue))
   );
+  assert(cap == packedCodeToCap(cap));
   ad->m_kindAndSize = uint64_t{1} << 32 | cap; // also set kind
   ad->m_posAndCount = 0;
 
@@ -140,7 +141,7 @@ std::pair<ArrayData*,TypedValue*> EmptyArray::MakePackedInl(TypedValue tv) {
   assert(ad->m_size == 1);
   assert(ad->m_pos == 0);
   assert(ad->m_count == 0);
-  assert(ad->m_packedCap == cap);
+  assert(ad->m_packedCapCode == cap);
   assert(PackedArray::checkInvariants(ad));
   return { ad, &lval };
 }
@@ -167,7 +168,6 @@ EmptyArray::MakeMixed(StringData* key, TypedValue val) {
   ad->m_capAndUsed  = uint64_t{1} << 32 | cap;
   ad->m_tableMask   = mask;
   ad->m_nextKI      = 0;
-  ad->m_hLoad       = 1;
 
   auto const data = reinterpret_cast<MixedArray::Elm*>(ad + 1);
   auto const hash = reinterpret_cast<int32_t*>(data + cap);
@@ -210,7 +210,6 @@ EmptyArray::MakeMixed(int64_t key, TypedValue val) {
   ad->m_capAndUsed  = uint64_t{1} << 32 | cap;
   ad->m_tableMask   = mask;
   ad->m_nextKI      = key + 1;
-  ad->m_hLoad       = 1;
 
   auto const data = reinterpret_cast<MixedArray::Elm*>(ad + 1);
   auto const hash = reinterpret_cast<int32_t*>(data + cap);

@@ -30,8 +30,15 @@ void zBoxAndProxy(TypedValue* arg) {
     tvBox(arg);
   }
   auto inner = arg->m_data.pref->tv();
-  if (inner->m_type == KindOfArray) {
-    inner->m_data.parr = ProxyArray::Make(inner->m_data.parr);
+  if (inner->m_type == KindOfArray && !inner->m_data.parr->isProxyArray()) {
+    ArrayData * inner_arr = inner->m_data.parr;
+    if (inner_arr->isStatic() || inner_arr->hasMultipleRefs()) {
+      ArrayData * tmp = inner_arr->copy();
+      tmp->incRefCount();
+      inner_arr->decRefAndRelease();
+      inner_arr = tmp;
+    }
+    inner->m_data.parr = ProxyArray::Make(inner_arr);
   }
 }
 
@@ -41,7 +48,7 @@ TypedValue* zend_wrap_func(ActRec* ar) {
   // compiled with -fomit-frame-pointer with the intention of having it call
   // back. Normal HHVM extensions have the luxury of only when such a thing
   // will be attempted, but we have no way to know in advance.
-  JIT::VMRegAnchor _;
+  VMRegAnchor _;
 
   TSRMLS_FETCH();
   zend_ext_func native_func = reinterpret_cast<zend_ext_func>(ar->func()->nativeFuncPtr());

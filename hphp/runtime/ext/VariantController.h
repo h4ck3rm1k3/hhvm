@@ -58,7 +58,7 @@ struct VariantController {
   static const Array& asVector(const VariantType& obj) { return obj.toCArrRef(); }
 
   // variant creators
-  static VariantType createNull() { return null_variant; }
+  static VariantType createNull() { return init_null(); }
   static VariantType fromInt64(int64_t val) { return val; }
   static VariantType fromBool(bool val) { return val; }
   static VariantType fromDouble(double val) { return val; }
@@ -67,7 +67,7 @@ struct VariantController {
   static VariantType fromVector(const VectorType& vec) { return vec; }
 
   // map methods
-  static MapType createMap() { return empty_array; }
+  static MapType createMap() { return empty_array(); }
   static MapType createMap(ArrayInit&& map) {
     return map.toArray();
   }
@@ -105,7 +105,7 @@ struct VariantController {
   static const VariantType& mapValue(ArrayIter& it) { return it.secondRef(); }
 
   // vector methods
-  static VectorType createVector() { return empty_array; }
+  static VectorType createVector() { return empty_array(); }
   static void vectorAppend(VectorType& vec, const VariantType& v) {
     vec.append(v);
   }
@@ -131,7 +131,7 @@ struct VariantController {
     return ret;
   }
   static StringType getStaticEmptyString() {
-    return empty_string;
+    return empty_string();
   }
   static char* getMutablePtr(StringType& s) {
     return s.bufferSlice().ptr;

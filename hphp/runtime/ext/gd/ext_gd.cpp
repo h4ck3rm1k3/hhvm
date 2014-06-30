@@ -25,7 +25,6 @@
 #include "hphp/runtime/base/zend-string.h"
 #include "hphp/runtime/base/request-local.h"
 #include "hphp/runtime/base/runtime-option.h"
-#include "hphp/util/min-max-macros.h"
 #include "hphp/runtime/base/request-event-handler.h"
 #include "hphp/runtime/vm/jit/translator-inline.h"
 
@@ -1692,7 +1691,7 @@ Variant HHVM_FUNCTION(getimagesize, const String& filename,
     }
     ret.set(s_mime, (char*)php_image_type_to_mime_type(itype));
     IM_FREE(result);
-    return ret.create();
+    return ret.toVariant();
   } else {
     return false;
   }
@@ -1749,12 +1748,12 @@ static Resource php_open_plain_file(const String& filename, const char *mode,
   Resource resource = File::Open(filename, mode);
   PlainFile *plain_file = resource.getTyped<PlainFile>(true, true);
   if (!plain_file) {
-    return null_resource;
+    return Resource();
   }
   FILE *fp = NULL;
   if (!plain_file || !(fp = plain_file->getStream())) {
     f_fclose(resource);
-    return null_resource;
+    return Resource();
   }
   if (fpp) *fpp = fp;
   return resource;
@@ -2261,8 +2260,8 @@ static gdImagePtr _php_image_create_from(const String& filename,
                                          int image_type, char *tn,
                                          gdImagePtr(*func_p)(),
                                          gdImagePtr(*ioctx_func_p)()) {
-  JIT::VMRegAnchor _;
-    gdImagePtr im = nullptr;
+  VMRegAnchor _;
+  gdImagePtr im = nullptr;
 #ifdef HAVE_GD_JPG
   // long ignore_warning;
 #endif
@@ -2456,7 +2455,7 @@ static int _php_image_type (char data[8]) {
 #ifdef HAVE_LIBGD15
 gdImagePtr _php_image_create_from_string(const String& image, char *tn,
                                          gdImagePtr (*ioctx_func_p)()) {
-  gdImagePtr im;
+  VMRegAnchor _;
   gdIOCtx *io_ctx;
 
   io_ctx = gdNewDynamicCtxEx(image.length(), (char *)image.c_str(), 0);
@@ -2465,7 +2464,7 @@ gdImagePtr _php_image_create_from_string(const String& image, char *tn,
     return NULL;
   }
 
-  im = (*(gdImagePtr (*)(gdIOCtx *))ioctx_func_p)(io_ctx);
+  gdImagePtr im = (*(gdImagePtr (*)(gdIOCtx *))ioctx_func_p)(io_ctx);
   if (!im) {
     raise_warning("Passed data is not in '%s' format", tn);
 #if HAVE_LIBGD204
@@ -2954,7 +2953,7 @@ Array HHVM_FUNCTION(gd_info) {
 
 Variant HHVM_FUNCTION(imageloadfont, const String& file) {
   // TODO: ind = 5 + zend_list_insert(font, le_gd_font);
-  throw NotSupportedException(__func__, "NYI");
+  throw_not_supported(__func__, "NYI");
 #ifdef NEVER
   Variant stream;
   zval **file;
@@ -3681,7 +3680,7 @@ Variant HHVM_FUNCTION(imagecolorsforindex, const Resource& image,
     ret.set(s_red, im->red[col]);
     ret.set(s_green, im->green[col]);
     ret.set(s_blue, im->blue[col]);
-    return ret.create();
+    return ret.toVariant();
   }
 #endif
   raise_warning("Color index %" PRId64 " out of range", index);
@@ -3896,7 +3895,7 @@ bool HHVM_FUNCTION(imagecopymerge, const Resource& dst_im,
                    src_x, src_y, src_w, src_h, pct);
   return true;
 #else
-  throw NotSupportedException(__func__, "HAVE_LIBGD15 undefined");
+  throw_not_supported(__func__, "HAVE_LIBGD15 undefined");
 #endif
 }
 
@@ -4095,9 +4094,9 @@ static int hphp_gdImageConvolution(gdImagePtr src, float filter[3][3],
       new_a = gdImageAlpha(srcback, pxl);
 
       for (j=0; j<3; j++) {
-        int yv = MIN(MAX(y - 1 + j, 0), src->sy - 1);
+        int yv = std::min(std::max(y - 1 + j, 0), src->sy - 1);
         for (i=0; i<3; i++) {
-                pxl = f(srcback, MIN(MAX(x - 1 + i, 0), src->sx - 1), yv);
+          pxl = f(srcback, std::min(std::max(x - 1 + i, 0), src->sx - 1), yv);
           new_r += (float)gdImageRed(srcback, pxl) * filter[j][i];
           new_g += (float)gdImageGreen(srcback, pxl) * filter[j][i];
           new_b += (float)gdImageBlue(srcback, pxl) * filter[j][i];
@@ -4394,6 +4393,8 @@ Variant HHVM_FUNCTION(iptcparse, const String& iptcblock) {
     recnum = buffer[inx++];
 
     if (buffer[inx] & (unsigned char) 0x80) { /* long tag */
+      if (inx + 6 >= str_len) break;
+
       len = (((long)buffer[inx + 2]) << 24) +
             (((long)buffer[inx + 3]) << 16) +
             (((long)buffer[inx + 4]) <<  8) +
@@ -5239,7 +5240,7 @@ static String exif_get_sectionname(int section) {
   case SECTION_WINXP:     return s_WINXP;
   case SECTION_MAKERNOTE: return s_MAKERNOTE;
   }
-  return empty_string;
+  return empty_string();
 }
 
 static tag_table_type exif_get_tag_table(int section) {

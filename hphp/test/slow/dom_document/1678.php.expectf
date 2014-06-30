@@ -1,0 +1,38 @@
+object(DOMElement)#3 (18) {
+  ["schemaTypeInfo"]=>
+  NULL
+  ["tagName"]=>
+  string(4) "root"
+  ["textContent"]=>
+  string(13) "$1 - SITENAME"
+  ["baseURI"]=>
+  string(%d) "%s"
+  ["localName"]=>
+  string(4) "root"
+  ["prefix"]=>
+  string(0) ""
+  ["ownerDocument"]=>
+  string(22) "(object value omitted)"
+  ["parentNode"]=>
+  string(22) "(object value omitted)"
+  ["namespaceURI"]=>
+  NULL
+  ["nodeType"]=>
+  int(1)
+  ["lastChild"]=>
+  string(22) "(object value omitted)"
+  ["nodeName"]=>
+  string(4) "root"
+  ["previousSibling"]=>
+  NULL
+  ["firstChild"]=>
+  string(22) "(object value omitted)"
+  ["childNodes"]=>
+  string(22) "(object value omitted)"
+  ["nodeValue"]=>
+  string(13) "$1 - SITENAME"
+  ["nextSibling"]=>
+  NULL
+  ["attributes"]=>
+  string(22) "(object value omitted)"
+}

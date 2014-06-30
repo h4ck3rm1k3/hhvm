@@ -34,7 +34,8 @@ namespace HPHP {
  *  WaitableWaitHandle             - wait handle that can be waited for
  *   BlockableWaitHandle           - wait handle that can be blocked by other WH
  *    ResumableWaitHandle          - wait handle that can resume PHP execution
- *     AsyncFunctionWaitHandle     - async function-based asynchronous execution
+ *     AsyncFunctionWaitHandle     - async function-based async execution
+ *     AsyncGeneratorWaitHandle    - async generator-based async execution
  *    GenArrayWaitHandle           - wait handle representing an array of WHs
  *    GenMapWaitHandle             - wait handle representing an Map of WHs
  *    GenVectorWaitHandle          - wait handle representing an Vector of WHs
@@ -48,6 +49,7 @@ namespace HPHP {
  * passed as an array member of GenArrayWaitHandle).
  */
 FORWARD_DECLARE_CLASS(WaitHandle);
+FORWARD_DECLARE_CLASS(BlockableWaitHandle);
 class c_WaitHandle : public ExtObjectDataFlags<ObjectData::IsWaitHandle> {
  public:
   DECLARE_CLASS_NO_SWEEP(WaitHandle)
@@ -55,6 +57,7 @@ class c_WaitHandle : public ExtObjectDataFlags<ObjectData::IsWaitHandle> {
   enum class Kind : uint8_t {
     Static,
     AsyncFunction,
+    AsyncGenerator,
     GenArray,
     GenMap,
     GenVector,
@@ -70,6 +73,8 @@ class c_WaitHandle : public ExtObjectDataFlags<ObjectData::IsWaitHandle> {
   ~c_WaitHandle() {}
 
   void t___construct();
+  static void ti_setoniowaitentercallback(const Variant& callback);
+  static void ti_setoniowaitexitcallback(const Variant& callback);
   static void ti_setonjoincallback(const Variant& callback);
   Object t_getwaithandle();
   void t_import();
@@ -116,6 +121,9 @@ class c_WaitHandle : public ExtObjectDataFlags<ObjectData::IsWaitHandle> {
   void setKindState(Kind kind, uint8_t state) {
     o_subclassData.u8[0] = toKindState(kind, state);
   }
+  void setContextVectorIndex(uint32_t idx) {
+    m_ctxVecIndex = idx;
+  }
 
   // The code in the TC will depend on the values of these constants.
   // See emitAwait().
@@ -123,7 +131,25 @@ class c_WaitHandle : public ExtObjectDataFlags<ObjectData::IsWaitHandle> {
   static const int8_t STATE_FAILED    = 1;
 
  protected:
-  Cell m_resultOrException;
+  union {
+    // STATE_SUCCEEDED || STATE_FAILED
+    Cell m_resultOrException;
+
+    // !STATE_SUCCEEDED && !STATE_FAILED
+    struct {
+      // WaitableWaitHandle: !STATE_SUCCEEDED && !STATE_FAILED
+      c_BlockableWaitHandle* m_firstParent;
+
+      union {
+        // BlockableWaitHandle: STATE_BLOCKED
+        c_BlockableWaitHandle* m_nextParent;
+
+        // ExternalThreadEventWaitHandle: STATE_WAITING
+        // SleepWaitHandle: STATE_WAITING
+        uint32_t m_ctxVecIndex;
+      };
+    };
+  };
 };
 
 ///////////////////////////////////////////////////////////////////////////////

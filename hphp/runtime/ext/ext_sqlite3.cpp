@@ -315,7 +315,7 @@ String c_SQLite3::ti_escapestring(const String& sql) {
       return sret;
     }
   }
-  return "";
+  return empty_string();
 }
 
 Variant c_SQLite3::t_prepare(const String& sql) {
@@ -364,9 +364,9 @@ Variant c_SQLite3::t_querysingle(const String& sql, bool entire_row /* = false *
         return get_column_value(pstmt, 0);
       case SQLITE_DONE: /* Valid but no results */
         if (entire_row) {
-          return empty_array;
+          return empty_array();
         } else {
-          return uninit_null();
+          return init_null();
         }
       default:
         raise_warning("Unable to execute statement: %s",
@@ -434,7 +434,7 @@ bool c_SQLite3::t_createaggregate(const String& name, const Variant& step, const
 
 bool c_SQLite3::t_openblob(const String& table, const String& column, int64_t rowid,
                            const String& dbname /* = null_string */) {
-  throw NotSupportedException(__func__, "sqlite3 stream");
+  throw_not_supported(__func__, "sqlite3 stream");
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -667,7 +667,7 @@ Variant c_SQLite3Result::t_fetcharray(int64_t mode /* = k_SQLITE3_BOTH */) {
     raise_warning("Unable to execute statement: %s",
                   sqlite3_errmsg(sqlite3_db_handle(m_stmt->m_raw_stmt)));
   }
-  return uninit_null();
+  return init_null();
 }
 
 bool c_SQLite3Result::t_reset() {

@@ -45,20 +45,21 @@ struct Resumable {
   static constexpr ptrdiff_t arOff() {
     return offsetof(Resumable, m_actRec);
   }
-  static constexpr ptrdiff_t stashedSpOff() {
-    return offsetof(Resumable, m_stashedSp);
-  }
   static constexpr ptrdiff_t resumeAddrOff() {
     return offsetof(Resumable, m_resumeAddr);
   }
   static constexpr ptrdiff_t resumeOffsetOff() {
     return offsetof(Resumable, m_resumeOffset);
   }
+  static constexpr ptrdiff_t objectOff() {
+    return sizeof(Resumable);
+  }
 
+  template <bool clone>
   static void* Create(const ActRec* fp, size_t numSlots, JIT::TCA resumeAddr,
                       Offset resumeOffset, size_t objSize) {
     assert(fp);
-    auto const func = fp->func();
+    DEBUG_ONLY auto const func = fp->func();
     assert(func);
     assert(func->isResumable());
     assert(func->contains(resumeOffset));
@@ -68,13 +69,25 @@ struct Resumable {
     size_t totalSize = frameSize + sizeof(Resumable) + objSize;
     void* mem = MM().objMallocLogged(totalSize);
     auto resumable = (Resumable*)((char*)mem + frameSize);
+    auto actRec = resumable->actRec();
 
-    // Populate ActRec.
-    auto& actRec = resumable->m_actRec;
-    actRec.m_func = func;
-    actRec.initNumArgsFromResumable(fp->numArgs());
-    actRec.setVarEnv(nullptr);
-    actRec.setThisOrClassAllowNull(fp->getThisOrClass());
+    if (!clone) {
+      // Copy ActRec, locals and iterators
+      auto src = (void *)((uintptr_t)fp - frameSize);
+      memcpy(mem, src, frameSize + sizeof(ActRec));
+
+      // Suspend VarEnv if needed
+      if (UNLIKELY(fp->hasVarEnv())) {
+        fp->getVarEnv()->suspend(fp, actRec);
+      }
+    } else {
+      // If we are cloning a Resumable, only copy the ActRec. The
+      // caller will take care of copying locals, setting the VarEnv, etc.
+      memcpy(actRec, fp, sizeof(ActRec));
+    }
+
+    // Set resumed flag.
+    actRec->setResumed();
 
     // Populate Resumable.
     resumable->m_resumeAddr = resumeAddr;
@@ -109,11 +122,6 @@ private:
 
   // ActRec of the resumed frame.
   ActRec m_actRec;
-
-  // Temporary storage used to save the SP when inlining into a resumable. This
-  // is used in an offsetof expression above, but clang doesn't recognize that
-  // as a "use", hence the UNUSED.
-  UNUSED void* m_stashedSp;
 
   // Resume address.
   JIT::TCA m_resumeAddr;

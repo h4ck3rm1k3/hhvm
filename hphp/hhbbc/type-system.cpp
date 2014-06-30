@@ -22,6 +22,7 @@
 
 #include "folly/Optional.h"
 #include "folly/Traits.h"
+#include "folly/Hash.h"
 
 #include "hphp/runtime/base/repo-auth-type.h"
 #include "hphp/runtime/base/repo-auth-type-array.h"
@@ -1015,7 +1016,7 @@ bool Type::subtypeData(const Type& o) const {
         m_data.dobj.cls.same(o.m_data.dobj.cls)) {
       return true;
     }
-    if (o.m_data.dobj.type == ClsTag::Sub) {
+    if (o.m_data.dobj.type == DObj::Sub) {
       return m_data.dobj.cls.subtypeOf(o.m_data.dobj.cls);
     }
     return false;
@@ -1024,7 +1025,7 @@ bool Type::subtypeData(const Type& o) const {
         m_data.dcls.cls.same(o.m_data.dcls.cls)) {
       return true;
     }
-    if (o.m_data.dcls.type == ClsTag::Sub) {
+    if (o.m_data.dcls.type == DCls::Sub) {
       return m_data.dcls.cls.subtypeOf(o.m_data.dcls.cls);
     }
     return false;
@@ -1064,10 +1065,8 @@ bool Type::couldBeData(const Type& o) const {
         m_data.dobj.cls.same(o.m_data.dobj.cls)) {
       return true;
     }
-    if (m_data.dobj.type == ClsTag::Sub || o.m_data.dobj.type == ClsTag::Sub) {
-      return m_data.dobj.cls.couldBe(o.m_data.dobj.cls,
-                                     m_data.dobj.type,
-                                     o.m_data.dobj.type);
+    if (m_data.dobj.type == DObj::Sub || o.m_data.dobj.type == DObj::Sub) {
+      return m_data.dobj.cls.couldBe(o.m_data.dobj.cls);
     }
     return false;
   case DataTag::Cls:
@@ -1075,10 +1074,8 @@ bool Type::couldBeData(const Type& o) const {
         m_data.dcls.cls.same(o.m_data.dcls.cls)) {
       return true;
     }
-    if (m_data.dcls.type == ClsTag::Sub || o.m_data.dcls.type == ClsTag::Sub) {
-      return m_data.dcls.cls.couldBe(o.m_data.dcls.cls,
-                                     m_data.dcls.type,
-                                     o.m_data.dcls.type);
+    if (m_data.dcls.type == DCls::Sub || o.m_data.dcls.type == DCls::Sub) {
+      return m_data.dcls.cls.couldBe(o.m_data.dcls.cls);
     }
     return false;
   case DataTag::RefInner:
@@ -1123,6 +1120,14 @@ bool Type::operator==(const Type& o) const {
   }
 
   return equivData(o);
+}
+
+size_t Type::hash() const {
+  using U1 = std::underlying_type<decltype(m_bits)>::type;
+  using U2 = std::underlying_type<decltype(m_dataTag)>::type;
+  auto const rawBits = U1{m_bits};
+  auto const rawTag  = static_cast<U2>(m_dataTag);
+  return folly::hash::hash_combine(rawBits, rawTag);
 }
 
 bool Type::subtypeOf(Type o) const {
@@ -1325,12 +1330,12 @@ Type aval(SArray val) {
 Type aempty()         { return Type { BSArrE }; }
 Type sempty()         { return sval(s_empty.get()); }
 Type counted_aempty() { return Type { BCArrE }; }
+Type some_aempty()    { return Type { BArrE }; }
 
 Type subObj(res::Class val) {
   auto r = Type { BObj };
   new (&r.m_data.dobj) DObj(
-    (val.couldBeOverriden() || val.couldBeInterface())
-      ? ClsTag::Sub : ClsTag::Exact,
+    val.couldBeOverriden() ? DObj::Sub : DObj::Exact,
     val
   );
   r.m_dataTag = DataTag::Obj;
@@ -1339,7 +1344,7 @@ Type subObj(res::Class val) {
 
 Type objExact(res::Class val) {
   auto r = Type { BObj };
-  new (&r.m_data.dobj) DObj(ClsTag::Exact, val);
+  new (&r.m_data.dobj) DObj(DObj::Exact, val);
   r.m_dataTag = DataTag::Obj;
   return r;
 }
@@ -1347,8 +1352,7 @@ Type objExact(res::Class val) {
 Type subCls(res::Class val) {
   auto r        = Type { BCls };
   new (&r.m_data.dcls) DCls {
-    (val.couldBeOverriden() || val.couldBeInterface())
-      ? ClsTag::Sub : ClsTag::Exact,
+    val.couldBeOverriden() ? DCls::Sub : DCls::Exact,
     val
   };
   r.m_dataTag = DataTag::Cls;
@@ -1357,7 +1361,7 @@ Type subCls(res::Class val) {
 
 Type clsExact(res::Class val) {
   auto r        = Type { BCls };
-  new (&r.m_data.dcls) DCls { ClsTag::Exact, val };
+  new (&r.m_data.dcls) DCls { DCls::Exact, val };
   r.m_dataTag   = DataTag::Cls;
   return r;
 }
@@ -1511,7 +1515,7 @@ Type objcls(Type t) {
   assert(t.subtypeOf(TObj));
   if (t.strictSubtypeOf(TObj)) {
     auto const d = dobj_of(t);
-    return d.type == ClsTag::Exact ? clsExact(d.cls) : subCls(d.cls);
+    return d.type == DObj::Exact ? clsExact(d.cls) : subCls(d.cls);
   }
   return TCls;
 }
@@ -2396,8 +2400,8 @@ RepoAuthType make_repo_type(ArrayTypeTable::Builder& arrTable, const Type& t) {
     auto const dobj = dobj_of(t);
     auto const tag =
       is_opt(t)
-        ? (dobj.type == ClsTag::Exact ? T::OptExactObj : T::OptSubObj)
-        : (dobj.type == ClsTag::Exact ? T::ExactObj    : T::SubObj);
+        ? (dobj.type == DObj::Exact ? T::OptExactObj : T::OptSubObj)
+        : (dobj.type == DObj::Exact ? T::ExactObj    : T::SubObj);
     return RepoAuthType { tag, dobj.cls.name() };
   }
 

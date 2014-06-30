@@ -22,7 +22,8 @@
 type build_opts = {
   root: Path.path;
   steps: string list option; (* steps for hack build to run.
-                                 None means 'all' *)
+                         None means 'all' *)
+  no_steps: string list option; (* ...but don't run these steps *)
   run_scripts: bool; (* when true, run remaining arc build steps
                      that we haven't figured out how to port yet*)
   serial: bool; (* when true, don't use parallel workers *)
@@ -56,13 +57,12 @@ type insert_patch = {
 type patch =
 | Insert of insert_patch
 | Remove of Pos.t
-| Replace of insert_patch 
+| Replace of insert_patch
 
 type command =
 | ERROR_OUT_OF_DATE
 | PRINT_TYPES of string
 | STATUS of Path.path
-| SKIP
 | LIST_FILES
 | AUTOCOMPLETE of string
 | SAVE_STATE of string
@@ -74,9 +74,11 @@ type command =
 | FIND_REFS of find_refs_action
 | IDENTIFY_FUNCTION of string * int * int
 | OUTLINE of string
+| METHOD_JUMP of (string * bool)
 | INFER_TYPE of string * int * int (* filename, line, char *)
 | REFACTOR of refactor_action
 | SEARCH of string
+| SUGGEST of string list
 
 let cmd_to_channel (oc:out_channel) (cmd:command): unit =
   Printf.fprintf oc "%s\n" Build_id.build_id_ohai;
@@ -98,7 +100,7 @@ type response =
 | SERVER_OUT_OF_DATE
 | DIRECTORY_MISMATCH of directory_mismatch
 | NO_ERRORS
-| ERRORS of Utils.error list
+| ERRORS of Errors.error list
 | SERVER_DYING
 | PONG
 

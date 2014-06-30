@@ -16,6 +16,8 @@
 #ifndef incl_HHBBC_TYPE_ARITH_H_
 #define incl_HHBBC_TYPE_ARITH_H_
 
+#include "hphp/runtime/vm/hhbc.h"
+
 namespace HPHP { namespace HHBBC {
 
 struct Type;
@@ -59,6 +61,17 @@ Type typeMulO(Type, Type);
 Type typeBitAnd(Type, Type);
 Type typeBitOr(Type, Type);
 Type typeBitXor(Type, Type);
+Type typeShl(Type, Type);
+Type typeShr(Type, Type);
+
+Type typeIncDec(IncDecOp, Type);
+
+//////////////////////////////////////////////////////////////////////
+
+/*
+ * Op= operations on types, where "Op" is determined by a SetOpOp.
+ */
+Type typeArithSetOp(SetOpOp, Type, Type);
 
 //////////////////////////////////////////////////////////////////////
 

@@ -113,7 +113,7 @@ struct FilterRequestData final : RequestEventHandler {
       case k_INPUT_SERVER: return m_SERVER;
       case k_INPUT_ENV: return m_ENV;
     }
-    return empty_array;
+    return empty_array();
   }
 
 private:
@@ -243,34 +243,31 @@ static Variant fail(bool return_null, const Variant& options) {
     }
   }
   if (return_null) {
-    return uninit_null();
+    return init_null();
   }
   return false;
 }
 
-static filter_list_entry php_find_filter(uint64_t id) {
+static const filter_list_entry* php_find_filter(uint64_t id) {
   int i, size = sizeof(filter_list) / sizeof(filter_list_entry);
 
   for (i = 0; i < size; ++i) {
     if (filter_list[i].id == id) {
-      return filter_list[i];
+      return &filter_list[i];
     }
   }
-  /* Fallback to "string" filter */
-  for (i = 0; i < size; ++i) {
-    if (filter_list[i].id == k_FILTER_DEFAULT) {
-      return filter_list[i];
-    }
-  }
-  // never hit
-  return filter_list[0];
+
+  return nullptr;
 }
 
 #define FAIL_IF(x) do { if (x) return false; } while (0)
 
 static bool filter_var(Variant& ret, const Variant& variable, int64_t filter,
                        const Variant& options) {
-  filter_list_entry filter_func = php_find_filter(filter);
+  const filter_list_entry* filter_func = php_find_filter(filter);
+  if (!filter_func) {
+    return false;
+  }
 
   int64_t flags;
   Variant option_array;
@@ -284,7 +281,7 @@ static bool filter_var(Variant& ret, const Variant& variable, int64_t filter,
 
   FAIL_IF(variable.isObject() && !variable.getObjectData()->hasToString());
 
-  ret = filter_func.function(variable.toString(), flags, option_array);
+  ret = filter_func->function(variable.toString(), flags, option_array);
   if (option_array.isArray() && option_array.toArray().exists(s_default) &&
       ((flags & k_FILTER_NULL_ON_FAILURE && ret.isNull()) ||
        (!(flags & k_FILTER_NULL_ON_FAILURE) && ret.isBoolean() &&
@@ -323,13 +320,19 @@ Variant f_filter_list() {
   return ret;
 }
 
-Variant f_filter_id(const String& filtername) {
+Variant f_filter_id(const Variant& filtername) {
+  if (filtername.isArray()) {
+    raise_warning("Array to string conversion");
+    return init_null();
+  }
+
   size_t size = sizeof(filter_list) / sizeof(filter_list_entry);
   for (size_t i = 0; i < size; ++i) {
     if (filter_list[i].name == filtername) {
       return filter_list[i].id;
     }
   }
+
   return false;
 }
 
@@ -339,7 +342,7 @@ Variant f_filter_id(const String& filtername) {
   } while(0)
 
 Variant f_filter_var(const Variant& variable, int64_t filter /* = 516 */,
-                     const Variant& options /* = empty_array */) {
+                     const Variant& options /* = empty_array_ref */) {
   int64_t filter_flags;
   if (options.isArray()) {
     filter_flags = options.toCArrRef()[s_flags].toInt64();

@@ -25,16 +25,12 @@
 
 namespace HPHP {
 
-using JIT::CallerFrame;
-using JIT::EagerCallerFrame;
-using JIT::VMRegAnchor;
-
 ///////////////////////////////////////////////////////////////////////////////
 // helpers
 
 static inline StrNR ctxClassName() {
   Class* ctx = g_context->getContextClass();
-  return ctx ? ctx->nameStr() : StrNR(empty_string);
+  return ctx ? ctx->nameStr() : StrNR(staticEmptyString());
 }
 
 static const Class* get_cls(const Variant& class_or_object) {
@@ -152,13 +148,13 @@ static void getMethodNamesImpl(const Class* cls,
 
 Variant HHVM_FUNCTION(get_class_methods, const Variant& class_or_object) {
   auto const cls = get_cls(class_or_object);
-  if (!cls) return null_variant;
+  if (!cls) return init_null();
   VMRegAnchor _;
 
   auto retVal = Array::attach(MixedArray::MakeReserve(cls->numMethods()));
   getMethodNamesImpl(
     cls,
-    arGetContextClassFromBuiltin(g_context->getFP()),
+    arGetContextClassFromBuiltin(vmfp()),
     retVal
   );
   return f_array_values(retVal).toArray();

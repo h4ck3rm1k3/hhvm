@@ -22,6 +22,7 @@
 #include "hphp/runtime/ext/unicode_data.h"
 #include "hphp/runtime/ext/ext_process.h"
 #include "hphp/runtime/ext/ext_string.h"
+#include "hphp/runtime/ext/std/ext_std_output.h"
 #include "hphp/runtime/base/zend-url.h"
 #include "hphp/runtime/base/zend-string.h"
 #include "hphp/runtime/base/ini-setting.h"
@@ -1121,7 +1122,7 @@ Variant f_mb_list_mime_names(const String& name /* = null_string */) {
         }
         break;
       }
-      return "";
+      return empty_string_variant();
     } else {
       return false;
     }
@@ -1310,7 +1311,7 @@ static Variant php_mbfl_convert(const Variant& var,
                                 mbfl_string *string,
                                 mbfl_string *result) {
   if (var.is(KindOfArray)) {
-    Array ret = empty_array;
+    Array ret = empty_array();
     Array items = var.toArray();
     for (ArrayIter iter(items); iter; ++iter) {
       ret.set(iter.first(),
@@ -3297,7 +3298,7 @@ static Variant _php_mb_regex_ereg_replace_exec(const Variant& pattern,
   }
 
   if (eval) {
-    throw NotSupportedException("ereg_replace", "dynamic coding");
+    throw_not_supported("ereg_replace", "dynamic coding");
   }
 
   /* do the actual work */

@@ -195,14 +195,27 @@ static void set_ns_and_type(xmlNodePtr node, encodeTypePtr type);
 #define FIND_XML_NULL(xml, v)                                   \
   {                                                             \
     if (!xml) {                                                 \
-      v = Variant();                                            \
+      v = init_null();                                          \
       return v;                                                 \
     }                                                           \
     if (xml->properties) {                                      \
       xmlAttrPtr n = get_attribute(xml->properties, "nil");     \
       if (n) {                                                  \
-        v = Variant();                                          \
+        v = init_null();                                        \
         return v;                                               \
+      }                                                         \
+    }                                                           \
+  }
+
+#define CHECK_XML_NULL(xml)                                     \
+  {                                                             \
+    if (!xml) {                                                 \
+      return uninit_null();                                     \
+    }                                                           \
+    if (xml->properties) {                                      \
+      xmlAttrPtr n = get_attribute(xml->properties, "nil");     \
+      if (n) {                                                  \
+        return uninit_null();                                   \
       }                                                         \
     }                                                           \
   }
@@ -449,6 +462,15 @@ static encodePtr find_encoder_by_type_name(sdl *sdl, const char *type) {
     }
   }
   return encodePtr();
+}
+
+static Variant soap_find_xml_ref(xmlNodePtr node) {
+  USE_SOAP_GLOBAL;
+  Array& ref_map = SOAP_GLOBAL(ref_map);
+  if (ref_map.exists((int64_t)node)) {
+    return ref_map.lvalAt((int64_t)node);
+  }
+  return uninit_null();
 }
 
 static bool soap_check_zval_ref(const Variant& data, xmlNodePtr node) {
@@ -763,7 +785,7 @@ static Variant to_zval_string(encodeTypePtr type, xmlNodePtr data) {
       throw SoapException("Encoding: Violation of encoding rules");
     }
   } else {
-    ret = empty_string;
+    ret = empty_string_variant();
   }
   return ret;
 }
@@ -799,7 +821,7 @@ static Variant to_zval_stringr(encodeTypePtr type, xmlNodePtr data) {
       throw SoapException("Encoding: Violation of encoding rules");
     }
   } else {
-    ret = empty_string;
+    ret = empty_string_variant();
   }
   return ret;
 }
@@ -835,7 +857,7 @@ static Variant to_zval_stringc(encodeTypePtr type, xmlNodePtr data) {
       throw SoapException("Encoding: Violation of encoding rules");
     }
   } else {
-    ret = empty_string;
+    ret = empty_string_variant();
   }
   return ret;
 }
@@ -865,7 +887,7 @@ static Variant to_zval_base64(encodeTypePtr type, xmlNodePtr data) {
       throw SoapException("Encoding: Violation of encoding rules");
     }
   } else {
-    ret = empty_string;
+    ret = empty_string_variant();
   }
   return ret;
 }
@@ -888,7 +910,7 @@ static Variant to_zval_hexbin(encodeTypePtr type, xmlNodePtr data) {
     }
     ret = str;
   } else {
-    ret = empty_string;
+    ret = empty_string_variant();
   }
   return ret;
 }
@@ -1139,7 +1161,7 @@ static xmlNodePtr to_xml_bool(encodeTypePtr type, const Variant& data, int style
 
 /* Null encode/decode */
 static Variant to_zval_null(encodeTypePtr type, xmlNodePtr data) {
-  return uninit_null();
+  return init_null();
 }
 
 static xmlNodePtr to_xml_null(encodeTypePtr type, const Variant& data, int style,
@@ -1406,6 +1428,11 @@ static Variant to_zval_object_ex(encodeTypePtr type, xmlNodePtr data,
           details.sdl_type->kind != XSD_TYPEKIND_LIST &&
           details.sdl_type->kind != XSD_TYPEKIND_UNION) {
 
+        CHECK_XML_NULL(data)
+        if (!(ret = soap_find_xml_ref(data)).isNull()) {
+          return ret;
+        }
+
         if (strcasecmp(ce, "stdClass") != 0 &&
             sdlType->encode->to_zval == sdl_guess_convert_zval &&
             details.sdl_type != NULL &&
@@ -1419,12 +1446,10 @@ static Variant to_zval_object_ex(encodeTypePtr type, xmlNodePtr data,
         } else {
           ret = master_to_zval_int(sdlType->encode, data);
         }
-        FIND_XML_NULL(data, ret);
         if (soap_check_xml_ref(ret, data)) {
           return ret;
         }
         redo_any = get_zval_property(ret, "any");
-        ret.toObject()->o_set("any", uninit_null());
       } else {
         if (soap_check_xml_ref(ret, data)) {
           return ret;

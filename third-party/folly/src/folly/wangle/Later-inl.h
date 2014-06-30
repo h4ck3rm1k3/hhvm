@@ -53,6 +53,15 @@ Later<T>::Later() {
   future_ = starter_.getFuture();
 }
 
+template <class T>
+Later<T>::Later(Future<T>&& f) {
+  MoveWrapper<Future<T>> fw(std::move(f));
+  *this = Later<void>()
+    .then([fw](Try<void>&&) mutable {
+      return std::move(*fw);
+    });
+}
+
 template <typename T>
 Later<T>::Later(Promise<void>&& starter)
   : starter_(std::forward<Promise<void>>(starter)) { }
@@ -130,10 +139,17 @@ Later<T>::then(F&& fn) {
 
 template <class T>
 Later<T> Later<T>::via(Executor* executor) {
-  Promise<T> promise;
+  folly::MoveWrapper<Promise<T>> promise;
   Later<T> later(std::move(starter_));
-  later.future_ = promise.getFuture();
-  future_->executeWith(executor, std::move(promise));
+  later.future_ = promise->getFuture();
+
+  future_->setCallback_([executor, promise](Try<T>&& t) mutable {
+    folly::MoveWrapper<Try<T>> tt(std::move(t));
+    executor->add([promise, tt]() mutable {
+      promise->fulfilTry(std::move(*tt));
+    });
+  });
+
   return later;
 }
 

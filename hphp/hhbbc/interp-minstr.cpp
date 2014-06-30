@@ -26,6 +26,7 @@
 #include "hphp/util/trace.h"
 
 #include "hphp/hhbbc/interp-internal.h"
+#include "hphp/hhbbc/type-arith.h"
 
 namespace HPHP { namespace HHBBC {
 
@@ -340,7 +341,7 @@ void handleInSelfPropD(MIS& env) {
   if (!couldBeInSelf(env, env.base)) return;
 
   if (auto const name = env.base.locName) {
-    auto const ty = thisPropAsCell(env, name);
+    auto const ty = selfPropAsCell(env, name);
     if (ty && propCouldPromoteToObj(*ty)) {
       mergeSelfProp(env, name,
         objExact(env.index.builtin_class(s_stdClass.get())));
@@ -910,21 +911,32 @@ void miFinalSetProp(MIS& env) {
   push(env, resultTy);
 }
 
-void miFinalSetOpProp(MIS& env) {
+void miFinalSetOpProp(MIS& env, SetOpOp subop) {
   auto const name = mcodeStringKey(env);
-  popC(env);
+  auto const rhsTy = popC(env);
+
   miPop(env);
   handleInThisPropD(env);
   handleInSelfPropD(env);
   handleBasePropD(env);
+
+  auto resultTy = TInitCell;
+
   if (couldBeThisObj(env, env.base)) {
+    if (name && mustBeThisObj(env, env.base)) {
+      if (auto const lhsTy = thisPropAsCell(env, name)) {
+        resultTy = typeArithSetOp(subop, *lhsTy, rhsTy);
+      }
+    }
+
     if (name) {
-      mergeThisProp(env, name, TInitCell);
+      mergeThisProp(env, name, resultTy);
     } else {
       loseNonRefThisPropTypes(env);
     }
   }
-  push(env, TInitCell);
+
+  push(env, resultTy);
 }
 
 void miFinalIncDecProp(MIS& env) {
@@ -1047,14 +1059,25 @@ void miFinalSetElem(MIS& env) {
 
   /*
    * In some unusual cases with illegal keys, SetM pushes null
-   * instead of the right hand side.  If the base is a string, it
-   * pushes a new string with the value of the first character of
-   * the right hand side converted to a string (or something like
-   * that), so for now we're leaving out string bases too.
+   * instead of the right hand side.
+   *
+   * There are also some special cases for SetM for different base types:
+   * 1. If the base is a string, SetM pushes a new string with the
+   * value of the first character of the right hand side converted
+   * to a string (or something like that).
+   * 2. If the base is a primitive type, SetM pushes null.
+   * 3. If the base is an object, and it does not implement ArrayAccess,
+   * it is still ok to push the right hand side, because it is a
+   * fatal.
+   *
+   * We push the right hand side on the stack only if the base is an
+   * array, object or emptyish.
    */
-  auto const isWeird = env.base.type.couldBe(TStr) ||
-                       key.couldBe(TObj) ||
-                       key.couldBe(TArr);
+  auto const isWeird = key.couldBe(TObj) ||
+                       key.couldBe(TArr) ||
+                       (!env.base.type.subtypeOf(TArr) &&
+                        !env.base.type.subtypeOf(TObj) &&
+                        !mustBeEmptyish(env.base.type));
 
   if (mustBeInFrame(env.base) && env.base.type.subtypeOf(TArr)) {
     env.base.type = array_set(env.base.type, key, t1);
@@ -1246,7 +1269,7 @@ void miFinal(MIS& env, const bc::SetM& op) {
 
 void miFinal(MIS& env, const bc::SetOpM& op) {
   if (mcodeIsElem(env.mcode())) return miFinalSetOpElem(env);
-  if (mcodeIsProp(env.mcode())) return miFinalSetOpProp(env);
+  if (mcodeIsProp(env.mcode())) return miFinalSetOpProp(env, op.subop);
   return miFinalSetOpNewElem(env);
 }
 

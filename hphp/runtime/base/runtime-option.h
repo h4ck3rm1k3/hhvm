@@ -53,10 +53,7 @@ class RuntimeOption {
 public:
   static void Load(const IniSettingMap &ini,
                    Hdf& config,
-                   std::vector<std::string>* overwrites = nullptr,
-                   bool empty = false);
-
-  static bool Loaded;
+                   std::vector<std::string>* overwrites = nullptr);
 
   static bool ServerExecutionMode() {
     return strcmp(ExecutionMode, "srv") == 0;
@@ -76,8 +73,6 @@ public:
   static int LogHeaderMangle;
   static bool AlwaysEscapeLog;
   static bool AlwaysLogUnhandledExceptions;
-  static bool InjectedStackTrace;
-  static int InjectedStackTraceLimit; // limit the size of the backtrace
   static bool NoSilencer;
   static bool CallUserHandlerOnFatals;
   static bool ThrowExceptionOnBadMethodCall;
@@ -88,11 +83,7 @@ public:
   static int  MaxLoopCount;
   static int  MaxSerializedStringSize;
   static bool NoInfiniteRecursionDetection;
-  static bool ThrowBadTypeExceptions;
-  static bool ThrowTooManyArguments;
   static bool WarnTooManyArguments;
-  static bool ThrowMissingArguments;
-  static bool ThrowInvalidArguments;
   static bool EnableHipHopErrors;
   static bool AssertActive;
   static bool AssertWarning;
@@ -142,7 +133,7 @@ public:
   static int FiberCount;
   static int RequestTimeoutSeconds;
   static int PspTimeoutSeconds;
-  static size_t ServerMemoryHeadRoom;
+  static int64_t ServerMemoryHeadRoom;
   static int64_t RequestMemoryMaxBytes;
   static int64_t ImageMemoryMaxBytes;
   static int ResponseQueueCount;
@@ -150,6 +141,7 @@ public:
   static int ServerDanglingWait;
   static bool ServerHarshShutdown;
   static bool ServerEvilShutdown;
+  static bool ServerKillOnSIGTERM;
   static int ServerShutdownListenWait;
   static int ServerShutdownListenNoWork;
   static std::vector<std::string> ServerNextProtocols;
@@ -281,7 +273,6 @@ public:
   static bool TranslateLeakStackTrace;
   static bool NativeStackTrace;
   static bool FullBacktrace;
-  static bool ServerStackTrace;
   static bool ServerErrorMessage;
   static bool TranslateSource;
   static bool RecordInput;
@@ -325,9 +316,6 @@ public:
 
   static bool EnableDnsCache;
   static int DnsCacheTTL;
-  static time_t DnsCacheKeyMaturityThreshold;
-  static size_t DnsCacheMaximumCapacity;
-  static int DnsCacheKeyFrequencyUpdatePeriod;
 
   static std::map<std::string, std::string> ServerVariables;
 
@@ -351,6 +339,7 @@ public:
   static int MaxUserFunctionId;
   static bool EnableArgsInBacktraces;
   static bool EnableZendCompat;
+  static bool EnableZendSorting;
   static bool TimeoutsUseWallTime;
   static bool CheckFlushOnUserClose;
   static bool EvalAuthoritativeMode;
@@ -359,6 +348,9 @@ public:
   static HackStrictOption DisallowDynamicVarEnvFuncs;
 
   static int GetScannerType();
+
+  static bool GetServerCustomBoolSetting(const std::string &settingName,
+                                         bool &val);
 
   static std::set<std::string, stdltistr> DynamicInvokeFunctions;
 
@@ -383,10 +375,10 @@ public:
   F(uint64_t, JitASize,                60 << 20)                        \
   F(uint64_t, JitAMaxUsage,            maxUsageDef())                   \
   F(uint64_t, JitAProfSize,            64 << 20)                        \
-  F(uint64_t, JitAStubsSize,           64 << 20)                        \
   F(uint64_t, JitAColdSize,            24 << 20)                        \
-  F(uint64_t, JitAFrozenSize,          40 << 20)                       \
+  F(uint64_t, JitAFrozenSize,          40 << 20)                        \
   F(uint64_t, JitGlobalDataSize,       kJitGlobalDataDef)               \
+  F(uint64_t, JitRelocationSize,       1 << 20)                         \
   F(bool, AllowHhas,                   false)                           \
   /* CheckReturnTypeHints:
      0 - no checks or enforcement
@@ -431,7 +423,7 @@ public:
   F(bool, JitDisabledByHphpd,          false)                           \
   F(bool, JitTransCounters,            false)                           \
   F(bool, JitPseudomain,               jitPseudomainDefault())          \
-  F(bool, HHIRBytecodeControlFlow,     hhirBytecodeControlFlowDefault())\
+  F(bool, HHIRBytecodeControlFlow,     true)                            \
   F(bool, HHIRCse,                     true)                            \
   F(bool, HHIRSimplification,          true)                            \
   F(bool, HHIRGenOpts,                 true)                            \
@@ -446,6 +438,7 @@ public:
   F(uint32_t, HHIRInliningMaxDepth,    4)                               \
   F(uint32_t, HHIRInliningMaxReturnDecRefs, 3)                          \
   F(bool, HHIRInlineFrameOpts,         true)                            \
+  F(bool, HHIRInlineSingletons,        true)                            \
   /* 1 (the default) gives most asserts. 2 adds less commonly           \
    * useful/more expensive asserts. */                                  \
   F(uint32_t, HHIRGenerateAsserts,     debug)                           \
@@ -459,9 +452,8 @@ public:
   F(bool, HHIREnableCoalescing,        true)                            \
   F(bool, HHIRAllocSIMDRegs,           true)                            \
   /* Region compiler flags */                                           \
+  F(bool,     JitLoops,                false)                           \
   F(string,   JitRegionSelector,       regionSelectorDefault())         \
-  F(bool,     JitDryRuns,              false)                           \
-  F(bool,     JitCompareRegions,       false)                           \
   F(bool,     JitPGO,                  pgoDefault())                    \
   F(string,   JitPGORegionSelector,    "hottrace")                      \
   F(uint64_t, JitPGOThreshold,         kDefaultJitPGOThreshold)         \
@@ -469,10 +461,9 @@ public:
   F(bool,     JitPGOUsePostConditions, true)                            \
   F(uint32_t, JitUnlikelyDecRefPercent,10)                              \
   F(uint32_t, JitPGOReleaseVVMinPercent, 10)                            \
-  F(uint32_t, HotFuncThreshold,        40)                              \
+  F(uint32_t, HotFuncThreshold,        80)                              \
   F(bool, HHIRValidateRefCount,        debug)                           \
   F(bool, HHIRRelaxGuards,             true)                            \
-  F(bool, HHBCRelaxGuards,             true)                            \
   /* DumpBytecode =1 dumps user php, =2 dumps systemlib & user php */   \
   F(int32_t, DumpBytecode,             0)                               \
   F(bool, DumpHhas,                    false)                           \
@@ -498,6 +489,11 @@ public:
 
 private:
   using string = std::string;
+
+  // Custom settings. This should be accessed via the GetServerCustomSetting
+  // APIs.
+  static std::map<std::string, std::string> CustomSettings;
+
 public:
 #define F(type, name, unused) \
   static type Eval ## name;
@@ -550,8 +546,8 @@ public:
   static std::string MailForceExtraParameters;
 
   // preg stack depth and debug support options
-  static long PregBacktraceLimit;
-  static long PregRecursionLimit;
+  static int64_t PregBacktraceLimit;
+  static int64_t PregRecursionLimit;
   static bool EnablePregErrorLog;
 
   // pprof/hhprof server options

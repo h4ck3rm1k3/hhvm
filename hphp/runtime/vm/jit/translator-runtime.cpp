@@ -27,6 +27,7 @@
 #include "hphp/runtime/vm/jit/mc-generator-internal.h"
 #include "hphp/runtime/base/stats.h"
 #include "hphp/runtime/base/packed-array.h"
+#include "hphp/runtime/base/autoload-handler.h"
 
 namespace HPHP {
 
@@ -61,6 +62,16 @@ RefData* lookupStaticFromClosure(ObjectData* closure,
 namespace JIT {
 
 //////////////////////////////////////////////////////////////////////
+
+ArrayData* addNewElemHelper(ArrayData* a, TypedValue value) {
+  ArrayData* r = a->append(tvAsCVarRef(&value), a->getCount() != 1);
+  if (UNLIKELY(r != a)) {
+    r->incRefCount();
+    decRefArr(a);
+  }
+  tvRefcountedDecRef(value);
+  return r;
+}
 
 ArrayData* addElemIntKeyHelper(ArrayData* ad,
                                int64_t key,
@@ -244,8 +255,7 @@ StringData* convResToStrHelper(ResourceData* o) {
 
 const StaticString
   s_empty(""),
-  s_1("1"),
-  s_Array("Array");
+  s_1("1");
 
 StringData* convCellToStrHelper(TypedValue tv) {
   switch (tv.m_type) {
@@ -259,7 +269,7 @@ StringData* convCellToStrHelper(TypedValue tv) {
   case KindOfStaticString:
                        return tv.m_data.pstr;
   case KindOfArray:    raise_notice("Array to string conversion");
-                       return s_Array.get();
+                       return array_string.get();
   case KindOfObject:   return convObjToStrHelper(tv.m_data.pobj);
   case KindOfResource: return convResToStrHelper(tv.m_data.pres);
   default:             not_reached();
@@ -267,7 +277,7 @@ StringData* convCellToStrHelper(TypedValue tv) {
 }
 
 void raisePropertyOnNonObject() {
-  raise_warning("Cannot access property on non-object");
+  raise_notice("Cannot access property on non-object");
 }
 
 void raiseUndefProp(ObjectData* base, const StringData* name) {
@@ -337,7 +347,7 @@ void VerifyParamTypeFail(int paramNum) {
   VMRegAnchor _;
   const ActRec* ar = liveFrame();
   const Func* func = ar->m_func;
-  auto const& tc = func->params()[paramNum].typeConstraint();
+  auto const& tc = func->params()[paramNum].typeConstraint;
   TypedValue* tv = frame_local(ar, paramNum);
   assert(!tc.check(tv, func));
   tc.verifyParamFail(func, tv, paramNum);
@@ -549,7 +559,7 @@ TCA sswitchHelperFast(const StringData* val,
 
 // TODO(#2031980): clear these out
 void tv_release_generic(TypedValue* tv) {
-  assert(JIT::tx->stateIsDirty());
+  assert(vmRegStateIsDirty());
   assert(tv->m_type == KindOfString || tv->m_type == KindOfArray ||
          tv->m_type == KindOfObject || tv->m_type == KindOfResource ||
          tv->m_type == KindOfRef);
@@ -848,8 +858,19 @@ void fpushCufHelperString(StringData* sd, ActRec* preLiveAR, ActRec* fp) {
   }
 }
 
+const Func* loadClassCtor(Class* cls) {
+  const Func* f = cls->getCtor();
+  if (UNLIKELY(!(f->attrs() & AttrPublic))) {
+    VMRegAnchor _;
+    UNUSED LookupResult res =
+      g_context->lookupCtorMethod(f, cls, true /*raise*/);
+    assert(res == LookupResult::MethodFoundWithThis);
+  }
+  return f;
+}
+
 const Func* lookupUnknownFunc(const StringData* name) {
-  JIT::VMRegAnchor _;
+  VMRegAnchor _;
   auto const func = Unit::loadFunc(name);
   if (UNLIKELY(!func)) {
     raise_error("Call to undefined function %s()", name->data());
@@ -859,7 +880,7 @@ const Func* lookupUnknownFunc(const StringData* name) {
 
 const Func* lookupFallbackFunc(const StringData* name,
                                const StringData* fallback) {
-  JIT::VMRegAnchor _;
+  VMRegAnchor _;
   // Try to load the first function
   auto func = Unit::loadFunc(name);
   if (LIKELY(!func)) {
@@ -950,11 +971,12 @@ ObjectData* colAddElemCHelper(ObjectData* coll, TypedValue key,
 static void sync_regstate_to_caller(ActRec* preLive) {
   assert(tl_regState == VMRegState::DIRTY);
   auto const ec = g_context.getNoCheck();
-  ec->m_stack.top() = (TypedValue*)preLive - preLive->numArgs();
-  ActRec* fp = preLive == ec->m_firstAR ?
+  auto& regs = vmRegsUnsafe();
+  regs.stack.top() = (TypedValue*)preLive - preLive->numArgs();
+  ActRec* fp = preLive == vmFirstAR() ?
     ec->m_nestedVMs.back().fp : preLive->m_sfp;
-  ec->m_fp = fp;
-  ec->m_pc = fp->m_func->unit()->at(fp->m_func->base() + preLive->m_soff);
+  regs.fp = fp;
+  regs.pc = fp->m_func->unit()->at(fp->m_func->base() + preLive->m_soff);
   tl_regState = VMRegState::CLEAN;
 }
 

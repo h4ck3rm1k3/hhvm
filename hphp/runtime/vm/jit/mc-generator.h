@@ -34,7 +34,6 @@
 #include "hphp/runtime/vm/jit/back-end.h"
 #include "hphp/runtime/vm/jit/code-gen-helpers.h"
 #include "hphp/runtime/vm/jit/service-requests.h"
-#include "hphp/runtime/vm/jit/tracelet.h"
 #include "hphp/runtime/vm/jit/translator.h"
 #include "hphp/runtime/vm/jit/unwind-x64.h"
 
@@ -46,6 +45,7 @@ typedef hphp_hash_map<TCA, TransID> TcaTransIDMap;
 struct TReqInfo;
 struct Label;
 struct MCGenerator;
+struct AsmInfo;
 
 extern MCGenerator* mcg;
 extern void* interpOneEntryPoints[];
@@ -81,6 +81,64 @@ struct PendingFixup {
     m_tca(tca), m_fixup(fixup) { }
 };
 
+struct CodeGenFixups {
+  std::vector<PendingFixup> m_pendingFixups;
+  std::vector<std::pair<CTCA, TCA>> m_pendingCatchTraces;
+  std::vector<std::pair<TCA,TransID>> m_pendingJmpTransIDs;
+  std::vector<TCA> m_reusedStubs;
+  std::set<TCA> m_addressImmediates;
+  std::set<TCA*> m_codePointers;
+  std::vector<TransBCMapping> m_bcMap;
+  std::multimap<TCA,std::pair<int,int>> m_alignFixups;
+
+  CodeBlock* m_tletMain{nullptr};
+  CodeBlock* m_tletCold{nullptr};
+  CodeBlock* m_tletFrozen{nullptr};
+
+  void setBlocks(CodeBlock* main, CodeBlock* cold, CodeBlock* frozen) {
+    m_tletMain = main;
+    m_tletCold = cold;
+    m_tletFrozen = frozen;
+  }
+
+  void process();
+  bool empty() const;
+  void clear();
+};
+
+struct RelocationInfo {
+  RelocationInfo(TCA start, TCA end, TCA dest) :
+      m_start(start), m_end(end), m_dest(dest) {}
+
+  TCA start() const { return m_start; }
+  TCA end() const { return m_end; }
+  TCA dest() const { return m_dest; }
+  bool relocated() { return m_destSize != size_t(-1); }
+  size_t destSize() const { return m_destSize; }
+  void recordAddress(TCA src, TCA dest, int range);
+  TCA adjustedAddressAfter(TCA addr) const;
+  TCA adjustedAddressBefore(TCA addr) const;
+  CTCA adjustedAddressAfter(CTCA addr) const {
+    return adjustedAddressAfter(const_cast<TCA>(addr));
+  }
+  CTCA adjustedAddressBefore(CTCA addr) const {
+    return adjustedAddressBefore(const_cast<TCA>(addr));
+  }
+ private:
+  TCA m_start;
+  TCA m_end;
+  TCA m_dest;
+  size_t m_destSize{size_t(-1)};
+  /*
+   * maps from src address, to range of destination addresse
+   * This is because we could insert nops before the instruction
+   * corresponding to src. Most things want the address of the
+   * instruction corresponding to the src instruction; but eg
+   * the fixup map would want the address of the nop.
+   */
+  std::map<TCA,std::pair<TCA,int>> m_adjustedAddresses;
+};
+
 //////////////////////////////////////////////////////////////////////
 
 /*
@@ -111,14 +169,14 @@ public:
    */
   Translator& tx() { return m_tx; }
   FixupMap& fixupMap() { return m_fixupMap; }
-  void processPendingFixups();
+  CodeGenFixups& cgFixups() { return m_fixups; }
   void recordSyncPoint(CodeAddress frontier, Offset pcOff, Offset spOff);
 
   DataBlock& globalData() { return code.data(); }
   Debug::DebugInfo* getDebugInfo() { return &m_debugInfo; }
   BackEnd& backEnd() { return *m_backEnd; }
 
-  const TcaTransIDMap& getJmpToTransIDMap() const {
+  TcaTransIDMap& getJmpToTransIDMap() {
     return m_jmpToTransID;
   }
 
@@ -129,7 +187,8 @@ public:
   /*
    * Handlers for function prologues.
    */
-  TCA getFuncPrologue(Func* func, int nPassed, ActRec* ar = nullptr);
+  TCA getFuncPrologue(Func* func, int nPassed, ActRec* ar = nullptr,
+                      bool ignoreTCLimit = false);
   TCA getCallArrayPrologue(Func* func);
   void smashPrologueGuards(TCA* prologues, int numPrologues, const Func* func);
 
@@ -174,7 +233,6 @@ public:
     assert(start);
     enterTC(start, nullptr);
   }
-
   /*
    * Called before entering a new PHP "world."
    */
@@ -190,15 +248,15 @@ public:
   bool addDbgGuards(const Unit* unit);
   bool addDbgGuard(const Func* func, Offset offset, bool resumed);
   bool freeRequestStub(TCA stub);
-  TCA getFreeStub(CodeBlock& unused);
+  TCA getFreeStub(CodeBlock& unused, CodeGenFixups* fixups);
   void registerCatchBlock(CTCA ip, TCA block);
   folly::Optional<TCA> getCatchTrace(CTCA ip) const;
+  CatchTraceMap& catchTraceMap() { return m_catchTraceMap; }
   TCA getTranslatedCaller() const;
   void setJmpTransID(TCA jmp);
   bool profileSrcKey(const SrcKey& sk) const;
   void getPerfCounters(Array& ret);
   bool reachedTranslationLimit(SrcKey, const SrcRec&) const;
-  Translator::TranslateResult translateTracelet(Tracelet& t);
   void traceCodeGen();
   void recordGdbStub(const CodeBlock& cb, TCA start, const char* name);
 
@@ -218,20 +276,20 @@ public:
    * in bytes. Note that the code may have been emitted by other threads.
    */
   void codeEmittedThisRequest(size_t& requestEntry, size_t& now) const;
-
 public:
   CodeCache code;
 
-private:
   /*
    * Check if function prologue already exists.
    */
-  bool checkCachedPrologue(const Func*, int, TCA&) const;
+  bool checkCachedPrologue(const Func*, int prologueIndex, TCA&) const;
 
+private:
   /*
    * Service request handlers.
    */
-  TCA bindJmp(TCA toSmash, SrcKey dest, JIT::ServiceRequest req, bool& smashed);
+  TCA bindJmp(TCA toSmash, SrcKey dest, ServiceRequest req,
+              TransFlags trflags, bool& smashed);
   TCA bindJmpccFirst(TCA toSmash,
                      Offset offTrue, Offset offFalse,
                      bool toTake,
@@ -247,14 +305,6 @@ private:
    * Emit trampoline to native C++ code.
    */
   TCA emitNativeTrampoline(TCA helperAddress);
-
-  /*
-   * Generate code for tracelet entry
-   */
-  void emitGuardChecks(SrcKey, const ChangeMap&,
-    const ChangeMap&, const RefDeps&, SrcRec&);
-  void emitResolvedDeps(const ChangeMap& resolvedDeps);
-  void checkRefs(SrcKey, const RefDeps&, SrcRec&);
 
   bool shouldTranslate() const {
     return code.mainUsed() < RuntimeOption::EvalJitAMaxUsage;
@@ -276,7 +326,6 @@ private:
   TCA retranslateOpt(TransID transId, bool align);
   TCA regeneratePrologues(Func* func, SrcKey triggerSk);
   TCA regeneratePrologue(TransID prologueTransId, SrcKey triggerSk);
-  void processPendingCatchTraces();
 
   void invalidateSrcKey(SrcKey sk);
   void invalidateFuncProfSrcKeys(const Func* func);
@@ -287,7 +336,7 @@ private:
                             bool exit, bool inPrologue);
 
   void recordBCInstr(uint32_t op, const CodeBlock& cb,
-                     const TCA addr, bool stubs);
+                     const TCA addr, bool cold);
 
   /*
    * TC dump helpers
@@ -307,14 +356,12 @@ private:
   uint64_t           m_numHHIRTrans;
   FixupMap           m_fixupMap;
   UnwindInfoHandle   m_unwindRegistrar;
-  std::vector<PendingFixup> m_pendingFixups;
-  std::vector<std::pair<CTCA, TCA>> m_pendingCatchTraces;
   CatchTraceMap      m_catchTraceMap;
-  std::vector<TransBCMapping> m_bcMap;
   Debug::DebugInfo   m_debugInfo;
   FreeStubList       m_freeStubs;
+  CodeGenFixups      m_fixups;
 
-  // asize + astubssize + gdatasize + trampolinesblocksize
+  // asize + acoldsize + afrozensize + gdatasize + trampolinesblocksize
   size_t             m_totalSize;
 };
 
@@ -366,8 +413,6 @@ PropInfo getPropertyOffset(const NormalizedInstruction& ni,
 PropInfo getFinalPropertyOffset(const NormalizedInstruction&,
                                 Class* contextClass,
                                 const MInstrInfo&);
-
-void dumpTranslationInfo(const Tracelet& t, TCA postGuards);
 
 // Both emitIncStat()s push/pop flags but don't clobber any registers.
 extern void emitIncStat(CodeBlock& cb, uint64_t* tl_table, uint32_t index,

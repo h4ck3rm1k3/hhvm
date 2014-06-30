@@ -42,8 +42,9 @@
 #include "hphp/runtime/base/runtime-option.h"
 #include "hphp/runtime/base/type-conversions.h"
 #include "hphp/runtime/debugger/debugger.h"
-#include "hphp/runtime/base/file-repository.h"
+#include "hphp/runtime/base/unit-cache.h"
 #include "hphp/runtime/ext/ext_string.h"
+#include "hphp/runtime/ext/std/ext_std_output.h"
 #include "hphp/runtime/vm/jit/translator-inline.h"
 #include "hphp/runtime/vm/jit/translator.h"
 #include "hphp/runtime/vm/debugger-hook.h"
@@ -57,9 +58,7 @@ namespace HPHP {
 IMPLEMENT_THREAD_LOCAL_NO_CHECK(ExecutionContext, g_context);
 
 ExecutionContext::ExecutionContext()
-  : m_fp(nullptr)
-  , m_pc(nullptr)
-  , m_transport(nullptr)
+  : m_transport(nullptr)
   , m_cwd(Process::CurrentWorkingDirectory)
   , m_out(nullptr)
   , m_implicitFlush(false)
@@ -98,15 +97,6 @@ ExecutionContext::ExecutionContext()
     ThreadInfo::s_threadInfo.getNoCheck()->m_reqInjectionData.
       setErrorReportingLevel(RuntimeOption::RuntimeErrorReportingLevel);
   }
-
-  // Make sure any fields accessed from the TC are within a byte of
-  // ExecutionContext's beginning.
-  static_assert(offsetof(ExecutionContext, m_stack) <= 0xff,
-                "m_stack offset too large");
-  static_assert(offsetof(ExecutionContext, m_fp) <= 0xff,
-                "m_fp offset too large");
-  static_assert(offsetof(ExecutionContext, m_pc) <= 0xff,
-                "m_pc offset too large");
 }
 
 ExecutionContext::~ExecutionContext() {
@@ -244,7 +234,7 @@ String ExecutionContext::obCopyContents() {
       return oss.copy();
     }
   }
-  return "";
+  return empty_string();
 }
 
 String ExecutionContext::obDetachContents() {
@@ -254,7 +244,7 @@ String ExecutionContext::obDetachContents() {
       return oss.detach();
     }
   }
-  return "";
+  return empty_string();
 }
 
 int ExecutionContext::obGetContentLength() {
@@ -427,12 +417,21 @@ void ExecutionContext::registerShutdownFunction(const Variant& function,
   forceToArray(funcs).append(callback);
 }
 
-Variant ExecutionContext::popShutdownFunction(ShutdownType type) {
-  Variant& funcs = m_shutdowns.lvalAt(type);
-  if (!funcs.isArray()) {
-    return uninit_null();
+bool ExecutionContext::removeShutdownFunction(const Variant& function,
+                                              ShutdownType type) {
+  bool ret = false;
+  auto& funcs = forceToArray(m_shutdowns.lvalAt(type));
+  PackedArrayInit newFuncs(funcs.size());
+
+  for (ArrayIter iter(funcs); iter; ++iter) {
+    if (!same(iter.second().toArray()[s_name], function)) {
+      newFuncs.appendWithRef(iter.secondRef());
+    } else {
+      ret = true;
+    }
   }
-  return funcs.toArrRef().pop();
+  funcs = newFuncs.toArray();
+  return ret;
 }
 
 Variant ExecutionContext::pushUserErrorHandler(const Variant& function,
@@ -512,10 +511,14 @@ void ExecutionContext::executeFunctions(const Array& funcs) {
 
 void ExecutionContext::onShutdownPreSend() {
   // in case obStart was called without obFlush
-  SCOPE_EXIT { obFlushAll(); };
+  SCOPE_EXIT {
+    try { obFlushAll(); } catch (...) {}
+  };
 
   if (!m_shutdowns.isNull() && m_shutdowns.exists(ShutDown)) {
-    SCOPE_EXIT { m_shutdowns.remove(ShutDown); };
+    SCOPE_EXIT {
+      try { m_shutdowns.remove(ShutDown); } catch (...) {}
+    };
     executeFunctions(m_shutdowns[ShutDown].toArray());
   }
 }
@@ -529,20 +532,22 @@ void ExecutionContext::onShutdownPostSend() {
       ServerStatsHelper ssh("psp", ServerStatsHelper::TRACK_HWINST);
       if (!m_shutdowns.isNull()) {
         if (m_shutdowns.exists(PostSend)) {
-          SCOPE_EXIT { m_shutdowns.remove(PostSend); };
+          SCOPE_EXIT {
+            try { m_shutdowns.remove(PostSend); } catch (...) {}
+          };
           executeFunctions(m_shutdowns[PostSend].toArray());
         }
-        if (m_shutdowns.exists(CleanUp)) {
-          SCOPE_EXIT { m_shutdowns.remove(CleanUp); };
-          executeFunctions(m_shutdowns[CleanUp].toArray());
-        }
       }
-    } catch (const ExitException &e) {
-      // do nothing
-    } catch (const Exception &e) {
-      onFatalError(e);
-    } catch (const Object &e) {
-      onUnhandledException(e);
+    } catch (...) {
+      try {
+        bump_counter_and_rethrow();
+      } catch (const ExitException &e) {
+        // do nothing
+      } catch (const Exception &e) {
+        onFatalError(e);
+      } catch (const Object &e) {
+        onUnhandledException(e);
+      }
     }
   } catch (...) {
     Logger::Error("unknown exception was thrown from psp");
@@ -608,11 +613,11 @@ const StaticString
   s_php_errormsg("php_errormsg");
 
 void ExecutionContext::handleError(const std::string& msg,
-                                       int errnum,
-                                       bool callUserHandler,
-                                       ErrorThrowMode mode,
-                                       const std::string& prefix,
-                                       bool skipFrame /* = false */) {
+                                   int errnum,
+                                   bool callUserHandler,
+                                   ErrorThrowMode mode,
+                                   const std::string& prefix,
+                                   bool skipFrame /* = false */) {
   SYNC_VM_REGS_SCOPED();
 
   auto newErrorState = ErrorState::ErrorRaised;
@@ -629,7 +634,7 @@ void ExecutionContext::handleError(const std::string& msg,
 
   ErrorStateHelper esh(this, newErrorState);
   auto const ee = skipFrame ?
-    ExtendedException(ExtendedException::SkipFrame::skipFrame, msg) :
+    ExtendedException(ExtendedException::SkipFrame{}, msg) :
     ExtendedException(msg);
   recordLastError(ee, errnum);
   bool handled = false;
@@ -648,8 +653,8 @@ void ExecutionContext::handleError(const std::string& msg,
       // Set $php_errormsg in the parent scope
       Variant varFrom(ee.getMessage());
       const auto tvFrom(varFrom.asTypedValue());
-      JIT::VMRegAnchor _;
-      auto fp = getFP();
+      VMRegAnchor _;
+      auto fp = vmfp();
       if (fp->func()->isBuiltin()) {
         fp = getPrevVMState(fp);
       }
@@ -668,17 +673,9 @@ void ExecutionContext::handleError(const std::string& msg,
 
     if (errorNeedsLogging(errnum)) {
       DEBUGGER_ATTACHED_ONLY(phpDebuggerErrorHook(ee.getMessage()));
-      String file = empty_string;
-      int line = 0;
-      if (RuntimeOption::InjectedStackTrace) {
-        Array bt = ee.getBackTrace();
-        if (!bt.empty()) {
-          Array top = bt.rvalAt(0).toArray();
-          if (top.exists(s_file)) file = top.rvalAt(s_file).toString();
-          if (top.exists(s_line)) line = top.rvalAt(s_line).toInt64();
-        }
-      }
-      Logger::Log(Logger::LogError, prefix.c_str(), ee, file.c_str(), line);
+      auto fileAndLine = ee.getFileAndLine();
+      Logger::Log(Logger::LogError, prefix.c_str(), ee,
+                  fileAndLine.first.c_str(), fileAndLine.second);
     }
   }
 }
@@ -728,24 +725,17 @@ bool ExecutionContext::callUserErrorHandler(const Exception &e, int errnum,
 bool ExecutionContext::onFatalError(const Exception &e) {
   int errnum = static_cast<int>(ErrorConstants::ErrorModes::FATAL_ERROR);
   recordLastError(e, errnum);
-  String file = empty_string;
-  int line = 0;
+
   bool silenced = false;
-  if (RuntimeOption::InjectedStackTrace) {
-    if (auto const ee = dynamic_cast<const ExtendedException *>(&e)) {
-      silenced = ee->isSilent();
-      Array bt = ee->getBackTrace();
-      if (!bt.empty()) {
-        Array top = bt.rvalAt(0).toArray();
-        if (top.exists(s_file)) file = top.rvalAt(s_file).toString();
-        if (top.exists(s_line)) line = top.rvalAt(s_line).toInt32();
-      }
-    }
+  auto fileAndLine = std::make_pair(empty_string(), 0);
+  if (auto const ee = dynamic_cast<const ExtendedException *>(&e)) {
+    silenced = ee->isSilent();
+    fileAndLine = ee->getFileAndLine();
   }
   // need to silence even with the AlwaysLogUnhandledExceptions flag set
   if (!silenced && RuntimeOption::AlwaysLogUnhandledExceptions) {
     Logger::Log(Logger::LogError, "\nFatal error: ", e,
-                file.c_str(), line);
+                fileAndLine.first.c_str(), fileAndLine.second);
   }
   bool handled = false;
   if (RuntimeOption::CallUserHandlerOnFatals) {
@@ -753,7 +743,7 @@ bool ExecutionContext::onFatalError(const Exception &e) {
   }
   if (!handled && !silenced && !RuntimeOption::AlwaysLogUnhandledExceptions) {
     Logger::Log(Logger::LogError, "\nFatal error: ", e,
-                file.c_str(), line);
+                fileAndLine.first.c_str(), fileAndLine.second);
   }
   return handled;
 }

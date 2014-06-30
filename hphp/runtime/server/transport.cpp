@@ -50,7 +50,7 @@ Transport::Transport()
     m_headerCallbackDone(false),
     m_responseCode(-1), m_firstHeaderSet(false), m_firstHeaderLine(0),
     m_responseSize(0), m_responseTotalSize(0), m_responseSentSize(0),
-    m_flushTimeUs(0), m_sendContentType(true),
+    m_flushTimeUs(0), m_sendEnded(false), m_sendContentType(true),
     m_compression(true), m_compressor(nullptr), m_isSSL(false),
     m_compressionDecision(CompressionDecision::NotDecidedYet),
     m_threadType(ThreadType::RequestThread) {
@@ -335,7 +335,8 @@ bool Transport::splitHeader(const String& header, String &name, const char *&val
     }
   }
 
-  throw InvalidArgumentException("header", header.c_str());
+  throw ExtendedException(
+    "Invalid argument \"header\": [%s]", header.c_str());
 }
 
 void Transport::addHeaderNoLock(const char *name, const char *value) {
@@ -344,7 +345,7 @@ void Transport::addHeaderNoLock(const char *name, const char *value) {
 
   if (!m_firstHeaderSet) {
     m_firstHeaderSet = true;
-    m_firstHeaderFile = g_context->getContainingFileName().data();
+    m_firstHeaderFile = g_context->getContainingFileName()->data();
     m_firstHeaderLine = g_context->getLine();
   }
 
@@ -400,25 +401,23 @@ void Transport::removeHeader(const char *name) {
   if (name && *name) {
     m_responseHeaders.erase(name);
     if (strcasecmp(name, "Set-Cookie") == 0) {
-      m_responseCookies.clear();
+      m_responseCookiesList.clear();
     }
   }
 }
 
 void Transport::removeAllHeaders() {
   m_responseHeaders.clear();
-  m_responseCookies.clear();
+  m_responseCookiesList.clear();
 }
 
 void Transport::getResponseHeaders(HeaderMap &headers) {
   headers = m_responseHeaders;
 
   std::vector<std::string> &cookies = headers["Set-Cookie"];
-  for (auto iter = m_responseCookies.begin();
-       iter != m_responseCookies.end();
-       ++iter) {
-    cookies.push_back(iter->second);
-  }
+  std::list<std::string> cookies_existing = getCookieLines();
+  cookies.insert(cookies.end(), cookies_existing.begin(),
+     cookies_existing.end());
 }
 
 bool Transport::acceptEncoding(const char *encoding) {
@@ -612,13 +611,37 @@ bool Transport::setCookie(const String& name, const String& value, int64_t expir
   // PHP5 does not deduplicate cookies. That behavior is preserved when
   // CookieDeduplicate is not enabled. Otherwise, we will only keep the
   // last cookie for a given name-domain-path triplet.
-  String dedup_key = RuntimeOption::AllowDuplicateCookies ?
-    cookie :
-    name + "\n" + domain + "\n" + path;
+  String dedup_key = name + "\n" + domain + "\n" + path;
 
-  m_responseCookies[dedup_key.data()] = cookie;
+  m_responseCookiesList.emplace(m_responseCookiesList.end(),
+    dedup_key.data(), cookie);
+
   return true;
 }
+
+std::list<std::string> Transport::getCookieLines() {
+  std::list<std::string> ret;
+  if (RuntimeOption::AllowDuplicateCookies) {
+    for(CookieList::const_iterator iter = m_responseCookiesList.begin();
+        iter != m_responseCookiesList.end(); ++iter) {
+      ret.push_back(iter->second);
+    }
+  } else {
+    // We will dedupe with last-one-wins semantics by walking backwards and
+    // including only those whose dedupe key we have not seen yet, then
+    // reversing the list
+    std::unordered_set<std::string> already_seen;
+    for(auto iter = m_responseCookiesList.crbegin();
+        iter != m_responseCookiesList.crend(); ++iter) {
+      if (already_seen.find(iter->first) == already_seen.end()) {
+        ret.push_front(iter->second);
+        already_seen.insert(iter->first);
+      }
+    }
+  }
+  return ret;
+}
+
 
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -632,9 +655,10 @@ void Transport::prepareHeaders(bool compressed, bool chunked,
     }
   }
 
-  for (CookieMap::const_iterator iter = m_responseCookies.begin();
-       iter != m_responseCookies.end(); ++iter) {
-    addHeaderImpl("Set-Cookie", iter->second.c_str());
+  const std::list<std::string> cookies = getCookieLines();
+  for (std::list<std::string>::const_iterator iter = cookies.begin();
+       iter != cookies.end(); ++iter) {
+    addHeaderImpl("Set-Cookie", iter->c_str());
   }
 
   if (compressed) {
@@ -786,6 +810,13 @@ void Transport::sendRawLocked(void *data, int size, int code /* = 200 */,
                               bool chunked /* = false */,
                               const char *codeInfo /* = "" */
                               ) {
+  // There are post-send functions that can run. Any output from them should
+  // be ignored as it doesn't make sense to try and send data after the
+  // request has ended.
+  if (m_sendEnded) {
+    return;
+  }
+
   if (!compressed && RuntimeOption::ForceChunkedEncoding) {
     chunked = true;
   }
@@ -863,6 +894,8 @@ void Transport::onSendEnd() {
     {ServiceData::StatsType::SUM});
   httpResponseStats->addValue(1);
   onSendEndImpl();
+  // Record that we have ended the request so any further output is discarded.
+  m_sendEnded = true;
 }
 
 void Transport::redirect(const char *location, int code /* = 302 */,

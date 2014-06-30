@@ -245,7 +245,6 @@ double tvCastToDouble(TypedValue* tv) {
 
 const StaticString
   s_1("1"),
-  s_Array("Array"),
   s_scalar("scalar");
 
 void tvCastToStringInPlace(TypedValue* tv) {
@@ -254,9 +253,9 @@ void tvCastToStringInPlace(TypedValue* tv) {
   StringData * s;
   switch (tv->m_type) {
   case KindOfUninit:
-  case KindOfNull:    s = empty_string.get(); goto static_string;
+  case KindOfNull:    s = staticEmptyString(); goto static_string;
   case KindOfBoolean:
-    s = tv->m_data.num ? s_1.get() : empty_string.get();
+    s = tv->m_data.num ? s_1.get() : staticEmptyString();
     goto static_string;
   case KindOfInt64:   s = buildStringData(tv->m_data.num); break;
   case KindOfDouble:  s = buildStringData(tv->m_data.dbl); break;
@@ -264,7 +263,7 @@ void tvCastToStringInPlace(TypedValue* tv) {
   case KindOfString:  return;
   case KindOfArray:
     raise_notice("Array to string conversion");
-    s = s_Array.get();
+    s = array_string.get();
     tvDecRefArr(tv);
     goto static_string;
   case KindOfObject:
@@ -297,14 +296,14 @@ StringData* tvCastToString(const TypedValue* tv) {
   StringData* s;
   switch (tv->m_type) {
   case KindOfUninit:
-  case KindOfNull:    return empty_string.get();
-  case KindOfBoolean: return tv->m_data.num ? s_1.get() : empty_string.get();
+  case KindOfNull:    return staticEmptyString();
+  case KindOfBoolean: return tv->m_data.num ? s_1.get() : staticEmptyString();
   case KindOfInt64:   s = buildStringData(tv->m_data.num); break;
   case KindOfDouble:  s = buildStringData(tv->m_data.dbl); break;
   case KindOfStaticString: return tv->m_data.pstr;
   case KindOfString:  s = tv->m_data.pstr; break;
   case KindOfArray:   raise_notice("Array to string conversion");
-                      return s_Array.get();
+                      return array_string.get();
   case KindOfObject:  return tv->m_data.pobj->invokeToString().detach();
   case KindOfResource: return tv->m_data.pres->o_toString().detach();
   default:            not_reached();
@@ -317,7 +316,7 @@ StringData* tvCastToString(const TypedValue* tv) {
 void tvCastToArrayInPlace(TypedValue* tv) {
   assert(tvIsPlausible(*tv));
   tvUnboxIfNeeded(tv);
-  ArrayData * a;
+  ArrayData* a;
   switch (tv->m_type) {
   case KindOfUninit:
   case KindOfNull:    a = ArrayData::Create(); break;
@@ -359,6 +358,7 @@ void tvCastToObjectInPlace(TypedValue* tv) {
   case KindOfInt64:
   case KindOfDouble:
   case KindOfStaticString:
+  case KindOfResource:
     o = SystemLib::AllocStdClassObject();
     o->o_set(s_scalar, tvAsVariant(tv));
     break;
@@ -372,7 +372,6 @@ void tvCastToObjectInPlace(TypedValue* tv) {
     tvAsVariant(tv) = ObjectData::FromArray(tv->m_data.parr);
     return;
   case KindOfObject: return;
-  case KindOfResource: return;
   default: assert(false); o = SystemLib::AllocStdClassObject(); break;
   }
   tv->m_data.pobj = o;

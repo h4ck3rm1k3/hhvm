@@ -173,6 +173,11 @@ struct IRBuilder {
    */
   void setBlock(Offset offset, Block* block);
 
+  /*
+   * Clear the state associated with the given block.
+   */
+  void clearBlockState(Block* block);
+
  public:
   /*
    * To emit code to a block other than the current block, call pushBlock(),
@@ -299,8 +304,6 @@ struct IRBuilder {
   SSATmp* cond(unsigned producedRefs, Branch branch, Next next, Taken taken) {
     Block* taken_block = m_unit.defBlock();
     Block* done_block = m_unit.defBlock();
-    IRInstruction* label = m_unit.defLabel(1, m_state.marker(), {producedRefs});
-    done_block->push_back(label);
     DisableCseGuard guard(*this);
 
     typedef decltype(branch(taken_block)) T;
@@ -309,7 +312,10 @@ struct IRBuilder {
     appendBlock(taken_block);
     SSATmp* v2 = taken();
     gen(Jmp, done_block, v2);
+
     appendBlock(done_block);
+    IRInstruction* label = m_unit.defLabel(1, m_state.marker(), {producedRefs});
+    done_block->push_back(label);
     SSATmp* result = label->dst(0);
     result->setType(Type::unionOf(v1->type(), v2->type()));
     return result;
@@ -411,11 +417,6 @@ struct IRBuilder {
     exit->setHint(hint);
     return exit;
   }
-
-  /*
-   * Get all typed locations in current translation.
-   */
-  std::vector<RegionDesc::TypePred> getKnownTypes();
 
 private:
   // RAII disable of CSE; only restores if it used to be on.  Used for

@@ -488,7 +488,7 @@ function get_serialized_default($s) {
       preg_match('/^(true|false|null)$/', $s)) {
     return serialize(eval("return $s;"));
   }
-  if ($s == "empty_array") return serialize(array());
+  if ($s == "empty_array_ref") return serialize(array());
   if (preg_match('/^null_(string|array|object|resource|variant)$/', $s)) {
     return serialize(null);
   }
@@ -893,7 +893,7 @@ function generateFuncCPPImplementation($func, $f, $prefix = 'f_') {
     fprintf($f, ', CArrRef _argv /* = null_array */');
   }
   fprintf($f, ") {\n");
-  fprintf($f, "  throw NotImplementedException(__func__);\n");
+  fprintf($f, "  throw_not_implemented(__func__);\n");
   fprintf($f, "}\n\n");
 }
 

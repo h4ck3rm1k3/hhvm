@@ -207,7 +207,7 @@ FuncInfo find_func_info(const Func* func) {
     for (auto i = uint32_t{0}; i < func->numParams(); ++i) {
       auto& param = func->params()[i];
       if (param.hasDefaultValue()) {
-        add_target("DV", func->params()[i].funcletOff());
+        add_target("DV", func->params()[i].funcletOff);
       }
     }
   };
@@ -477,9 +477,9 @@ std::string func_param_list(const FuncInfo& finfo) {
     if (func->byRef(i)) ret += "&";
     ret += folly::format("${}", loc_name(finfo, i)).str();
     if (func->params()[i].hasDefaultValue()) {
-      auto const off = func->params()[i].funcletOff();
+      auto const off = func->params()[i].funcletOff;
       ret += folly::format(" = {}", jmp_label(finfo, off)).str();
-      if (auto const code = func->params()[i].phpCode()) {
+      if (auto const code = func->params()[i].phpCode) {
         ret += folly::format("({})", escaped_long(code)).str();
       }
     }
@@ -596,11 +596,11 @@ void print_cls_used_traits(Output& out, const PreClass* cls) {
   indented(out, [&] {
     for (auto& prec : precRules) {
       out.fmtln("{}::{} insteadof{};",
-        prec.getSelectedTraitName()->data(),
-        prec.getMethodName()->data(),
+        prec.selectedTraitName()->data(),
+        prec.methodName()->data(),
         [&]() -> std::string {
           auto ret = std::string{};
-          for (auto& name : prec.getOtherTraitNames()) {
+          for (auto& name : prec.otherTraitNames()) {
             ret += folly::format(" {}", name->data()).str();
           }
           return ret;
@@ -609,13 +609,13 @@ void print_cls_used_traits(Output& out, const PreClass* cls) {
     }
     for (auto& alias : aliasRules) {
       out.fmtln("{}{} as{}{};",
-        alias.getTraitName()->empty()
+        alias.traitName()->empty()
           ? std::string{}
-          : folly::format("{}::", alias.getTraitName()->data()).str(),
-        alias.getOrigMethodName()->data(),
-        opt_attrs(AttrContext::TraitImport, alias.getModifiers()),
-        alias.getNewMethodName() != alias.getOrigMethodName()
-          ? std::string(" ") + alias.getNewMethodName()->data()
+          : folly::format("{}::", alias.traitName()->data()).str(),
+        alias.origMethodName()->data(),
+        opt_attrs(AttrContext::TraitImport, alias.modifiers()),
+        alias.newMethodName() != alias.origMethodName()
+          ? std::string(" ") + alias.newMethodName()->data()
           : std::string{}
       );
     }

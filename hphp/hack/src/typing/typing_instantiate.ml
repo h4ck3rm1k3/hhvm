@@ -66,7 +66,7 @@ let rec instantiate_fun env fty el =
       let fty = r, Tfun ft in
       env, fty
   | r, Tapply ((_, x), argl) when Typing_env.is_typedef env x ->
-      let env, fty = TUtils.expand_typedef SSet.empty env r x argl in
+      let env, fty = TUtils.expand_typedef env r x argl in
       instantiate_fun env fty el
   | _ -> env, fty
 
@@ -112,10 +112,12 @@ and instantiate subst env (r, ty) =
                  * the constraints on generics
                  *)
                 Env.add_todo env begin fun env ->
-                  try
-                    check_constraint env ty x_ty
-                  with Error l ->
-                    Reason.explain_generic_constraint r x l
+                  Errors.try_
+                    (fun () -> check_constraint env ty x_ty)
+                    (fun l ->
+                      Reason.explain_generic_constraint r x l;
+                      env
+                    )
                 end
           in
           env, (r, snd x_ty)

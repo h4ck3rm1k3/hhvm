@@ -111,7 +111,7 @@ bool Object::more(const Object& v2) const {
 }
 
 static Variant warn_non_object() {
-  raise_warning("Cannot access property on non-object");
+  raise_notice("Cannot access property on non-object");
   return uninit_null();
 }
 
@@ -142,10 +142,6 @@ void Object::serialize(VariableSerializer *serializer) const {
   } else {
     serializer->writeNull();
   }
-}
-
-bool Object::unserialize(std::istream &in) {
-  throw NotImplementedException(__func__);
 }
 
 void Object::setToDefaultObject() {

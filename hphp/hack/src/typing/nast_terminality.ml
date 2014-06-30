@@ -8,7 +8,6 @@
  *
  *)
 
-open Utils
 open Nast
 
 (* Module coded with an exception, if we find a terminal statement we
@@ -32,7 +31,8 @@ end = struct
     | Expr (_, Assert (
             AE_assert (_, False) |
             AE_invariant ((_, False), _, _) |
-            AE_invariant_violation _)) -> raise Exit
+            AE_invariant_violation _))
+    | Expr (_, Call (Cnormal, (_, Id (_, "exit")), _)) -> raise Exit
     | Expr (_, Yield (_, Special_func sf)) -> special_func sf
     | If (_, b1, b2) ->
       (try terminal inside_case b1; () with Exit ->
@@ -119,7 +119,8 @@ end = struct
     | Expr (_, Assert (
             AE_assert (_, False) |
             AE_invariant ((_, False), _, _) |
-            AE_invariant_violation _)) -> raise Exit
+            AE_invariant_violation _))
+    | Expr (_, Call (Cnormal, (_, Id (_, "exit")), _)) -> raise Exit
     | Expr (_, Yield (_, Special_func sf)) -> special_func sf
     | If (_, b1, b2) ->
       (try terminal b1; () with Exit ->
@@ -178,16 +179,11 @@ end = struct
         | Default [] -> ()
         | Case (e, b) -> begin
           terminal b;
-          error_l [
-            p, ("This switch has a case that implicitly falls through and is "^
-                "not annotated with // FALLTHROUGH");
-            fst e, "This case implicitly falls through"
-          ]
+          Errors.case_fallthrough p (fst e)
         end
         | Default b -> begin
           terminal b;
-          error p ("This switch has a default case that implicitly falls "^
-                   "through and is not annotated with // FALLTHROUGH")
+          Errors.default_fallthrough p
         end
       with Exit -> ()
     end (List.tl (List.rev cl)) (* Skip the last case *)

@@ -1,5 +1,12 @@
 <?hh
 require_once __DIR__.'/SortedIterator.php';
+require_once __DIR__.'/Options.php';
+
+class TimeoutException extends Exception {
+}
+
+const INSTALL_TIMEOUT_SECS = 600;
+const NETWORK_RETRIES = 3;
 
 // For determining number of processes
 function num_cpus() {
@@ -27,29 +34,11 @@ function remove_dir_recursive(string $root_dir) {
                RecursiveDirectoryIterator::SKIP_DOTS),
              RecursiveIteratorIterator::CHILD_FIRST);
 
-  // This can be better, but good enough for now.
-  // Maybe just use rm -rf, but that always seems
-  // a bit dangerous. The below is probably only
-  // O(2n) or so. No order depth order guaranteed
-  // with the iterator, so actual files can be
-  // deleted before symlinks
-
-  // Get rid of the symlinks first to avoid orphan
-  // symlinks that cannot be deleted.
-  foreach ($files as $fileinfo) {
-    if (is_link($fileinfo)) {
-      $target = readlink($fileinfo);
-      unlink($fileinfo);
-      unlink($target);
-    }
-  }
-
-  // Get rid of the rest
   foreach ($files as $fileinfo) {
     if ($fileinfo->isDir()) {
-      rmdir($fileinfo->getRealPath());
+      rmdir($fileinfo->getPathname());
     } else {
-      unlink($fileinfo->getRealPath());
+      unlink($fileinfo->getPathname());
     }
   }
 
@@ -98,7 +87,7 @@ function find_first_file_recursive(Set $filenames, string $root_dir,
 
 function find_all_files(string $pattern, string $root_dir,
                         string $exclude_file_pattern,
-                        Set $exclude_dirs = null): ?Set {
+                        ?Set<string> $exclude_dirs = null): ?Set<string> {
   if (!file_exists($root_dir)) {
     return null;
   }
@@ -111,7 +100,7 @@ function find_all_files(string $pattern, string $root_dir,
     if (preg_match($pattern, $fileinfo->getFileName()) === 1 &&
         preg_match($exclude_file_pattern, $fileinfo->getFileName()) === 0 &&
         strstr($fileinfo->getPath(), '/vendor/') === false &&
-        !$exclude_dirs->contains(dirname($fileinfo->getPath()))) {
+        !nullthrows($exclude_dirs)->contains(dirname($fileinfo->getPath()))) {
       $files[] = $fileinfo->getPathName();
     }
   }
@@ -119,10 +108,12 @@ function find_all_files(string $pattern, string $root_dir,
   return $files;
 }
 
-function find_all_files_containing_text(string $text,
-                                        string $root_dir,
-                                        string $exclude_file_pattern,
-                                        Set $exclude_dirs = null): ?Set {
+function find_all_files_containing_text(
+  string $text,
+  string $root_dir,
+  string $exclude_file_pattern,
+  ?Set<string> $exclude_dirs = null,
+): ?Set<string> {
   if (!file_exists($root_dir)) {
     return null;
   }
@@ -134,8 +125,8 @@ function find_all_files_containing_text(string $text,
   foreach ($sit as $fileinfo) {
     if (strpos(file_get_contents($fileinfo->getPathName()), $text) !== false &&
         preg_match($exclude_file_pattern, $fileinfo->getFileName()) === 0 &&
-        strstr($file_info->getPath(), '/vendor/') === false &&
-        !$exclude_dirs->contains(dirname($fileinfo->getPath()))) {
+        strstr($fileinfo->getPath(), '/vendor/') === false &&
+        !nullthrows($exclude_dirs)->contains(dirname($fileinfo->getPath()))) {
       $files[] = $fileinfo->getPathName();
     }
   }
@@ -152,8 +143,74 @@ function command_exists(string $cmd): bool {
     return !empty($ret);
 }
 
-function verbose(string $msg, bool $verbose): void {
-  if ($verbose) {
+/**
+ * Print if output format is for humans
+ */
+function human(string $msg): void {
+  if (
+    (Options::$output_format === OutputFormat::HUMAN) ||
+    (Options::$output_format === OutputFormat::HUMAN_VERBOSE)
+  ) {
+    print $msg;
+  }
+}
+
+function fbmake_json(Map<string, mixed> $data) {
+  if (Options::$output_format === OutputFormat::FBMAKE) {
+    // Yep, really. STDERR. If you put it on STDOUT instead, 'All tests passed.'
+    fprintf(STDERR, "%s\n", json_encode($data));
+  }
+}
+
+function fbmake_test_name(Framework $framework, string $test) {
+  return $framework->getName().'/'.$test;
+}
+
+function fbmake_result_json(
+  Framework $framework,
+  string $test,
+  string $status
+): Map<string, mixed> {
+  if (Options::$output_format !== OutputFormat::FBMAKE) {
+    return Map { };
+  }
+
+  $expected = $framework->getCurrentTestStatuses();
+  if ($expected && $expected->containsKey($test)) {
+    $expected = $expected[$test];
+
+    if ($expected === $status) {
+      return Map {
+        'status' => 'passed',
+        'details' => 'Matched expected status: '.$status,
+      };
+    }
+    return Map {
+      'status' => 'failed',
+      'details' => 'Expected '.$expected.', got '.$status,
+    };
+  }
+  return Map {
+    'status' => 'failed',
+    'details' => 'Unknown test - updated expect file needed?',
+  };
+}
+
+/**
+ * Print output if verbose mode is on. This implies that the output format
+ * is human-readable.
+ */
+function verbose(string $msg): void {
+  if (Options::$output_format === OutputFormat::HUMAN_VERBOSE) {
+    print $msg;
+  }
+}
+
+/**
+ * Print output if format is human readable, but not not verbose.
+ */
+function not_verbose(string $msg): void {
+  if (Options::$output_format === OutputFormat::HUMAN) {
     print $msg;
   }
 }
@@ -237,15 +294,11 @@ function get_runtime_build(bool $use_php = false): string {
         " --config ".__DIR__."/php.ini";
     }
   }
-  return $build;
+  return nullthrows($build);
 }
 
-function error_and_exit(string $message, bool $to_file = false): void {
-  if ($to_file) {
-    $target = Options::$script_errors_file;
-  } else {
-    $target = 'php://stderr';
-  }
+function error_and_exit(string $message): void {
+  $target = 'php://stderr';
   file_put_contents($target, basename(__FILE__).": ".
                     $message.PHP_EOL, FILE_APPEND);
   exit(1);
@@ -254,15 +307,32 @@ function error_and_exit(string $message, bool $to_file = false): void {
 // Include all PHP files in a directory
 function include_all_php($folder){
   foreach (glob("{$folder}/*.php") as $filename) {
-    include_once $filename;
+    require_once $filename;
   }
 }
 
 // This will run processes that will get the test infra dependencies
 // (e.g. PHPUnit), frameworks and framework dependencies.
-function run_install(string $proc, string $path, ?Map $env): ?int
+function run_install(
+  string $proc,
+  string $path,
+  ?Map $env,
+  int $retries = NETWORK_RETRIES
+): ?int {
+  while ($retries > 0) {
+    try {
+      return run_install_impl($proc, $path, $env);
+    } catch (TimeoutException $e) {
+      verbose((string) $e);
+      $retries--;
+    }
+  }
+  return run_install_impl($proc, $path, $env);
+}
+
+function run_install_impl(string $proc, string $path, ?Map $env): ?int
 {
-  verbose("Running: $proc\n", Options::$verbose);
+  verbose("Running: $proc\n");
   $descriptorspec = array(
     0 => array("pipe", "r"),
     1 => array("pipe", "w"),
@@ -273,24 +343,59 @@ function run_install(string $proc, string $path, ?Map $env): ?int
   if ($env !== null) {
     $env_arr = array_merge($_ENV, $env->toArray());
   }
+  // If you have this set, it probably points to hhvm objects, not OSS
+  // objects. Misses here seem to be a huge slowdown, causing problems with
+  // fbmake timeouts.
+  if (
+    $env_arr !== null &&
+    array_key_exists('GIT_ALTERNATE_OBJECT_DIRECTORIES', $env_arr)
+  ) {
+    unset($env_arr['GIT_ALTERNATE_OBJECT_DIRECTORIES']);
+  }
+
   $pipes = null;
   $process = proc_open($proc, $descriptorspec, $pipes, $path, $env_arr);
+  assert($pipes !== null);
   if (is_resource($process)) {
     fclose($pipes[0]);
     $start_time = microtime(true);
-    while ($line = fgets($pipes[1])) {
-      verbose("$line", Options::$verbose);
+
+    $read = [$pipes[1]];
+    $write = [];
+    $except = $read;
+    $ready = null;
+    while (true) {
+      $ready = stream_select($read, $write, $except, INSTALL_TIMEOUT_SECS);
+      if ($ready === 0) {
+        proc_terminate($process);
+        throw new TimeoutException("Hit timeout reading from proc: ".$proc);
+      }
+      if (feof($pipes[1])) {
+        break;
+      }
+      $block = fread($pipes[1], 8096);
+      verbose($block);
       if ((microtime(true) - $start_time) > 1) {
-        verbose(".", !Options::$verbose && !Options::$csv_only);
+        not_verbose('.');
         $start_time = microtime(true);
       }
     }
-    verbose(stream_get_contents($pipes[2]), Options::$verbose);
+    verbose(stream_get_contents($pipes[2]));
     fclose($pipes[1]);
     $ret = proc_close($process);
-    verbose("Returned status $ret\n", Options::$verbose);
+    verbose("Returned status $ret\n");
     return $ret;
   }
-  verbose("Couldn't proc_open: $proc\n", Options::$verbose);
+  verbose("Couldn't proc_open: $proc\n");
   return null;
+}
+
+function nullthrows<T>(?T $x, ?string $message = null): T {
+  if ($x !== null) {
+    return $x;
+  }
+  if ($message === null) {
+    $message = 'Unexpected null';
+  }
+  throw new Exception($message);
 }

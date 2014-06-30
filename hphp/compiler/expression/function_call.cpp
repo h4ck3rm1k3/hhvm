@@ -67,6 +67,7 @@ FunctionCall::FunctionCall
     m_name = toLower(name);
   }
   m_clsNameTemp = -1;
+  this->checkUnpackParams();
 }
 
 void FunctionCall::reset() {
@@ -117,6 +118,13 @@ int FunctionCall::getKidCount() const {
   return 3;
 }
 
+bool FunctionCall::hasUnpack() const {
+  // NOTE: hasContext(Expression::UnpackParameter) on the last parameter
+  // does not work in RepoAuthoritative mode due to contexts being cleared
+  // and copied as part of whole program optimizations
+  return m_params && m_params->containsUnpack();
+}
+
 void FunctionCall::setNthKid(int n, ConstructPtr cp) {
   switch (n) {
     case 0:
@@ -127,10 +135,28 @@ void FunctionCall::setNthKid(int n, ConstructPtr cp) {
       break;
     case 2:
       m_params = dynamic_pointer_cast<ExpressionList>(cp);
+      this->checkUnpackParams();
       break;
     default:
       assert(false);
       break;
+  }
+}
+
+void FunctionCall::checkUnpackParams() {
+  if (!m_params) { return; }
+  ExpressionList &params = *m_params;
+  const auto numParams = params.getCount();
+
+  // when supporting multiple unpacks at the end of the param list, this
+  // will need to disallow transitions from unpack to non-unpack.
+  for (int i = 0; i < (numParams - 1); ++i) {
+    ExpressionPtr p = params[i];
+    if (p->hasContext(Expression::UnpackParameter)) {
+      parseTimeFatal(
+        Compiler::NoError,
+        "Only the last parameter in a function call is allowed to use ...");
+    }
   }
 }
 

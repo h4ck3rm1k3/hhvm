@@ -72,7 +72,7 @@ static std::string dynamic_to_std_string(const folly::dynamic& v) {
     case folly::dynamic::Type::BOOL:
       return std::to_string(v.asBool());
     case folly::dynamic::Type::DOUBLE:
-      return std::to_string(v.asDouble());
+      return convDblToStrWithPhpFormat(v.asDouble());
     case folly::dynamic::Type::INT64:
       return std::to_string(v.asInt());
     case folly::dynamic::Type::STRING:
@@ -84,7 +84,7 @@ static std::string dynamic_to_std_string(const folly::dynamic& v) {
 static Variant dynamic_to_variant(const folly::dynamic& v) {
   switch (v.type()) {
     case folly::dynamic::Type::NULLT:
-      return init_null_variant;
+      return init_null();
     case folly::dynamic::Type::BOOL:
       return v.asBool();
     case folly::dynamic::Type::DOUBLE:
@@ -276,6 +276,10 @@ folly::dynamic ini_get(double& p) {
   return p;
 }
 
+folly::dynamic ini_get(char& p) {
+  return p;
+}
+
 folly::dynamic ini_get(int16_t& p) {
   return p;
 }
@@ -285,6 +289,10 @@ folly::dynamic ini_get(int32_t& p) {
 }
 
 folly::dynamic ini_get(int64_t& p) {
+  return p;
+}
+
+folly::dynamic ini_get(unsigned char& p) {
   return p;
 }
 
@@ -357,11 +365,11 @@ void IniSetting::ParserCallback::onPopEntry(
   }
 }
 
-void IniSetting::ParserCallback::makeArray(Variant &hash,
-                                           const std::string &offset,
-                                           const std::string &value) {
+void IniSetting::ParserCallback::makeArray(Variant& hash,
+                                           const std::string& offset,
+                                           const std::string& value) {
   assert(!offset.empty());
-  Variant val = strongBind(hash);
+  Variant val(hash, Variant::StrongBind{});
   auto start = offset.c_str();
   auto p = start;
   bool last = false;
@@ -725,6 +733,15 @@ bool IniSetting::ResetSystemDefault(const std::string& name) {
     return false;
   }
   return ini_set(name, it->second, PHP_INI_SET_EVERY);
+}
+
+bool IniSetting::GetMode(const std::string& name, Mode& mode) {
+  auto cb = get_callback(name);
+  if (!cb) {
+    return false;
+  }
+  mode = cb->mode;
+  return true;
 }
 
 Array IniSetting::GetAll(const String& ext_name, bool details) {

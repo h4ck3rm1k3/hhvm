@@ -132,12 +132,12 @@ String f_mysql_get_client_info() {
 Variant f_mysql_set_charset(const String& charset,
                                    const Variant& link_identifier /* = uninit_null() */) {
   MYSQL *conn = MySQL::GetConn(link_identifier);
-  if (!conn) return uninit_null();
+  if (!conn) return init_null();
   return !mysql_set_character_set(conn, charset.data());
 }
 Variant f_mysql_ping(const Variant& link_identifier /* = uninit_null() */) {
   MYSQL *conn = MySQL::GetConn(link_identifier);
-  if (!conn) return uninit_null();
+  if (!conn) return init_null();
   return !mysql_ping(conn);
 }
 Variant f_mysql_client_encoding(const Variant& link_identifier /* = uninit_null() */) {
@@ -231,7 +231,7 @@ Variant f_mysql_thread_id(const Variant& link_identifier /* = uninit_null() */) 
 }
 Variant f_mysql_create_db(const String& db,
                                  const Variant& link_identifier /* = uninit_null() */) {
-  throw NotSupportedException
+  throw_not_supported
     (__func__, "Deprecated. Use mysql_query(CREATE DATABASE) instead.");
 }
 Variant f_mysql_select_db(const String& db,
@@ -242,7 +242,7 @@ Variant f_mysql_select_db(const String& db,
 }
 Variant f_mysql_drop_db(const String& db,
                                const Variant& link_identifier /* = uninit_null() */) {
-  throw NotSupportedException
+  throw_not_supported
     (__func__, "Deprecated. Use mysql_query(DROP DATABASE) instead.");
 }
 Variant f_mysql_affected_rows(const Variant& link_identifier /* = uninit_null() */) {
@@ -332,7 +332,7 @@ Variant f_mysql_unbuffered_query(const String& query,
 
 Variant f_mysql_db_query(const String& database, const String& query,
                          const Variant& link_identifier /* = uninit_null() */) {
-  throw NotSupportedException
+  throw_not_supported
     (__func__, "Deprecated. Use mysql_query() instead.");
 }
 
@@ -364,7 +364,7 @@ Variant f_mysql_list_tables(const String& database,
 
 Variant f_mysql_list_fields(const String& database_name, const String& table_name,
                             const Variant& link_identifier /* = uninit_null() */) {
-  throw NotSupportedException
+  throw_not_supported
     (__func__, "Deprecated. Use mysql_query(SHOW COLUMNS FROM table "
      "[LIKE 'name']) instead.");
 }
@@ -473,9 +473,7 @@ Variant f_mysql_async_query_result(const Variant& link_identifier) {
 }
 
 bool f_mysql_async_query_completed(const Variant& result) {
-  MySQLResult *res = result.toResource().getTyped<MySQLResult>
-    (!RuntimeOption::ThrowBadTypeExceptions,
-     !RuntimeOption::ThrowBadTypeExceptions);
+  auto const res = result.toResource().getTyped<MySQLResult>(true, true);
   return !res || res->get() == NULL;
 }
 
@@ -553,7 +551,7 @@ Variant f_mysql_async_fetch_array(const Variant& result, int result_type /* = 1 
 Variant f_mysql_async_wait_actionable(const Variant& items, double timeout) {
   size_t count = items.toArray().size();
   if (count == 0 || timeout < 0) {
-    return empty_array;
+    return empty_array();
   }
 
   struct pollfd* fds = (struct pollfd*)calloc(count, sizeof(struct pollfd));
@@ -568,7 +566,7 @@ Variant f_mysql_async_wait_actionable(const Variant& items, double timeout) {
     if (entry.size() < 1) {
       raise_warning("element %d did not have at least one entry",
                    nfds);
-      return empty_array;
+      return empty_array();
     }
 
     MySQL* mySQL = entry.rvalAt(0).toResource().getTyped<MySQL>();
@@ -576,7 +574,7 @@ Variant f_mysql_async_wait_actionable(const Variant& items, double timeout) {
     if (conn->async_op_status == ASYNC_OP_UNSET) {
       raise_warning("runtime/ext_mysql: no pending async operation in "
                     "progress");
-      return empty_array;
+      return empty_array();
     }
 
     pollfd* fd = &fds[nfds++];
@@ -596,7 +594,7 @@ Variant f_mysql_async_wait_actionable(const Variant& items, double timeout) {
   if (res == -1) {
     raise_warning("unable to poll [%d]: %s", errno,
                   folly::errnoStr(errno).c_str());
-    return empty_array;
+    return empty_array();
   }
 
   // Now just find the ones that are ready, and copy the corresponding
@@ -608,7 +606,7 @@ Variant f_mysql_async_wait_actionable(const Variant& items, double timeout) {
     if (entry.size() < 1) {
       raise_warning("element %d did not have at least one entry",
                    nfds);
-      return empty_array;
+      return empty_array();
     }
     MySQL* mySQL = entry.rvalAt(0).toResource().getTyped<MySQL>();
     MYSQL* conn = mySQL->get();
@@ -642,35 +640,35 @@ Variant f_mysql_async_connect_start(const String& server,
                                     const String& username,
                                     const String& password,
                                     const String& database) {
-  throw NotImplementedException(__func__);
+  throw_not_implemented(__func__);
 }
 
 bool f_mysql_async_connect_completed(const Variant& link_identifier) {
-  throw NotImplementedException(__func__);
+  throw_not_implemented(__func__);
 }
 
 bool f_mysql_async_query_start(const String& query, const Variant& link_identifier) {
-  throw NotImplementedException(__func__);
+  throw_not_implemented(__func__);
 }
 
 Variant f_mysql_async_query_result(const Variant& link_identifier) {
-  throw NotImplementedException(__func__);
+  throw_not_implemented(__func__);
 }
 
 bool f_mysql_async_query_completed(const Variant& result) {
-  throw NotImplementedException(__func__);
+  throw_not_implemented(__func__);
 }
 
 Variant f_mysql_async_fetch_array(const Variant& result, int result_type /* = 1 */) {
-  throw NotImplementedException(__func__);
+  throw_not_implemented(__func__);
 }
 
 Variant f_mysql_async_wait_actionable(const Variant& items, double timeout) {
-  throw NotImplementedException(__func__);
+  throw_not_implemented(__func__);
 }
 
 int64_t f_mysql_async_status(const Variant& link_identifier) {
-  throw NotImplementedException(__func__);
+  throw_not_implemented(__func__);
 }
 
 #endif
@@ -830,7 +828,7 @@ Variant f_mysql_result(const Variant& result, int row,
                     CopyString);
     }
   }
-  return uninit_null();
+  return init_null();
 }
 
 ///////////////////////////////////////////////////////////////////////////////

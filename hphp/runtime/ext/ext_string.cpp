@@ -462,7 +462,8 @@ String f_implode(const Variant& arg1, const Variant& arg2 /* = null_variant */) 
     items = arg2;
     delim = arg1.toString();
   } else {
-    throw_bad_type_exception("expected a container as one of the arguments");
+    throw_bad_type_exception("implode() expects a container as "
+                             "one of the arguments");
     return String();
   }
   return StringUtil::Implode(items, delim);
@@ -534,13 +535,18 @@ Variant f_strtok(const String& str, const Variant& token /* = null_variant */) {
     }
   }
 
-  String ret(s0 + pos0, i - pos0, CopyString);
-  s_tokenizer_data->pos = i + 1;
-
   // reset mask
   for (int i = 0; i < stoken.size(); i++) {
     mask[(unsigned char)stoken.data()[i]] = 0;
   }
+
+  if (pos0 == sstr.size()) {
+    return false;
+  }
+
+  String ret(s0 + pos0, i - pos0, CopyString);
+  s_tokenizer_data->pos = i + 1;
+
   return ret;
 }
 
@@ -669,10 +675,12 @@ Variant f_substr_replace(const Variant& str, const Variant& replacement, const V
          ++iter, ++startIter, ++lengthIter) {
       int nStart = startIter.second().toInt32();
       int nLength = lengthIter.second().toInt32();
-      String repl = empty_string;
+      String repl;
       if (replIter) {
         repl = replIter.second().toString();
         ++replIter;
+      } else {
+        repl = empty_string();
       }
       auto s2 = string_replace(iter.second().toString(), nStart, nLength, repl);
       ret.append(s2);
@@ -713,7 +721,7 @@ String f_str_repeat(const String& input, int multiplier) {
   }
 
   if (multiplier == 0) {
-    return empty_string;
+    return empty_string();
   }
 
   if (input.size() == 1) {
@@ -738,14 +746,14 @@ String f_str_repeat(const String& input, int multiplier) {
 Variant f_printf(int _argc, const String& format, const Array& _argv /* = null_array */) {
   String output = string_printf(format.data(), format.size(), _argv);
   if (output.isNull()) return false;
-  echo(output.data(), output.size());
+  g_context->write(output.data(), output.size());
   return output.size();
 }
 
 Variant f_vprintf(const String& format, const Array& args) {
   String output = string_printf(format.data(), format.size(), args);
   if (output.isNull()) return false;
-  echo(output.data(), output.size());
+  g_context->write(output.data(), output.size());
   return output.size();
 }
 
@@ -768,7 +776,7 @@ Variant f_sscanf(int _argc,
   Variant ret;
   int result;
   result = string_sscanf(str.c_str(), format.c_str(), _argv.size(), ret);
-  if (SCAN_ERROR_WRONG_PARAM_COUNT == result) return uninit_null();
+  if (SCAN_ERROR_WRONG_PARAM_COUNT == result) return init_null();
   if (_argv.empty()) return ret;
 
   if (ret.isArray()) {
@@ -906,48 +914,107 @@ Variant f_stristr(const String& haystack, const Variant& needle) {
   return haystack.substr(ret.toInt32());
 }
 
+template<bool existence_only>
 static NEVER_INLINE
-Variant strpbrk_slow(const String& haystack, const String& char_list) {
-  auto const hd = haystack.get()->data();
-  auto const cd = char_list.get()->data();
-  for (size_t i = 0; i < haystack.length(); ++i) {
-    for (size_t j = 0; j < char_list.length(); ++j) {
-      if (hd[i] == cd[j]) {
-        return String(hd + i, haystack.length() - i, CopyString);
-      }
-    }
+Variant strpbrk_char_list_has_nulls_slow(const String& haystack,
+                                         const String& char_list) {
+
+  auto const charListSz = char_list.size();
+  auto const charListData = char_list.c_str();
+  assert(memchr(charListData, '\0', charListSz) != nullptr);
+
+  // in order to use strcspn, remove all null byte(s) from char_list
+  auto charListWithoutNull = (char*) smart_malloc(charListSz);
+  SCOPE_EXIT { smart_free(charListWithoutNull); };
+
+  auto copy_ptr = charListWithoutNull;
+  auto const charListStop = charListData + char_list.size();
+  for (auto ptr = charListData; ptr != charListStop; ++ptr) {
+    if (*ptr != '\0') { *copy_ptr++ = *ptr; }
+  }
+  assert((copy_ptr - charListWithoutNull) < charListSz);
+  // at least one of charListData chars was null, so there must be room:
+  *copy_ptr = '\0';
+
+  // Use strcspn instead of strpbrk because the latter doesn't report when
+  // its terminated due to a null byte in haystack in any manageable way.
+  auto haySize = haystack.size();
+  auto hayData = haystack.c_str();
+
+  size_t idx = strcspn(hayData, charListWithoutNull);
+  if (idx < haySize) {
+    // we know that char_list contains null bytes, being terminated because
+    // haystack has null bytes is just dandy
+    if (existence_only) { return true; }
+    return String(hayData + idx, haySize - idx, CopyString);
   }
   return false;
 }
 
-Variant f_strpbrk(const String& haystack, const String& char_list) {
+template<bool existence_only>
+static ALWAYS_INLINE
+Variant strpbrk_impl(const String& haystack, const String& char_list) {
   if (char_list.empty()) {
     throw_invalid_argument("char_list: (empty)");
     return false;
   }
-
-  auto const charListData = char_list.c_str();
-  auto const charListStop = charListData + char_list.size();
-  for (auto ptr = charListData; ptr != charListStop;) {
-    if (UNLIKELY(*ptr++ == '\0')) return strpbrk_slow(haystack, char_list);
+  if (haystack.empty()) {
+    return false;
   }
 
-  // Use strcspn instead of strpbrk because the latter doesn't report
-  // when its terminated due to a null byte in haystack in any
-  // manageable way.
+  auto charListData = char_list.c_str();
+
+  // equivalent to rawmemchr(charListData, '\0') ... charListData must be
+  // null-terminated
+  auto firstNull = charListData;
+  while (*firstNull != '\0') { ++firstNull; }
+
+  auto const hasNullByte = (firstNull - charListData) < char_list.size();
+
+  if (UNLIKELY(hasNullByte)) {
+    if ((firstNull - charListData) == (char_list.size() - 1)) {
+      // the first null is the last character in char_list
+    } else if (firstNull == charListData) {
+      // the first null is the first character in char_list
+      auto secondNull = firstNull + 1;
+      while (*secondNull != '\0') { ++secondNull; }
+
+      if ((secondNull - charListData) != char_list.size()) {
+        return
+          strpbrk_char_list_has_nulls_slow<existence_only>(haystack, char_list);
+      }
+      ++charListData; // we can remember the null byte
+    } else {
+      return
+        strpbrk_char_list_has_nulls_slow<existence_only>(haystack, char_list);
+    }
+  }
+
+  // Use strcspn instead of strpbrk because the latter doesn't report when
+  // it's terminated due to a null byte in haystack in any manageable way.
   auto haySize = haystack.size();
   auto hayData = haystack.c_str();
 retry:
   size_t idx = strcspn(hayData, charListData);
   if (idx < haySize) {
-    if (UNLIKELY(hayData[idx] == '\0')) {
+    if (UNLIKELY(hayData[idx] == '\0' && !hasNullByte)) {
       hayData += idx + 1;
       haySize -= idx + 1;
       goto retry;
     }
+    if (existence_only) { return true; }
+
     return String(hayData + idx, haySize - idx, CopyString);
   }
   return false;
+}
+
+bool str_contains_any_of(const String& haystack, const String& char_list) {
+  return strpbrk_impl<true>(haystack, char_list).toBooleanVal();
+}
+
+Variant f_strpbrk(const String& haystack, const String& char_list) {
+  return strpbrk_impl<false>(haystack, char_list);
 }
 
 Variant f_strchr(const String& haystack, const Variant& needle) {
@@ -1124,14 +1191,14 @@ Variant f_strlen(const Variant& vstr) {
     return Variant(cell->m_data.pstr->size());
   case KindOfArray:
     raise_warning("strlen() expects parameter 1 to be string, array given");
-    return uninit_null();
+    return init_null();
   case KindOfResource:
     raise_warning("strlen() expects parameter 1 to be string, resource given");
-    return uninit_null();
+    return init_null();
   case KindOfObject:
     if (!HHVM_FN(method_exists)(vstr, "__toString")) {
       raise_warning("strlen() expects parameter 1 to be string, object given");
-      return uninit_null();
+      return init_null();
     } //else fallback to default
   default:
     const String& str = vstr.toString();
@@ -1229,7 +1296,7 @@ Variant f_str_word_count(const String& str, int64_t format /* = 0 */,
   case 1:
   case 2:
     if (!str_len) {
-      return empty_array;
+      return empty_array();
     }
     break;
   case 0:

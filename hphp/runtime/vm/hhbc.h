@@ -480,6 +480,8 @@ constexpr int32_t kMaxConcatN = 4;
   O(String,          ONE(SA),          NOV,             ONE(CV),    NF) \
   O(Array,           ONE(AA),          NOV,             ONE(CV),    NF) \
   O(NewArray,        ONE(IVA),         NOV,             ONE(CV),    NF) \
+  O(NewMixedArray,   ONE(IVA),         NOV,             ONE(CV),    NF) \
+  O(NewLikeArrayL,   TWO(LA,IVA),      NOV,             ONE(CV),    NF) \
   O(NewPackedArray,  ONE(IVA),         CMANY,           ONE(CV),    NF) \
   O(NewStructArray,  ONE(VSA),         SMANY,           ONE(CV),    NF) \
   O(AddElemC,        NA,               THREE(CV,CV,CV), ONE(CV),    NF) \
@@ -637,6 +639,7 @@ constexpr int32_t kMaxConcatN = 4;
   O(FPassM,          TWO(IVA,MA),      MMANY,           ONE(FV),    FF) \
   O(FCall,           ONE(IVA),         FMANY,           ONE(RV),    CF_FF) \
   O(FCallD,          THREE(IVA,SA,SA), FMANY,           ONE(RV),    CF_FF) \
+  O(FCallUnpack,     ONE(IVA),         FMANY,           ONE(RV),    CF_FF) \
   O(FCallArray,      NA,               ONE(FV),         ONE(RV),    CF_FF) \
   O(FCallBuiltin,    THREE(IVA,IVA,SA),CVUMANY,         ONE(RV),    CF) \
   O(CufSafeArray,    NA,               THREE(RV,CV,CV), ONE(CV),    NF) \
@@ -673,13 +676,13 @@ constexpr int32_t kMaxConcatN = 4;
   O(BareThis,        ONE(OA(BareThisOp)),                               \
                                        NOV,             ONE(CV),    NF) \
   O(CheckThis,       NA,               NOV,             NOV,        NF) \
-  O(InitThisLoc,     ONE(IVA),         NOV,             NOV,        NF) \
-  O(StaticLoc,       TWO(IVA,SA),      NOV,             ONE(CV),    NF) \
-  O(StaticLocInit,   TWO(IVA,SA),      ONE(CV),         NOV,        NF) \
+  O(InitThisLoc,     ONE(LA),          NOV,             NOV,        NF) \
+  O(StaticLoc,       TWO(LA,SA),       NOV,             ONE(CV),    NF) \
+  O(StaticLocInit,   TWO(LA,SA),       ONE(CV),         NOV,        NF) \
   O(Catch,           NA,               NOV,             ONE(CV),    NF) \
   O(OODeclExists,    ONE(OA(OODeclExistsOp)),                           \
                                        TWO(CV,CV),      ONE(CV),    NF) \
-  O(VerifyParamType, ONE(IVA),         NOV,             NOV,        NF) \
+  O(VerifyParamType, ONE(LA),          NOV,             NOV,        NF) \
   O(VerifyRetTypeC,  NA,               ONE(CV),         ONE(CV),    NF) \
   O(VerifyRetTypeV,  NA,               ONE(VV),         ONE(VV),    NF) \
   O(Self,            NA,               NOV,             ONE(AV),    NF) \
@@ -688,8 +691,8 @@ constexpr int32_t kMaxConcatN = 4;
   O(NativeImpl,      NA,               NOV,             NOV,        CF_TF) \
   O(CreateCl,        TWO(IVA,SA),      CVMANY,          ONE(CV),    NF) \
   O(CreateCont,      NA,               NOV,             ONE(CV),    CF) \
-  O(ContEnter,       NA,               ONE(CV),         NOV,        CF) \
-  O(ContRaise,       NA,               ONE(CV),         NOV,        CF) \
+  O(ContEnter,       NA,               ONE(CV),         ONE(CV),    CF) \
+  O(ContRaise,       NA,               ONE(CV),         ONE(CV),    CF) \
   O(Yield,           NA,               ONE(CV),         ONE(CV),    NF) \
   O(YieldK,          NA,               TWO(CV,CV),      ONE(CV),    NF) \
   O(ContCheck,       ONE(IVA),         NOV,             NOV,        NF) \
@@ -739,12 +742,12 @@ inline bool isValidOpcode(Op op) {
 
 const MInstrInfo& getMInstrInfo(Op op);
 
-enum AstubsOp {
-  OpAstubStart = Op_count-1,
-#define O(name, imm, pop, push, flags) OpAstub##name,
+enum AcoldOp {
+  OpAcoldStart = Op_count-1,
+#define O(name, imm, pop, push, flags) OpAcold##name,
   OPCODES
 #undef O
-  OpAstubCount
+  OpAcoldCount
 };
 
 #define HIGH_OPCODES \
@@ -753,7 +756,7 @@ enum AstubsOp {
   O(NativeTrampoline)
 
 enum HighOp {
-  OpHighStart = OpAstubCount-1,
+  OpHighStart = OpAcoldCount-1,
 #define O(name) Op##name,
   HIGH_OPCODES
 #undef O
@@ -1005,6 +1008,7 @@ inline bool isFCallStar(Op opcode) {
     case Op::FCall:
     case Op::FCallD:
     case Op::FCallArray:
+    case Op::FCallUnpack:
       return true;
     default:
       return false;
@@ -1074,6 +1078,17 @@ inline bool isSwitch(Op op) {
   switch (op) {
     case OpSwitch:
     case OpSSwitch:
+      return true;
+
+    default:
+      return false;
+  }
+}
+
+inline bool isTypeAssert(Op op) {
+  switch (op) {
+    case OpAssertRATL:
+    case OpAssertRATStk:
       return true;
 
     default:

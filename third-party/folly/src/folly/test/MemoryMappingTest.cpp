@@ -23,7 +23,8 @@ namespace folly {
 TEST(MemoryMapping, Basic) {
   File f = File::temporary();
   {
-    WritableMemoryMapping m(File(f.fd()), 0, sizeof(double));
+    MemoryMapping m(File(f.fd()), 0, sizeof(double),
+                    MemoryMapping::writable());
     double volatile* d = m.asWritableRange<double>().data();
     *d = 37 * M_PI;
   }
@@ -38,10 +39,32 @@ TEST(MemoryMapping, Basic) {
   }
 }
 
+TEST(MemoryMapping, Move) {
+  File f = File::temporary();
+  {
+    MemoryMapping m(File(f.fd()), 0, sizeof(double) * 2,
+                    MemoryMapping::writable());
+    double volatile* d = m.asWritableRange<double>().data();
+    d[0] = 37 * M_PI;
+    MemoryMapping m2(std::move(m));
+    double volatile* d2 = m2.asWritableRange<double>().data();
+    d2[1] = 39 * M_PI;
+  }
+  {
+    MemoryMapping m(File(f.fd()), 0, sizeof(double));
+    const double volatile* d = m.asRange<double>().data();
+    EXPECT_EQ(d[0], 37 * M_PI);
+    MemoryMapping m2(std::move(m));
+    const double volatile* d2 = m2.asRange<double>().data();
+    EXPECT_EQ(d2[1], 39 * M_PI);
+  }
+}
+
 TEST(MemoryMapping, DoublyMapped) {
   File f = File::temporary();
   // two mappings of the same memory, different addresses.
-  WritableMemoryMapping mw(File(f.fd()), 0, sizeof(double));
+  MemoryMapping mw(File(f.fd()), 0, sizeof(double),
+                   MemoryMapping::writable());
   MemoryMapping mr(File(f.fd()), 0, sizeof(double));
 
   double volatile* dw = mw.asWritableRange<double>().data();

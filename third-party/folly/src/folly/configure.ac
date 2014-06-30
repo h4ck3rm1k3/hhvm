@@ -4,14 +4,28 @@
 
 AC_PREREQ(2.59)
 AC_INIT(folly, 0.1, folly@fb.com)
+
+m4_define([folly_libtool_current], [1])
+
+# We assume all revisions are backwards incompatible.
+LT_VERSION=folly_libtool_current:0:0
+AC_SUBST(LT_VERSION)
+
 AC_CONFIG_SRCDIR([Likely.h])
 AC_CONFIG_HEADERS([config.h])
 AX_PREFIX_CONFIG_H([folly-config.h], [folly], [config.h])
 AC_CONFIG_AUX_DIR([build-aux])
 
-AM_INIT_AUTOMAKE([foreign dist-bzip2 nostdinc])
+AM_INIT_AUTOMAKE([foreign dist-bzip2 nostdinc subdir-objects])
 
 AC_CONFIG_MACRO_DIR([m4])
+
+AX_CONFIG_FEATURE_DEFAULT_DISABLED
+AX_CONFIG_FEATURE(
+        [deprecated-assoc],
+        [supports deprecated associative containers (hash_map/hash_set)],
+        [HAVE_DEPRECATED_ASSOC],
+        [Define if you want to support deprecated associative containers])
 
 AC_PROG_INSTALL
 AM_PROG_LIBTOOL
@@ -49,10 +63,11 @@ AX_BOOST_BASE([1.20.0], [], [AC_MSG_ERROR(
 AX_BOOST_THREAD
 AX_BOOST_REGEX
 AX_BOOST_SYSTEM
+AX_BOOST_FILESYSTEM
 
 # Checks for header files.
 AC_HEADER_STDC
-AC_CHECK_HEADERS([fcntl.h features.h inttypes.h limits.h stdint.h stdlib.h string.h sys/time.h unistd.h mutex.h malloc.h emmintrin.h byteswap.h bits/functexcept.h])
+AC_CHECK_HEADERS([fcntl.h features.h inttypes.h limits.h stdint.h stdlib.h string.h sys/time.h unistd.h mutex.h malloc.h emmintrin.h byteswap.h bits/functexcept.h bits/c++config.h])
 
 AC_CHECK_HEADER(double-conversion/double-conversion.h, [], [AC_MSG_ERROR(
                 [Couldn't find double-conversion.h, please download from \
@@ -61,6 +76,8 @@ AC_CHECK_LIB([double-conversion],[ceil],[],[AC_MSG_ERROR(
              [Please install double-conversion library])])
 
 AC_CHECK_LIB([event], [event_set], [], [AC_MSG_ERROR([Unable to find libevent])])
+
+AC_CHECK_LIB([jemalloc], [rallocm])
 
 # Checks for typedefs, structures, and compiler characteristics.
 AC_HEADER_STDBOOL
@@ -143,7 +160,7 @@ AC_LINK_IFELSE(
     AC_DEFINE([HAVE_WEAK_SYMBOLS], [1],
               [Define to 1 if the linker supports weak symbols.])])
 
-AC_SEARCH_LIBS([cplus_demangle_v3_callback], [iberty])
+AC_SEARCH_LIBS([cplus_demangle_v3_callback], [iberty_pic iberty])
 if test "$ac_cv_search_cplus_demangle_v3_callback" != "no" ; then
   AC_DEFINE([HAVE_CPLUS_DEMANGLE_V3_CALLBACK], [1],
             [Define to 1 if we have cplus_demangle_v3_callback.])
@@ -176,8 +193,13 @@ if test "$ac_cv_func_pthread_yield" = "no"; then
    AC_CHECK_FUNCS([sched_yield])
 fi
 
+AC_CHECK_HEADER([lz4.h], AC_CHECK_LIB([lz4], [main]))
+AC_CHECK_HEADER([snappy.h], AC_CHECK_LIB([snappy], [main]))
+AC_CHECK_HEADER([zlib.h], AC_CHECK_LIB([z], [main]))
+AC_CHECK_HEADER([lzma.h], AC_CHECK_LIB([lzma], [main]))
+
 AC_SUBST(AM_CPPFLAGS, '-I../$(top_srcdir)'" "'-I$(top_srcdir)/io'" "'-I$(top_srcdir)/test'" $BOOST_CPPFLAGS")
-AC_SUBST(AM_LDFLAGS, "$BOOST_LDFLAGS $BOOST_THREAD_LIB $BOOST_SYSTEM_LIB $BOOST_REGEX_LIB -lpthread")
+AC_SUBST(AM_LDFLAGS, "$BOOST_LDFLAGS $BOOST_THREAD_LIB $BOOST_FILESYSTEM_LIB $BOOST_SYSTEM_LIB $BOOST_REGEX_LIB -lpthread")
 
 AM_CONDITIONAL([HAVE_STD_THREAD], [test "$ac_cv_header_features" = "yes"])
 AM_CONDITIONAL([HAVE_X86_64], [test "$build_cpu" = "x86_64"])

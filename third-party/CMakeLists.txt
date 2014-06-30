@@ -24,6 +24,7 @@ set(THIRD_PARTY_MODULES)
 set(THIRD_PARTY_HEADERS)
 
 list(APPEND THIRD_PARTY_MODULES
+  fastlz
   libafdt
   libmbfl
   libsqlite3
@@ -43,7 +44,7 @@ function(TP_INSTALL_HEADERS TARGET SRCDIR DEST)
     CODE "INCLUDE(\"${HPHP_HOME}/CMake/HPHPFunctions.cmake\")
       HHVM_INSTALL_HEADERS(${TARGET}
       \"${CMAKE_CURRENT_SOURCE_DIR}/${SRCDIR}\"
-      \"${CMAKE_INSTALL_PREFIX}/include/hphp/third-party/${DEST}\"
+      \"\${CMAKE_INSTALL_PREFIX}/include/hphp/third-party/${DEST}\"
       ${files})"
     COMPONENT dev)
 endfunction()

@@ -55,6 +55,13 @@ TEST(Type, Null) {
   EXPECT_FALSE(Type::Null.subtypeOf(Type::InitNull));
   EXPECT_NE(Type::Null, Type::Uninit);
   EXPECT_NE(Type::Null, Type::InitNull);
+
+  EXPECT_TRUE(Type::Null.needsReg());
+  EXPECT_FALSE(Type::Uninit.needsReg());
+  EXPECT_FALSE(Type::InitNull.needsReg());
+  EXPECT_FALSE(Type::Null.needsValueReg());
+  EXPECT_FALSE(Type::Uninit.needsValueReg());
+  EXPECT_FALSE(Type::InitNull.needsValueReg());
 }
 
 TEST(Type, KnownDataType) {
@@ -245,19 +252,37 @@ TEST(Type, TypeConstraints) {
   EXPECT_FALSE(fits(Type::Gen, DataTypeCountness));
   EXPECT_FALSE(fits(Type::Gen, DataTypeCountnessInit));
   EXPECT_FALSE(fits(Type::Gen, DataTypeSpecific));
-  EXPECT_FALSE(fits(Type::Gen, DataTypeSpecialized));
+  EXPECT_FALSE(fits(Type::Gen,
+                    TypeConstraint(DataTypeSpecialized).setWantArrayKind()));
 
   EXPECT_TRUE(fits(Type::Cell,
                    {DataTypeGeneric, DataTypeSpecific}));
   EXPECT_FALSE(fits(Type::Gen,
                     {DataTypeGeneric, DataTypeSpecific}));
+
+  EXPECT_FALSE(fits(Type::Arr,
+                    TypeConstraint(DataTypeSpecialized).setWantArrayKind()));
+  EXPECT_TRUE(fits(Type::Arr.specialize(ArrayData::kPackedKind),
+                   TypeConstraint(DataTypeSpecialized).setWantArrayKind()));
 }
 
-TEST(Type, Relax) {
-  EXPECT_EQ(Type::BoxedInitCell | Type::InitNull,
-            relaxType(Type::BoxedObj |Type::InitNull,
+TEST(Type, RelaxType) {
+  EXPECT_EQ(Type::Gen, relaxType(Type::BoxedStr, {DataTypeGeneric}));
+  EXPECT_EQ(Type::BoxedInitCell | Type::Uncounted,
+            relaxType(Type::BoxedObj | Type::InitNull,
                       {DataTypeCountness, DataTypeGeneric}));
 
+
+  auto inner = TypeConstraint{DataTypeSpecialized};
+  inner.setDesiredClass(SystemLib::s_IteratorClass);
+  inner.innerCat = DataTypeSpecialized;
+  inner.category = DataTypeSpecific;
+  auto type = Type::Obj.specialize(SystemLib::s_IteratorClass).box();
+  EXPECT_EQ("BoxedObj<Iterator>", type.toString());
+  EXPECT_EQ(type, relaxType(type, inner));
+}
+
+TEST(Type, RelaxConstraint) {
   EXPECT_EQ(TypeConstraint(DataTypeCountness, DataTypeCountness),
             relaxConstraint(TypeConstraint{DataTypeSpecific, DataTypeSpecific},
                             Type::BoxedCell,

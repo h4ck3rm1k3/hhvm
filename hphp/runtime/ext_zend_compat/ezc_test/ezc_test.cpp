@@ -393,7 +393,7 @@ PHP_FUNCTION(ezc_hash_set)
   ZEND_FETCH_RESOURCE(hash, HashTable*, &zht, -1, le_ezc_test_hash_name, le_ezc_test_hash);
 
   initial_value = (char*)ecalloc(1, value_len + 1);
-  zend_symtable_update(hash, key, key_len + 1, initial_value, value_len, (void**)&dest);
+  zend_symtable_update(hash, key, key_len + 1, initial_value, value_len + 1, (void**)&dest);
   memcpy(dest, value, value_len);
   dest[value_len] = '\0';
   efree(initial_value);
@@ -459,6 +459,80 @@ static void ezc_hash_element_dtor(void * data) /* {{{ */
   char * value = (char*)data;
   php_write(value, strlen(value) TSRMLS_CC);
 }
+/* }}} */
+
+/* {{{ proto void ezc_array_val_set(array a, mixed key, mixed value)
+ * Set an element of an array passed by value, by modifying the data pointer
+ * returned by zend_hash_find(). This should theoretically have no effect
+ * on the caller.
+ */
+PHP_FUNCTION(ezc_array_val_set)
+{
+  zval *array, *key, *value;
+  zval ** data;
+  int found;
+
+  if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC,
+        "azz", &array, &key, &value) == FAILURE)
+  {
+    return;
+  }
+
+  if (Z_TYPE_P(key) == IS_LONG) {
+    found = zend_hash_index_find(
+        Z_ARRVAL_P(array), Z_LVAL_P(key), (void**)&data);
+  } else if (Z_TYPE_P(key) == IS_STRING) {
+    found = zend_hash_find(
+        Z_ARRVAL_P(array), Z_STRVAL_P(key), Z_STRLEN_P(key) + 1, (void**)&data);
+  } else {
+    php_error_docref(NULL TSRMLS_CC, E_WARNING, "array key must be either integer or string");
+    return;
+  }
+  if (found == FAILURE) {
+    php_error_docref(NULL TSRMLS_CC, E_WARNING, "array key must exist");
+    return;
+  }
+  zval_ptr_dtor(data);
+  Z_ADDREF_P(value);
+  *data = value;
+}
+/* }}} */
+
+/* {{{ proto void ezc_array_set(array a, mixed key, mixed value)
+ * Set an element of an array passed by reference, by modifying the data
+ * pointer returned by zend_hash_find().
+ */
+PHP_FUNCTION(ezc_array_set)
+{
+  zval *array, *key, *value;
+  zval **data;
+  int found;
+
+  if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC,
+        "azz", &array, &key, &value) == FAILURE)
+  {
+    return;
+  }
+
+  if (Z_TYPE_P(key) == IS_LONG) {
+    found = zend_hash_index_find(
+        Z_ARRVAL_P(array), Z_LVAL_P(key), (void**)&data);
+  } else if (Z_TYPE_P(key) == IS_STRING) {
+    found = zend_hash_find(
+        Z_ARRVAL_P(array), Z_STRVAL_P(key), Z_STRLEN_P(key) + 1, (void**)&data);
+  } else {
+    php_error_docref(NULL TSRMLS_CC, E_WARNING, "array key must be either integer or string");
+    return;
+  }
+  if (found == FAILURE) {
+    php_error_docref(NULL TSRMLS_CC, E_WARNING, "array key must exist");
+    return;
+  }
+  zval_ptr_dtor(data);
+  Z_ADDREF_P(value);
+  *data = value;
+}
+
 /* }}} */
 
 /* {{{ EzcTestCloneable_create_object */
@@ -533,6 +607,23 @@ static zend_object_value EzcTestUncloneable2_create_object(zend_class_entry *ce 
 }
 /* }}} */
 
+/* {{{ proto object ezc_create_cloneable_in_array()
+ * Create an array with a TestCloneable object in it. Test of
+ * object_init_ex(). */
+PHP_FUNCTION(ezc_create_cloneable_in_array)
+{
+  zval * element;
+  if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "") == FAILURE) {
+    return;
+  }
+  array_init_size(return_value, 1);
+  ALLOC_INIT_ZVAL(element);
+  object_init_ex(element, EzcTestCloneable_ce);
+  zend_hash_next_index_insert(Z_ARRVAL_P(return_value),
+      (void*)&element, sizeof(zval*), NULL);
+}
+/* }}} */
+
 /* {{{ arginfo */
 ZEND_BEGIN_ARG_INFO(arginfo_ezc_fetch_global, 0)
 ZEND_END_ARG_INFO()
@@ -592,6 +683,20 @@ ZEND_BEGIN_ARG_INFO(arginfo_ezc_hash_append, 0)
   ZEND_ARG_INFO(0, value)
 ZEND_END_ARG_INFO()
 
+ZEND_BEGIN_ARG_INFO(arginfo_ezc_array_val_set, 0)
+  ZEND_ARG_INFO(0, a)
+  ZEND_ARG_INFO(0, key)
+  ZEND_ARG_INFO(0, value)
+ZEND_END_ARG_INFO()
+
+ZEND_BEGIN_ARG_INFO(arginfo_ezc_create_cloneable_in_array, 0)
+ZEND_END_ARG_INFO()
+
+ZEND_BEGIN_ARG_INFO(arginfo_ezc_array_set, 0)
+  ZEND_ARG_INFO(1, a)
+  ZEND_ARG_INFO(0, key)
+  ZEND_ARG_INFO(0, value)
+ZEND_END_ARG_INFO()
 /* }}} */
 
 /* {{{ ezc_test_functions[]
@@ -610,6 +715,9 @@ const zend_function_entry ezc_test_functions[] = {
   PHP_FE(ezc_hash_set, arginfo_ezc_hash_set)
   PHP_FE(ezc_hash_get, arginfo_ezc_hash_get)
   PHP_FE(ezc_hash_append, arginfo_ezc_hash_append)
+  PHP_FE(ezc_array_val_set, arginfo_ezc_array_val_set)
+  PHP_FE(ezc_create_cloneable_in_array, arginfo_ezc_create_cloneable_in_array)
+  PHP_FE(ezc_array_set, arginfo_ezc_array_set)
   PHP_FE_END
 };
 /* }}} */

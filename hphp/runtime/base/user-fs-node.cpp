@@ -26,13 +26,12 @@ namespace HPHP {
 StaticString s_call("__call");
 
 UserFSNode::UserFSNode(Class* cls, const Variant& context /*= null */) {
-  JIT::VMRegAnchor _;
+  VMRegAnchor _;
   const Func* ctor;
   m_cls = cls;
   if (LookupResult::MethodFoundWithThis !=
       g_context->lookupCtorMethod(ctor, m_cls)) {
-    throw InvalidArgumentException(0, "Unable to call %s's constructor",
-                                   m_cls->name()->data());
+    raise_error("Unable to call %s'n constructor", m_cls->name()->data());
   }
 
   m_obj = ObjectData::newInstance(m_cls);
@@ -45,7 +44,7 @@ UserFSNode::UserFSNode(Class* cls, const Variant& context /*= null */) {
 
 Variant UserFSNode::invoke(const Func* func, const String& name,
                            const Array& args, bool& invoked) {
-  JIT::VMRegAnchor _;
+  VMRegAnchor _;
 
   // Assume failure
   invoked = false;
@@ -66,7 +65,7 @@ Variant UserFSNode::invoke(const Func* func, const String& name,
     return uninit_null();
   }
 
-  HPHP::JIT::CallerFrame cf;
+  CallerFrame cf;
   Class* ctx = arGetContextClass(cf());
   switch(g_context->lookupObjMethod(func, m_cls, name.get(), ctx)) {
     case LookupResult::MethodFoundWithThis:
@@ -113,8 +112,8 @@ const Func* UserFSNode::lookupMethod(const StringData* name) {
   if (!f) return nullptr;
 
   if (f->attrs() & AttrStatic) {
-    throw InvalidArgumentException(0, "%s::%s() must not be declared static",
-                                   m_cls->name()->data(), name->data());
+    raise_error("%s::%s() must not be declared static",
+                m_cls->name()->data(), name->data());
   }
   return f;
 }

@@ -55,6 +55,8 @@ const VarNR false_varNR(false);
 const VarNR INF_varNR(std::numeric_limits<double>::infinity());
 const VarNR NEGINF_varNR(std::numeric_limits<double>::infinity());
 const VarNR NAN_varNR(std::numeric_limits<double>::quiet_NaN());
+const Variant empty_string_variant_ref(staticEmptyString(),
+                                       Variant::StaticStrInit{});
 
 static void unserializeProp(VariableUnserializer *uns,
                             ObjectData *obj, const String& key,
@@ -70,7 +72,6 @@ const StaticString
   s_offsetUnset("offsetUnset"),
   s_s("s"),
   s_scalar("scalar"),
-  s_array("Array"),
   s_1("1"),
   s_unserialize("unserialize"),
   s_PHP_Incomplete_Class("__PHP_Incomplete_Class"),
@@ -207,14 +208,6 @@ Variant::Variant(RefData *r) {
 // the version of the high frequency function that is not inlined
 Variant::Variant(const Variant& v) {
   constructValHelper(v);
-}
-
-Variant::Variant(CVarStrongBind v) {
-  constructRefHelper(const_cast<Variant&>(variant(v))); // XXX
-}
-
-Variant::Variant(CVarWithRefBind v) {
-  constructWithRefHelper(variant(v));
 }
 
 /*
@@ -458,15 +451,16 @@ double Variant::toDoubleHelper() const {
 String Variant::toStringHelper() const {
   switch (m_type) {
   case KindOfUninit:
-  case KindOfNull:    return empty_string;
-  case KindOfBoolean: return m_data.num ? s_1 : empty_string;
+  case KindOfNull:    return empty_string();
+  case KindOfBoolean: return m_data.num ? static_cast<String>(s_1)
+                                        : empty_string();
   case KindOfDouble:  return m_data.dbl;
   case KindOfStaticString:
   case KindOfString:
     assert(false); // Should be done in caller
     return m_data.pstr;
   case KindOfArray:   raise_notice("Array to string conversion");
-                      return s_array;
+                      return array_string;
   case KindOfObject:  return m_data.pobj->invokeToString();
   case KindOfResource: return m_data.pres->o_toString();
   case KindOfRef: return m_data.pref->var()->toString();
@@ -479,7 +473,7 @@ String Variant::toStringHelper() const {
 Array Variant::toArrayHelper() const {
   switch (m_type) {
   case KindOfUninit:
-  case KindOfNull:    return empty_array;
+  case KindOfNull:    return empty_array();
   case KindOfInt64:   return Array::Create(m_data.num);
   case KindOfStaticString:
   case KindOfString:  return Array::Create(m_data.pstr);
@@ -554,7 +548,7 @@ VarNR Variant::toKey() const {
   switch (m_type) {
   case KindOfUninit:
   case KindOfNull:
-    return VarNR(empty_string);
+    return VarNR(staticEmptyString());
   case KindOfBoolean:
   case KindOfInt64:
     return VarNR(m_data.num);
@@ -574,16 +568,6 @@ VarNR Variant::toKey() const {
 
 ///////////////////////////////////////////////////////////////////////////////
 // offset functions
-
-ObjectData *Variant::getArrayAccess() const {
-  assert(is(KindOfObject));
-  ObjectData *obj = getObjectData();
-  assert(obj);
-  if (!obj->instanceof(SystemLib::s_ArrayAccessClass)) {
-    throw InvalidOperandException("not ArrayAccess objects");
-  }
-  return obj;
-}
 
 template <typename T>
 class LvalHelper {};
@@ -1048,13 +1032,13 @@ void Variant::unserialize(VariableUnserializer *uns,
             int subLen = 0;
             if (kdata[0] == '\0') {
               if (UNLIKELY(!ksize)) {
-                throw EmptyObjectPropertyException();
+                raise_error("Cannot access empty property");
               }
               // private or protected
               subLen = strlen(kdata + 1) + 2;
               if (UNLIKELY(subLen >= ksize)) {
                 if (subLen == ksize) {
-                  throw EmptyObjectPropertyException();
+                  raise_error("Cannot access empty property");
                 } else {
                   throw Exception("Mangled private object property");
                 }
@@ -1099,17 +1083,19 @@ void Variant::unserialize(VariableUnserializer *uns,
       String serialized;
       serialized.unserialize(uns, '{', '}');
 
-      Object obj;
-      try {
-        obj = create_object_only(clsName);
-      } catch (ClassNotFoundException &e) {
-        if (!uns->allowUnknownSerializableClass()) {
-          throw;
+      auto const obj = [&]() -> Object {
+        if (auto const cls = Unit::loadClass(clsName.get())) {
+          return g_context->createObject(cls, init_null_variant,
+            false /* init */);
         }
-        obj = create_object_only(s_PHP_Incomplete_Class);
-        obj->o_set(s_PHP_Incomplete_Class_Name, clsName);
-        obj->o_set("serialized", serialized);
-      }
+        if (!uns->allowUnknownSerializableClass()) {
+          raise_error("unknown class %s", clsName.data());
+        }
+        Object ret = create_object_only(s_PHP_Incomplete_Class);
+        ret->o_set(s_PHP_Incomplete_Class_Name, clsName);
+        ret->o_set("serialized", serialized);
+        return ret;
+      }();
 
       if (!obj->instanceof(SystemLib::s_SerializableClass)) {
         raise_warning("Class %s has no unserializer",

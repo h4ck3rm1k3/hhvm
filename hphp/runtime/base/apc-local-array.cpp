@@ -57,7 +57,8 @@ void APCLocalArray::sweep() {
 const Variant& APCLocalArray::GetValueRef(const ArrayData* adIn, ssize_t pos) {
   auto const ad = asSharedArray(adIn);
   auto const sv = ad->m_arr->getValue(pos);
-  if (!sv->isRefCountedHandle()) {
+  auto const t = sv->getType();
+  if (!IS_REFCOUNTED_TYPE(t)) {
     return APCTypedValue::fromHandle(sv)->asCVarRef();
   }
   if (LIKELY(ad->m_localCache != nullptr)) {
@@ -344,7 +345,8 @@ bool APCLocalArray::AdvanceMArrayIter(ArrayData* ad, MArrayIter& fp) {
 }
 
 ArrayData* APCLocalArray::NonSmartCopy(const ArrayData*) {
-  throw FatalErrorException("APCLocalArray::nonSmartCopy not implemented.");
+  raise_error("APCLocalArray::nonSmartCopy not implemented.");
+  return nullptr;
 }
 
 void APCLocalArray::Renumber(ArrayData*) {

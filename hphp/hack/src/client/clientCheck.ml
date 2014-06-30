@@ -57,11 +57,6 @@ let rec main args retries =
     | MODE_LIST_FILES ->
       let infol = get_list_files args in
       List.iter (Printf.printf "%s\n") infol
-    | MODE_SKIP ->
-      let ic, oc = connect args.root in
-      let command = ServerMsg.SKIP in
-      ServerMsg.cmd_to_channel oc command;
-      Printf.printf "No errors!\n"; flush stdout;
     | MODE_COLORING file ->
         let file = expand_path file in
         let ic, oc = connect args.root in
@@ -76,7 +71,7 @@ let rec main args retries =
         ServerMsg.cmd_to_channel oc command;
         let results = Marshal.from_channel ic in
         ClientFindRefs.go results args.output_json;
-        exit 0     
+        exit 0
     | MODE_FIND_REFS name ->
         let ic, oc = connect args.root in
         let pieces = Str.split (Str.regexp "::") name in
@@ -145,6 +140,20 @@ let rec main args retries =
       let results = Marshal.from_channel ic in
       ClientOutline.go results args.output_json;
       exit 0
+    | MODE_METHOD_JUMP_CHILDREN class_ ->
+      let ic, oc = connect args.root in
+      let command = ServerMsg.METHOD_JUMP (class_, true) in
+      ServerMsg.cmd_to_channel oc command;
+      let results = Marshal.from_channel ic in
+      ClientMethodJumps.go results true args.output_json;
+      exit 0
+    | MODE_METHOD_JUMP_ANCESTORS class_ ->
+      let ic, oc = connect args.root in
+      let command = ServerMsg.METHOD_JUMP (class_, false) in
+      ServerMsg.cmd_to_channel oc command;
+      let results = Marshal.from_channel ic in
+      ClientMethodJumps.go results false args.output_json;
+      exit 0
     | MODE_STATUS -> ClientCheckStatus.check_status args
     | MODE_VERSION ->
       Printf.printf "%s\n" (Build_id.build_id_ohai);
@@ -171,7 +180,7 @@ let rec main args retries =
                      "just started this can take some time." in
       if args.retry_if_init
       then begin
-        Printf.fprintf stderr "%s Retrying...\n" init_msg;
+        Printf.fprintf stderr "%s Retrying... %s\r" init_msg (Utils.spinner());
         flush stderr;
         Unix.sleep(1);
         main args retries
@@ -182,7 +191,8 @@ let rec main args retries =
   | Server_cant_connect ->
       if retries > 1
       then begin
-        Printf.fprintf stderr "Error: could not connect to hh_server, retrying...\n";
+        Printf.fprintf stderr "Error: could not connect to hh_server, retrying... %s\r"
+          (Utils.spinner());
         flush stderr;
         Unix.sleep(1);
         main args (retries-1)
@@ -194,7 +204,8 @@ let rec main args retries =
   | Server_busy ->
       if retries > 1
       then begin
-        Printf.fprintf stderr "Error: hh_server is busy, retrying...\n";
+        Printf.fprintf stderr "Error: hh_server is busy, retrying... %s\r"
+          (Utils.spinner());
         flush stderr;
         Unix.sleep(1);
         main args (retries-1)
@@ -232,7 +243,8 @@ let rec main args retries =
   | _ ->
       if retries > 1
       then begin
-        Printf.fprintf stderr "Error: hh_server disconnected or crashed, retrying...\n";
+        Printf.fprintf stderr "Error: hh_server disconnected or crashed, retrying... %s\r"
+          (Utils.spinner());
         flush stderr;
         Unix.sleep(1);
         main args (retries-1)

@@ -365,7 +365,7 @@ void HhbcTranslator::MInstrTranslator::checkMIState() {
       simpleArrayIsset || simpleStringOp) {
     setNoMIState();
     if (simpleCollectionGet || simpleCollectionIsset) {
-      constrainBase(DataTypeSpecialized, baseVal);
+      constrainBase(TypeConstraint(baseType.getClass()), baseVal);
     } else {
       constrainBase(DataTypeSpecific, baseVal);
     }
@@ -724,12 +724,20 @@ void HhbcTranslator::MInstrTranslator::constrainCollectionOpBase() {
       return;
 
     case SimpleOp::PackedArray:
+      constrainBase(TypeConstraint(DataTypeSpecialized).setWantArrayKind());
+      return;
+
     case SimpleOp::Vector:
     case SimpleOp::Map:
-    case SimpleOp::Pair:
-      constrainBase(DataTypeSpecialized);
+    case SimpleOp::Pair: {
+      SSATmp* base = getInput(m_mii.valCount(), DataTypeGeneric);
+      auto baseType = base->type().unbox();
+      constrainBase(TypeConstraint(baseType.getClass()));
       return;
+    }
   }
+
+  not_reached();
 }
 
 // "Simple" bases are stack cells and locals.
@@ -1248,9 +1256,7 @@ void HhbcTranslator::MInstrTranslator::emitRatchetRefs() {
         gen(DecRefMem, Type::Gen, m_misBase, cns(MISOFF(tvRef2)));
       }
       // Copy tvRef to tvRef2. Use mmx at some point
-      SSATmp* tvRef = gen(
-        LdMem, Type::Gen, m_misBase, cns(MISOFF(tvRef))
-      );
+      SSATmp* tvRef = gen(LdMem, Type::Gen, m_misBase, cns(MISOFF(tvRef)));
       gen(StMem, m_misBase, cns(MISOFF(tvRef2)), tvRef);
 
       // Reset tvRef.
@@ -1334,8 +1340,6 @@ HELPER_TABLE(PROP)
 #undef PROP
 
 void HhbcTranslator::MInstrTranslator::emitCGetProp() {
-  assert(!m_ni.outLocal);
-
   const Class* knownCls = nullptr;
   const auto propInfo   = getPropertyOffset(m_ni, contextClass(), knownCls,
                                             m_mii, m_mInd, m_iInd);
@@ -1758,7 +1762,8 @@ void HhbcTranslator::MInstrTranslator::emitProfiledArrayGet(SSATmp* key) {
         },
         [&] (SSATmp* base) { // Next
           m_ht.emitIncStat(Stats::ArrayGet_Packed, 1, false);
-          m_irb.constrainValue(base, DataTypeSpecialized);
+          m_irb.constrainValue(
+            base, TypeConstraint(DataTypeSpecialized).setWantArrayKind());
           return emitPackedArrayGet(base, key, true);
         },
         [&] { // Taken
@@ -2233,7 +2238,7 @@ void HhbcTranslator::MInstrTranslator::emitArraySet(SSATmp* key,
     assert(base.location.space == Location::Local ||
            base.location.space == Location::Stack);
     SSATmp* box = getInput(baseStkIdx, DataTypeSpecific);
-    gen(ArraySetRef, cns((TCA)opFunc), m_base, key, value, box);
+    gen(ArraySetRef, makeCatch(), cns((TCA)opFunc), m_base, key, value, box);
     // Unlike the non-ref case, we don't need to do anything to the stack
     // because any load of the box will be guarded.
     m_result = value;
@@ -2335,7 +2340,7 @@ void HhbcTranslator::MInstrTranslator::emitVectorSet(
   gen(CheckBounds, makeCatch(), key, size);
 
   m_irb.ifThen([&](Block* taken) {
-          gen(VectorHasFrozenCopy, taken, m_base);
+          gen(VectorHasImmCopy, taken, m_base);
         },
         [&] {
           m_irb.hint(Block::Hint::Unlikely);
@@ -2531,7 +2536,7 @@ void HhbcTranslator::MInstrTranslator::emitUnsetElem() {
 #undef HELPER_TABLE
 
 void HhbcTranslator::MInstrTranslator::emitNotSuppNewElem() {
-  not_reached();
+  PUNT(NotSuppNewElem);
 }
 
 void HhbcTranslator::MInstrTranslator::emitVGetNewElem() {
@@ -2666,7 +2671,7 @@ void HhbcTranslator::MInstrTranslator::emitSideExits(SSATmp* catchSp,
     SSATmp* sp = gen(SpillStack, std::make_pair(args.size(), &args[0]));
     gen(DeleteUnwinderException);
     gen(SyncABIRegs, m_irb.fp(), sp);
-    gen(ReqBindJmp, BCOffset(nextOff));
+    gen(ReqBindJmp, ReqBindJmpData(nextOff));
   }
 
   if (m_strTestResult) {
@@ -2690,6 +2695,33 @@ void HhbcTranslator::MInstrTranslator::emitSideExits(SSATmp* catchSp,
     }
     gen(CheckNullptr, exit, m_strTestResult);
     gen(IncStat, cns(Stats::TC_SetMStrGuess_Hit), cns(1), cns(false));
+  }
+}
+
+Block* HhbcTranslator::MInstrTranslator::makeEmptyCatch() {
+  return m_ht.makeCatch();
+}
+
+Block* HhbcTranslator::MInstrTranslator::makeCatch() {
+  auto b = makeEmptyCatch();
+  m_failedVec.push_back(b);
+  return b;
+}
+
+Block* HhbcTranslator::MInstrTranslator::makeCatchSet() {
+  assert(!m_failedSetBlock);
+  m_failedSetBlock = makeCatch();
+
+  // This catch trace will be modified in emitMPost to end with a side
+  // exit, and TryEndCatch will fall through to that side exit if an
+  // InvalidSetMException is thrown.
+  m_failedSetBlock->back().setOpcode(TryEndCatch);
+  return m_failedSetBlock;
+}
+
+void HhbcTranslator::MInstrTranslator::prependToTraces(IRInstruction* inst) {
+  for (auto b : m_failedVec) {
+    b->prepend(m_unit.cloneInstruction(inst));
   }
 }
 

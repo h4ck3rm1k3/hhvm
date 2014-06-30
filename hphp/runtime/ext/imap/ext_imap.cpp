@@ -776,7 +776,7 @@ static Variant HHVM_FUNCTION(imap_body, const Resource& imap_stream,
   char *body = mail_fetchtext_full(obj->m_stream, msg_number,
                                    &body_len, (options ? options : NIL));
   if (body_len == 0) {
-    return empty_string;
+    return empty_string_variant();
   } else {
     return String(body, body_len, CopyString);
   }
@@ -1146,7 +1146,7 @@ static Variant HHVM_FUNCTION(imap_last_error, ) {
       return String((const char *)cur->text.data, CopyString);
     }
   }
-  return uninit_null();
+  return init_null();
 }
 
 static Variant HHVM_FUNCTION(imap_list, const Resource& imap_stream,

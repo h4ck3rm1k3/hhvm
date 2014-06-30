@@ -36,6 +36,65 @@ bool shouldHHIRRelaxGuards() {
      tx->mode() == TransKind::Optimize);
 }
 
+/* For each possible dest type, determine if its type might relax. */
+#define ND             always_assert(false);
+#define D(t)           return false; // fixed type
+#define DofS(n)        return typeMightRelax(inst->src(n));
+#define DUnbox(n)      DofS(n)
+#define DBox(n)        DofS(n)
+#define DRefineS(n)    return true;  // typeParam may relax
+#define DParam         return true;  // typeParam may relax
+#define DLdRef         return true;  // typeParam may relax
+#define DAllocObj      return false; // fixed type from ExtraData
+#define DArrPacked     return false; // fixed type
+#define DArrElem       assert(inst->is(LdPackedArrayElem));     \
+  return typeMightRelax(inst->src(0));
+#define DThis          return false; // fixed type from ctx class
+#define DMulti         return true;  // DefLabel; value could be anything
+#define DSetElem       return false; // fixed type
+#define DStk(x)        x;
+#define DBuiltin       return false; // from immutable typeParam
+#define DSubtract(n,t) DofS(n)
+#define DLdRaw         return false; // fixed type from ExtraData
+#define DCns           return false; // fixed type
+
+bool typeMightRelax(const SSATmp* tmp) {
+  if (tmp == nullptr) return true;
+
+  if (tmp->isA(Type::Cls) || tmp->type() == Type::Gen) return false;
+  if (canonical(tmp)->inst()->is(DefConst)) return false;
+
+  auto inst = tmp->inst();
+  // Do the rest based on the opcode's dest type
+  switch (inst->op()) {
+#   define O(name, dst, src, flags) case name: dst
+  IR_OPCODES
+#   undef O
+  }
+
+  return true;
+}
+
+#undef ND
+#undef D
+#undef DofS
+#undef DUnbox
+#undef DBox
+#undef DRefineS
+#undef DParam
+#undef DLdRef
+#undef DAllocObj
+#undef DArrPacked
+#undef DArrElem
+#undef DThis
+#undef DMulti
+#undef DSetElem
+#undef DStk
+#undef DBuiltin
+#undef DSubtract
+#undef DLdRaw
+#undef DCns
+
 /*
  * Trace back through the source of fp, looking for a guard with the
  * given locId. If one can't be found, return nullptr.
@@ -92,7 +151,8 @@ void retypeLoad(IRInstruction* load, Type newType) {
 void visitLoad(IRInstruction* inst, const FrameState& state) {
   switch (inst->op()) {
     case LdLoc:
-    case LdLocAddr: {
+    case LdLocAddr:
+    case LdGbl: {
       auto const id = inst->extra<LocalId>()->locId;
       auto const newType = state.localType(id);
 
@@ -126,71 +186,43 @@ void visitLoad(IRInstruction* inst, const FrameState& state) {
   }
 }
 
-/*
- * If inst is a guard/assert instruction that can be removed with its newly
- * relaxed typeParam, do so and return true. Otherwise, return false.
- */
-bool removeGuard(IRUnit& unit, IRInstruction* inst, const FrameState& state) {
-  Type prevType;
-  switch (inst->op()) {
-    case GuardLoc:
-    case CheckLoc:
-    case AssertLoc:
-      prevType = state.localType(inst->extra<LocalId>()->locId);
-      break;
+Type relaxOuter(Type t, TypeConstraint tc) {
+  assert(t.notBoxed());
 
-    case GuardStk:
-    case CheckStk:
-    case AssertStk:
-      prevType = getStackValue(inst->src(0),
-                               inst->extra<StackOffset>()->offset).knownType;
-      break;
+  switch (tc.category) {
+    case DataTypeGeneric:
+      return Type::Gen;
 
-    case CheckType:
-    case AssertType:
-      prevType = inst->src(0)->type();
-      break;
+    case DataTypeCountness:
+      return t.notCounted() ? Type::Uncounted : t.unspecialize();
 
-    default:
-      return false;
+    case DataTypeCountnessInit:
+      if (t <= Type::Uninit) return Type::Uninit;
+      return (t.notCounted() && t.not(Type::Uninit))
+        ? Type::UncountedInit : t.unspecialize();
+
+    case DataTypeSpecific:
+      return t.unspecialize();
+
+    case DataTypeSpecialized:
+      assert(tc.wantClass() ^ tc.wantArrayKind());
+
+      if (tc.wantClass()) {
+        // We could try to relax t's specialized class to tc.desiredClass() if
+        // they're related but not the same, but we only support guarding on
+        // final classes so the resulting guard would be bogus.
+      } else {
+        // t might have a RepoAuthType::Array that wasn't asked for in tc, but
+        // RATArrays always come from static analysis and never guards, so we
+        // don't need to eliminate it here. Just make sure t actually fits the
+        // constraint.
+        assert(t < Type::Arr && t.hasArrayKind());
+      }
+
+      return t;
   }
 
-  ITRACE(2, "removeGuard inspecting {}\n", *inst);
-  auto type = inst->typeParam();
-  if (type < prevType) return false;
-
-  if (!(type >= prevType)) {
-    // Neither is a subtype of the other. If they have no intersection the
-    // guard will always fail but we can let the simplifier take care of
-    // that.
-    return false;
-  }
-
-  ITRACE(2, "replacing {} with Mov due to prevType {}\n", *inst, prevType);
-  if (inst->isControlFlow()) {
-    // We can't replace CF instructions with a Mov, so stick a Mov in front of
-    // it and convert it to a Jmp to the next block.
-    auto* block = inst->block();
-    block->insert(block->iteratorTo(inst),
-                  unit.mov(inst->dst(), inst->src(0), inst->marker()));
-    inst->setTaken(inst->next());
-    inst->convertToJmp();
-  } else {
-    inst->convertToMov();
-  }
-  return true;
-}
-
-Type relaxInner(Type t, TypeConstraint tc) {
-  if (t.notBoxed()) return t;
-
-  auto cell = t & Type::Cell;
-  auto inner = (t & Type::BoxedCell).innerType();
-  auto innerCat = tc.innerCat;
-
-  auto innerRelaxed = innerCat == DataTypeGeneric ? Type::Cell
-                                                  : relaxType(inner, innerCat);
-  return cell | (innerRelaxed - Type::Uninit).box();
+  not_reached();
 }
 }
 
@@ -203,11 +235,12 @@ Type relaxInner(Type t, TypeConstraint tc) {
  * DataTypeGeneric. Returns true iff any changes were made to the trace.
  */
 bool relaxGuards(IRUnit& unit, const GuardConstraints& constraints,
-                 bool simple) {
+                 RelaxGuardsFlags flags) {
   Timer _t(Timer::optimize_relaxGuards);
   ITRACE(2, "entering relaxGuards\n");
   Indent _i;
-
+  bool simple = flags & RelaxSimple;
+  bool reflow = flags & RelaxReflow;
   splitCriticalEdges(unit);
   auto& guards = constraints.guards;
   auto blocks = rpoSortCfg(unit);
@@ -242,20 +275,21 @@ bool relaxGuards(IRUnit& unit, const GuardConstraints& constraints,
   }
 
   if (!changed) return false;
+  if (!reflow) return true;
 
   // Make a second pass to reflow types, with some special logic for loads.
   FrameState state{unit, unit.entry()->front().marker()};
   for (auto* block : blocks) {
+    ITRACE(2, "relaxGuards reflow entering B{}\n", block->id());
+    Indent _i;
     state.startBlock(block);
 
     for (auto& inst : *block) {
       state.setMarker(inst.marker());
       copyProp(&inst);
       visitLoad(&inst, state);
-      if (!removeGuard(unit, &inst, state)) {
-        retypeDests(&inst);
-        state.update(&inst);
-      }
+      retypeDests(&inst);
+      state.update(&inst);
     }
 
     state.finishBlock(block);
@@ -311,9 +345,19 @@ static bool typeFitsOuterConstraint(Type t, TypeConstraint tc) {
 
     case DataTypeSpecialized:
       // Type::isSpecialized() returns true for types like {Arr<Packed>|Int}
-      // and Arr has non-specialized subtypes, so we check that t is both
-      // specialized and a strict subtype of Obj or Arr.
-      return t.isSpecialized() && (t < Type::Obj || t < Type::Arr);
+      // and Arr has non-specialized subtypes, so we require that t is
+      // specialized, a strict subtype of Obj or Arr, and that it fits the
+      // specific requirements of tc.
+
+      assert(tc.wantClass() ^ tc.wantArrayKind());
+      if (!t.isSpecialized()) return false;
+      if (t < Type::Obj) {
+        return tc.wantClass() && t.getClass()->classof(tc.desiredClass());
+      }
+      if (t < Type::Arr) {
+        return tc.wantArrayKind() && t.hasArrayKind();
+      }
+      return false;
   }
 
   not_reached();
@@ -325,7 +369,7 @@ static bool typeFitsOuterConstraint(Type t, TypeConstraint tc) {
  */
 static bool typeFitsInnerConstraint(Type t, TypeConstraint tc) {
   return tc.innerCat == DataTypeGeneric || t.notBoxed() ||
-    typeFitsOuterConstraint((t & Type::BoxedCell).innerType(), tc.innerCat);
+    typeFitsOuterConstraint((t & Type::BoxedCell).innerType(), tc.inner());
 }
 
 /*
@@ -344,29 +388,21 @@ bool typeFitsConstraint(Type t, TypeConstraint tc) {
  * required by tc.
  */
 Type relaxType(Type t, TypeConstraint tc) {
-  always_assert(t <= Type::Gen);
+  always_assert(t <= Type::Gen && t != Type::Bottom);
+  if (tc.category == DataTypeGeneric) return Type::Gen;
 
-  switch (tc.category) {
-    case DataTypeGeneric:
-      return Type::Gen;
+  auto outerRelaxed = relaxOuter(t & Type::Cell, tc);
+  if (t.notBoxed()) return outerRelaxed;
 
-    case DataTypeCountness:
-      return t.notCounted() ? Type::Uncounted
-                            : relaxInner(t.unspecialize(), tc);
+  auto innerType = (t & Type::BoxedCell).innerType();
+  auto innerRelaxed = tc.innerCat == DataTypeGeneric ? Type::Cell
+                                                     : relaxOuter(innerType,
+                                                                  tc.inner());
 
-    case DataTypeCountnessInit:
-      if (t <= Type::Uninit) return Type::Uninit;
-      return (t.notCounted() && t.not(Type::Uninit))
-        ? Type::UncountedInit : relaxInner(t.unspecialize(), tc);
-
-    case DataTypeSpecific:
-      return relaxInner(t.unspecialize(), tc);
-
-    case DataTypeSpecialized:
-      return relaxInner(t, tc);
-  }
-
-  not_reached();
+  // Only add outerRelax into the result type if t had a meaningful outer type
+  // coming in.
+  return (t.isBoxed() ? Type::Bottom : outerRelaxed) |
+    (innerRelaxed - Type::Uninit).box();
 }
 
 void incCategory(DataTypeCategory& c) {
@@ -407,6 +443,13 @@ TypeConstraint relaxConstraint(const TypeConstraint origTc,
   newTc.weak = origTc.weak;
 
   while (true) {
+    if (newTc.category == DataTypeSpecialized) {
+      // We need to ask for the right kind of specialization, so grab it from
+      // origTc.
+      if (origTc.wantArrayKind()) newTc.setWantArrayKind();
+      if (origTc.wantClass()) newTc.setDesiredClass(origTc.desiredClass());
+    }
+
     auto const relaxed = relaxType(toRelax, newTc);
     auto const newDstType = refineType(relaxed, knownType);
     if (typeFitsConstraint(newDstType, origTc)) break;
@@ -429,6 +472,30 @@ TypeConstraint relaxConstraint(const TypeConstraint origTc,
   always_assert(newTc.category <= origTc.category &&
                 newTc.innerCat <= origTc.innerCat);
   return newTc;
+}
+
+/*
+ * Return a copy of tc refined with any new information in newTc.
+ */
+TypeConstraint applyConstraint(TypeConstraint tc, const TypeConstraint newTc) {
+  tc.category = std::max(newTc.category, tc.category);
+  tc.innerCat = std::max(newTc.innerCat, tc.innerCat);
+
+  if (newTc.wantArrayKind()) tc.setWantArrayKind();
+
+  if (newTc.wantClass()) {
+    if (tc.wantClass()) {
+      // It only makes sense to constrain tc with a class that's related to its
+      // existing class, and we want to preserve the more derived of the two.
+      auto cls1 = tc.desiredClass();
+      auto cls2 = newTc.desiredClass();
+      tc.setDesiredClass(cls1->classof(cls2) ? cls1 : cls2);
+    } else {
+      tc.setDesiredClass(newTc.desiredClass());
+    }
+  }
+
+  return tc;
 }
 
 } }

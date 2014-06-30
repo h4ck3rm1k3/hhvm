@@ -157,6 +157,7 @@ function get_options($argv) {
     'hhas-round-trip' => '',
     'color' => 'c',
     'no-fun' => '',
+    'cores' => '',
   );
   $options = array();
   $files = array();
@@ -231,6 +232,7 @@ function find_tests($files, array $options = null) {
     $file = preg_replace(',//+,', '/', realpath($file));
     $file = preg_replace(',^'.getcwd().'/,', '', $file);
   }
+  $files = array_map('escapeshellarg', $files);
   $files = implode(' ', $files);
   $tests = explode("\n", shell_exec(
       "find $files -name '*.php' -o -name '*.hhas' | grep -v round_trip.hhas"
@@ -344,6 +346,9 @@ function hhvm_cmd_impl($options, $config /*, $extra_args... */) {
     isset($options['bccf']) ? '-vEval.HHIRBytecodeControlFlow=1' : '',
     extra_args($options),
   );
+  if (!isset($options['cores'])) {
+    $args[] = '-vResourceLimit.CoreFileSize=0';
+  }
 
   $extra_args = array_slice(func_get_args(), 2);
   return implode(' ', array_merge($args, $extra_args));
@@ -356,7 +361,7 @@ function hhvm_cmd($options, $test, $test_run = null) {
     $use_automain = 'automain' === idx($options, 'mode')
       && 'php' === pathinfo($test, PATHINFO_EXTENSION);
     $test_run = $use_automain
-      ? __DIR__.'/pseudomain_wrapper.php'
+      ? __DIR__.'/tools/pseudomain_wrapper.php'
       : $test;
   }
   $cmd = hhvm_cmd_impl(
@@ -364,7 +369,6 @@ function hhvm_cmd($options, $test, $test_run = null) {
     find_test_ext($test, 'ini'),
     find_debug_config($test, 'hphpd.ini'),
     read_file(find_test_ext($test, 'opts')),
-    '-vResourceLimit.CoreFileSize=0',
     '--file',
     escapeshellarg($test_run),
     $use_automain ? escapeshellarg($test) : ''
@@ -378,7 +382,7 @@ function hhvm_cmd($options, $test, $test_run = null) {
   }
 
   if (isset($options['repo'])) {
-    $hhbbc_repo = "$test.repo/hhvm.hhbbc";
+    $hhbbc_repo = "\"$test.repo/hhvm.hhbbc\"";
     $cmd .= ' -vRepo.Authoritative=true -vRepo.Commit=0';
     $cmd .= " -vRepo.Central.Path=$hhbbc_repo";
   }
@@ -405,7 +409,7 @@ function hphp_cmd($options, $test) {
     '--config',
     find_file($test, 'hphp_config.ini'),
     read_file("$test.hphp_opts"),
-    "-thhbc -l0 -k1 -o $test.repo $test",
+    "-thhbc -l0 -k1 -o \"$test.repo\" \"$test\"",
   ));
 }
 
@@ -416,7 +420,7 @@ function hhbbc_cmd($options, $test) {
     '--no-logging',
     '--parallel-num-threads=1',
     read_file("$test.hhbbc_opts"),
-    "-o $test.repo/hhvm.hhbbc $test.repo/hhvm.hhbc",
+    "-o \"$test.repo/hhvm.hhbbc\" \"$test.repo/hhvm.hhbc\"",
   ));
 }
 
@@ -443,6 +447,10 @@ class Status {
   const GREEN = 32;
   const YELLOW = 33;
 
+  const PASS_SERVER = 0;
+  const SKIP_SERVER = 1;
+  const PASS_CLI = 2;
+
   public static function setMode($mode) {
     self::$mode = $mode;
   }
@@ -461,7 +469,9 @@ class Status {
 
   public static function pass($test, $detail) {
     array_push(self::$results, array('name' => $test, 'status' => 'passed'));
-    self::send(self::MSG_TEST_PASS, [$test, $detail === 'pass-server']);
+    $how = $detail === 'pass-server' ? self::PASS_SERVER :
+      ($detail === 'skip-server' ? self::SKIP_SERVER : self::PASS_CLI);
+    self::send(self::MSG_TEST_PASS, [$test, $how]);
   }
 
   public static function skip($test, $reason = null) {
@@ -584,11 +594,156 @@ function skip_test($options, $test) {
   if (!$skipif_test) {
     return false;
   }
+ 
+  // For now, run the .skipif in non-repo since building a repo for it is hard
+  $options_without_repo = $options;
+  unset($options_without_repo['repo']);
 
-  list($hhvm, $_) = hhvm_cmd($options, $test, $skipif_test);
-  $out = shell_exec($hhvm . ' 2> /dev/null');
-  $out = trim($out);
-  return (bool)strlen($out);
+  list($hhvm, $_) = hhvm_cmd($options_without_repo, $test, $skipif_test);
+  $descriptorspec = array(
+    0 => array("pipe", "r"),
+    1 => array("pipe", "w"),
+    2 => array("pipe", "w"),
+  );
+  $pipes = null;
+  $process = proc_open("$hhvm 2>&1", $descriptorspec, $pipes);
+  if (!is_resource($process)) {
+    // This is weird. We can't run HHVM but we probably shouldn't skip the test
+    // since on a broken build everything will show up as skipped and give you a
+    // SHIPIT
+    return false;
+  }
+
+  fclose($pipes[0]);
+  $output = stream_get_contents($pipes[1]);
+  fclose($pipes[1]);
+  proc_close($process);
+  return strlen($output) != 0;
+}
+
+function comp_line($l1, $l2, $is_reg) {
+  if ($is_reg) {
+    return preg_match('/^'. $l1 . '$/s', $l2);
+  } else {
+    return !strcmp($l1, $l2);
+  }
+}
+
+function count_array_diff($ar1, $ar2, $is_reg, $w, $idx1, $idx2, $cnt1, $cnt2, $steps) {
+  $equal = 0;
+
+  while ($idx1 < $cnt1 && $idx2 < $cnt2 && comp_line($ar1[$idx1], $ar2[$idx2], $is_reg)) {
+    $idx1++;
+    $idx2++;
+    $equal++;
+    $steps--;
+  }
+  if (--$steps > 0) {
+    $eq1 = 0;
+    $st = $steps / 2;
+
+    for ($ofs1 = $idx1 + 1; $ofs1 < $cnt1 && $st-- > 0; $ofs1++) {
+      $eq = @count_array_diff($ar1, $ar2, $is_reg, $w, $ofs1, $idx2, $cnt1, $cnt2, $st);
+
+      if ($eq > $eq1) {
+        $eq1 = $eq;
+      }
+    }
+
+    $eq2 = 0;
+    $st = $steps;
+
+    for ($ofs2 = $idx2 + 1; $ofs2 < $cnt2 && $st-- > 0; $ofs2++) {
+      $eq = @count_array_diff($ar1, $ar2, $is_reg, $w, $idx1, $ofs2, $cnt1, $cnt2, $st);
+      if ($eq > $eq2) {
+        $eq2 = $eq;
+      }
+    }
+
+    if ($eq1 > $eq2) {
+      $equal += $eq1;
+    } else if ($eq2 > 0) {
+      $equal += $eq2;
+    }
+  }
+
+  return $equal;
+}
+
+function generate_array_diff($ar1, $ar2, $is_reg, $w) {
+  $idx1 = 0; $ofs1 = 0; $cnt1 = @count($ar1);
+  $idx2 = 0; $ofs2 = 0; $cnt2 = @count($ar2);
+  $diff = array();
+  $old1 = array();
+  $old2 = array();
+
+  while ($idx1 < $cnt1 && $idx2 < $cnt2) {
+
+    if (comp_line($ar1[$idx1], $ar2[$idx2], $is_reg)) {
+      $idx1++;
+      $idx2++;
+      continue;
+    } else {
+
+      $c1 = @count_array_diff($ar1, $ar2, $is_reg, $w, $idx1+1, $idx2, $cnt1, $cnt2, 10);
+      $c2 = @count_array_diff($ar1, $ar2, $is_reg, $w, $idx1, $idx2+1, $cnt1, $cnt2, 10);
+
+      if ($c1 > $c2) {
+        $old1[$idx1] = sprintf("%03d- ", $idx1+1) . $w[$idx1++];
+        $last = 1;
+      } else if ($c2 > 0) {
+        $old2[$idx2] = sprintf("%03d+ ", $idx2+1) . $ar2[$idx2++];
+        $last = 2;
+      } else {
+        $old1[$idx1] = sprintf("%03d- ", $idx1+1) . $w[$idx1++];
+        $old2[$idx2] = sprintf("%03d+ ", $idx2+1) . $ar2[$idx2++];
+      }
+    }
+  }
+
+  reset($old1); $k1 = key($old1); $l1 = -2;
+  reset($old2); $k2 = key($old2); $l2 = -2;
+
+  while ($k1 !== null || $k2 !== null) {
+
+    if ($k1 == $l1 + 1 || $k2 === null) {
+      $l1 = $k1;
+      $diff[] = current($old1);
+      $k1 = next($old1) ? key($old1) : null;
+    } else if ($k2 == $l2 + 1 || $k1 === null) {
+      $l2 = $k2;
+      $diff[] = current($old2);
+      $k2 = next($old2) ? key($old2) : null;
+    } else if ($k1 < $k2) {
+      $l1 = $k1;
+      $diff[] = current($old1);
+      $k1 = next($old1) ? key($old1) : null;
+    } else {
+      $l2 = $k2;
+      $diff[] = current($old2);
+      $k2 = next($old2) ? key($old2) : null;
+    }
+  }
+
+  while ($idx1 < $cnt1) {
+    $diff[] = sprintf("%03d- ", $idx1 + 1) . $w[$idx1++];
+  }
+
+  while ($idx2 < $cnt2) {
+    $diff[] = sprintf("%03d+ ", $idx2 + 1) . $ar2[$idx2++];
+  }
+
+  return $diff;
+}
+
+function generate_diff($wanted, $wanted_re, $output)
+{
+  $w = explode("\n", $wanted);
+  $o = explode("\n", $output);
+  $r = is_null($wanted_re) ? $w : explode("\n", $wanted_re);
+  $diff = generate_array_diff($r, $o, !is_null($wanted_re), $w);
+
+  return implode("\r\n", $diff);
 }
 
 function dump_hhas_to_temp($hhvm_cmd, $test) {
@@ -601,9 +756,10 @@ function dump_hhas_to_temp($hhvm_cmd, $test) {
 const HHAS_EXT = '.hhas';
 function can_run_server_test($test) {
   return
-    !find_test_ext($test, 'noserver') &&
+    !is_file("$test.noserver") &&
     !find_test_ext($test, 'opts') &&
-    !find_test_ext($test, 'ini') &&
+    !is_file("$test.ini") &&
+    !is_file("$test.onlyrepo") &&
     strpos($test, 'quick/debugger') === false &&
     strpos($test, 'quick/xenon') === false &&
     strpos($test, 'slow/streams/') === false &&
@@ -696,17 +852,18 @@ function run_config_post($outputs, $test, $options) {
 
   if (file_exists("$test.expect")) {
     $file = get_expect_file($test, 'expect', $options);
-    $diff_cmds = "--text -u";
-    file_put_contents("$test.expect-trimmed",
-                      trim(file_get_contents($file)));
-    exec("diff --text -u $test.expect-trimmed $test.out > $test.diff 2>&1",
-         $_, $status);
-    // unix 0 == success
-    unlink("$test.expect-trimmed");
-    return !$status;
+    $wanted = trim(file_get_contents($file));
+    $passed = !strcmp($output, $wanted);
+    
+    if (!$passed) {
+      file_put_contents("$test.diff", generate_diff($wanted, null, $output));
+    }
+
+    return $passed;
   } else if (file_exists("$test.expectf")) {
     $file = get_expect_file($test, 'expectf', $options);
-    $wanted_re = trim(file_get_contents($file));
+    $wanted = trim(file_get_contents($file));
+    $wanted_re = $wanted;
 
     // do preg_quote, but miss out any %r delimited sections
     $temp = "";
@@ -772,23 +929,29 @@ function run_config_post($outputs, $test, $options) {
     $wanted_re = str_replace('%c', '.', $wanted_re);
     // %f allows two points "-.0.0" but that is the best *simple* expression
 
-    # a poor man's aide for debugging
-    shell_exec("diff --text -u $test.expectf $test.out > $test.diff 2>&1");
-
     // Normalize newlines
     $wanted_re = preg_replace("/(\r\n?|\n)/", "\n", $wanted_re);
     $output    = preg_replace("/(\r\n?|\n)/", "\n", $output);
 
-    return preg_match("/^$wanted_re\$/s", $output);
+    $passed = preg_match("/^$wanted_re\$/s", $output);
+    
+    if (!$passed) {
+      file_put_contents("$test.diff", generate_diff($wanted, $wanted_re, $output));
+    }
+
+    return $passed;
 
   } else if (file_exists("$test.expectregex")) {
     $file = get_expect_file($test, 'expectregex', $options);
     $wanted_re = trim(file_get_contents($file));
 
-    # a poor man's aide for debugging
-    shell_exec("diff --text -u $test.expectregex $test.out > $test.diff 2>&1");
+    $passed = preg_match("/^$wanted_re\$/s", $output);
+    
+    if (!$passed) {
+      file_put_contents("$test.diff", generate_diff($wanted_re, $wanted_re, $output));
+    }
 
-    return preg_match("/^$wanted_re\$/s", $output);
+    return $passed;
   }
 }
 
@@ -815,7 +978,8 @@ function run_test($options, $test) {
 
     $hphp_repo = "$test.repo/hhvm.hhbc";
     $hhbbc_repo = "$test.repo/hhvm.hhbbc";
-    shell_exec("rm -f $hphp_repo $hhbbc_repo $test.repo/CodeError.js");
+    shell_exec("rm -f \"$hphp_repo\" \"$hhbbc_repo\" ".
+               "\"$test.repo/CodeError.js\"");
     $hphp = hphp_cmd($options, $test);
     $hhbbc = hhbbc_cmd($options, $test);
     shell_exec("$hphp 2>&1");
@@ -840,7 +1004,9 @@ function run_test($options, $test) {
   }
 
   if ($outputs = run_config_server($options, $test)) {
-    return run_config_post($outputs, $test, $options) ? 'pass-server' : false;
+    return run_config_post($outputs, $test, $options) ? 'pass-server'
+      : (run_one_config($options, $test, $hhvm, $hhvm_env) ? 'skip-server'
+         : false);
   }
   return run_one_config($options, $test, $hhvm, $hhvm_env);
 }
@@ -893,10 +1059,17 @@ function msg_loop($num_tests, $queue) {
   $do_progress = Status::getMode() == Status::MODE_NORMAL &&
     Status::hasCursorControl();
   if ($do_progress) {
-    preg_match_all("/columns.([0-9]+);/",
-                   strtolower(exec('stty -a | grep columns')),
-                   $output);
-    $cols = $output[1][0];
+    $stty = strtolower(exec('stty -a | grep columns'));
+    preg_match_all("/columns ([0-9]+);/", $stty, $output);
+    if (!isset($output[1][0])) {
+      // because BSD has to be different
+      preg_match_all("/([0-9]+) columns;/", $stty, $output);
+    }
+    if (!isset($output[1][0])) {
+      $do_progress = false;
+    } else {
+      $cols = $output[1][0];
+    }
   }
 
   while (true) {
@@ -912,7 +1085,7 @@ function msg_loop($num_tests, $queue) {
         switch (Status::getMode()) {
           case Status::MODE_NORMAL:
             if (!Status::hasCursorControl()) {
-              Status::sayColor(Status::YELLOW, 'x');
+              Status::sayColor(Status::RED, 'x');
             }
             break;
 
@@ -927,11 +1100,16 @@ function msg_loop($num_tests, $queue) {
 
       case Status::MSG_TEST_PASS:
         $passed++;
-        list($test, $server) = $message;
+        list($test, $how) = $message;
         switch (Status::getMode()) {
           case Status::MODE_NORMAL:
             if (!Status::hasCursorControl()) {
-              Status::sayColor(Status::GREEN, $server ? ',' : '.');
+              if ($how == Status::SKIP_SERVER) {
+                Status::sayColor(Status::RED, '.');
+              } else {
+                Status::sayColor(Status::GREEN,
+                                 $how == Status::PASS_SERVER ? ',' : '.');
+              }
             }
             break;
 
@@ -977,7 +1155,7 @@ function msg_loop($num_tests, $queue) {
             }
             $diff = (string)@file_get_contents($test.'.diff');
             Status::sayColor(Status::RED, "\nFAILED",
-                             ": $test\n$diff");
+                             ": $test\n$diff\n");
             break;
 
           case Status::MODE_VERBOSE:
@@ -1073,9 +1251,13 @@ SHIP
 
 function print_failure($argv, $results, $options) {
   $failed = array();
+  $passed = array();
   foreach ($results as $result) {
-    if ($result['status'] == 'failed') {
+    if ($result['status'] === 'failed') {
       $failed[] = $result['name'];
+    }
+    if ($result['status'] === 'passed') {
+      $passed[] = $result['name'];
     }
   }
   asort($failed);
@@ -1096,6 +1278,15 @@ function print_failure($argv, $results, $options) {
   print make_header('For xargs, list of failures is available using:').
     'cat '.$failing_tests_file."\n";
 
+  if (!empty($passed)) {
+    $passing_tests_file = !empty($options['success-file'])
+      ? $options['success-file']
+      : tempnam('/tmp', 'tests-passed');
+    file_put_contents($passing_tests_file, implode("\n", $passed)."\n");
+    print make_header('For xargs, list of passed tests is available using:').
+      'cat '.$passing_tests_file."\n";
+  }
+
   print_commands($failed, $options);
 
   print make_header("Re-run just the failing tests:").
@@ -1104,7 +1295,8 @@ function print_failure($argv, $results, $options) {
   if (idx($options, 'mode') == 'automain') {
     print make_header(
       'Automain caveat: wrapper script may change semantics');
-    print 'The automain wrapper script ('.__DIR__.'/pseudomain_wrapper.php)'
+    print 'The automain wrapper script '
+      .__DIR__.'/tools/pseudomain_wrapper.php'
       .' may have changed behavior'."\n"
       .'(e.g. extra frames in backtraces) by moving code from '
       .'pseudo-main to file top-level and adding a wrapper function.'
@@ -1143,7 +1335,16 @@ function start_server_impl($options, $config, $port) {
     '-vServer.RequestTimeoutSeconds='.SERVER_TIMEOUT,
     '-vPageletServer.ThreadCount=0',
     '-vLog.UseRequestLog=1',
-    '-vLog.File=/dev/null'
+    '-vLog.File=/dev/null',
+
+    // This ensures we actually jit everything:
+    '-vEval.JitRequireWriteLease=1',
+
+    // The default test config uses a small TC but we'll be running thousands
+    // of tests against the same process:
+    '-vEval.JitASize=100000000',
+    '-vEval.JitAStubsSize=100000000',
+    '-vEval.JitGlobalDataSize=32000000'
   );
   if (getenv('HHVM_TEST_SERVER_LOG')) {
     echo "Starting server '$command'\n";

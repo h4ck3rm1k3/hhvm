@@ -205,13 +205,23 @@ public:
       mysql_free_result(m_res);
       m_res = NULL;
     }
+    if (isLocalized()) {
+      m_rows.clear();
+    }
+  }
+
+  virtual bool isInvalid() const {
+    if (isLocalized()) {
+      return !m_rows.hasValue();
+    }
+    return m_res == nullptr;
   }
 
   MYSQL_RES *get() {
     return m_res;
   }
 
-  bool isLocalized() {
+  bool isLocalized() const {
     return m_localized;
   }
 

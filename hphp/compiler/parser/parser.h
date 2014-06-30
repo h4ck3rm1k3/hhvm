@@ -151,7 +151,8 @@ public:
   void onIndirectRef(Token &out, Token &refCount, Token &var);
   void onStaticMember(Token &out, Token &cls, Token &name);
   void onRefDim(Token &out, Token &var, Token &offset);
-  void onCallParam(Token &out, Token *params, Token &expr, bool ref);
+  void onCallParam(Token &out, Token *params, Token &expr,
+                   bool ref, bool unpack);
   void onCall(Token &out, bool dynamic, Token &name, Token &params, Token *cls);
   void onEncapsList(Token &out, int type, Token &list);
   void addEncap(Token &out, Token *list, Token &expr, int type);
@@ -200,7 +201,7 @@ public:
   void onInterface(Token &out, Token &name, Token &base, Token &stmt,
                    Token *attr);
   void onInterfaceName(Token &out, Token *names, Token &name);
-  void onTraitRequire(Token &out, Token &name, bool isClass);
+  void onClassRequire(Token &out, Token &name, bool isClass);
   void onTraitUse(Token &out, Token &traits, Token &rules);
   void onTraitName(Token &out, Token *names, Token &name);
   void onTraitRule(Token &out, Token &stmtList, Token &newStmt);
@@ -245,7 +246,7 @@ public:
   void onExpStatement(Token &out, Token &expr);
   void onForEachStart();
   void onForEach(Token &out, Token &arr, Token &name, Token &value,
-                 Token &stmt);
+                 Token &stmt, bool awaitAs);
   void onTry(Token &out, Token &tryStmt, Token &className, Token &var,
              Token &catchStmt, Token &catches, Token &finallyStmt);
   void onTry(Token &out, Token &tryStmt, Token &finallyStmt);
@@ -347,7 +348,7 @@ private:
     {}
 
     void checkFinalAssertions() {
-      assert(!isGenerator || (!isAsync && !hasNonEmptyReturn));
+      assert(!isGenerator || !hasNonEmptyReturn);
     }
 
     bool hasNonEmptyReturn; // function contains a non-empty return statement
@@ -392,10 +393,10 @@ private:
   void setHasNonEmptyReturn(ConstructPtr blame);
 
   void invalidYield();
-  bool setIsGenerator();
+  void setIsGenerator();
 
   void invalidAwait();
-  bool setIsAsync();
+  void setIsAsync();
 
   static bool canBeAsyncOrGenerator(string funcName, string clsName);
   void checkFunctionContext(string funcName,

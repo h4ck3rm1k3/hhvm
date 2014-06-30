@@ -220,7 +220,13 @@ void in(ISS& env, const bc::Array& op) {
   push(env, aval(op.arr1));
 }
 
-void in(ISS& env, const bc::NewArray&) { push(env, TArr); }
+void in(ISS& env, const bc::NewArray& op) {
+  push(env, op.arg1 == 0 ? aempty() : counted_aempty());
+}
+
+void in(ISS& env, const bc::NewMixedArray& op) {
+  push(env, op.arg1 == 0 ? aempty() : counted_aempty());
+}
 
 void in(ISS& env, const bc::NewPackedArray& op) {
   auto elems = std::vector<Type>{};
@@ -237,6 +243,10 @@ void in(ISS& env, const bc::NewStructArray& op) {
     map[*rit] = popC(env);
   }
   push(env, carr_struct(std::move(map)));
+}
+
+void in(ISS& env, const bc::NewLikeArrayL&) {
+  push(env, counted_aempty());
 }
 
 void in(ISS& env, const bc::AddElemC& op) {
@@ -285,7 +295,7 @@ void in(ISS& env, const bc::ClsCns& op) {
   auto const t1 = topA(env);
   if (t1.strictSubtypeOf(TCls)) {
     auto const dcls = dcls_of(t1);
-    if (dcls.type == ClsTag::Exact) {
+    if (dcls.type == DCls::Exact) {
       return reduce(env, bc::PopA {},
                          bc::ClsCnsD { op.str1, dcls.cls.name() });
     }
@@ -366,27 +376,8 @@ void in(ISS& env, const bc::BitXor& op) { arithImpl(env, op, typeBitXor); }
 void in(ISS& env, const bc::AddO& op)   { arithImpl(env, op, typeAddO); }
 void in(ISS& env, const bc::SubO& op)   { arithImpl(env, op, typeSubO); }
 void in(ISS& env, const bc::MulO& op)   { arithImpl(env, op, typeMulO); }
-
-template<class Op, class Fun>
-void shiftImpl(ISS& env, const Op& op, Fun fop) {
-  constprop(env);
-  auto const v1 = tv(typeToInt(popC(env)));
-  auto const v2 = tv(typeToInt(popC(env)));
-  if (v1 && v2) {
-    return push(env, eval_cell([&] {
-      return make_tv<KindOfInt64>(fop(cellToInt(*v2), cellToInt(*v1)));
-    }));
-  }
-  push(env, TInt);
-}
-
-void in(ISS& env, const bc::Shl& op) {
-  shiftImpl(env, op, [&] (int64_t a, int64_t b) { return a << b; });
-}
-
-void in(ISS& env, const bc::Shr& op) {
-  shiftImpl(env, op, [&] (int64_t a, int64_t b) { return a >> b; });
-}
+void in(ISS& env, const bc::Shl& op)    { arithImpl(env, op, typeShl); }
+void in(ISS& env, const bc::Shr& op)    { arithImpl(env, op, typeShr); }
 
 void in(ISS& env, const bc::BitNot& op) {
   auto const t = popC(env);
@@ -687,12 +678,7 @@ void in(ISS& env, const bc::NativeImpl&) {
   }
 
   if (env.ctx.func->nativeInfo) {
-    auto const dt = env.ctx.func->nativeInfo->returnType;
-    if (dt != KindOfInvalid) {
-      // TODO(#3568043): adding TInitNull, because HNI doesn't know
-      // about nullability.
-      return doRet(env, union_of(from_DataType(dt), TInitNull));
-    }
+    return doRet(env, native_function_return_type(env.ctx.func));
   }
   doRet(env, TInitGen);
 }
@@ -1022,8 +1008,9 @@ void in(ISS& env, const bc::SetOpL& op) {
     return;
   }
 
-  setLoc(env, op.loc1, TInitCell);
-  push(env, TInitCell);
+  auto const resultTy = typeArithSetOp(op.subop, loc, t1);
+  setLoc(env, op.loc1, resultTy);
+  push(env, resultTy);
 }
 
 void in(ISS& env, const bc::SetOpN&) {
@@ -1058,38 +1045,18 @@ void in(ISS& env, const bc::SetOpS&) {
 
 void in(ISS& env, const bc::IncDecL& op) {
   auto const loc = locAsCell(env, op.loc1);
-  auto const val = tv(loc);
-  if (!val) {
-    // Only tracking IncDecL for constants for now.
-    setLoc(env, op.loc1, TInitCell);
-    return push(env, TInitCell);
+  auto const newT = typeIncDec(op.subop, loc);
+  auto const pre = isPre(op.subop);
+
+  // If it's a non-numeric string, this may cause it to exceed the max length.
+  if (!locCouldBeUninit(env, op.loc1) &&
+      !loc.couldBe(TStr)) {
+    nothrow(env);
   }
 
-  auto const pre = isPre(op.subop);
-  auto const inc = isInc(op.subop);
-  auto const over = isIncDecO(op.subop);
-
   if (!pre) push(env, loc);
-
-  // We can't constprop with this eval_cell, because of the effects
-  // on locals.
-  auto resultTy = eval_cell([inc,over,val] {
-    auto c = *val;
-    if (inc) {
-      (over ? cellIncO : cellInc)(c);
-    } else {
-      (over ? cellDecO : cellDec)(c);
-    }
-    return c;
-  });
-
-  // We may have inferred a TSStr or TSArr with a value here, but at
-  // runtime it will not be static.
-  resultTy = loosen_statics(resultTy);
-
-  if (pre) push(env, resultTy);
-
-  setLoc(env, op.loc1, resultTy);
+  setLoc(env, op.loc1, newT);
+  if (pre)  push(env, newT);
 }
 
 void in(ISS& env, const bc::IncDecN& op) {
@@ -1241,16 +1208,12 @@ void in(ISS& env, const bc::FPushObjMethodD& op) {
   folly::Optional<res::Class> rcls;
   if (is_opt(obj)) obj = unopt(obj);
   if (obj.strictSubtypeOf(TObj)) rcls = dcls_of(objcls(obj)).cls;
-
-  folly::Optional<res::Func> func = folly::none;
-  if (obj.subtypeOf(TObj)) {
-    func = env.index.resolve_method(env.ctx, objcls(obj), op.str2);
-    if (func && !rcls) rcls = func->interfaceCls();
-  }
   fpiPush(env, ActRec {
     FPIKind::ObjMeth,
     rcls,
-    func
+    obj.subtypeOf(TObj)
+      ? env.index.resolve_method(env.ctx, objcls(obj), op.str2)
+      : folly::none
   });
 }
 
@@ -1278,13 +1241,12 @@ void in(ISS& env, const bc::FPushClsMethod& op) {
   auto const t1 = popA(env);
   auto const t2 = popC(env);
   auto const v2 = tv(t2);
+  auto const rfunc =
+    v2 && v2->m_type == KindOfStaticString
+      ? env.index.resolve_method(env.ctx, t1, v2->m_data.pstr)
+      : folly::none;
   folly::Optional<res::Class> rcls;
   if (t1.strictSubtypeOf(TCls)) rcls = dcls_of(t1).cls;
-  folly::Optional<res::Func> rfunc = folly::none;
-  if (v2 && v2->m_type == KindOfStaticString) {
-    rfunc = env.index.resolve_method(env.ctx, t1, v2->m_data.pstr);
-    if (rfunc && !rcls) rcls = rfunc->interfaceCls();
-  }
   fpiPush(env, ActRec { FPIKind::ClsMeth, rcls, rfunc });
 }
 
@@ -1306,7 +1268,7 @@ void in(ISS& env, const bc::FPushCtor& op) {
   auto const t1 = topA(env);
   if (t1.strictSubtypeOf(TCls)) {
     auto const dcls = dcls_of(t1);
-    if (dcls.type == ClsTag::Exact) {
+    if (dcls.type == DCls::Exact) {
       return reduce(env, bc::PopA {},
                          bc::FPushCtorD { op.arg1, dcls.cls.name() });
     }
@@ -1513,11 +1475,17 @@ void in(ISS& env, const bc::FCall& op) {
 }
 
 void in(ISS& env, const bc::FCallD& op) {
-  for (auto i = uint32_t{0}; i < op.arg1; ++i) popF(env);
   auto const ar = fpiPop(env);
   specialFunctionEffects(env, ar);
   if (ar.func) {
-    auto const ty = env.index.lookup_return_type(env.ctx, *ar.func);
+    std::vector<Type> args(op.arg1);
+    for (auto i = uint32_t{0}; i < op.arg1; ++i) {
+      args[op.arg1 - i - 1] = popF(env);
+    }
+    auto const ty = env.index.lookup_return_type(
+      CallContext { env.ctx, args },
+      *ar.func
+    );
     if (ty == TBottom) {
       // The callee function never returns.  It might throw, or loop
       // forever.
@@ -1530,11 +1498,25 @@ void in(ISS& env, const bc::FCallD& op) {
     }
     return push(env, ty);
   }
+  for (auto i = uint32_t{0}; i < op.arg1; ++i) popF(env);
   push(env, TInitGen);
 }
 
 void in(ISS& env, const bc::FCallArray& op) {
   popF(env);
+  auto const ar = fpiPop(env);
+  specialFunctionEffects(env, ar);
+  if (ar.func) {
+    return push(env, env.index.lookup_return_type(env.ctx, *ar.func));
+  }
+  push(env, TInitGen);
+}
+
+void in(ISS& env, const bc::FCallUnpack& op) {
+  // FCallUnpack has pretty much the same effects as FCallArray, just with
+  // potentially more than one argument. It's possible that we can share
+  // more code with FCall and FCallArray here.
+  for (auto i = uint32_t{0}; i < op.arg1; ++i) { popF(env); }
   auto const ar = fpiPop(env);
   specialFunctionEffects(env, ar);
   if (ar.func) {
@@ -1766,17 +1748,17 @@ void in(ISS& env, const bc::BareThis& op) {
 }
 
 void in(ISS& env, const bc::InitThisLoc& op) {
-  setLocRaw(env, findLocalById(env, op.arg1), TCell);
+  setLocRaw(env, op.loc1, TCell);
 }
 
 void in(ISS& env, const bc::StaticLoc& op) {
-  setLocRaw(env, findLocalById(env, op.arg1), TRef);
+  setLocRaw(env, op.loc1, TRef);
   push(env, TBool);
 }
 
 void in(ISS& env, const bc::StaticLocInit& op) {
   popC(env);
-  setLocRaw(env, findLocalById(env, op.arg1), TRef);
+  setLocRaw(env, op.loc1, TRef);
 }
 
 /*
@@ -1795,8 +1777,7 @@ void in(ISS& env, const bc::OODeclExists& op) {
 }
 
 void in(ISS& env, const bc::VerifyParamType& op) {
-  auto loc = findLocalById(env, op.arg1);
-  locAsCell(env, loc);
+  locAsCell(env, op.loc1);
   if (!options.HardTypeHints) return;
 
   /*
@@ -1811,10 +1792,10 @@ void in(ISS& env, const bc::VerifyParamType& op) {
    * references if it re-enters, even if Option::HardTypeHints is
    * on.
    */
-  auto const constraint = env.ctx.func->params[op.arg1].typeConstraint;
+  auto const constraint = env.ctx.func->params[op.loc1->id].typeConstraint;
   if (constraint.hasConstraint() && !constraint.isTypeVar()) {
     FTRACE(2, "     {}\n", constraint.fullName());
-    setLoc(env, loc, env.index.lookup_constraint(env.ctx, constraint));
+    setLoc(env, op.loc1, env.index.lookup_constraint(env.ctx, constraint));
   }
 }
 void in(ISS& env, const bc::VerifyRetTypeV& op) {}
@@ -1861,8 +1842,8 @@ void in(ISS& env, const bc::CreateCont& op) {
   push(env, TInitNull);
 }
 
-void in(ISS& env, const bc::ContEnter&) { popC(env); }
-void in(ISS& env, const bc::ContRaise&) { popC(env); }
+void in(ISS& env, const bc::ContEnter&) { popC(env); push(env, TInitCell); }
+void in(ISS& env, const bc::ContRaise&) { popC(env); push(env, TInitCell); }
 
 void in(ISS& env, const bc::Yield&) {
   popC(env);

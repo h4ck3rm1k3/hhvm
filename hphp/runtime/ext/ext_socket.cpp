@@ -41,6 +41,7 @@
 #include "hphp/runtime/server/server-stats.h"
 #include "hphp/runtime/base/persistent-resource-store.h"
 #include "hphp/runtime/base/zend-php-config.h"
+#include "hphp/runtime/base/mem-file.h"
 #include "hphp/util/logger.h"
 
 #define PHP_NORMAL_READ 0x0001
@@ -1014,6 +1015,14 @@ Variant f_socket_recvfrom(const Resource& socket, VRefParam buf, int len, int fl
 }
 
 bool f_socket_shutdown(const Resource& socket, int how /* = 0 */) {
+  /* For some operations that are conceptually a socket operation
+   * (eg fopen('http://...)) we actually complete it and store the result in
+   * a memfile. As the fact that it's not really a socket is an implementation
+   * detail, user code needs to be able to call shutdown on it.
+   */
+  if (socket.is<MemFile>()) {
+    return true;
+  }
   Socket *sock = socket.getTyped<Socket>();
   if (shutdown(sock->fd(), how) != 0) {
     SOCKET_ERROR(sock, "unable to shutdown socket", errno);
@@ -1076,8 +1085,9 @@ Variant sockopen_impl(const HostURL &hosturl, VRefParam errnum,
       }
 
       // socket had an error earlier, we need to remove it from persistent
-      // storage, and create a new one
+      // storage, close it, and create a new one
       g_persistentResources->remove("socket", key.c_str());
+      sock->close();
     }
   }
 
@@ -1187,7 +1197,6 @@ Variant HHVM_FUNCTION(pfsockopen, const String& hostname, int port /* = -1 */,
                                   VRefParam errnum /* = null */,
                                   VRefParam errstr /* = null */,
                                   double timeout /* = -1.0 */) {
-  // TODO: persistent socket handling
   HostURL hosturl(static_cast<const std::string>(hostname), port);
   return sockopen_impl(hosturl, errnum, errstr, timeout, true);
 }
@@ -1198,7 +1207,7 @@ String ipaddr_convert(struct sockaddr *addr, int addrlen) {
 
   if (error) {
     raise_warning("%s", gai_strerror(error));
-    return "";
+    return empty_string();
   }
   return String(buffer, CopyString);
 }

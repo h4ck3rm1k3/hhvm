@@ -27,6 +27,8 @@ TRACE_SET_MOD(hhir);
 namespace HPHP {
 namespace JIT {
 
+using Trace::Indent;
+
 FrameState::FrameState(IRUnit& unit, BCMarker marker)
   : FrameState(unit, marker.spOff(), marker.func(), marker.func()->numLocals())
 {
@@ -52,6 +54,7 @@ FrameState::FrameState(IRUnit& unit, Offset initialSpOffset, const Func* func,
 
 void FrameState::update(const IRInstruction* inst) {
   ITRACE(3, "FrameState::update processing {}\n", *inst);
+  Indent _i;
 
   if (auto* taken = inst->taken()) {
     // When we're building the IR, we append a conditional jump after
@@ -92,6 +95,8 @@ void FrameState::update(const IRInstruction* inst) {
     break;
 
   case ContEnter:
+    m_spValue = inst->dst();
+    m_frameSpansCall = true;
     clearCse();
     break;
 
@@ -100,16 +105,11 @@ void FrameState::update(const IRInstruction* inst) {
     m_fpValue = inst->dst();
     break;
 
-  case ReDefResumableSP:
-    m_spValue = inst->dst();
-    break;
-
   case ReDefSP:
     m_spValue = inst->dst();
     m_spOffset = inst->extra<ReDefSP>()->spOffset;
     break;
 
-  case DefInlineSP:
   case DefSP:
     m_spValue = inst->dst();
     m_spOffset = inst->extra<StackOffset>()->offset;
@@ -117,6 +117,7 @@ void FrameState::update(const IRInstruction* inst) {
 
   case AssertStk:
   case CastStk:
+  case CastStkIntToDbl:
   case CoerceStk:
   case CheckStk:
   case GuardStk:
@@ -188,6 +189,8 @@ void FrameState::update(const IRInstruction* inst) {
   }
 }
 
+static const StaticString s_php_errormsg("php_errormsg");
+
 void FrameState::getLocalEffects(const IRInstruction* inst,
                                  LocalStateHook& hook) const {
   auto killIterLocals = [&](const std::initializer_list<uint32_t>& ids) {
@@ -226,7 +229,9 @@ void FrameState::getLocalEffects(const IRInstruction* inst,
 
     case LdGbl: {
       auto const type = inst->typeParam().relaxToGuardable();
-      hook.setLocalType(inst->extra<LdGbl>()->locId, type);
+      auto id = inst->extra<LdGbl>()->locId;
+      hook.setLocalType(id, type);
+      hook.setLocalTypeSource(id, inst->dst());
       break;
     }
     case StGbl: {
@@ -305,6 +310,14 @@ void FrameState::getLocalEffects(const IRInstruction* inst,
     }
     default:
       break;
+  }
+
+  // If this instruction may raise an error and our function has a local named
+  // "php_errormsg", we have to clobber it. See
+  // http://www.php.net/manual/en/reserved.variables.phperrormsg.php
+  if (inst->mayRaiseError()) {
+    auto id = m_curFunc->lookupVarId(s_php_errormsg.get());
+    if (id != -1) hook.setLocalValue(id, nullptr);
   }
 
   if (MInstrEffects::supported(inst)) MInstrEffects::get(inst, hook);
@@ -416,6 +429,8 @@ void FrameState::dropLocalRefsInnerTypes(LocalStateHook& hook) const {
 ///// Methods for managing and merge block state /////
 void FrameState::startBlock(Block* block) {
   auto it = m_snapshots.find(block);
+  assert(IMPLIES(block->numPreds() > 0,
+                 it != m_snapshots.end() || RuntimeOption::EvalJitLoops));
   if (it != m_snapshots.end()) {
     load(it->second);
     ITRACE(4, "Loading state for B{}: {}\n", block->id(), show(*this));
@@ -437,6 +452,14 @@ void FrameState::finishBlock(Block* block) {
 
 void FrameState::pauseBlock(Block* block) {
   save(block);
+}
+
+void FrameState::clearBlock(Block* block) {
+  auto it = m_snapshots.find(block);
+  if (it != m_snapshots.end()) {
+    ITRACE(4, "Clearing state for B{}\n", block->id());
+    m_snapshots.erase(it);
+  }
 }
 
 FrameState::Snapshot FrameState::createSnapshot() const {
@@ -461,7 +484,7 @@ FrameState::Snapshot FrameState::createSnapshot() const {
  * existing snapshot.
  */
 void FrameState::save(Block* block) {
-  ITRACE(4, "Saving state for B{}: {}\n", block->id(), show(*this));
+  ITRACE(4, "Saving current state to B{}: {}\n", block->id(), show(*this));
   auto it = m_snapshots.find(block);
   if (it != m_snapshots.end()) {
     merge(it->second);
@@ -478,7 +501,14 @@ bool FrameState::compatible(Block* block) {
   // Probably because the other incoming edge is unreachable.
   if (it == m_snapshots.end()) return true;
   auto& snapshot = it->second;
-  if (m_fpValue != snapshot.fpValue) return false;
+  if (m_fpValue != snapshot.fpValue) {
+    DEBUG_ONLY auto fpRoot       =
+      IRInstruction::framePassthroughRoot(m_fpValue);
+    DEBUG_ONLY auto snapshotRoot =
+      IRInstruction::framePassthroughRoot(snapshot.fpValue);
+
+    assert(fpRoot == snapshotRoot);
+  }
 
   assert(m_locals.size() == snapshot.locals.size());
   for (int i = 0; i < m_locals.size(); ++i) {
@@ -531,14 +561,16 @@ void FrameState::load(Snapshot& state) {
  * types are combined using Type::unionOf.
  */
 void FrameState::merge(Snapshot& state) {
-  // cannot merge fp or spOffset state, so assert they match
-  assert(state.fpValue == m_fpValue);
+  // cannot merge spOffset state, so assert they match
   assert(state.spOffset == m_spOffset);
   assert(state.curFunc == m_curFunc);
   if (state.spValue != m_spValue) {
     // we have two different sp definitions but we know they're equal
     // because spOffset matched.
     state.spValue = nullptr;
+  }
+  if (state.fpValue != m_fpValue) {
+    state.fpValue = IRInstruction::frameCommonRoot(state.fpValue, m_fpValue);
   }
   // this is available iff it's available in both states
   state.thisAvailable &= m_thisAvailable;
@@ -548,8 +580,6 @@ void FrameState::merge(Snapshot& state) {
     auto& local = state.locals[i];
 
     // preserve local values if they're the same in both states,
-    // This would be the place to insert phi nodes (jmps+deflabels) if we want
-    // to avoid clearing state, which triggers a downstream reload.
     if (local.value != m_locals[i].value) {
       // try to merge SSATmps for the local if one of them came from
       // a passthrough instruction with the other as the source.
@@ -564,6 +594,7 @@ void FrameState::merge(Snapshot& state) {
       }
     }
     if (local.typeSource != m_locals[i].typeSource) local.typeSource = nullptr;
+    if (local.value && !local.typeSource) local.typeSource = local.value;
 
     local.type = Type::unionOf(local.type, m_locals[i].type);
   }
@@ -721,6 +752,11 @@ void FrameState::setLocalType(uint32_t id, Type type) {
   m_locals[id].value = nullptr;
   m_locals[id].type = type;
   m_locals[id].typeSource = nullptr;
+}
+
+void FrameState::setLocalTypeSource(uint32_t id, SSATmp* typeSrc) {
+  always_assert(id < m_locals.size());
+  m_locals[id].typeSource = typeSrc;
 }
 
 /*

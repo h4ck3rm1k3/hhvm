@@ -10,7 +10,6 @@
 
 open Utils
 open Typing_defs
-open Silent
 
 module Reason = Typing_reason
 module Inst = Typing_instantiate
@@ -25,11 +24,9 @@ let rec subtype_funs_generic ~check_return env r1 ft1 r2 orig_ft2 =
   let p1 = Reason.to_pos r1 in
   let env, ft2 = Inst.instantiate_ft env orig_ft2 in
   if ft2.ft_arity_min > ft1.ft_arity_min
-  then error_l [p, ("Too many mandatory arguments");
-                p1, "Because of this definition"];
+  then Errors.fun_too_many_args p p1;
   if ft2.ft_arity_max < ft1.ft_arity_max
-  then error_l [p, ("Too few arguments");
-                p1, "Because of this definition"];
+  then Errors.fun_too_few_args p p1;
   let env, _ = subtype_params env ft1.ft_params ft2.ft_params in
   (* Checking that if the return type was defined in the parent class, it
    * is defined in the subclass too (requested by Gabe Levi).
@@ -62,10 +59,10 @@ and sub_type env ty1 ty2 =
   let env, ety2 = Env.expand_type env ty2 in
   match ety1, ety2 with
   | (r, Tapply ((_, x), argl)), _ when Typing_env.is_typedef env x ->
-      let env, ty1 = TDef.expand_typedef SSet.empty env r x argl in
+      let env, ty1 = TDef.expand_typedef env r x argl in
       sub_type env ty1 ty2
   | _, (r, Tapply ((_, x), argl)) when Typing_env.is_typedef env x ->
-      let env, ty2 = TDef.expand_typedef SSet.empty env r x argl in
+      let env, ty2 = TDef.expand_typedef env r x argl in
       sub_type env ty1 ty2
   | (_, Tunresolved _), (_, Tunresolved _) ->
       let env, _ = Unify.unify env ty1 ty2 in
@@ -86,23 +83,18 @@ and sub_type env ty1 ty2 =
       fst (Unify.unify env ty1 ty2)
   | _, (_, Tunresolved tyl) ->
       List.fold_left (fun env x -> sub_type env ty1 x) env tyl
-  | _, (_, Tabstract (_, _, Some x)) ->
-      (try fst (Unify.unify env ty1 ty2)
-       with _ -> sub_type env ty1 x)
   | (_, Tapply _), (r2, Tgeneric (x, Some ty2)) ->
-      (try
-         sub_type env ty1 ty2
-       with Error l ->
-         Reason.explain_generic_constraint r2 x l
+      (Errors.try_
+         (fun () -> sub_type env ty1 ty2)
+         (fun l -> Reason.explain_generic_constraint r2 x l; env)
       )
   | (r1, Tgeneric ("this", Some ty1)), (r2, Tgeneric ("this", Some ty2)) ->
       sub_type env ty1 ty2
   | (_, Tgeneric (x1, _)), (r2, Tgeneric (x2, Some ty2)) ->
       if x1 = x2 then env else
-      (try
-         sub_type env ty1 ty2
-       with Error l ->
-         Reason.explain_generic_constraint r2 x2 l
+      (Errors.try_
+         (fun () -> sub_type env ty1 ty2)
+         (fun l -> Reason.explain_generic_constraint r2 x2 l; env)
       )
   (* Dirty covariance hacks *)
   | (_, (Tapply ((_, "\\Awaitable"), [ty1]))),
@@ -111,8 +103,8 @@ and sub_type env ty1 ty2 =
       let env = Env.set_allow_null_as_void env in
       let env = sub_type env ty1 ty2 in
       Env.set_allow_null_as_void ~allow:old_allow_null_as_void env
-  | (_, (Tapply ((_, ("\\Continuation" | "\\ImmVector" | "\\ImmSet")), [ty1]))),
-    (_, (Tapply ((_, ("\\Continuation" | "\\ImmVector" | "\\ImmSet")), [ty2]))) ->
+  | (_, (Tapply ((_, ("\\Continuation" | "\\ImmVector" | "\\ImmSet" | "\\PrivacyPolicyBase")), [ty1]))),
+    (_, (Tapply ((_, ("\\Continuation" | "\\ImmVector" | "\\ImmSet" | "\\PrivacyPolicyBase")), [ty2]))) ->
       sub_type env ty1 ty2
   | (_, (Tapply ((_, ("\\Pair" | "\\ImmMap" | "\\GenReadApi" | "\\GenReadIdxApi")), [kty1; vty1]))),
     (_, (Tapply ((_, ("\\Pair" | "\\ImmMap" | "\\GenReadApi" | "\\GenReadIdxApi")), [kty2; vty2]))) ->
@@ -124,11 +116,7 @@ and sub_type env ty1 ty2 =
     else begin
       let env, class_ = Env.get_class env cid2 in
       (match class_ with
-        | None ->
-          (match env.Env.genv.Env.mode with
-            | Ast.Mstrict -> raise Ignore
-            | Ast.Mpartial | Ast.Mdecl -> env
-          )
+        | None -> env
         | Some class_ ->
           let subtype_req_ancestor =
             if class_.tc_kind = Ast.Ctrait then
@@ -140,10 +128,10 @@ and sub_type env ty1 ty2 =
                 match acc with
                   | _, Some _ -> acc
                   | env, None ->
-                    try
+                    Errors.try_ begin fun () ->                        
                       let candidate_ty = (p2, Tapply ((pos, elt), tyl2)) in
                       env, Some (sub_type env ty1 candidate_ty)
-                    with _ -> acc
+                    end (fun _ -> acc)
               end class_.tc_req_ancestors (env, None) in
               ret
             else None in
@@ -161,19 +149,14 @@ and sub_type env ty1 ty2 =
                   in
                   if List.length class_.tc_tparams <> List.length tyl2
                   then
-                    error (Reason.to_pos p2)
-                      ("Expected " ^
-                          (match List.length class_.tc_tparams with
-                            | 0 -> "no type parameter"
-                            | 1 -> "a type parameter"
-                            | n -> string_of_int n ^ " type parameters"
-                          ));
+                    Errors.expected_tparam
+                      (Reason.to_pos p2) (List.length class_.tc_tparams);
                   let subst = Inst.make_subst class_.tc_tparams tyl2 in
                   let env, up_obj = Inst.instantiate subst env up_obj in
                   sub_type env ty1 up_obj
-                | None when !is_silent_mode -> env
                 | None when class_.tc_members_fully_known ->
-                  TUtils.uerror p1 ty1_ p2 ty2_
+                  TUtils.uerror p1 ty1_ p2 ty2_;
+                  env
                 | _ -> env
           )
       )
@@ -254,18 +237,19 @@ and sub_type env ty1 ty2 =
         then
           let p1 = Reason.to_pos r1 in
           let p2 = Reason.to_pos r2 in
-          error_l [p2, "The field '"^k^"' is defined";
-                   p1, "The field '"^k^"' is missing"]
+          Errors.field_missing k p1 p2
       end fdm2;
       TUtils.apply_shape sub_type env (r1, fdm1) (r2, fdm2)
+  | _, (_, Tabstract (_, _, Some x)) ->
+      Errors.try_
+         (fun () -> fst (Unify.unify env ty1 ty2))
+         (fun _ -> sub_type env ty1 x)
   | _ -> fst (Unify.unify env ty1 ty2)
 
 and is_sub_type env ty1 ty2 =
-  try
-    ignore(sub_type env ty1 ty2);
-    true
-  with _ ->
-    false
+  Errors.try_
+    (fun () -> ignore(sub_type env ty1 ty2); true)
+    (fun _ -> false)
 
 and sub_string p env ty2 =
   let env, ety2 = Env.expand_type env ty2 in
@@ -278,26 +262,21 @@ and sub_string p env ty2 =
   | (_, Tgeneric (_, Some ty)) ->
       sub_string p env ty
   | (r2, Tapply ((_, x), argl)) when Typing_env.is_typedef env x ->
-      let env, ty2 = Typing_tdef.expand_typedef SSet.empty env r2 x argl in
+      let env, ty2 = Typing_tdef.expand_typedef env r2 x argl in
       sub_string p env ty2
   | (r2, Tapply (x, _)) ->
       let env, class_ = Env.get_class env (snd x) in
       (match class_ with
-      | None when Env.is_strict env ->
-          raise Ignore
       | None -> env
       | Some {tc_name = "\\Stringish"; _} -> env
       | Some tc when SMap.mem "\\Stringish" tc.tc_ancestors -> env
-      | _ when !is_silent_mode -> env
-      | Some _ -> error_l [
-          p, "You cannot use this object as a string";
-          Reason.to_pos r2, "This object doesn't implement __toString"]
+      | Some _ ->
+          Errors.object_string p (Reason.to_pos r2);
+          env
       )
   | (_, Tany) when Env.is_strict env ->
-      error_l [
-      p,
-      "You cannot use this object as a string, it is an untyped value"
-    ]
+      Errors.untyped_string p;
+      env
   | _, Tany ->
       env (* Unifies with anything *)
   | _, Tobject -> env
@@ -318,9 +297,6 @@ and subtype_params env l1 l2 =
       let env, _ = Unify.unify env x1 x2 in
       let env, rl = Unify.unify_params env rl1 rl2 in
       env, (name, x2) :: rl
-
-let sub_type_ok env ty1 ty2 =
-  try ignore (sub_type env ty1 ty2); true with Error _ -> false
 
 let subtype_funs = subtype_funs_generic ~check_return:true
 let subtype_funs_no_return = subtype_funs_generic ~check_return:false

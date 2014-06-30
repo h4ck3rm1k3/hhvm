@@ -19,7 +19,9 @@
 
 #include "folly/Optional.h"
 
+#include "hphp/runtime/ext/ext_collections.h"
 #include "hphp/runtime/ext/ext_generator.h"
+
 #include "hphp/runtime/vm/jit/abi-arm.h"
 #include "hphp/runtime/vm/jit/arg-group.h"
 #include "hphp/runtime/vm/jit/code-gen-helpers-arm.h"
@@ -117,6 +119,7 @@ NOOP_OPCODE(Nop)
 NOOP_OPCODE(DefLabel)
 NOOP_OPCODE(ExceptionBarrier)
 NOOP_OPCODE(TakeStack)
+NOOP_OPCODE(EndGuards)
 
 // XXX
 NOOP_OPCODE(DbgAssertPtr);
@@ -136,7 +139,6 @@ CALL_OPCODE(Box)
 CALL_OPCODE(ConvIntToStr)
 
 CALL_OPCODE(AllocObj)
-CALL_OPCODE(NewPackedArray)
 
 CALL_OPCODE(ConcatStrStr)
 CALL_OPCODE(ConcatIntStr)
@@ -184,6 +186,9 @@ CALL_OPCODE(LdArrFuncCtx)
 CALL_OPCODE(LdArrFPushCuf)
 CALL_OPCODE(LdStrFPushCuf)
 CALL_OPCODE(NewArray)
+CALL_OPCODE(NewMixedArray)
+CALL_OPCODE(NewLikeArray)
+CALL_OPCODE(NewPackedArray)
 CALL_OPCODE(NewCol)
 CALL_OPCODE(Clone)
 CALL_OPCODE(ClosureStaticLocInit)
@@ -199,27 +204,31 @@ CALL_OPCODE(ArrayAdd)
 CALL_OPCODE(CreateCont)
 CALL_OPCODE(CreateAFWH)
 CALL_OPCODE(CreateSSWH)
+CALL_OPCODE(AFWHPrepareChild)
+CALL_OPCODE(BWHUnblockChain)
 CALL_OPCODE(TypeProfileFunc)
 CALL_OPCODE(IncStatGrouped)
 CALL_OPCODE(ZeroErrorLevel)
 CALL_OPCODE(RestoreErrorLevel)
+CALL_OPCODE(Count)
+CALL_OPCODE(CountArray)
 
 /////////////////////////////////////////////////////////////////////
 void cgPunt(const char* file, int line, const char* func, uint32_t bcOff,
-            const Func* vmFunc, bool resumed) {
+            const Func* vmFunc, bool resumed, TransID profTransId) {
   FTRACE(1, "punting: {}\n", func);
-  throw FailedCodeGen(file, line, func, bcOff, vmFunc, resumed);
+  throw FailedCodeGen(file, line, func, bcOff, vmFunc, resumed, profTransId);
 }
 
-#define PUNT_OPCODE(name)                                           \
-  void CodeGenerator::cg##name(IRInstruction* inst) {               \
-    cgPunt(__FILE__, __LINE__, #name, m_curInst->marker().bcOff(),  \
-           curFunc(), resumed());                                   \
+#define PUNT_OPCODE(name)                                               \
+  void CodeGenerator::cg##name(IRInstruction* inst) {                   \
+    cgPunt(__FILE__, __LINE__, #name, m_curInst->marker().bcOff(),      \
+           curFunc(), resumed(), m_curInst->marker().profTransId());    \
   }
 
 #define CG_PUNT(instr)                                              \
     cgPunt(__FILE__, __LINE__, #instr, m_curInst->marker().bcOff(), \
-           curFunc(), resumed())
+           curFunc(), resumed(), m_curInst->marker().profTransId())
 
 /////////////////////////////////////////////////////////////////////
 //TODO t3702757: Convert to CALL_OPCODE, the following set works on
@@ -256,6 +265,7 @@ PUNT_OPCODE(ProfileArray)
 PUNT_OPCODE(CheckTypeMem)
 PUNT_OPCODE(CheckLoc)
 PUNT_OPCODE(CastStk)
+PUNT_OPCODE(CastStkIntToDbl)
 PUNT_OPCODE(CoerceStk)
 PUNT_OPCODE(CheckDefinedClsEq)
 PUNT_OPCODE(TryEndCatch)
@@ -358,8 +368,8 @@ PUNT_OPCODE(SideExitGuardLoc)
 PUNT_OPCODE(JmpIndirect)
 PUNT_OPCODE(CheckSurpriseFlags)
 PUNT_OPCODE(SurpriseHook)
-PUNT_OPCODE(FunctionExitSurpriseHook)
-PUNT_OPCODE(ExitOnVarEnv)
+PUNT_OPCODE(FunctionSuspendHook)
+PUNT_OPCODE(FunctionReturnHook)
 PUNT_OPCODE(ReleaseVVOrExit)
 PUNT_OPCODE(CheckInit)
 PUNT_OPCODE(CheckInitMem)
@@ -369,7 +379,7 @@ PUNT_OPCODE(CheckBounds)
 PUNT_OPCODE(LdVectorSize)
 PUNT_OPCODE(CheckPackedArrayBounds)
 PUNT_OPCODE(CheckPackedArrayElemNull)
-PUNT_OPCODE(VectorHasFrozenCopy)
+PUNT_OPCODE(VectorHasImmCopy)
 PUNT_OPCODE(VectorDoCow)
 PUNT_OPCODE(CheckNonNull)
 PUNT_OPCODE(AssertNonNull)
@@ -427,7 +437,9 @@ PUNT_OPCODE(LdSSwitchDestFast)
 PUNT_OPCODE(LdSSwitchDestSlow)
 PUNT_OPCODE(JmpSwitchDest)
 PUNT_OPCODE(ConstructInstance)
+PUNT_OPCODE(CheckInitProps)
 PUNT_OPCODE(InitProps)
+PUNT_OPCODE(CheckInitSProps)
 PUNT_OPCODE(InitSProps)
 PUNT_OPCODE(NewInstanceRaw)
 PUNT_OPCODE(InitObjProps)
@@ -443,7 +455,6 @@ PUNT_OPCODE(StRetVal)
 PUNT_OPCODE(RetAdjustStack)
 PUNT_OPCODE(StMem)
 PUNT_OPCODE(StProp)
-PUNT_OPCODE(StCell)
 PUNT_OPCODE(StLocNT)
 PUNT_OPCODE(StRef)
 PUNT_OPCODE(StRaw)
@@ -462,13 +473,8 @@ PUNT_OPCODE(DecRef)
 PUNT_OPCODE(DecRefNZ)
 PUNT_OPCODE(DefInlineFP)
 PUNT_OPCODE(InlineReturn)
-PUNT_OPCODE(DefInlineSP)
 PUNT_OPCODE(ReDefSP)
 PUNT_OPCODE(OODeclExists);
-PUNT_OPCODE(PassSP)
-PUNT_OPCODE(PassFP)
-PUNT_OPCODE(StashResumableSP)
-PUNT_OPCODE(ReDefResumableSP)
 PUNT_OPCODE(VerifyParamCls)
 PUNT_OPCODE(VerifyRetCls)
 PUNT_OPCODE(ConcatCellCell)
@@ -486,12 +492,13 @@ PUNT_OPCODE(StContArValue)
 PUNT_OPCODE(LdContArKey)
 PUNT_OPCODE(StContArKey)
 PUNT_OPCODE(StAsyncArRaw)
-PUNT_OPCODE(StAsyncArChild)
 PUNT_OPCODE(StAsyncArResult)
+PUNT_OPCODE(LdAsyncArFParent)
+PUNT_OPCODE(AFWHBlockOn)
 PUNT_OPCODE(LdWHState)
 PUNT_OPCODE(LdWHResult)
 PUNT_OPCODE(LdAFWHActRec)
-PUNT_OPCODE(CopyCells)
+PUNT_OPCODE(LdResumableArObj)
 PUNT_OPCODE(IterInit)
 PUNT_OPCODE(IterInitK)
 PUNT_OPCODE(IterNext)
@@ -585,19 +592,18 @@ PUNT_OPCODE(ColIsNEmpty)
 
 //////////////////////////////////////////////////////////////////////
 
-void CodeGenerator::emitJumpToBlock(CodeBlock& cb,
-                                    Block* target,
-                                    ConditionCode cc) {
+void emitJumpToBlock(CodeBlock& cb, Block* target, ConditionCode cc,
+                     CodegenState& state) {
   vixl::MacroAssembler as { cb };
 
-  if (m_state.addresses[target]) {
+  if (state.addresses[target]) {
     not_implemented();
   }
 
   // The block hasn't been emitted yet. Record the location in CodegenState.
   // CodegenState holds a map from Block* to the head of a linked list, where
   // the jump instructions themselves are the list nodes.
-  auto next = reinterpret_cast<TCA>(m_state.patches[target]);
+  auto next = reinterpret_cast<TCA>(state.patches[target]);
   auto here = cb.frontier();
 
   // To avoid encoding 0x0 as the jump target. That would conflict with the use
@@ -608,7 +614,7 @@ void CodeGenerator::emitJumpToBlock(CodeBlock& cb,
   // This will never actually be executed as a jump to "next". It's just a
   // pointer to the next jump instruction to retarget.
   mcg->backEnd().emitSmashableJump(cb, next, cc);
-  m_state.patches[target] = here;
+  state.patches[target] = here;
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -633,7 +639,7 @@ void CodeGenerator::cgHalt(IRInstruction* inst) {
 //////////////////////////////////////////////////////////////////////
 
 void CodeGenerator::cgJmp(IRInstruction* inst) {
-  emitJumpToBlock(m_mainCode, inst->taken(), CC_None);
+  emitJumpToBlock(m_mainCode, inst->taken(), CC_None, m_state);
 }
 
 void CodeGenerator::cgDbgAssertRefCount(IRInstruction* inst) {
@@ -1259,13 +1265,16 @@ void CodeGenerator::emitTypeTest(Type type, vixl::Register typeReg, Loc dataSrc,
     // though; the jump instruction will be written by some other code.
     m_as.   Tst   (typeReg, KindOfStringBit);
     cc = CC_NE;
-  } else if (type.equals(Type::UncountedInit)) {
+  } else if (type == Type::Null) {
+    m_as.   Cmp   (typeReg, KindOfNull);
+    cc = CC_LE;
+  } else if (type == Type::UncountedInit) {
     m_as.   Tst   (typeReg, KindOfUncountedInitBit);
     cc = CC_NE;
-  } else if (type.equals(Type::Uncounted)) {
+  } else if (type == Type::Uncounted) {
     m_as.   Cmp   (typeReg, KindOfRefCountThreshold);
     cc = CC_LE;
-  } else if (type.equals(Type::Cell)) {
+  } else if (type == Type::Cell) {
     m_as.   Cmp   (typeReg, KindOfRef);
     cc = CC_L;
   } else {
@@ -1333,7 +1342,7 @@ void CodeGenerator::cgCheckStk(IRInstruction* inst) {
     rAsm.W(),
     rSP[baseOff + TVOFF(m_data)],
     [&] (ConditionCode cc) {
-      emitJumpToBlock(m_mainCode, inst->taken(), ccNegate(cc));
+      emitJumpToBlock(m_mainCode, inst->taken(), ccNegate(cc), m_state);
     }
   );
 }
@@ -1366,7 +1375,7 @@ void CodeGenerator::cgCheckType(IRInstruction* inst) {
   };
 
   auto doJcc = [&] (ConditionCode cc) {
-    emitJumpToBlock(m_mainCode, inst->taken(), ccNegate(cc));
+    emitJumpToBlock(m_mainCode, inst->taken(), ccNegate(cc), m_state);
   };
 
   Type typeParam = inst->typeParam();
@@ -1377,7 +1386,7 @@ void CodeGenerator::cgCheckType(IRInstruction* inst) {
     return;
   }
   if (srcType.not(typeParam)) {
-    emitJumpToBlock(m_mainCode, inst->taken(), CC_None);
+    emitJumpToBlock(m_mainCode, inst->taken(), CC_None, m_state);
     return;
   }
 
@@ -1415,7 +1424,7 @@ void CodeGenerator::cgSideExitGuardStk(IRInstruction* inst) {
     sp[cellsToBytes(extra->checkedSlot) + TVOFF(m_data)],
     [&] (ConditionCode cc) {
       auto const sk = SrcKey(curFunc(), extra->taken, resumed());
-      emitBindSideExit(this->m_mainCode, this->m_unusedCode, sk, ccNegate(cc));
+      emitBindSideExit(this->m_mainCode, this->m_frozenCode, sk, ccNegate(cc));
     }
   );
 }
@@ -1530,7 +1539,7 @@ void CodeGenerator::cgSyncABIRegs(IRInstruction* inst) {
 void CodeGenerator::cgReqBindJmp(IRInstruction* inst) {
   emitBindJmp(
     m_mainCode,
-    m_unusedCode,
+    m_frozenCode,
     SrcKey(curFunc(), inst->extra<ReqBindJmp>()->offset, resumed())
   );
 }
@@ -1607,11 +1616,10 @@ void CodeGenerator::cgCallBuiltin(IRInstruction* inst) {
   if (FixupMap::eagerRecord(func)) {
     // Save VM registers
     auto const* pc = curFunc()->unit()->entry() + m_curInst->marker().bcOff();
-    m_as.Str  (rVmFp, rGContextReg[offsetof(ExecutionContext, m_fp)]);
-    m_as.Str  (rVmSp, rGContextReg[offsetof(ExecutionContext, m_stack) +
-                                   Stack::topOfStackOffset()]);
+    m_as.Str  (rVmFp, rVmTl[RDS::kVmfpOff]);
+    m_as.Str  (rVmSp, rVmTl[RDS::kVmspOff]);
     m_as.Mov  (rAsm, pc);
-    m_as.Str  (rAsm, rGContextReg[offsetof(ExecutionContext, m_pc)]);
+    m_as.Str  (rAsm, rVmTl[RDS::kVmpcOff]);
   }
 
   // The stack pointer currently points to the MInstrState we need to use.
@@ -1634,7 +1642,7 @@ void CodeGenerator::cgCallBuiltin(IRInstruction* inst) {
   }
   for (auto i = uint32_t{0}; i < numArgs; ++i, ++srcNum) {
     auto const& pi = func->params()[i];
-    if (TVOFF(m_data) && isSmartPtrRef(pi.builtinType())) {
+    if (TVOFF(m_data) && isSmartPtrRef(pi.builtinType)) {
       callArgs.addr(srcLoc(srcNum).reg(), TVOFF(m_data));
     } else {
       callArgs.ssa(srcNum);
@@ -1702,8 +1710,8 @@ void CodeGenerator::cgCall(IRInstruction* inst) {
 
   auto const srcKey = m_curInst->marker().sk();
   auto const adjust = emitBindCall(m_mainCode,
-                                   m_stubsCode,
-                                   m_unusedCode,
+                                   m_coldCode,
+                                   m_frozenCode,
                                    srcKey,
                                    extra->callee,
                                    extra->numParams);
@@ -1960,18 +1968,38 @@ void CodeGenerator::cgInterpOne(IRInstruction* inst) {
 void CodeGenerator::cgInterpOneCF(IRInstruction* inst) {
   cgInterpOneCommon(inst);
 
-  m_as.   Ldr   (rVmFp, rReturnReg[offsetof(ExecutionContext, m_fp)]);
-  m_as.   Ldr   (rVmSp, rReturnReg[offsetof(ExecutionContext, m_stack) +
-                                   Stack::topOfStackOffset()]);
+  m_as.   Ldr   (rVmFp, rVmTl[RDS::kVmfpOff]);
+  m_as.   Ldr   (rVmSp, rVmTl[RDS::kVmspOff]);
 
   emitServiceReq(m_mainCode, REQ_RESUME);
 }
 
+void CodeGenerator::cgLdClsName(IRInstruction* inst) {
+  auto const dstReg = x2a(dstLoc(0).reg());
+  auto const srcReg = x2a(srcLoc(0).reg());
+
+  m_as.   Ldr   (dstReg, srcReg[Class::preClassOff()]);
+  m_as.   Ldr   (dstReg, dstReg[PreClass::nameOffset()]);
+}
+
 //////////////////////////////////////////////////////////////////////
 
-Address CodeGenerator::cgInst(IRInstruction* inst) {
+void CodeGenerator::cgCountArrayFast(IRInstruction* inst) {
+  auto const baseReg = x2a(srcLoc(0).reg());
+  auto const dstReg = x2a(dstLoc(0).reg());
+  m_as.  Ldr  (dstReg.W(), baseReg[ArrayData::offsetofSize()]);
+}
+
+void CodeGenerator::cgCountCollection(IRInstruction* inst) {
+  auto const baseReg = x2a(srcLoc(0).reg());
+  auto const dstReg = x2a(dstLoc(0).reg());
+  m_as.  Ldr  (dstReg.W(), baseReg[FAST_COLLECTION_SIZE_OFFSET]);
+}
+
+//////////////////////////////////////////////////////////////////////
+
+void CodeGenerator::cgInst(IRInstruction* inst) {
   Opcode opc = inst->op();
-  auto const start = m_as.frontier();
   m_curInst = inst;
   SCOPE_EXIT { m_curInst = nullptr; };
 
@@ -1979,12 +2007,11 @@ Address CodeGenerator::cgInst(IRInstruction* inst) {
 #define O(name, dsts, srcs, flags)                                \
   case name: FTRACE(7, "cg" #name "\n");                          \
              cg ## name (inst);                                   \
-             return m_as.frontier() == start ? nullptr : start;
+             return;
     IR_OPCODES
 #undef O
   default:
-    assert(0);
-    return nullptr;
+    always_assert(false);
   }
 }
 

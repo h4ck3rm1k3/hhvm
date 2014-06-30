@@ -129,6 +129,7 @@
   CASE(CreateCl) \
   CASE(DefCns) \
   CASE(DefFunc) \
+  CASE(Dir) \
   CASE(Div) \
   CASE(Double) \
   CASE(Dup) \
@@ -145,6 +146,7 @@
   CASE(FPushFuncU) \
   CASE(FPushObjMethodD) \
   CASE(False) \
+  CASE(File) \
   CASE(Floor) \
   CASE(Idx) \
   CASE(InitThisLoc) \
@@ -159,9 +161,12 @@
   CASE(MIterFree) \
   CASE(Mod) \
   CASE(Pow) \
+  CASE(NameA) \
   CASE(NativeImpl) \
   CASE(NewArray) \
   CASE(NewCol) \
+  CASE(NewLikeArrayL) \
+  CASE(NewMixedArray) \
   CASE(NewPackedArray) \
   CASE(Nop) \
   CASE(Not) \
@@ -188,6 +193,7 @@
   CASE(Strlen) \
   CASE(This) \
   CASE(True) \
+  CASE(Unbox) \
   CASE(UnsetL) \
   CASE(VGetG) \
   CASE(VGetL) \

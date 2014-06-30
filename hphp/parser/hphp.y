@@ -1,21 +1,17 @@
 %{
-#ifdef XHPAST2_PARSER
-#include "hphp/parser/xhpast2/parser.h"
-#else
-#include "hphp/compiler/parser/parser.h"
-#endif
-#include <boost/lexical_cast.hpp>
-#include "hphp/util/text-util.h"
-#include "hphp/util/logger.h"
-
 // macros for bison
 #define YYSTYPE HPHP::HPHP_PARSER_NS::Token
-#define YYSTYPE_IS_TRIVIAL 1
+#define YYSTYPE_IS_TRIVIAL false
 #define YYLTYPE HPHP::Location
-#define YYLTYPE_IS_TRIVIAL 1
+#define YYLTYPE_IS_TRIVIAL true
 #define YYERROR_VERBOSE
 #define YYINITDEPTH 500
 #define YYLEX_PARAM _p
+
+#include "hphp/compiler/parser/parser.h"
+#include <boost/lexical_cast.hpp>
+#include "hphp/util/text-util.h"
+#include "hphp/util/logger.h"
 
 #ifdef yyerror
 #undef yyerror
@@ -339,7 +335,7 @@ static void xhp_attribute_stmt(Parser *_p, Token &out, Token &attributes) {
     Token cls;     _p->onName(cls, parent, Parser::StringName);
     Token fname;   fname.setText("__xhpAttributeDeclaration");
     Token param1;  _p->onCall(param1, 0, fname, dummy, &cls);
-    Token params1; _p->onCallParam(params1, NULL, param1, 0);
+    Token params1; _p->onCallParam(params1, NULL, param1, false, false);
 
     for (unsigned int i = 0; i < classes.size(); i++) {
       Token parent;  parent.set(T_STRING, classes[i]);
@@ -347,11 +343,12 @@ static void xhp_attribute_stmt(Parser *_p, Token &out, Token &attributes) {
       Token fname;   fname.setText("__xhpAttributeDeclaration");
       Token param;   _p->onCall(param, 0, fname, dummy, &cls);
 
-      Token params; _p->onCallParam(params, &params1, param, 0);
+      Token params; _p->onCallParam(params, &params1, param, false, false);
       params1 = params;
     }
 
-    Token params2; _p->onCallParam(params2, &params1, arrAttributes, 0);
+    Token params2; _p->onCallParam(params2, &params1, arrAttributes,
+                                   false, false);
 
     Token name;    name.set(T_STRING, "array_merge");
     Token call;    _p->onCall(call, 0, name, params2, NULL);
@@ -577,6 +574,7 @@ static int yylex(YYSTYPE *token, HPHP::Location *loc, Parser *_p) {
 %left T_LOGICAL_AND
 %right T_PRINT
 %left '=' T_PLUS_EQUAL T_MINUS_EQUAL T_MUL_EQUAL T_DIV_EQUAL T_CONCAT_EQUAL T_MOD_EQUAL T_AND_EQUAL T_OR_EQUAL T_XOR_EQUAL T_SL_EQUAL T_SR_EQUAL T_POW_EQUAL
+%right T_AWAIT T_YIELD
 %left '?' ':'
 %left T_BOOLEAN_OR
 %left T_BOOLEAN_AND
@@ -674,8 +672,6 @@ static int yylex(YYSTYPE *token, HPHP::Location *loc, Parser *_p) {
 %token T_DIR
 %token T_NS_SEPARATOR
 
-%token T_YIELD
-
 %token T_XHP_LABEL
 %token T_XHP_TEXT
 %token T_XHP_ATTRIBUTE
@@ -707,7 +703,6 @@ static int yylex(YYSTYPE *token, HPHP::Location *loc, Parser *_p) {
 %token T_UNRESOLVED_NEWTYPE
 
 %token T_COMPILER_HALT_OFFSET
-%right T_AWAIT
 %token T_ASYNC
 
 %right T_FROM
@@ -937,7 +932,14 @@ statement:
     foreach_optional_arg ')'           { _p->onNewLabelScope(false);
                                          _p->pushLabelScope();}
     foreach_statement                  { _p->popLabelScope();
-                                         _p->onForEach($$,$3,$5,$6,$9);
+                                         _p->onForEach($$,$3,$5,$6,$9, false);
+                                         _p->onCompleteLabelScope(false);}
+  | T_FOREACH '(' expr
+    T_AWAIT T_AS foreach_variable
+    foreach_optional_arg ')'           { _p->onNewLabelScope(false);
+                                         _p->pushLabelScope();}
+    foreach_statement                  { _p->popLabelScope();
+                                         _p->onForEach($$,$3,$6,$7,$10, true);
                                          _p->onCompleteLabelScope(false);}
   | T_DECLARE '(' declare_list ')'
     declare_statement                  { _p->onBlock($$, $5); $$ = T_DECLARE;}
@@ -1382,12 +1384,15 @@ function_call_parameter_list:
   |                                    { $$.reset();}
 ;
 non_empty_fcall_parameter_list:
-    expr                               { _p->onCallParam($$,NULL,$1,0);}
-  | '&' variable                       { _p->onCallParam($$,NULL,$2,1);}
-  | non_empty_fcall_parameter_list ','
-    expr                               { _p->onCallParam($$,&$1,$3,0);}
-  | non_empty_fcall_parameter_list ','
-    '&' variable                       { _p->onCallParam($$,&$1,$4,1);}
+  expr                               { _p->onCallParam($$,NULL,$1,false,false);}
+| '&' variable                       { _p->onCallParam($$,NULL,$2,true,false);}
+| "..." expr                         { _p->onCallParam($$,NULL,$2,false,true);}
+| non_empty_fcall_parameter_list
+',' expr                           { _p->onCallParam($$,&$1,$3,false, false);}
+| non_empty_fcall_parameter_list
+',' "..." expr                     { _p->onCallParam($$,&$1,$4,false,true);}
+| non_empty_fcall_parameter_list
+',' '&' variable                   { _p->onCallParam($$,&$1,$4,true, false);}
 ;
 
 global_var_list:
@@ -1455,9 +1460,9 @@ class_statement:
   | T_XHP_CHILDREN
     xhp_children_stmt ';'              { xhp_children_stmt(_p,$$,$2);}
   | T_REQUIRE T_EXTENDS fully_qualified_class_name  ';'
-                                       { _p->onTraitRequire($$, $3, true); }
+                                       { _p->onClassRequire($$, $3, true); }
   | T_REQUIRE T_IMPLEMENTS fully_qualified_class_name ';'
-                                       { _p->onTraitRequire($$, $3, false); }
+                                       { _p->onClassRequire($$, $3, false); }
   | T_USE trait_list ';'               { Token t; t.reset();
                                          _p->onTraitUse($$,$2,t); }
   | T_USE trait_list '{'
@@ -1854,6 +1859,7 @@ lambda_body:
 shape_keyname:
     T_CONSTANT_ENCAPSED_STRING        { validate_shape_keyname($1, _p);
                                         _p->onScalar($$, T_CONSTANT_ENCAPSED_STRING, $1); }
+  | class_constant                    { $$ = $1 }
 ;
 
 non_empty_shape_pair_list:
@@ -2040,10 +2046,10 @@ xhp_tag_body:
                                          Token t2; _p->onArray(t2,$2);
                                          Token file; scalar_file(_p, file);
                                          Token line; scalar_line(_p, line);
-                                         _p->onCallParam($1,NULL,t1,0);
-                                         _p->onCallParam($$, &$1,t2,0);
-                                         _p->onCallParam($1, &$1,file,0);
-                                         _p->onCallParam($1, &$1,line,0);
+                                         _p->onCallParam($1,NULL,t1,0,0);
+                                         _p->onCallParam($$, &$1,t2,0,0);
+                                         _p->onCallParam($1, &$1,file,0,0);
+                                         _p->onCallParam($1, &$1,line,0,0);
                                          $$.setText("");}
   | xhp_attributes T_XHP_TAG_GT
     xhp_children T_XHP_TAG_LT '/'
@@ -2051,10 +2057,10 @@ xhp_tag_body:
                                          Token line; scalar_line(_p, line);
                                          _p->onArray($4,$1);
                                          _p->onArray($5,$3);
-                                         _p->onCallParam($2,NULL,$4,0);
-                                         _p->onCallParam($$, &$2,$5,0);
-                                         _p->onCallParam($2, &$2,file,0);
-                                         _p->onCallParam($2, &$2,line,0);
+                                         _p->onCallParam($2,NULL,$4,0,0);
+                                         _p->onCallParam($$, &$2,$5,0,0);
+                                         _p->onCallParam($2, &$2,file,0,0);
+                                         _p->onCallParam($2, &$2,line,0,0);
                                          $$.setText($6.text());}
 ;
 xhp_opt_end_label:
@@ -2755,16 +2761,22 @@ hh_typeargs_opt:
   |                                    { $$.reset(); }
 ;
 
-hh_type_list:
+hh_non_empty_type_list:
     hh_type                            { Token t; t.reset();
                                          _p->onTypeList($1, t);
                                          $$ = $1; }
-  | hh_type_list ',' hh_type           { _p->onTypeList($1, $3);
+  | hh_non_empty_type_list ',' hh_type { _p->onTypeList($1, $3);
                                          $$ = $1; }
 ;
 
+hh_type_list:
+    hh_non_empty_type_list
+    possible_comma                     { $$ = $1; }
+;
+
 hh_func_type_list:
-  hh_type_list ',' T_ELLIPSIS          { $$ = $1; }
+    hh_non_empty_type_list
+    ',' T_ELLIPSIS                     { $$ = $1; }
   | hh_type_list                       { $$ = $1; }
   | T_ELLIPSIS                         { $$.reset(); }
   |                                    { $$.reset(); }
@@ -2788,6 +2800,12 @@ hh_shape_member_type:
     T_CONSTANT_ENCAPSED_STRING
       T_DOUBLE_ARROW
       hh_type                      { validate_shape_keyname($1, _p); }
+ |  class_namespace_string_typeargs
+      T_DOUBLE_COLON
+      ident
+     T_DOUBLE_ARROW
+      hh_type                      { }
+
 ;
 
 hh_non_empty_shape_member_list:
@@ -2842,7 +2860,9 @@ hh_type:
                                         _p->onTypeList($7, $4);
                                         _p->onTypeAnnotation($$, $2, $7);
                                         _p->onTypeSpecialization($$, 'f'); }
-  | '(' hh_type_list ',' hh_type ')'  { only_in_hh_syntax(_p);
+  | '(' hh_type ','
+    hh_non_empty_type_list
+    possible_comma ')'                { only_in_hh_syntax(_p);
                                         _p->onTypeList($2, $4);
                                         Token t; t.reset(); t.setText("array");
                                         _p->onTypeAnnotation($$, t, $2);

@@ -131,7 +131,7 @@ class ReflectionParameter implements Reflector {
     } else {
       $out .= '<required> '.$type.'$'.$this->getName();
     }
-    $out .= ' ]';
+    $out .= " ]\n";
     return $out;
   }
 
@@ -260,18 +260,14 @@ class ReflectionParameter implements Reflector {
       return null;
     }
     $ltype = strtolower($this->info['type']);
-    if (hphp_scalar_typehints_enabled()) {
-      $nonClassTypehints = array(
-        'HH\bool' => 1,
-        'HH\int' => 1,
-        'HH\float' => 1,
-        'HH\string' => 1,
-        'array' => 1
-      );
-      if (isset($nonClassTypehints[$ltype])) {
-        return null;
-      }
-    } else if ($ltype === 'array') {
+    $nonClassTypehints = array(
+      'hh\bool' => 1,
+      'hh\int' => 1,
+      'hh\float' => 1,
+      'hh\string' => 1,
+      'array' => 1
+    );
+    if (isset($nonClassTypehints[$ltype])) {
       return null;
     }
     return new ReflectionClass($this->info['type']);
@@ -555,7 +551,25 @@ class ReflectionProperty implements Reflector {
    *
    */
   public function __toString() {
-    return "";
+    if ($this->isStatic()) {
+      $def = '';
+    } elseif ($this->isDefault()) {
+      $def = '<default> ';
+    } else {
+      $def = '<dynamic> ';
+    }
+    // FIXME: Implicit public
+    if ($this->isPrivate()) {
+      $modifiers = 'private';
+    } elseif ($this->isProtected()) {
+      $modifiers = 'protected';
+    } else {
+      $modifiers = 'public';
+    }
+    if ($this->isStatic()) {
+      $modifiers .= ' static';
+    }
+    return "Property [ {$def}{$modifiers} \${$this->getName()} ]\n";
   }
 
   // Prevent cloning
@@ -883,7 +897,13 @@ class ReflectionExtension implements Reflector {
    *                     same way as the ReflectionExtension::export().
    */
   public function __toString() {
-    return "";
+    /* HHVM extensions don't (currently) track what consts/ini/funcs/classes
+     * are associated with them (nor do they track a unique number).
+     * Provide a placeholder string with the data we do have pending
+     * changes to the Extension registry.
+     */
+    return "Extension [ <persistent> extension #0 {$this->getName()} " .
+           "version {$this->getVersion()} \{\}\n";
   }
 
   // Prevent cloning

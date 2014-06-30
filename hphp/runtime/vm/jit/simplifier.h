@@ -127,6 +127,7 @@ private:
   SSATmp* simplifyConvCellToStr(const IRInstruction*);
   SSATmp* simplifyConvCellToInt(const IRInstruction*);
   SSATmp* simplifyConvCellToDbl(const IRInstruction*);
+  SSATmp* simplifyConvCellToObj(const IRInstruction*);
   SSATmp* simplifyFloor(const IRInstruction*);
   SSATmp* simplifyCeil(const IRInstruction*);
   SSATmp* simplifyUnboxPtr(const IRInstruction*);
@@ -146,7 +147,6 @@ private:
                       SSATmp* src1, SSATmp* src2);
   SSATmp* simplifyCondJmp(const IRInstruction*);
   SSATmp* simplifyQueryJmp(const IRInstruction*);
-  SSATmp* simplifyExitOnVarEnv(const IRInstruction*);
   SSATmp* simplifyCastStk(const IRInstruction*);
   SSATmp* simplifyCoerceStk(const IRInstruction*);
   SSATmp* simplifyLdStack(const IRInstruction*);
@@ -158,6 +158,10 @@ private:
   SSATmp* simplifyCallBuiltin(const IRInstruction*);
   SSATmp* simplifyConvObjToBool(const IRInstruction*);
   SSATmp* simplifyIsWaitHandle(const IRInstruction*);
+  SSATmp* simplifyCount(const IRInstruction*);
+  SSATmp* simplifyCountArray(const IRInstruction*);
+  SSATmp* simplifyCountCollection(const IRInstruction*);
+  SSATmp* simplifyLdClsName(const IRInstruction*);
 
   template <class Oper>
   SSATmp* simplifyConst(SSATmp* src1, SSATmp* src2, Oper op);
@@ -288,13 +292,6 @@ SSATmp* canonical(SSATmp* tmp);
  * frame. Returns nullptr if the frame can't be found.
  */
 IRInstruction* findSpillFrame(SSATmp* sp);
-
-/*
- * Given an instruction defining a frame pointer, chase backwards in the
- * definition chain looking for a PassFP, returning it if found. If a
- * DefInlineFP or DefFP is found before a PassFP, returns nullptr.
- */
-IRInstruction* findPassFP(IRInstruction* inst);
 
 /*
  * Given an instruction defining a frame pointer, chase backwards in the

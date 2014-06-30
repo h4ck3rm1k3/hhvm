@@ -31,7 +31,7 @@
 #include "hphp/parser/parser.h"
 #include "hphp/util/lock.h"
 
-#include "hphp/runtime/base/file-repository.h"
+#include "hphp/runtime/base/unit-cache.h"
 #include "hphp/util/trace.h"
 
 using namespace HPHP::Trace;
@@ -92,7 +92,7 @@ bool register_intercept(const String& name, const Variant& callback, const Varia
   StringIMap<Variant> &handlers = s_intercept_data->m_intercept_handlers;
   if (!callback.toBoolean()) {
     if (name.empty()) {
-      s_intercept_data->m_global_handler = Variant();
+      s_intercept_data->m_global_handler.unset();
       handlers.clear();
     } else {
       handlers.erase(name);

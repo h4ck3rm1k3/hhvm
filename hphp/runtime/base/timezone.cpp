@@ -199,7 +199,7 @@ Array TimeZone::GetAbbreviations() {
       element.set(s_timezone_id, uninit_null());
     }
     auto& val = ret.lvalAt(String(entry->name));
-    forceToArray(val).append(element.create());
+    forceToArray(val).append(element.toArray());
   }
   return ret;
 }
@@ -293,7 +293,7 @@ Array TimeZone::getLocation() const {
   ret.set(s_longitude,    m_tzi->location.longitude);
   ret.set(s_comments,     String(m_tzi->location.comments, CopyString));
 #else
-  throw NotImplementedException("timelib version too old");
+  throw_not_implemented("timelib version too old");
 #endif
 
   return ret;

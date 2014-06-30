@@ -474,7 +474,7 @@ static int zend_parse_va_args(int num_args, const char *type_spec, va_list *va, 
   zval ****varargs = NULL;
   int *n_varargs = NULL;
 
-  HPHP::JIT::VMRegAnchor _;
+  HPHP::VMRegAnchor _;
 
   for (spec_walk = type_spec; *spec_walk; spec_walk++) {
     c = *spec_walk;
@@ -1626,10 +1626,8 @@ ZEND_API int _object_and_properties_init(zval *arg, zend_class_entry *class_type
     return FAILURE;
   }
   Z_OBJVAL_P(arg) = HPHP::ObjectData::newInstance(cls);
+  Z_OBJVAL_P(arg)->incRefCount();
   Z_TYPE_P(arg) = IS_OBJECT;
-  // Zend doesn't have this, but I think we need it or else new objects have a
-  // refcount of 0
-  Z_ADDREF_P(arg);
   return SUCCESS;
 }
 

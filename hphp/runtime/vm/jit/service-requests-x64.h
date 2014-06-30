@@ -31,29 +31,36 @@ namespace HPHP { namespace JIT { namespace X64 {
  *   the TC.
  *
  *   Return value is a destination; we emit the bulky service
- *   request code into astubs.
+ *   request code into acold.
  *
  *   Returns a continuation that will run after the arguments have been
  *   emitted. This is gross, but is a partial workaround for the inability
  *   to capture argument packs in the version of gcc we're using.
  */
-TCA emitServiceReqWork(CodeBlock& cb, TCA start, bool persist, SRFlags flags,
+TCA emitServiceReqWork(CodeBlock& cb, TCA start, SRFlags flags,
                        ServiceRequest req, const ServiceReqArgVec& argInfo);
 
 /*
- * "cb" may be either the main section or unused section.
+ * "cb" may be either the main section or frozen section.
  */
-void emitBindSideExit(CodeBlock& cb, CodeBlock& unused, JIT::ConditionCode cc,
-                      SrcKey dest);
-void emitBindJcc(CodeBlock& cb, CodeBlock& unused, JIT::ConditionCode cc,
+void emitBindJmp(CodeBlock& cb, CodeBlock& frozen, SrcKey dest,
+                 TransFlags trflags = TransFlags{});
+void emitBindJcc(CodeBlock& cb, CodeBlock& frozen, JIT::ConditionCode cc,
                  SrcKey dest);
-void emitBindJmp(CodeBlock& cb, CodeBlock& unused, SrcKey dest);
+void emitBindSideExit(CodeBlock& cb, CodeBlock& frozen, JIT::ConditionCode cc,
+                      SrcKey dest, TransFlags trflags = TransFlags{});
+
+/*
+ * Similar to the emitBindJ() series.  The address of the jmp is returned.
+ */
+TCA emitRetranslate(CodeBlock& cb, CodeBlock& frozen, JIT::ConditionCode cc,
+                    SrcKey dest, TransFlags trflags);
 
 /*
  * Returns the amount by which rVmSp should be adjusted.
  */
-int32_t emitBindCall(CodeBlock& mainCode, CodeBlock& stubsCode,
-                     CodeBlock& unusedCode, SrcKey srcKey,
+int32_t emitBindCall(CodeBlock& mainCode, CodeBlock& coldCode,
+                     CodeBlock& frozenCode, SrcKey srcKey,
                      const Func* funcd, int numArgs);
 
 }}}

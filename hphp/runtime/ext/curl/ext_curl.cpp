@@ -283,7 +283,7 @@ public:
       }
     }
     if (m_write.method == PHP_CURL_RETURN) {
-      return empty_string;
+      return empty_string_variant();
     }
     return true;
   }
@@ -713,7 +713,7 @@ public:
       m_exception = e.clone();
       m_phpException = false;
     }
-    return uninit_null();
+    return init_null();
   }
 
   static int curl_progress(void* p,
@@ -835,7 +835,7 @@ public:
 
   CURL *get(bool nullOkay = false) {
     if (m_cp == nullptr && !nullOkay) {
-      throw NullPointerException();
+      throw_null_pointer_exception();
     }
     return m_cp;
   }
@@ -1012,7 +1012,7 @@ Variant HHVM_FUNCTION(curl_version, int uversion /* = k_CURLVERSION_NOW */) {
     protocol_list.append(String(*p++, CopyString));
   }
   ret.set(s_protocols, protocol_list);
-  return ret.create();
+  return ret.toVariant();
 }
 
 bool HHVM_FUNCTION(curl_setopt, const Resource& ch, int option, const Variant& value) {
@@ -1081,7 +1081,7 @@ Variant HHVM_FUNCTION(curl_getinfo, const Resource& ch, int opt /* = 0 */) {
       if (s_code != nullptr) {
         ret.set(s_content_type, String(s_code, CopyString));
       } else {
-        ret.set(s_content_type, uninit_null());
+        ret.set(s_content_type, init_null());
       }
     }
     if (curl_easy_getinfo(cp, CURLINFO_HTTP_CODE, &l_code) == CURLE_OK) {
@@ -1209,7 +1209,7 @@ Variant HHVM_FUNCTION(curl_getinfo, const Resource& ch, int opt /* = 0 */) {
     }
   }
 
-  return uninit_null();
+  return init_null();
 }
 
 Variant HHVM_FUNCTION(curl_errno, const Resource& ch) {
@@ -1225,7 +1225,7 @@ Variant HHVM_FUNCTION(curl_error, const Resource& ch) {
 Variant HHVM_FUNCTION(curl_close, const Resource& ch) {
   CHECK_RESOURCE(curl);
   curl->close();
-  return uninit_null();
+  return init_null();
 }
 
 void HHVM_FUNCTION(curl_reset, const Resource& ch) {
@@ -1316,7 +1316,7 @@ public:
 
   CURLM *get() {
     if (m_multi == nullptr) {
-      throw NullPointerException();
+      throw_null_pointer_exception();
     }
     return m_multi;
   }
@@ -1338,7 +1338,7 @@ void CurlMultiResource::sweep() {
   CurlMultiResource *curlm = mh.getTyped<CurlMultiResource>(true, true); \
   if (curlm == nullptr) {                                                \
     raise_warning("expects parameter 1 to be cURL multi resource");      \
-    return uninit_null();                                                \
+    return init_null();                                                  \
   }                                                                      \
 
 Resource HHVM_FUNCTION(curl_multi_init) {
@@ -1370,8 +1370,7 @@ Variant HHVM_FUNCTION(curl_multi_exec, const Resource& mh, VRefParam still_runni
   return result;
 }
 
-/* Fallback implementation of curl_multi_select() for
- * libcurl < 7.28.0 without FB's curl_multi_select() patch
+/* Fallback implementation of curl_multi_select()
  *
  * This allows the OSS build to work with older package
  * versions of libcurl, but will fail with file descriptors
@@ -1413,7 +1412,7 @@ static void hphp_curl_multi_select(CURLM *mh, int timeout_ms, int *ret) {
 #  define curl_multi_select_func hphp_curl_multi_select
 # endif
 #else
-#define curl_multi_select_func curl_multi_select
+#define curl_multi_select_func(mh, tm, ret) curl_multi_wait((mh), nullptr, 0, (tm), (ret))
 #endif
 
 Variant HHVM_FUNCTION(curl_multi_select, const Resource& mh,
@@ -1497,7 +1496,7 @@ Variant HHVM_FUNCTION(curl_multi_info_read, const Resource& mh,
 Variant HHVM_FUNCTION(curl_multi_close, const Resource& mh) {
   CHECK_MULTI_RESOURCE(curlm);
   curlm->close();
-  return uninit_null();
+  return init_null();
 }
 
 ///////////////////////////////////////////////////////////////////////////////

@@ -20,6 +20,7 @@
 #include "hphp/runtime/base/smart-containers.h"
 #include "hphp/runtime/ext/asio/asio_context.h"
 #include "hphp/runtime/ext/asio/async_function_wait_handle.h"
+#include "hphp/runtime/ext/asio/async_generator_wait_handle.h"
 #include "hphp/runtime/ext/asio/gen_array_wait_handle.h"
 #include "hphp/runtime/ext/asio/gen_map_wait_handle.h"
 #include "hphp/runtime/ext/asio/gen_vector_wait_handle.h"
@@ -29,6 +30,12 @@
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
 
+void c_BlockableWaitHandle::UnblockChain(c_BlockableWaitHandle* parentChain) {
+  while (parentChain) {
+    parentChain = parentChain->unblock();
+  }
+}
+
 c_BlockableWaitHandle* c_BlockableWaitHandle::unblock() {
   c_BlockableWaitHandle* next = m_nextParent;
 
@@ -36,6 +43,8 @@ c_BlockableWaitHandle* c_BlockableWaitHandle::unblock() {
   switch (getKind()) {
     case Kind::AsyncFunction:
       static_cast<c_AsyncFunctionWaitHandle*>(this)->onUnblocked(); break;
+    case Kind::AsyncGenerator:
+      static_cast<c_AsyncGeneratorWaitHandle*>(this)->onUnblocked(); break;
     case Kind::GenArray:
       static_cast<c_GenArrayWaitHandle*>(this)->onUnblocked(); break;
     case Kind::GenMap:
@@ -48,9 +57,6 @@ c_BlockableWaitHandle* c_BlockableWaitHandle::unblock() {
     case Kind::ExternalThreadEvent:
       not_reached();
   }
-
-  // decrement ref count, we can't be called by child anymore
-  decRefObj(this);
 
   return next;
 }

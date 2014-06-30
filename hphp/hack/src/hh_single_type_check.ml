@@ -17,7 +17,6 @@ open Utils
 type options = {
   filename : string;
   suggest : bool;
-  flow : bool;
   rest : string list
 }
 
@@ -75,12 +74,11 @@ let die str =
   close_out oc;
   exit 2
 
-let error l = die (Utils.pmsg_l l)
+let error l = die (Errors.to_string l)
 
 let parse_options () =
   let fn_ref = ref None in
   let suggest = ref false in
-  let flow = ref false in
   let rest_options = ref [] in
   let rest x = rest_options := x :: !rest_options in
   let usage = Printf.sprintf "Usage: %s filename\n" Sys.argv.(0) in
@@ -88,9 +86,6 @@ let parse_options () =
     "--suggest",
       Arg.Set suggest,
       "Suggest missing typehints";
-    "--flow",
-      Arg.Set flow,
-      "";
     "--",
       Arg.Rest rest,
       "";
@@ -99,7 +94,7 @@ let parse_options () =
   let fn = match !fn_ref with
     | Some fn -> fn
     | None -> die usage in
-  { filename = fn; suggest = !suggest; flow = !flow; rest = !rest_options }
+  { filename = fn; suggest = !suggest; rest = !rest_options }
 
 let suggest_and_print fn funs classes typedefs consts =
   let make_set =
@@ -144,11 +139,17 @@ let parse_file fn =
     let files = make_files contentl in
     List.fold_right begin fun (sub_fn, content) ast ->
       Pos.file := fn^"--"^sub_fn ;
-      Parser_hack.program content @ ast
+      let {Parser_hack.is_hh_file; comments; ast = ast'} =
+        Parser_hack.program content
+      in
+      ast' @ ast
     end files []
   else begin
     Pos.file := fn ;
-    Parser_hack.program content
+    let {Parser_hack.is_hh_file; comments; ast} =
+      Parser_hack.program content
+    in
+    ast
   end
 
 (* collect definition names from parsed ast *)
@@ -175,35 +176,32 @@ let collect_defs ast =
 let main_hack { filename; suggest; _ } =
   SharedMem.init();
   Typing.debug := true;
-  try
-    Pos.file := builtins_filename;
-    let ast_builtins = Parser_hack.program builtins in
-    Pos.file := filename;
-    let ast_file = parse_file filename in
-    let ast = Namespaces.elaborate_defs (ast_builtins @ ast_file) in
-    Parser_heap.ParserHeap.add filename ast;
-    let funs, classes, typedefs, consts = collect_defs ast in
-    let nenv = Naming.make_env Naming.empty ~funs ~classes ~typedefs ~consts in
-    let all_classes = List.fold_right begin fun (_, cname) acc ->
-      SMap.add cname (SSet.singleton filename) acc
-    end classes SMap.empty in
-    Typing_decl.make_env nenv all_classes filename;
-    List.iter (fun (_, fname) -> Typing_check_service.type_fun fname) funs;
-    List.iter (fun (_, cname) -> Typing_check_service.type_class cname) classes;
-    List.iter (fun (_, x) -> Typing_check_service.check_typedef x) typedefs;
-    Printf.printf "No errors\n";
-    if suggest
-    then suggest_and_print filename funs classes typedefs consts
-  with
-  | Utils.Error l -> error l
-
-(* flow single-file entry point *)
-let main_flow { filename; suggest; rest; flow } =
-  SharedMem.init();
-  try
-    Flow.main [filename] rest
-  with
-  | Utils.Error l -> error l
+  let errors, () =
+    Errors.do_ begin fun () ->
+      Pos.file := builtins_filename;
+      let {Parser_hack.is_hh_file; comments; ast = ast_builtins} =
+        Parser_hack.program builtins
+      in
+      Pos.file := filename;
+      let ast_file = parse_file filename in
+      let ast = ast_builtins @ ast_file in
+      Parser_heap.ParserHeap.add filename ast;
+      let funs, classes, typedefs, consts = collect_defs ast in
+      let nenv = Naming.make_env Naming.empty ~funs ~classes ~typedefs ~consts in
+      let all_classes = List.fold_right begin fun (_, cname) acc ->
+        SMap.add cname (SSet.singleton filename) acc
+      end classes SMap.empty in
+      Typing_decl.make_env nenv all_classes filename;
+      List.iter (fun (_, fname) -> Typing_check_service.type_fun fname) funs;
+      List.iter (fun (_, cname) -> Typing_check_service.type_class cname) classes;
+      List.iter (fun (_, x) -> Typing_check_service.check_typedef x) typedefs;
+      if suggest
+      then suggest_and_print filename funs classes typedefs consts
+    end
+  in
+  if errors <> []
+  then error (List.hd errors)
+  else Printf.printf "No errors\n"
 
 (* command line driver *)
 let _ =
@@ -211,6 +209,5 @@ let _ =
   then ()
   else
     let options = parse_options () in
-    if options.flow
-    then main_flow options
-    else main_hack options
+    main_hack options
+

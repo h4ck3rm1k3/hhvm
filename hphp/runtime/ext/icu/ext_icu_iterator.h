@@ -60,7 +60,8 @@ public:
     }
     return obj;
   }
-  static IntlIterator* Get(Object obj) {
+
+  static IntlIterator* Get(ObjectData* obj) {
     return GetData<IntlIterator>(obj, s_IntlIterator);
   }
 
@@ -100,7 +101,7 @@ public:
 private:
   icu::StringEnumeration *m_enum = nullptr;
   int64_t m_key = -1;
-  Variant m_current = null_string;
+  Variant m_current{Variant::NullInit()};
 
   static Class* c_IntlIterator;
 };

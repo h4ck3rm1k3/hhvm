@@ -79,10 +79,7 @@ MySQL *MySQL::Get(const Variant& link_identifier) {
   if (link_identifier.isNull()) {
     return GetDefaultConn();
   }
-  MySQL *mysql = link_identifier.toResource().getTyped<MySQL>
-    (!RuntimeOption::ThrowBadTypeExceptions,
-     !RuntimeOption::ThrowBadTypeExceptions);
-  return mysql;
+  return link_identifier.toResource().getTyped<MySQL>(true, true);
 }
 
 MYSQL *MySQL::GetConn(const Variant& link_identifier, MySQL **rconn /* = NULL */) {
@@ -334,10 +331,8 @@ bool MySQL::reconnect(const String& host, int port, const String& socket,
 // helpers
 
 MySQLResult *php_mysql_extract_result(const Variant& result) {
-  MySQLResult *res = result.toResource().getTyped<MySQLResult>
-    (!RuntimeOption::ThrowBadTypeExceptions,
-     !RuntimeOption::ThrowBadTypeExceptions);
-  if (res == nullptr || (res->get() == nullptr && !res->isLocalized())) {
+  auto const res = result.toResource().getTyped<MySQLResult>(true, true);
+  if (res == nullptr || res->isInvalid()) {
     raise_warning("supplied argument is not a valid MySQL result resource");
     return nullptr;
   }
@@ -560,7 +555,7 @@ Variant php_mysql_do_connect_on_link(MySQL* mySQL, String server,
         return false;
       }
 #else
-      throw NotImplementedException("mysql_async_connect_start");
+      throw_not_implemented("mysql_async_connect_start");
 #endif
     } else {
       if (!mySQL->connect(host, port, socket, username, password,
@@ -675,7 +670,7 @@ MySQLFieldInfo *MySQLResult::getFieldInfo(int64_t field) {
 
 Variant MySQLResult::getField(int64_t field) const {
   if (!m_localized || field < 0 || field >= (int64_t)m_current_row->size()) {
-    return uninit_null();
+    return init_null();
   }
   return (*m_current_row)[field];
 }
@@ -712,6 +707,8 @@ bool MySQLResult::seekRow(int64_t row) {
 }
 
 bool MySQLResult::fetchRow() {
+  // If not localized, use standard mysql functions on m_res
+  assert(isLocalized());
   if (m_current_row != m_rows->end()) m_current_row++;
   if (m_current_row != m_rows->end()) {
     m_row_ready = true;
@@ -1187,7 +1184,7 @@ Variant mysql_makevalue(const String& data, MYSQL_FIELD *mysql_field) {
 
 Variant mysql_makevalue(const String& data, enum_field_types field_type) {
   if (field_type == MYSQL_TYPE_NULL) {
-    return uninit_null();
+    return init_null();
   } else if (mysqlExtension::TypedResults) {
     switch (field_type) {
     case MYSQL_TYPE_DECIMAL:
@@ -1377,7 +1374,7 @@ MySQLQueryReturn php_mysql_do_query(const String& query, const Variant& link_id,
     mySQL->m_async_query = query;
     return MySQLQueryReturn::OK;
 #else
-    throw NotImplementedException("mysql_async_query_start");
+    throw_not_implemented("mysql_async_query_start");
 #endif
   }
 
@@ -1421,8 +1418,11 @@ MySQLQueryReturn php_mysql_do_query(const String& query, const Variant& link_id,
   }
   Logger::Verbose("runtime/ext_mysql: successfully executed [%dms] [%s]",
                   (int)timer.getTime(), query.data());
-
-  return MySQLQueryReturn::OK_FETCH_RESULT;
+  if (mysql_field_count(conn) == 0) {
+    return MySQLQueryReturn::OK;
+  } else {
+    return MySQLQueryReturn::OK_FETCH_RESULT;
+  }
 }
 
 Variant php_mysql_get_result(const Variant& link_id, bool use_store) {

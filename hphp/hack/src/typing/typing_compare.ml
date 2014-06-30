@@ -175,6 +175,7 @@ module CompareTypes = struct
     let same = same && celt1.ce_visibility = celt2.ce_visibility in
     let same = same && celt1.ce_final = celt2.ce_final in
     let same = same && celt1.ce_override = celt2.ce_override in
+    let same = same && celt1.ce_synthesized = celt2.ce_synthesized in
     ty (subst, same) celt1.ce_type celt2.ce_type
 
   and members acc m1 m2 = smap class_elt acc m1 m2
@@ -188,6 +189,7 @@ module CompareTypes = struct
 
   and class_ (subst, same) c1 c2 =
     let same =
+      same &&
       c1.tc_final = c2.tc_final &&
       c1.tc_need_init = c2.tc_need_init &&
       c1.tc_members_fully_known = c2.tc_members_fully_known &&
@@ -268,7 +270,7 @@ module TraversePos(ImplementPos: sig val pos: Pos.t -> Pos.t end) = struct
 
   and ty_ = function
     | Tanon _
-    | Tvar _               -> raise (Error [Pos.none, "internal error"])
+    | Tvar _               -> failwith "Internal error"
     | Tany
     | Tmixed as x          -> x
     | Tarray (b, ty1, ty2) -> Tarray (b, ty_opt ty1, ty_opt ty2)
@@ -299,11 +301,12 @@ module TraversePos(ImplementPos: sig val pos: Pos.t -> Pos.t end) = struct
   and fun_param (x, y) = x, ty y
 
   and class_elt ce =
-    { ce_final      = ce.ce_final      ;
-      ce_override   = ce.ce_override   ;
-      ce_visibility = ce.ce_visibility ;
-      ce_type       = ty ce.ce_type    ;
-      ce_origin     = ce.ce_origin;
+    { ce_final       = ce.ce_final      ;
+      ce_override    = ce.ce_override   ;
+      ce_synthesized = ce.ce_synthesized;
+      ce_visibility  = ce.ce_visibility ;
+      ce_type        = ty ce.ce_type    ;
+      ce_origin      = ce.ce_origin     ;
     }
 
   and type_param (sid, y) =
@@ -317,6 +320,7 @@ module TraversePos(ImplementPos: sig val pos: Pos.t -> Pos.t end) = struct
       tc_members_fully_known   = tc.tc_members_fully_known            ;
       tc_kind                  = tc.tc_kind                           ;
       tc_name                  = tc.tc_name                           ;
+      tc_pos                   = tc.tc_pos                            ;
       tc_extends               = tc.tc_extends                        ;
       tc_req_ancestors         = tc.tc_req_ancestors                  ;
       tc_req_ancestors_extends = tc.tc_req_ancestors_extends          ;
@@ -330,9 +334,6 @@ module TraversePos(ImplementPos: sig val pos: Pos.t -> Pos.t end) = struct
       tc_ancestors             = SMap.map ty tc.tc_ancestors          ;
       tc_ancestors_checked_when_concrete    = SMap.map ty tc.tc_ancestors_checked_when_concrete ;
       tc_user_attributes       = tc.tc_user_attributes                ;
-      tc_prefetch_classes      = tc.tc_prefetch_classes               ;
-      tc_prefetch_funs         = tc.tc_prefetch_funs                  ;
-      tc_mtime                 = 0.0                                  ;
     }
 
   and constructor = function
@@ -341,10 +342,10 @@ module TraversePos(ImplementPos: sig val pos: Pos.t -> Pos.t end) = struct
 
   and typedef = function
     | Typing_env.Typedef.Error as x -> x
-    | Typing_env.Typedef.Ok (is_abstract, tparams, tcstr, h) ->
+    | Typing_env.Typedef.Ok (is_abstract, tparams, tcstr, h, pos) ->
         let tparams = List.map type_param tparams in
         let tcstr = ty_opt tcstr in
-        let tdef = (is_abstract, tparams, tcstr, ty h) in
+        let tdef = (is_abstract, tparams, tcstr, ty h, pos) in
         Typing_env.Typedef.Ok tdef
 end
 

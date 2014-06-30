@@ -26,7 +26,9 @@
 #include <set>
 #include <utility>
 #include <vector>
+
 #include "hphp/compiler/analysis/alias_manager.h"
+#include "hphp/compiler/analysis/exceptions.h"
 #include "hphp/compiler/analysis/file_scope.h"
 #include "hphp/compiler/analysis/class_scope.h"
 #include "hphp/compiler/analysis/code_error.h"
@@ -37,7 +39,7 @@
 #include "hphp/compiler/statement/loop_statement.h"
 #include "hphp/compiler/statement/class_variable.h"
 #include "hphp/compiler/statement/use_trait_statement.h"
-#include "hphp/compiler/statement/trait_require_statement.h"
+#include "hphp/compiler/statement/class_require_statement.h"
 #include "hphp/compiler/analysis/symbol_table.h"
 #include "hphp/compiler/package.h"
 #include "hphp/compiler/parser/parser.h"

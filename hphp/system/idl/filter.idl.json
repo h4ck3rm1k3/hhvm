@@ -243,7 +243,7 @@
             "args": [
                 {
                     "name": "filtername",
-                    "type": "String",
+                    "type": "Variant",
                     "desc": "Name of a filter to get."
                 }
             ]
@@ -270,7 +270,7 @@
                 {
                     "name": "options",
                     "type": "Variant",
-                    "value": "empty_array"
+                    "value": "empty_array_ref"
                 }
             ]
         }

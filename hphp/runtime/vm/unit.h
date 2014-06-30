@@ -344,10 +344,6 @@ struct Unit {
     assert(m_filepath);
     return m_filepath;
   }
-  const String& filepathRef() const {
-    assert(m_filepath);
-    return *(String*)(&m_filepath);
-  }
   const StringData* dirpath() const {
     assert(m_dirpath);
     return m_dirpath;
@@ -811,7 +807,7 @@ public:
   void emitDouble(double n, int64_t pos = -1) { emitImpl(n, pos); }
   bool insert(UnitOrigin unitOrigin, RepoTxn& txn);
   void commit(UnitOrigin unitOrigin);
-  Func* newFunc(const FuncEmitter* fe, Unit& unit, Id id, PreClass* preClass,
+  Func* newFunc(const FuncEmitter* fe, Unit& unit, PreClass* preClass,
                 int line1, int line2, Offset base, Offset past,
                 const StringData* name, Attr attrs, bool top,
                 const StringData* docComment, int numParams,

@@ -38,15 +38,12 @@ class c_AsyncFunctionWaitHandle : public c_ResumableWaitHandle {
  public:
   DECLARE_CLASS_NO_SWEEP(AsyncFunctionWaitHandle)
 
-  explicit c_AsyncFunctionWaitHandle(
-    Class* cls = c_AsyncFunctionWaitHandle::classof());
+  explicit c_AsyncFunctionWaitHandle(Class* cls =
+      c_AsyncFunctionWaitHandle::classof())
+    : c_ResumableWaitHandle(cls)
+  {}
   ~c_AsyncFunctionWaitHandle();
-  static void ti_setoncreatecallback(const Variant& callback);
-  static void ti_setonawaitcallback(const Variant& callback);
-  static void ti_setonsuccesscallback(const Variant& callback);
-  static void ti_setonfailcallback(const Variant& callback);
-  Object t_getprivdata();
-  void t_setprivdata(const Object& data);
+  void t___construct();
 
  public:
   static constexpr ptrdiff_t resumableOff() { return -sizeof(Resumable); }
@@ -66,17 +63,19 @@ class c_AsyncFunctionWaitHandle : public c_ResumableWaitHandle {
                                            size_t numSlots,
                                            JIT::TCA resumeAddr,
                                            Offset resumeOffset,
-                                           ObjectData* child);
+                                           c_WaitableWaitHandle* child);
+  static void PrepareChild(const ActRec* fp, c_WaitableWaitHandle* child);
   void resume();
   void onUnblocked();
+  void await(Offset resumeOffset, c_WaitableWaitHandle* child);
   void ret(Cell& result);
+  void fail(ObjectData* exception);
+  void failCpp();
   String getName();
   c_WaitableWaitHandle* getChild();
   void enterContextImpl(context_idx_t ctx_idx);
   void exitContext(context_idx_t ctx_idx);
   bool isRunning() { return getState() == STATE_RUNNING; }
-  void suspend(JIT::TCA resumeAddr, Offset resumeOffset,
-               c_WaitableWaitHandle* child);
   String getFileName();
   Offset getNextExecutionOffset();
   int getLineNumber();
@@ -93,14 +92,10 @@ class c_AsyncFunctionWaitHandle : public c_ResumableWaitHandle {
  private:
   void setState(uint8_t state) { setKindState(Kind::AsyncFunction, state); }
   void initialize(c_WaitableWaitHandle* child);
-  void markAsSucceeded();
-  void markAsFailed(const Object& exception);
-  c_WaitableWaitHandle* child() { return m_child; }
+  void prepareChild(c_WaitableWaitHandle* child);
 
   // valid if STATE_SCHEDULED || STATE_BLOCKED
   c_WaitableWaitHandle* m_child;
-
-  Object m_privData;
 
   static const int8_t STATE_SCHEDULED = 3;
   static const int8_t STATE_RUNNING   = 4;

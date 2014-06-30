@@ -24,6 +24,7 @@
 #include <memory>
 #include <set>
 #include <vector>
+#include <stdexcept>
 
 #include "hphp/runtime/ext/ext_fb.h"
 #include "hphp/runtime/base/runtime-option.h"
@@ -60,7 +61,7 @@ void apcExtension::moduleLoad(const IniSetting::Map& ini, Hdf config) {
   if (strcasecmp(tblType.c_str(), "concurrent") == 0) {
     TableType = TableTypes::ConcurrentTable;
   } else {
-    throw InvalidArgumentException("apc table type", "Invalid table type");
+    throw std::runtime_error("invalid apc table type");
   }
   EnableApcSerialize = Config::GetBool(ini, apc["EnableApcSerialize"], true);
   ExpireOnSets = Config::GetBool(ini, apc["ExpireOnSets"]);
@@ -95,7 +96,6 @@ void apcExtension::moduleLoad(const IniSetting::Map& ini, Hdf config) {
 
   UseUncounted = Config::GetBool(ini, apc["MemModelTreadmill"],
                                  RuntimeOption::ServerExecutionMode());
-  InnerUncounted = Config::GetBool(ini, apc["InnerUncounted"], false);
 
   IniSetting::Bind(this, IniSetting::PHP_INI_SYSTEM, "apc.enabled", &Enable);
   IniSetting::Bind(this, IniSetting::PHP_INI_SYSTEM, "apc.stat",
@@ -146,7 +146,6 @@ bool apcExtension::ConcurrentTableLockFree = false;
 bool apcExtension::FileStorageKeepFileLinked = false;
 std::vector<std::string> apcExtension::NoTTLPrefix;
 bool apcExtension::UseUncounted = false;
-bool apcExtension::InnerUncounted = false;
 bool apcExtension::Stat = true;
 // Different from zend default but matches what we've been returning for years
 bool apcExtension::EnableCLI = true;
@@ -399,7 +398,7 @@ Variant f_apc_cache_info(int64_t cache_id /* = 0 */,
 }
 
 Array f_apc_sma_info(bool limited /* = false */) {
-  return empty_array;
+  return empty_array();
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -584,7 +583,7 @@ void const_load_impl(struct cache_info *info,
         switch (*v++) {
         case 0: value = false; break;
         case 1: value = true; break;
-        case 2: value = uninit_null(); break;
+        case 2: value = init_null(); break;
         default:
           throw Exception("bad apc archive, unknown char type");
         }

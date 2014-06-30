@@ -375,17 +375,22 @@ void print(std::ostream& os, const Block* block,
   if (asmInfo) {
     // print code associated with this block that isn't tied to any
     // instruction.  This includes code after the last isntruction (e.g.
-    // jmp to next block), and AStubs code.
+    // jmp to next block), and ACold or AFrozen code.
     if (!blockRange.empty()) {
       os << std::string(kIndent, ' ') << punc("A:") << "\n";
       disasmRange(os, blockRange.start(), blockRange.end());
     }
-    auto astubRange = asmInfo->astubRanges[block];
-    if (!astubRange.empty()) {
-      os << std::string(kIndent, ' ') << punc("AStubs:") << "\n";
-      disasmRange(os, astubRange.start(), astubRange.end());
+    auto acoldRange = asmInfo->acoldRanges[block];
+    if (!acoldRange.empty()) {
+      os << std::string(kIndent, ' ') << punc("ACold:") << "\n";
+      disasmRange(os, acoldRange.start(), acoldRange.end());
     }
-    if (!blockRange.empty() || !astubRange.empty()) {
+    auto afrozenRange = asmInfo->afrozenRanges[block];
+    if (!afrozenRange.empty()) {
+      os << std::string(kIndent, ' ') << punc("AFrozen:") << "\n";
+      disasmRange(os, afrozenRange.start(), afrozenRange.end());
+    }
+    if (!blockRange.empty() || !acoldRange.empty() || !afrozenRange.empty()) {
       os << '\n';
     }
   }
@@ -414,6 +419,23 @@ std::string Block::toString() const {
 
 //////////////////////////////////////////////////////////////////////
 
+void printOpcodeStats(std::ostream& os, const BlockList& blocks) {
+  uint32_t counts[kNumOpcodes];
+  memset(counts, 0, sizeof(counts));
+
+  for (auto block : blocks) {
+    for (auto& inst : *block) ++counts[static_cast<size_t>(inst.op())];
+  }
+
+  os << "\nopcode counts:\n";
+  for (unsigned i = 0; i < kNumOpcodes; ++i) {
+    if (counts[i] == 0) continue;
+    auto op = safe_cast<Opcode>(i);
+    os << folly::format("{:>5} {}\n", counts[i], opcodeName(op));
+  }
+  os << '\n';
+}
+
 /*
  * Unit
  */
@@ -425,6 +447,9 @@ void print(std::ostream& os, const IRUnit& unit,
 
   auto const layout = layoutBlocks(unit);
   auto const& blocks = layout.blocks;
+
+  if (dumpIREnabled(kExtraExtraLevel)) printOpcodeStats(os, blocks);
+
   // Print the block CFG above the actual code.
   os << "digraph G {\n";
   for (Block* block : blocks) {
@@ -461,8 +486,11 @@ void print(std::ostream& os, const IRUnit& unit,
 
   curMarker = BCMarker();
   for (auto it = blocks.begin(); it != blocks.end(); ++it) {
-    if (it == layout.astubsIt) {
-      os << folly::format("\n{:-^60}", "unlikely blocks");
+    if (it == layout.acoldIt) {
+      os << folly::format("\n{:-^60}", "cold blocks");
+    }
+    if (it == layout.afrozenIt) {
+      os << folly::format("\n{:-^60}", "frozen blocks");
     }
     print(os, *it, regs, asmInfo, guards, &curMarker);
   }

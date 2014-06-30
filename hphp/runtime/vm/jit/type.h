@@ -521,23 +521,16 @@ public:
   }
 
   /*
-   * Returns true if this value has a known constant DataType enum value.  If
-   * the type is exactly Type::Str or Type::Null it returns true anyway, even
-   * though it could be either KindOfStaticString or KindOfString, or
-   * KindOfUninit or KindOfNull, respectively.
-   *
-   * TODO(#3390819): this function should return false for Str and Null.
+   * Returns true iff there exists a DataType in the range [KindOfUninit,
+   * KindOfRef] that represents a non-strict supertype of this type.
    *
    * Pre: subtypeOf(StackElem)
    */
   bool isKnownDataType() const {
     assert(subtypeOf(StackElem));
 
-    // Some unions that correspond to single KindOfs.  And Type::Str
-    // and Type::Null for now for historical reasons.
-    if (subtypeOfAny(Str, Arr, Null, BoxedCell)) {
-      return true;
-    }
+    // Some unions that correspond to single KindOfs.
+    if (subtypeOfAny(Str, Arr, BoxedCell)) return true;
 
     return !isUnion();
   }
@@ -558,7 +551,7 @@ public:
   }
 
   bool needsValueReg() const {
-    return !subtypeOfAny(Uninit, InitNull, Nullptr);
+    return !subtypeOfAny(Null, Nullptr);
   }
 
   bool needsStaticBitCheck() const {
@@ -786,12 +779,10 @@ public:
   ////////// Methods for talking to other type systems in the VM //////////
 
   /*
-   * TODO(#3390819): this function does not exactly convert this type into a
-   * DataType in cases where a type does not exactly map to a DataType.  For
-   * example, Null.toDataType() returns KindOfNull, even though it could be
-   * KindOfUninit.
+   * Returns the most specific DataType that is a supertype of this
+   * type.
    *
-   * Try not to use this function in new code.
+   * pre: isKnownDataType()
    */
   DataType toDataType() const;
 
@@ -843,7 +834,16 @@ struct TypeConstraint {
     : category(cat)
     , innerCat(inner)
     , weak(false)
+    , m_specialized(0)
   {}
+
+  explicit TypeConstraint(const Class* cls)
+    : TypeConstraint(DataTypeSpecialized)
+  {
+    setDesiredClass(cls);
+  }
+
+  void applyConstraint(TypeConstraint newTc);
 
   std::string toString() const;
 
@@ -854,11 +854,48 @@ struct TypeConstraint {
 
   bool operator==(TypeConstraint tc2) const {
     return category == tc2.category && innerCat == tc2.innerCat &&
-      weak == tc2.weak;
+      weak == tc2.weak && m_specialized == tc2.m_specialized;
   }
+  bool operator!=(TypeConstraint tc2) const { return !(*this == tc2); }
 
   bool empty() const {
     return category == DataTypeGeneric && innerCat == DataTypeGeneric && !weak;
+  }
+
+  static constexpr uint8_t kWantArrayKind = 0x1;
+
+  TypeConstraint& setWantArrayKind() {
+    assert(!wantClass());
+    assert(category == DataTypeSpecialized);
+    m_specialized |= kWantArrayKind;
+    return *this;
+  }
+
+  bool wantArrayKind() const { return m_specialized & kWantArrayKind; }
+
+  TypeConstraint& setDesiredClass(const Class* cls) {
+    assert(m_specialized == 0 ||
+           desiredClass()->classof(cls) || cls->classof(desiredClass()));
+    assert(category == DataTypeSpecialized || innerCat == DataTypeSpecialized);
+    m_specialized = reinterpret_cast<uintptr_t>(cls);
+    assert(wantClass());
+    return *this;
+  }
+
+  bool wantClass() const {
+    return m_specialized != 0 && !wantArrayKind();
+  }
+
+  const Class* desiredClass() const {
+    assert(wantClass());
+    return reinterpret_cast<const Class*>(m_specialized);
+  }
+
+  // Get the inner constraint, preserving m_specialized if appropriate.
+  TypeConstraint inner() const {
+    auto tc = TypeConstraint{innerCat}.setWeak(weak);
+    if (tc.category == DataTypeSpecialized) tc.m_specialized = m_specialized;
+    return tc;
   }
 
   // category starts as DataTypeGeneric and is refined to more specific values
@@ -875,6 +912,12 @@ struct TypeConstraint {
   // actually want to constrain the guard (if found). Most often used to figure
   // out if a type can be used without further constraining guards.
   bool weak;
+
+ private:
+  // m_specialized either holds a Class* or a 1 in its low bit, indicating that
+  // for a DataTypeSpecialized constraint, we require the specified class or an
+  // array kind, respectively.
+  uintptr_t m_specialized;
 };
 
 const int kTypeWordOffset = offsetof(TypedValue, m_type) % 8;

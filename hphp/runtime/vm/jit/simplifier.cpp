@@ -44,19 +44,13 @@ StackValueInfo getStackValue(SSATmp* sp, uint32_t index) {
   IRInstruction* inst = sp->inst();
 
   switch (inst->op()) {
-  case DefInlineSP:
   case DefSP:
+    // You aren't really allowed to look above your current stack.  We
+    // can't assert fail here if the index is too high right now
+    // though, because it's currently legal to call getStackValue with
+    // invalid stack offsets.  (And this is done in ir-builder; see
+    // TODO(#4355796)).
     return StackValueInfo { inst, Type::StackElem };
-
-  case ReDefResumableSP: {
-    auto const extra = inst->extra<ReDefResumableSP>();
-    auto info = getStackValue(inst->src(0), index);
-    if (extra->spansCall) info.spansCall = true;
-    return info;
-  }
-
-  case StashResumableSP:
-    return getStackValue(inst->src(1), index);
 
   case ReDefSP: {
     auto const extra = inst->extra<ReDefSP>();
@@ -65,7 +59,6 @@ StackValueInfo getStackValue(SSATmp* sp, uint32_t index) {
     return info;
   }
 
-  case PassSP:
   case ExceptionBarrier:
   case Mov:
     return getStackValue(inst->src(0), index);
@@ -77,6 +70,7 @@ StackValueInfo getStackValue(SSATmp* sp, uint32_t index) {
     return getStackValue(inst->src(0), index);
 
   case CastStk:
+  case CastStkIntToDbl:
     // fallthrough
   case CoerceStk:
     // fallthrough
@@ -125,6 +119,16 @@ StackValueInfo getStackValue(SSATmp* sp, uint32_t index) {
                  (kNumActRecCells +
                    inst->extra<Call>()->numParams) /* popped */)
       );
+    info.spansCall = true;
+    return info;
+  }
+
+  case ContEnter: {
+    if (index == 0) {
+      // return value from call
+      return StackValueInfo { inst, Type::Gen };
+    }
+    auto info = getStackValue(inst->src(0), index);
     info.spansCall = true;
     return info;
   }
@@ -236,13 +240,13 @@ void copyProp(IRInstruction* inst) {
     auto tmp     = inst->src(i);
     auto srcInst = tmp->inst();
 
-    if (srcInst->is(Mov, PassSP, PassFP)) {
+    if (srcInst->is(Mov)) {
       inst->setSrc(i, srcInst->src(0));
     }
 
     // We're assuming that all of our src instructions have already been
     // copyPropped.
-    assert(!inst->src(i)->inst()->is(Mov, PassSP, PassFP));
+    assert(!inst->src(i)->inst()->is(Mov));
   }
 }
 
@@ -285,14 +289,6 @@ IRInstruction* findSpillFrame(SSATmp* sp) {
   }
 
   return inst;
-}
-
-IRInstruction* findPassFP(IRInstruction* fpInst) {
-  while (!fpInst->is(DefFP, DefInlineFP, PassFP)) {
-    assert(fpInst->dst()->isA(Type::FramePtr));
-    fpInst = fpInst->src(0)->inst();
-  }
-  return fpInst->is(PassFP) ? fpInst : nullptr;
 }
 
 const IRInstruction* frameRoot(const IRInstruction* fpInst) {
@@ -431,6 +427,7 @@ SSATmp* Simplifier::simplifyWork(const IRInstruction* inst) {
     case ConvCellToInt: return simplifyConvCellToInt(inst);
     case ConvCellToDbl: return simplifyConvCellToDbl(inst);
     case ConvObjToBool: return simplifyConvObjToBool(inst);
+    case ConvCellToObj: return simplifyConvCellToObj(inst);
     case Floor:         return simplifyFloor(inst);
     case Ceil:          return simplifyCeil(inst);
     case UnboxPtr:      return simplifyUnboxPtr(inst);
@@ -481,11 +478,14 @@ SSATmp* Simplifier::simplifyWork(const IRInstruction* inst) {
     case DecRefStack:  return simplifyDecRefStack(inst);
     case LdLoc:        return simplifyLdLoc(inst);
 
-    case ExitOnVarEnv: return simplifyExitOnVarEnv(inst);
-
     case CheckPackedArrayBounds: return simplifyCheckPackedArrayBounds(inst);
     case LdPackedArrayElem:      return simplifyLdPackedArrayElem(inst);
     case IsWaitHandle:           return simplifyIsWaitHandle(inst);
+
+    case Count:       return simplifyCount(inst);
+    case CountArray:  return simplifyCountArray(inst);
+
+    case LdClsName:   return simplifyLdClsName(inst);
 
     case CallBuiltin: return simplifyCallBuiltin(inst);
 
@@ -505,16 +505,6 @@ SSATmp* Simplifier::simplifySpillStack(const IRInstruction* inst) {
   // need the instruction; the old stack is still accurate.
   if (!numSpillSrcs && spDeficit == 0) return sp;
 
-  return nullptr;
-}
-
-// We never inline functions that could have a VarEnv, so an
-// ExitOnVarEnv that has a frame based on DefInlineFP can be removed.
-SSATmp* Simplifier::simplifyExitOnVarEnv(const IRInstruction* inst) {
-  auto const frameInst = inst->src(0)->inst();
-  if (frameInst->op() == DefInlineFP) {
-    return gen(Nop);
-  }
   return nullptr;
 }
 
@@ -1354,11 +1344,11 @@ SSATmp* Simplifier::simplifyIsType(const IRInstruction* inst) {
   auto src       = inst->src(0);
   auto srcType   = src->type();
 
-  if (typeMightRelax(src)) return nullptr;
-
-  // The comparisons below won't work for these cases covered by this
-  // assert, and we currently don't generate these types.
-  assert(type.isKnownUnboxedDataType());
+  // If typeMightRelax(src) returns true, we can't generally depend on the
+  // src's type. However, we always constrain the input to this opcode with at
+  // least DataTypeSpecific, so we only have to skip the optimization if the
+  // typeParam is specialized.
+  if (typeMightRelax(src) && type.isSpecialized()) return nullptr;
 
   // Testing for StaticStr will make you miss out on CountedStr, and vice versa,
   // and similarly for arrays. PHP treats both types of string the same, so if
@@ -1469,10 +1459,9 @@ SSATmp* Simplifier::simplifyConvToArr(const IRInstruction* inst) {
 SSATmp* Simplifier::simplifyConvArrToBool(const IRInstruction* inst) {
   SSATmp* src  = inst->src(0);
   if (src->isConst()) {
-    if (src->arrVal()->empty()) {
-      return cns(false);
-    }
-    return cns(true);
+    // const_cast is safe. We're only making use of a cell helper.
+    auto arr = const_cast<ArrayData*>(src->arrVal());
+    return cns(cellToBool(make_tv<KindOfArray>(arr)));
   }
   return nullptr;
 }
@@ -1692,6 +1681,12 @@ SSATmp* Simplifier::simplifyConvObjToBool(const IRInstruction* inst) {
   if (ty < Type::Obj && ty.getClass() && ty.getClass()->isCollectionClass()) {
     return gen(ColIsNEmpty, inst->src(0));
   }
+  return nullptr;
+}
+
+SSATmp* Simplifier::simplifyConvCellToObj(const IRInstruction* inst) {
+  if (inst->src(0)->isA(Type::Obj)) return inst->src(0);
+
   return nullptr;
 }
 
@@ -2035,6 +2030,48 @@ SSATmp* Simplifier::simplifyLdPackedArrayElem(const IRInstruction* inst) {
 
 const StaticString s_isEmpty("isEmpty");
 
+SSATmp* Simplifier::simplifyCount(const IRInstruction* inst) {
+  auto const val = inst->src(0);
+  auto const ty = val->type();
+
+  if (ty <= Type::Null) return cns(0);
+
+  auto const oneTy = Type::Bool | Type::Int | Type::Dbl | Type::Str | Type::Res;
+  if (ty <= oneTy) return cns(1);
+
+  if (ty <= Type::Arr) return gen(CountArray, val);
+
+  if (ty < Type::Obj) {
+    auto const cls = ty.getClass();
+    if (!typeMightRelax(val) && cls != nullptr && cls->isCollectionClass()) {
+      return gen(CountCollection, val);
+    }
+    return nullptr;
+  }
+  return nullptr;
+}
+
+SSATmp* Simplifier::simplifyCountArray(const IRInstruction* inst) {
+  auto const src = inst->src(0);
+  auto const ty = src->type();
+
+  if (src->isConst()) return cns(src->arrVal()->size());
+
+  auto const notNvtw =
+    ty.hasArrayKind() && ty.getArrayKind() != ArrayData::kNvtwKind;
+
+  if (!typeMightRelax(src) && notNvtw) {
+    return gen(CountArrayFast, src);
+  }
+
+  return nullptr;
+}
+
+SSATmp* Simplifier::simplifyLdClsName(const IRInstruction* inst) {
+  auto const src = inst->src(0);
+  return src->isConst(Type::Cls) ? cns(src->clsVal()->name()) : nullptr;
+}
+
 SSATmp* Simplifier::simplifyCallBuiltin(const IRInstruction* inst) {
   auto const callee = inst->extra<CallBuiltin>()->callee;
   auto const args = inst->srcs();
@@ -2071,9 +2108,7 @@ SSATmp* Simplifier::simplifyIsWaitHandle(const IRInstruction* inst) {
 
 bool Simplifier::typeMightRelax(SSATmp* tmp) const {
   if (!m_typesMightRelax) return false;
-  if (tmp && (canonical(tmp)->inst()->is(DefConst) ||
-              tmp->isA(Type::Cls))) return false;
-  return true;
+  return JIT::typeMightRelax(tmp);
 }
 
 //////////////////////////////////////////////////////////////////////

@@ -21,6 +21,10 @@
 #endif
 #include <fcntl.h>
 #include <poll.h>
+
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
 #include <unistd.h>
 
 #include <array>
@@ -58,8 +62,9 @@ ProcessReturnCode::State ProcessReturnCode::state() const {
 void ProcessReturnCode::enforce(State expected) const {
   State s = state();
   if (s != expected) {
-    throw std::logic_error(to<std::string>("Invalid state ", s,
-                                           " expected ", expected));
+    throw std::logic_error(to<std::string>(
+      "Bad use of ProcessReturnCode; state is ", s, " expected ", expected
+    ));
   }
 }
 
@@ -576,10 +581,7 @@ bool handleWrite(int fd, IOBufQueue& queue) {
       return true;  // EOF
     }
 
-    ssize_t n;
-    do {
-      n = ::write(fd, p.first, p.second);
-    } while (n == -1 && errno == EINTR);
+    ssize_t n = writeNoInt(fd, p.first, p.second);
     if (n == -1 && errno == EAGAIN) {
       return false;
     }
@@ -592,10 +594,7 @@ bool handleWrite(int fd, IOBufQueue& queue) {
 bool handleRead(int fd, IOBufQueue& queue) {
   for (;;) {
     auto p = queue.preallocate(100, 65000);
-    ssize_t n;
-    do {
-      n = ::read(fd, p.first, p.second);
-    } while (n == -1 && errno == EINTR);
+    ssize_t n = readNoInt(fd, p.first, p.second);
     if (n == -1 && errno == EAGAIN) {
       return false;
     }
@@ -613,10 +612,7 @@ bool discardRead(int fd) {
   static std::unique_ptr<char[]> buf(new char[bufSize]);
 
   for (;;) {
-    ssize_t n;
-    do {
-      n = ::read(fd, buf.get(), bufSize);
-    } while (n == -1 && errno == EINTR);
+    ssize_t n = readNoInt(fd, buf.get(), bufSize);
     if (n == -1 && errno == EAGAIN) {
       return false;
     }
@@ -740,7 +736,9 @@ void Subprocess::communicate(FdCallback readCallback,
         }
       }
 
-      if (events & POLLIN) {
+      // Call read callback on POLLHUP, to give it a chance to read (and act
+      // on) end of file
+      if (events & (POLLIN | POLLHUP)) {
         DCHECK(!(events & POLLOUT));
         if (readCallback(p.parentFd, p.childFd)) {
           toClose.push_back(i);

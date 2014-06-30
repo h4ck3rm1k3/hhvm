@@ -43,7 +43,7 @@ struct RequestEventHandler;
 struct EventHook;
 struct PCFilter;
 struct Resumable;
-namespace Eval { struct PhpFile; }
+struct PhpFile;
 namespace JIT { struct Translator; }
 }
 
@@ -147,20 +147,9 @@ struct DebuggerSettings {
 ///////////////////////////////////////////////////////////////////////////////
 
 struct ExecutionContext {
-  // These members are declared first for performance reasons: they
-  // are accessed from within the TC and having their offset fit
-  // within a single byte makes the generated code slightly smaller
-  // and faster.
-  Stack m_stack;
-  ActRec* m_fp;
-  PC m_pc;
-
   enum ShutdownType {
     ShutDown,
     PostSend,
-    CleanUp,
-
-    ShutdownTypeCount
   };
 
   enum class ErrorThrowMode {
@@ -249,7 +238,7 @@ public:
   void registerRequestEventHandler(RequestEventHandler* handler);
   void registerShutdownFunction(const Variant& function, Array arguments,
                                 ShutdownType type);
-  Variant popShutdownFunction(ShutdownType type);
+  bool removeShutdownFunction(const Variant& function, ShutdownType type);
   void onRequestShutdown();
   void onShutdownPreSend();
   void onShutdownPostSend();
@@ -386,13 +375,14 @@ public:
   void requestInit();
   void requestExit();
 
-  static void fillResumableVars(const Func* func, ActRec* origFp,
-                                   ActRec* genFp);
   void pushLocalsAndIterators(const Func* f, int nparams = 0);
-  void enqueueAPCHandle(APCHandle* handle);
+  void enqueueAPCHandle(APCHandle* handle, size_t size);
 
 private:
-  std::vector<APCHandle*> m_apcHandles;
+  struct APCHandles {
+    size_t m_memSize = 0;
+    std::vector<APCHandle*> m_handles;
+  } m_apcHandles;
   void manageAPCHandle();
 
   enum class VectorLeaveCode {
@@ -453,6 +443,7 @@ OPCODES
 #undef O
 
   void contEnterImpl(IOP_ARGS);
+  void yield(IOP_ARGS, const Cell* key, const Cell& value);
   void asyncSuspendE(IOP_ARGS, int32_t iters);
   void asyncSuspendR(IOP_ARGS);
   void ret(IOP_ARGS);
@@ -484,6 +475,9 @@ public:
   LookupResult lookupCtorMethod(const Func*& f,
                                 const Class* cls,
                                 bool raise = false);
+  ObjectData* createObject(const Class* cls,
+                           const Variant& params,
+                           bool init);
   ObjectData* createObject(StringData* clsName,
                            const Variant& params,
                            bool init = true);
@@ -514,50 +508,24 @@ public:
 
   hphp_hash_map<
     StringData*,
-    Eval::PhpFile*,
+    Unit*,
     string_data_hash,
     string_data_same
   > m_evaledFiles;
-  std::vector<Eval::PhpFile*> m_evaledFilesOrder;
+  std::vector<const StringData*> m_evaledFilesOrder;
   std::vector<Unit*> m_createdFuncs;
 
-  /*
-   * Accessors for ExecutionContext state that check safety wrt
-   * whether these values may be stale due to TC.  Asserts in these
-   * usually mean the need for a VMRegAnchor somewhere in the call
-   * chain.
-   */
-
-  void checkRegStateWork() const;
-  void checkRegState() const { if (debug) checkRegStateWork(); }
-
-  const ActRec* getFP()    const { checkRegState(); return m_fp; }
-        ActRec* getFP()          { checkRegState(); return m_fp; }
-        PC      getPC()    const { checkRegState(); return m_pc; }
-  const Stack&  getStack() const { checkRegState(); return m_stack; }
-        Stack&  getStack()       { checkRegState(); return m_stack; }
-
-  ActRec* m_firstAR;
   std::vector<Fault> m_faults;
 
   ActRec* getStackFrame();
   ObjectData* getThis();
   Class* getContextClass();
   Class* getParentContextClass();
-  const String& getContainingFileName();
+  StringData* getContainingFileName();
   int getLine();
   Array getCallerInfo();
-  Eval::PhpFile* lookupPhpFile(
-      StringData* path, const char* currentDir, bool* initial = nullptr);
-  Unit* evalInclude(StringData* path,
-                              const StringData* curUnitFilePath, bool* initial);
-  Unit* evalIncludeRoot(StringData* path,
-                                  InclOpFlags flags, bool* initial);
-  Eval::PhpFile* lookupIncludeRoot(StringData* path,
-                                         InclOpFlags flags, bool* initial,
-                                         Unit* unit = 0);
   bool evalUnit(Unit* unit, PC& pc, int funcType);
-  void invokeUnit(TypedValue* retval, Unit* unit);
+  void invokeUnit(TypedValue* retval, const Unit* unit);
   Unit* compileEvalString(StringData* code,
                                 const char* evalFilename = nullptr);
   StrNR createFunction(const String& args, const String& code);
@@ -579,7 +547,6 @@ public:
                          Offset* prevPc = nullptr,
                          TypedValue** prevSp = nullptr,
                          bool* fromVMEntry = nullptr);
-  void nullOutReturningActRecs();
   Array debugBacktrace(bool skip = false,
                        bool withSelf = false,
                        bool withThis = false,
@@ -594,13 +561,21 @@ public:
   PCFilter* m_lastLocFilter;
   bool m_dbgNoBreak;
   bool doFCall(ActRec* ar, PC& pc);
-  bool doFCallArray(PC& pc);
   bool doFCallArrayTC(PC pc);
   const Variant& getEvaledArg(const StringData* val, const String& namespacedName);
   String getLastErrorPath() const { return m_lastErrorPath; }
   int getLastErrorLine() const { return m_lastErrorLine; }
 
 private:
+  enum class CallArrOnInvalidContainer {
+    // task #1756122: warning and returning null is what we /should/ always
+    // do in call_user_func_array, but some code depends on the broken
+    // behavior of casting the list of args to FCallArray to an array.
+    CastToArray,
+    WarnAndReturnNull,
+    WarnAndContinue
+  };
+  bool doFCallArray(PC& pc, int stkSize, CallArrOnInvalidContainer);
   enum class StackArgsState { // tells prepareFuncEntry how much work to do
     // the stack may contain more arguments than the function expects
     Untrimmed,
@@ -694,14 +669,10 @@ public:
   void op##name();
 OPCODES
 #undef O
-  enum DispatchFlags {
-    BreakOnCtlFlow = 1 << 0,
-    Profile        = 1 << 1
-  };
-  template <int dispatchFlags>
+  template <bool breakOnCtlFlow>
   void dispatchImpl();
   void dispatch();
-  // dispatchBB() tries to run until a control-flow instruction has been run.
+  // dispatchBB() exits if a control-flow instruction has been run.
   void dispatchBB();
 
 public:

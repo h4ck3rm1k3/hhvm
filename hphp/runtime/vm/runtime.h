@@ -18,6 +18,7 @@
 
 #include "hphp/runtime/ext/ext_generator.h"
 #include "hphp/runtime/ext/asio/async_function_wait_handle.h"
+#include "hphp/runtime/ext/asio/async_generator.h"
 #include "hphp/runtime/ext/std/ext_std_errorfunc.h"
 #include "hphp/runtime/vm/event-hook.h"
 #include "hphp/runtime/vm/func.h"
@@ -79,6 +80,7 @@ frame_resumable(const ActRec* fp) {
 
 inline c_AsyncFunctionWaitHandle*
 frame_afwh(const ActRec* fp) {
+  assert(fp->func()->isAsyncFunction());
   auto resumable = frame_resumable(fp);
   auto arOffset = c_AsyncFunctionWaitHandle::arOff();
   auto waitHandle = (c_AsyncFunctionWaitHandle*)((char*)resumable - arOffset);
@@ -86,12 +88,30 @@ frame_afwh(const ActRec* fp) {
   return waitHandle;
 }
 
+inline BaseGenerator*
+frame_base_generator(const ActRec* fp) {
+  assert(fp->func()->isGenerator());
+  auto resumable = frame_resumable(fp);
+  auto obj = (ObjectData*)((char*)resumable - BaseGenerator::resumableOff());
+  assert(obj->getVMClass() == c_AsyncGenerator::classof() ||
+         obj->getVMClass() == c_Generator::classof());
+  return static_cast<BaseGenerator*>(obj);
+}
+
 inline c_Generator*
 frame_generator(const ActRec* fp) {
-  auto resumable = frame_resumable(fp);
-  auto obj = (ObjectData*)((char*)resumable - c_Generator::resumableOff());
+  assert(fp->func()->isNonAsyncGenerator());
+  auto obj = frame_base_generator(fp);
   assert(obj->getVMClass() == c_Generator::classof());
   return static_cast<c_Generator*>(obj);
+}
+
+inline c_AsyncGenerator*
+frame_async_generator(const ActRec* fp) {
+  assert(fp->func()->isAsyncGenerator());
+  auto obj = frame_base_generator(fp);
+  assert(obj->getVMClass() == c_AsyncGenerator::classof());
+  return static_cast<c_AsyncGenerator*>(obj);
 }
 
 /*
@@ -146,6 +166,7 @@ frame_free_locals_helper_inl(ActRec* fp, int numLocals) {
 template<bool unwinding>
 void ALWAYS_INLINE
 frame_free_locals_inl_no_hook(ActRec* fp, int numLocals) {
+  frame_free_locals_helper_inl<unwinding>(fp, numLocals);
   if (fp->hasThis()) {
     ObjectData* this_ = fp->getThis();
     if (unwinding) {
@@ -153,13 +174,12 @@ frame_free_locals_inl_no_hook(ActRec* fp, int numLocals) {
     }
     decRefObj(this_);
   }
-  frame_free_locals_helper_inl<unwinding>(fp, numLocals);
 }
 
 void ALWAYS_INLINE
 frame_free_locals_inl(ActRec* fp, int numLocals, TypedValue* rv) {
   frame_free_locals_inl_no_hook<false>(fp, numLocals);
-  EventHook::FunctionExit(fp, rv);
+  EventHook::FunctionReturn(fp, *rv);
 }
 
 void ALWAYS_INLINE
@@ -169,19 +189,19 @@ frame_free_inl(ActRec* fp, TypedValue* rv) { // For frames with no locals
   assert(fp->m_varEnv == nullptr);
   assert(fp->hasThis());
   decRefObj(fp->getThis());
-  EventHook::FunctionExit(fp, rv);
+  EventHook::FunctionReturn(fp, *rv);
 }
 
 void ALWAYS_INLINE
-frame_free_locals_unwind(ActRec* fp, int numLocals) {
+frame_free_locals_unwind(ActRec* fp, int numLocals, const Fault& fault) {
   frame_free_locals_inl_no_hook<true>(fp, numLocals);
-  EventHook::FunctionExit(fp, nullptr);
+  EventHook::FunctionUnwind(fp, fault);
 }
 
 void ALWAYS_INLINE
 frame_free_locals_no_this_inl(ActRec* fp, int numLocals, TypedValue* rv) {
   frame_free_locals_helper_inl<false>(fp, numLocals);
-  EventHook::FunctionExit(fp, rv);
+  EventHook::FunctionReturn(fp, *rv);
 }
 
 // Helper for iopFCallBuiltin.

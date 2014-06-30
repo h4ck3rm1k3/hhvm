@@ -16,6 +16,8 @@
 */
 #include "hphp/runtime/ext/std/ext_std_options.h"
 
+#include <sys/types.h>
+#include <sys/stat.h>
 #include <sys/time.h>
 #include <sys/resource.h>
 #include <sys/utsname.h>
@@ -24,6 +26,7 @@
 #include <vector>
 
 #include "folly/ScopeGuard.h"
+#include "folly/String.h"
 
 #include "hphp/runtime/ext/ext_misc.h"
 #include "hphp/runtime/ext/std/ext_std_errorfunc.h"
@@ -31,7 +34,7 @@
 #include "hphp/runtime/ext/extension.h"
 #include "hphp/runtime/base/runtime-option.h"
 #include "hphp/runtime/base/php-globals.h"
-#include "hphp/runtime/base/file-repository.h"
+#include "hphp/runtime/base/unit-cache.h"
 #include "hphp/runtime/base/ini-setting.h"
 #include "hphp/runtime/base/memory-manager.h"
 #include "hphp/runtime/base/request-local.h"
@@ -158,7 +161,7 @@ static Variant eval_for_assert(ActRec* const curFP, const String& codeStr) {
 static Variant HHVM_FUNCTION(assert, const Variant& assertion) {
   if (!s_option_data->assertActive) return true;
 
-  JIT::CallerFrame cf;
+  CallerFrame cf;
   Offset callerOffset;
   auto const fp = cf(&callerOffset);
 
@@ -167,7 +170,7 @@ static Variant HHVM_FUNCTION(assert, const Variant& assertion) {
       if (RuntimeOption::EvalAuthoritativeMode) {
         // We could support this with compile-time string literals,
         // but it's not yet implemented.
-        throw NotSupportedException(__func__,
+        throw_not_supported(__func__,
           "assert with strings argument in RepoAuthoritative mode");
       }
       return eval_for_assert(fp, assertion.toString()).toBoolean();
@@ -182,8 +185,7 @@ static Variant HHVM_FUNCTION(assert, const Variant& assertion) {
     PackedArrayInit ai(3);
     ai.append(String(const_cast<StringData*>(unit->filepath())));
     ai.append(Variant(unit->getLineNumber(callerOffset)));
-    ai.append(assertion.isString() ? assertion.toString()
-                                   : static_cast<String>(empty_string));
+    ai.append(assertion.isString() ? assertion : empty_string_variant_ref);
     f_call_user_func(1, s_option_data->assertCallback, ai.toArray());
   }
 
@@ -194,10 +196,10 @@ static Variant HHVM_FUNCTION(assert, const Variant& assertion) {
     raise_warning("%s", str.data());
   }
   if (s_option_data->assertBail) {
-    throw Assertion();
+    throw ExtendedException("An assertion was raised.");
   }
 
-  return uninit_null();
+  return init_null();
 }
 
 static int64_t HHVM_FUNCTION(dl, const String& library) {
@@ -218,7 +220,7 @@ static Array HHVM_FUNCTION(get_extension_funcs,
   // TODO Have loadSystemlib() or Native::registerBuiltinFunction
   // track this for us so that we can support this here and
   // in ReflectionExtesion
-  throw NotSupportedException(__func__, "extensions are built differently");
+  throw_not_supported(__func__, "extensions are built differently");
 }
 
 static Variant HHVM_FUNCTION(get_cfg_var, const String& option) {
@@ -228,14 +230,14 @@ static Variant HHVM_FUNCTION(get_cfg_var, const String& option) {
 static String HHVM_FUNCTION(get_current_user) {
   int pwbuflen = sysconf(_SC_GETPW_R_SIZE_MAX);
   if (pwbuflen < 1) {
-    return "";
+    return empty_string();
   }
   char *pwbuf = (char*)smart_malloc(pwbuflen);
   struct passwd pw;
   struct passwd *retpwptr = NULL;
   if (getpwuid_r(getuid(), &pw, pwbuf, pwbuflen, &retpwptr) != 0) {
     smart_free(pwbuf);
-    return "";
+    return empty_string();
   }
   String ret(pw.pw_name, CopyString);
   smart_free(pwbuf);
@@ -263,18 +265,11 @@ static String HHVM_FUNCTION(set_include_path, const Variant& new_include_path) {
 }
 
 static Array HHVM_FUNCTION(get_included_files) {
-  Array included_files = Array::Create();
-  int idx = 0;
-  for (auto& file: g_context->m_evaledFilesOrder) {
-    included_files.set(idx++, file->getFileName());
+  PackedArrayInit pai(g_context->m_evaledFilesOrder.size());
+  for (auto& file : g_context->m_evaledFilesOrder) {
+    pai.append(const_cast<StringData*>(file));
   }
-  return included_files;
-}
-
-
-static Array HHVM_FUNCTION(inclued_get_data) {
-  // TODO: Clearly this is not implemented...
-  return empty_array;
+  return pai.toArray();
 }
 
 static int64_t HHVM_FUNCTION(get_magic_quotes_gpc) {
@@ -295,7 +290,7 @@ static Variant HHVM_FUNCTION(getenv, const String& varname) {
 
 static Variant HHVM_FUNCTION(getlastmod) {
   struct stat s;
-  int ret = ::stat(g_context->getContainingFileName().c_str(), &s);
+  int ret = ::stat(g_context->getContainingFileName()->data(), &s);
   return ret == 0 ? s.st_mtime : false;
 }
 
@@ -309,7 +304,7 @@ static Variant HHVM_FUNCTION(getmygid) {
 
 static Variant HHVM_FUNCTION(getmyinode) {
   struct stat s;
-  int ret = ::stat(g_context->getContainingFileName().c_str(), &s);
+  int ret = ::stat(g_context->getContainingFileName()->data(), &s);
   return ret == 0 ? s.st_ino : false;
 }
 
@@ -716,7 +711,8 @@ static Array HHVM_FUNCTION(getrusage, int64_t who /* = 0 */) {
   memset(&usg, 0, sizeof(struct rusage));
 
   if (getrusage(who == 1 ? RUSAGE_CHILDREN : RUSAGE_SELF, &usg) == -1) {
-    throw SystemCallFailure("getrusage");
+    raise_error("getrusage returned %d: %s", errno,
+      folly::errnoStr(errno).c_str());
   }
 
   return Array(ArrayInit(17, ArrayInit::Mixed{}).
@@ -737,13 +733,13 @@ static Array HHVM_FUNCTION(getrusage, int64_t who /* = 0 */) {
                set(s_ru_utime_tv_sec,  (int64_t)usg.ru_utime.tv_sec).
                set(s_ru_stime_tv_usec, (int64_t)usg.ru_stime.tv_usec).
                set(s_ru_stime_tv_sec,  (int64_t)usg.ru_stime.tv_sec).
-               create());
+               toArray());
 }
 
 static bool HHVM_FUNCTION(clock_getres,
                           int64_t clk_id, VRefParam sec, VRefParam nsec) {
 #if defined(__APPLE__)
-  throw NotSupportedException(__func__, "feature not supported on OSX");
+  throw_not_supported(__func__, "feature not supported on OSX");
 #else
   struct timespec ts;
   int ret = clock_getres(clk_id, &ts);
@@ -762,19 +758,6 @@ static bool HHVM_FUNCTION(clock_gettime,
   return ret == 0;
 }
 
-static bool HHVM_FUNCTION(clock_settime,
-                          int64_t clk_id, int64_t sec, int64_t nsec) {
-#if defined(__APPLE__)
-  throw NotSupportedException(__func__, "feature not supported on OSX");
-#else
-  struct timespec ts;
-  ts.tv_sec = sec;
-  ts.tv_nsec = nsec;
-  int ret = clock_settime(clk_id, &ts);
-  return ret == 0;
-#endif
-}
-
 static int64_t HHVM_FUNCTION(cpu_get_count) {
   return Process::GetCPUCount();
 }
@@ -784,8 +767,11 @@ static String HHVM_FUNCTION(cpu_get_model) {
 }
 
 Variant HHVM_FUNCTION(ini_get, const String& varname) {
-  String value = empty_string;
-  IniSetting::Get(varname, value);
+  String value = empty_string();
+  bool ret = IniSetting::Get(varname, value);
+  if (!ret) {
+    return false;
+  }
   return value;
 }
 
@@ -865,7 +851,7 @@ const StaticString s_m("m");
 Variant HHVM_FUNCTION(php_uname, const String& mode /*="" */) {
   struct utsname buf;
   if (uname((struct utsname *)&buf) == -1) {
-    return uninit_null();
+    return init_null();
   }
 
   if (mode == s_s) {
@@ -888,7 +874,7 @@ Variant HHVM_FUNCTION(php_uname, const String& mode /*="" */) {
 }
 
 static bool HHVM_FUNCTION(phpinfo, int64_t what /*=0 */) {
-  echo("HipHop\n");
+  g_context->write("HipHop\n");
   return false;
 }
 
@@ -921,7 +907,7 @@ static bool HHVM_FUNCTION(putenv, const String& setting) {
 
 static bool HHVM_FUNCTION(set_magic_quotes_runtime, bool new_setting) {
   if (new_setting) {
-    throw NotSupportedException(__func__, "not using magic quotes");
+    throw_not_supported(__func__, "not using magic quotes");
   }
   return true;
 }
@@ -1139,7 +1125,7 @@ Variant HHVM_FUNCTION(version_compare,
       !strncmp(op, "ne", op_len)) {
     return compare != 0;
   }
-  return uninit_null();
+  return init_null();
 }
 
 static bool HHVM_FUNCTION(gc_enabled) {
@@ -1182,7 +1168,6 @@ void StandardExtension::initOptions() {
   HHVM_FE(restore_include_path);
   HHVM_FE(set_include_path);
   HHVM_FE(get_included_files);
-  HHVM_FE(inclued_get_data);
   HHVM_FE(get_magic_quotes_gpc);
   HHVM_FE(get_magic_quotes_runtime);
   HHVM_FE(getenv);
@@ -1195,7 +1180,6 @@ void StandardExtension::initOptions() {
   HHVM_FE(getrusage);
   HHVM_FE(clock_getres);
   HHVM_FE(clock_gettime);
-  HHVM_FE(clock_settime);
   HHVM_FE(cpu_get_count);
   HHVM_FE(cpu_get_model);
   HHVM_FE(ini_get);

@@ -22,7 +22,7 @@ module Env = Typing_env
 let not_implemented _ = failwith "Function not implemented"
 
 type expand_typedef = 
-    SSet.t -> Env.env -> Reason.t -> string -> ty list -> Env.env * ty
+    Env.env -> Reason.t -> string -> ty list -> Env.env * ty
 
 let (expand_typedef_ref : expand_typedef ref) = ref not_implemented
 let expand_typedef x = !expand_typedef_ref x
@@ -53,42 +53,9 @@ let rec is_option env ty =
 let uerror r1 ty1 r2 ty2 =
   let ty1 = Typing_print.error ty1 in
   let ty2 = Typing_print.error ty2 in
-  error_l (
-    (Reason.to_string ("This is " ^ ty1) r1) @
+  Errors.unify_error
+    (Reason.to_string ("This is " ^ ty1) r1)
     (Reason.to_string ("It is incompatible with " ^ ty2) r2)
-  )
-
-(*****************************************************************************)
-(* Adding results to auto-completion  *)
-(*****************************************************************************)
-
-let add_auto_result env class_members =
-  Autocomplete.auto_complete_result :=
-    SMap.fold begin fun x class_elt acc ->
-      let ty = class_elt.ce_type in
-      let type_ = Typing_print.full_strip_ns env ty in
-      let pos = Reason.to_pos (fst ty) in
-      let sig_ = x^" "^type_ in
-      SMap.add sig_ (Autocomplete.make_result x pos type_) acc
-    end class_members SMap.empty
-
-let handle_class_type completion_type c =
-  match completion_type, c.Typing_defs.tc_kind with
-  | Some Autocomplete.Acid, Ast.Cnormal
-  | Some Autocomplete.Acid, Ast.Cabstract
-  | Some Autocomplete.Acnew, Ast.Cnormal
-  | Some Autocomplete.Actype, _ -> true
-  | _ -> false
-
-let should_complete_fun completion_type name =
-  match (Typing_env.Funs.get name) with
-  | Some _ when completion_type = (Some Autocomplete.Acid) -> true
-  | _ -> false
-
-let should_complete_class completion_type name =
-  match (Typing_env.Classes.get name) with
-  | Some c when handle_class_type completion_type c -> true
-  | _ -> false
 
 let is_argument_info_target p =
   match !argument_info_target with
@@ -125,8 +92,7 @@ let save_infer env pos ty =
   match !infer_target with
   | None -> ()
   | Some (line, char_pos) ->
-      let l, start, end_ = Pos.info_pos pos in
-      if l = line && start <= char_pos && char_pos <= end_ && !infer_type = None
+      if Pos.inside pos line char_pos && !infer_type = None
       then begin
         infer_type := Some (Typing_print.full_strip_ns env ty);
         infer_pos := Some (Reason.to_pos (fst ty));
@@ -156,8 +122,8 @@ let apply_shape ~f env (r1, fdm1) (r2, fdm2) =
     | None ->
         let pos1 = Reason.to_pos r1 in
         let pos2 = Reason.to_pos r2 in
-        error_l [pos2, "The field '"^name^"' is missing";
-                 pos1, "The field '"^name^"' is defined"]
+        Errors.missing_field pos2 pos1 name;
+        env
     | Some ty2 ->
         f env ty1 ty2
   end fdm1 env
@@ -170,11 +136,14 @@ let rec member_inter env ty tyl acc =
   match tyl with
   | [] -> env, ty :: acc
   | x :: rl ->
-      try
-        let env, ty = unify env x ty in
-        env, List.rev_append acc (ty :: rl)
-      with Error _ ->
-        member_inter env ty rl (x :: acc)
+      Errors.try_
+        begin fun () ->
+          let env, ty = unify env x ty in
+          env, List.rev_append acc (ty :: rl)
+        end
+        begin fun _ ->
+          member_inter env ty rl (x :: acc)
+        end
 
 and normalize_inter env tyl1 tyl2 =
   match tyl1 with
@@ -205,9 +174,7 @@ let fold_unresolved env ty =
       (try
         let env, acc =
           List.fold_left begin fun (env, acc) ty ->
-            try unify env acc ty
-            with Error _ ->
-              raise Exit
+            Errors.try_ (fun () -> unify env acc ty) (fun _ -> raise Exit)
           end (env, x) rl in
         env, acc
       with Exit ->
@@ -247,20 +214,6 @@ let is_array_as_tuple env ty =
       | _ -> false
       )
   | _ -> false
-
-(*****************************************************************************)
-(* Retrieves the type of "self" *)
-(*****************************************************************************)
-
-let get_self_class env error =
-  let self = Env.get_self env in
-  match self with
-  | _, Tapply ((_, self), _) ->
-      (match snd (Env.get_class env self) with
-      | None -> assert false
-      | Some tc -> tc)
-  | _ ->
-      error()
 
 (*****************************************************************************)
 (* Adds a new field to all the shapes found in a given type.

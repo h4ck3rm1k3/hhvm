@@ -73,10 +73,12 @@ class StreamUserFilters : public RequestEventHandler {
   }
 
   virtual void requestInit() {
-    vm_call_user_func(s_default_filters_register_func, empty_array);
+    vm_call_user_func(s_default_filters_register_func, empty_array_ref);
   }
 
-  virtual void requestShutdown() {}
+  virtual void requestShutdown() {
+    m_registeredFilters.detach();
+  }
 private:
   Variant appendOrPrependFilter(const Resource& stream,
                  const String& filtername,
@@ -157,7 +159,7 @@ private:
                           const Variant& params) {
     auto class_name = m_registeredFilters.rvalAt(filter).asCStrRef();
     Class* class_ = Unit::getClass(class_name.get(), true);
-    Object obj = null_object;
+    Object obj = Object();
 
     if (LIKELY(class_ != nullptr)) {
       PackedArrayInit ctor_args(3);
@@ -171,7 +173,7 @@ private:
        * - false: documented value for failure
        */
       if (!(created.isNull() || created.toBoolean())) {
-        obj = null_object;
+        obj.reset();
       }
     } else {
       raise_warning("%s: user-filter \"%s\" requires class \"%s\", but that "
@@ -186,7 +188,7 @@ private:
       raise_warning("%s: unable to create or locate filter \"%s\"",
                     php_func,
                     filter.data());
-      return null_resource;
+      return Resource();
     }
 
     return Resource(NEWOBJ(StreamFilter)(obj, stream));
@@ -223,7 +225,7 @@ bool StreamFilter::remove() {
   assert(file);
   Resource rthis(this);
   auto ret = file->removeFilter(rthis);
-  m_stream = null_resource;
+  m_stream.reset();
   return ret;
 }
 
@@ -248,7 +250,7 @@ void BucketBrigade::prependBucket(const Object& bucket) {
 
 Object BucketBrigade::popFront() {
   if (m_buckets.empty()) {
-    return null_object;
+    return Object();
   }
   auto bucket = m_buckets.front();
   m_buckets.pop_front();
@@ -274,7 +276,7 @@ bool HHVM_FUNCTION(stream_filter_register,
 Array HHVM_FUNCTION(stream_get_filters) {
   auto filters = s_stream_user_filters.get()->m_registeredFilters;
   if (UNLIKELY(filters.isNull())) {
-    return empty_array;
+    return empty_array();
   }
   return f_array_keys(filters).toArray();
 }

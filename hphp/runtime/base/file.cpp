@@ -77,13 +77,13 @@ String File::TranslatePathKeepRelative(const String& filename) {
 
     // disallow access with an absolute path
     if (canonicalized.charAt(0) == '/') {
-      return "";
+      return empty_string();
     }
 
     // unresolvable paths are all considered as unsafe
     if (canonicalized.find("..") >= 0) {
       assert(canonicalized.find("..") == 0);
-      return "";
+      return empty_string();
     }
   }
 
@@ -130,10 +130,6 @@ bool File::IsVirtualDirectory(const String& filename) {
     StaticContentCache::TheFileCache->dirExists(filename.data(), false);
 }
 
-bool File::IsPlainFilePath(const String& filename) {
-  return filename.find("://") == String::npos;
-}
-
 Resource File::Open(const String& filename, const String& mode,
                     int options /* = 0 */,
                     const Variant& context /* = null */) {
@@ -155,7 +151,7 @@ Resource File::Open(const String& filename, const String& mode,
 
 File::File(bool nonblocking /* = true */,
            const String& wrapper /* = null_string */,
-           const String& stream_type /* = empty_string */)
+           const String& stream_type /* = empty_string_ref */)
   : m_isLocal(false), m_fd(-1), m_closed(false), m_nonblocking(nonblocking),
     m_writepos(0), m_readpos(0), m_position(0), m_eof(false),
     m_wrapperType(wrapper.get()), m_streamType(stream_type.get()),
@@ -191,13 +187,13 @@ void File::invokeFiltersOnClose() {
   }
   // As it's being closed, we can't actually do anything with filter output
   applyFilters(
-    empty_string,
+    empty_string_ref,
     m_readFilters,
     /* closing = */ true
   );
   if (!m_writeFilters.empty()) {
     auto buf = applyFilters(
-      empty_string,
+      empty_string_ref,
       m_writeFilters,
       /* closing = */ true
     );
@@ -263,6 +259,9 @@ String File::read() {
 String File::read(int64_t length) {
   if (length <= 0) {
     raise_notice("Invalid length %" PRId64, length);
+    // XXX: Changing this to empty_string causes problems, something is
+    // writing to this upstream but I'm not sure what and since it's
+    // unlikely to provide significant gain alone I'm leaving it for now.
     return "";
   }
 
@@ -387,10 +386,10 @@ int File::putc(char c) {
 
 bool File::seek(int64_t offset, int whence /* = SEEK_SET */) {
   if (whence != SEEK_CUR) {
-    throw NotSupportedException(__func__, "cannot seek other than SEEK_CUR");
+    throw_not_supported(__func__, "cannot seek other than SEEK_CUR");
   }
   if (offset < 0) {
-    throw NotSupportedException(__func__, "cannot seek backwards");
+    throw_not_supported(__func__, "cannot seek backwards");
   }
   if (offset > 0) {
     int64_t avail = bufferedLen();
@@ -418,15 +417,15 @@ bool File::seek(int64_t offset, int whence /* = SEEK_SET */) {
 }
 
 int64_t File::tell() {
-  throw NotSupportedException(__func__, "cannot tell");
+  throw_not_supported(__func__, "cannot tell");
 }
 
 bool File::eof() {
-  throw NotSupportedException(__func__, "cannot test eof");
+  throw_not_supported(__func__, "cannot test eof");
 }
 
 bool File::rewind() {
-  throw NotSupportedException(__func__, "cannot rewind");
+  throw_not_supported(__func__, "cannot rewind");
 }
 
 bool File::flush() {
@@ -434,7 +433,7 @@ bool File::flush() {
 }
 
 bool File::truncate(int64_t size) {
-  throw NotSupportedException(__func__, "cannot truncate");
+  throw_not_supported(__func__, "cannot truncate");
 }
 
 bool File::lock(int operation) {
@@ -493,7 +492,7 @@ bool File::removeFilter(Resource& resource) {
     if (it->get() == rd) {
       std::list<Resource> closing_filters;
       closing_filters.push_back(rd);
-      String result(applyFilters(empty_string,
+      String result(applyFilters(empty_string_ref,
                                  closing_filters,
                                  /* closing = */ true));
       std::list<Resource> later_filters;
@@ -627,9 +626,9 @@ String File::readLine(int64_t maxlen /* = 0 */) {
   return String(ret, total_copied, AttachString);
 }
 
-String File::readRecord(const String& delimiter, int64_t maxlen /* = 0 */) {
+Variant File::readRecord(const String& delimiter, int64_t maxlen /* = 0 */) {
   if (eof() && m_writepos == m_readpos) {
-    return empty_string;
+    return false;
   }
 
   if (maxlen <= 0 || maxlen > CHUNK_SIZE) {
@@ -698,7 +697,7 @@ String File::readRecord(const String& delimiter, int64_t maxlen /* = 0 */) {
     return s;
   }
 
-  return empty_string;
+  return empty_string();
 }
 
 int64_t File::print() {
@@ -1042,7 +1041,7 @@ String File::applyFilters(const String& buffer,
     // PSFS_ERR_FATAL doesn't raise a fatal in Zend - appears to be
     // treated the same as PSFS_FEED_ME
     if (UNLIKELY(result != k_PSFS_PASS_ON)) {
-      return empty_string;
+      return empty_string();
     }
   }
 

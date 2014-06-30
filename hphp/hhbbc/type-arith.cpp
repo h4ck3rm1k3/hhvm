@@ -63,6 +63,22 @@ folly::Optional<Type> eval_const_divmod(Type t1, Type t2, Fun fun) {
   return folly::none;
 }
 
+template<class Fun>
+Type bitwise_impl(Type t1, Type t2, Fun op) {
+  if (auto t = eval_const(t1, t2, op))          return *t;
+  if (t1.subtypeOf(TStr) && t2.subtypeOf(TStr)) return TStr;
+  if (!t1.couldBe(TStr) || !t2.couldBe(TStr))   return TInt;
+  return TInitCell;
+}
+
+template<class Fun>
+Type shift_impl(Type t1, Type t2, Fun op) {
+  t1 = typeToInt(t1);
+  t2 = typeToInt(t2);
+
+  if (auto const t = eval_const(t1, t2, op)) return *t;
+  return TInt;
+}
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -94,7 +110,7 @@ template <class CellOp>
 Type typeSubMulImpl(Type t1, Type t2, CellOp op) {
   if (auto t = eval_const(t1, t2, op))          return *t;
   if (auto t = usual_arith_conversions(t1, t2)) return *t;
-  return TInitCell;
+  return TInitPrim;
 }
 
 template <class CellOp>
@@ -102,7 +118,7 @@ Type typeSubMulImplO(Type t1, Type t2, CellOp op) {
   if (auto t = eval_const(t1, t2, op))          return *t;
   if (t1.subtypeOf(TInt) && t2.subtypeOf(TInt)) return TNum;
   if (auto t = usual_arith_conversions(t1, t2)) return *t;
-  return TInitCell;
+  return TInitPrim;
 }
 
 Type typeSub(Type t1, Type t2)  { return typeSubMulImpl(t1, t2, cellSub); }
@@ -113,12 +129,12 @@ Type typeMulO(Type t1, Type t2) { return typeSubMulImplO(t1, t2, cellMulO); }
 
 Type typeDiv(Type t1, Type t2) {
   if (auto t = eval_const_divmod(t1, t2, cellDiv)) return *t;
-  return TInitCell;
+  return TInitPrim;
 }
 
 Type typeMod(Type t1, Type t2) {
   if (auto t = eval_const_divmod(t1, t2, cellMod)) return *t;
-  return TInitCell;
+  return TInitPrim;
 }
 
 Type typePow(Type t1, Type t2) {
@@ -128,22 +144,86 @@ Type typePow(Type t1, Type t2) {
 
 //////////////////////////////////////////////////////////////////////
 
-Type typeBitAnd(Type t1, Type t2) {
-  if (auto t = eval_const(t1, t2, cellBitAnd)) return *t;
-  return TInitCell;
+Type typeBitAnd(Type t1, Type t2) { return bitwise_impl(t1, t2, cellBitAnd); }
+Type typeBitOr(Type t1, Type t2)  { return bitwise_impl(t1, t2, cellBitOr); }
+Type typeBitXor(Type t1, Type t2) { return bitwise_impl(t1, t2, cellBitXor); }
+
+Type typeShl(Type t1, Type t2) { return shift_impl(t1, t2, cellShl); }
+Type typeShr(Type t1, Type t2) { return shift_impl(t1, t2, cellShr); }
+
+//////////////////////////////////////////////////////////////////////
+
+Type typeIncDec(IncDecOp op, Type t) {
+  auto const overflowToDbl = isIncDecO(op);
+  auto const val = tv(t);
+
+  if (!val) {
+    // Doubles always stay doubles
+    if (t.subtypeOf(TDbl)) return TDbl;
+
+    // Ints stay ints unless they can overflow to doubles
+    if (t.subtypeOf(TInt)) {
+      return overflowToDbl ? TNum : TInt;
+    }
+
+    // Null goes to 1 on ++, stays null on --. Uninit is folded to init.
+    if (t.subtypeOf(TNull)) {
+      return isInc(op) ? ival(1) : TInitNull;
+    }
+
+    // No-op on bool, array, resource, object.
+    if (t.subtypeOfAny(TBool, TArr, TRes, TObj)) return t;
+
+    // Last unhandled case: strings. These result in Int|Str because of the
+    // behavior on strictly-numeric strings, and we can't express that yet.
+    return TInitCell;
+  }
+
+  auto const inc = isInc(op);
+
+  // We can't constprop with this eval_cell, because of the effects
+  // on locals.
+  auto resultTy = eval_cell([inc,overflowToDbl,val] {
+    auto c = *val;
+    if (inc) {
+      (overflowToDbl ? cellIncO : cellInc)(c);
+    } else {
+      (overflowToDbl ? cellDecO : cellDec)(c);
+    }
+    return c;
+  });
+
+  // We may have inferred a TSStr or TSArr with a value here, but at
+  // runtime it will not be static.
+  resultTy = loosen_statics(resultTy);
+  return resultTy;
 }
 
-Type typeBitOr(Type t1, Type t2) {
-  if (auto t = eval_const(t1, t2, cellBitOr)) return *t;
-  return TInitCell;
-}
+Type typeArithSetOp(SetOpOp op, Type lhs, Type rhs) {
+  switch (op) {
+    case SetOpOp::PlusEqual:   return typeAdd(lhs, rhs);
+    case SetOpOp::MinusEqual:  return typeSub(lhs, rhs);
+    case SetOpOp::MulEqual:    return typeMul(lhs, rhs);
 
-Type typeBitXor(Type t1, Type t2) {
-  if (auto t = eval_const(t1, t2, cellBitXor)) return *t;
-  return TInitCell;
+    case SetOpOp::DivEqual:    return typeDiv(lhs, rhs);
+    case SetOpOp::ModEqual:    return typeMod(lhs, rhs);
+    case SetOpOp::PowEqual:    return typePow(lhs, rhs);
+
+    case SetOpOp::AndEqual:    return typeBitAnd(lhs, rhs);
+    case SetOpOp::OrEqual:     return typeBitOr(lhs, rhs);
+    case SetOpOp::XorEqual:    return typeBitXor(lhs, rhs);
+
+    case SetOpOp::PlusEqualO:  return typeAddO(lhs, rhs);
+    case SetOpOp::MinusEqualO: return typeSubO(lhs, rhs);
+    case SetOpOp::MulEqualO:   return typeMulO(lhs, rhs);
+
+    case SetOpOp::ConcatEqual: return TStr;
+    case SetOpOp::SlEqual:     return typeShl(lhs, rhs);
+    case SetOpOp::SrEqual:     return typeShr(lhs, rhs);
+  }
+  not_reached();
 }
 
 //////////////////////////////////////////////////////////////////////
 
 }}
-

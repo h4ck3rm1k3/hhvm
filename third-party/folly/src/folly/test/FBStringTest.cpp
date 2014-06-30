@@ -1114,7 +1114,7 @@ TEST(FBString, testFixedBugs) {
     cp.c_str();
     EXPECT_EQ(str.front(), 'f');
   }
-  { // D481173, --extra-cxxflags=-DFBSTRING_CONSERVATIVE
+  { // D481173
     fbstring str(1337, 'f');
     for (int i = 0; i < 2; ++i) {
       fbstring cp = str;
@@ -1233,6 +1233,16 @@ TEST(FBString, rvalueIterators) {
   auto Xit = b.begin() + 6;
   b.replace(ait, b.end(), b.begin(), Xit);
   EXPECT_EQ("123123abc", b); // if things go wrong, you'd get "123123123"
+}
+
+TEST(FBString, moveTerminator) {
+  // The source of a move must remain in a valid state
+  fbstring s(100, 'x'); // too big to be in-situ
+  fbstring k;
+  k = std::move(s);
+
+  EXPECT_EQ(0, s.size());
+  EXPECT_EQ('\0', *s.c_str());
 }
 
 int main(int argc, char** argv) {

@@ -25,8 +25,6 @@
 #include <vector>
 #include <set>
 
-#include <boost/dynamic_bitset.hpp>
-
 #include "hphp/util/md5.h"
 #include "hphp/util/hash.h"
 #include "hphp/util/timer.h"
@@ -36,12 +34,14 @@
 #include "hphp/runtime/vm/bytecode.h"
 #include "hphp/runtime/vm/jit/block.h"
 #include "hphp/runtime/vm/jit/fixup.h"
+#include "hphp/runtime/vm/jit/prof-data.h"
+#include "hphp/runtime/vm/jit/prof-src-key.h"
 #include "hphp/runtime/vm/jit/runtime-type.h"
 #include "hphp/runtime/vm/jit/srcdb.h"
+#include "hphp/runtime/vm/jit/trans-rec.h"
 #include "hphp/runtime/vm/jit/translator-instrs.h"
-#include "hphp/runtime/vm/jit/write-lease.h"
-#include "hphp/runtime/vm/jit/prof-data.h"
 #include "hphp/runtime/vm/jit/unique-stubs.h"
+#include "hphp/runtime/vm/jit/write-lease.h"
 #include "hphp/runtime/vm/debugger-hook.h"
 #include "hphp/runtime/vm/srckey.h"
 
@@ -58,16 +58,6 @@ namespace JIT {
 
 
 static const uint32_t transCountersPerChunk = 1024 * 1024 / 8;
-
-/*
- * DIRTY when the live register state is spread across the stack and m_fixup,
- * CLEAN when it has been sync'ed into g_context.
- */
-enum class VMRegState {
-  CLEAN,
-  DIRTY
-};
-extern __thread VMRegState tl_regState;
 
 struct NormalizedInstruction;
 
@@ -154,12 +144,6 @@ struct DynLocation {
   bool canBeAliased() const;
 };
 
-struct Tracelet;
-struct TraceletContext;
-
-// Return a summary string of the bytecode in a tracelet.
-std::string traceletShape(const Tracelet&);
-
 struct TranslationFailedExc : std::runtime_error {
   TranslationFailedExc(const char* file, int line)
     : std::runtime_error(folly::format("TranslationFailedExc @ {}:{}",
@@ -194,115 +178,9 @@ struct ControlFlowFailedExc : std::runtime_error {
   throw JIT::UnknownInputExc(__FILE__, __LINE__); \
 } while(0);
 
-struct GuardType {
-  explicit GuardType(DataType outer = KindOfAny,
-                     DataType inner = KindOfNone);
-  explicit GuardType(const RuntimeType& rtt);
-           GuardType(const GuardType& other);
-  const DataType   getOuterType() const;
-  const DataType   getInnerType() const;
-  const Class*     getSpecializedClass() const;
-  bool             isSpecific() const;
-  bool             isSpecialized() const;
-  bool             isRelaxed() const;
-  bool             isGeneric() const;
-  bool             isCounted() const;
-  bool             isMoreRefinedThan(const GuardType& other) const;
-  bool             mayBeUninit() const;
-  GuardType        getCountness() const;
-  GuardType        getCountnessInit() const;
-  DataTypeCategory getCategory() const;
-  GuardType        dropSpecialization() const;
-  RuntimeType      getRuntimeType() const;
-  bool             isEqual(GuardType other) const;
-  bool             hasArrayKind() const;
-  ArrayData::ArrayKind getArrayKind() const;
-
- private:
-  DataType outerType;
-  DataType innerType;
-  union {
-    const Class* klass;
-    struct {
-      bool arrayKindValid;
-      ArrayData::ArrayKind arrayKind;
-    };
-  };
-};
-
-typedef hphp_hash_map<Location,RuntimeType,Location> TypeMap;
-typedef hphp_hash_set<Location, Location> LocationSet;
-typedef hphp_hash_map<DynLocation*, GuardType> DynLocTypeMap;
 typedef hphp_hash_map<RegionDesc::BlockId, Block*> BlockIdToIRBlockMap;
 typedef hphp_hash_map<RegionDesc::BlockId,
                       RegionDesc::Block*> BlockIdToRegionBlockMap;
-
-/*
- * Used to maintain a mapping from the bytecode to its corresponding x86.
- */
-struct TransBCMapping {
-  MD5    md5;
-  Offset bcStart;
-  TCA    aStart;
-  TCA    astubsStart;
-};
-
-/*
- * A record with various information about a translation.
- */
-struct TransRec {
-  TransID                id;
-  TransKind              kind;
-  SrcKey                 src;
-  MD5                    md5;
-  std::string            funcName;
-  Offset                 bcStopOffset;
-  std::vector<DynLocation>
-                         dependencies;
-  TCA                    aStart;
-  uint32_t               aLen;
-  TCA                    astubsStart;
-  uint32_t               astubsLen;
-  std::vector<TransBCMapping>
-                         bcMapping;
-
-  TransRec() {}
-
-  TransRec(SrcKey      s,
-           MD5         _md5,
-           std::string _funcName,
-           TransKind   _kind,
-           TCA         _aStart = 0,
-           uint32_t    _aLen = 0,
-           TCA         _astubsStart = 0,
-           uint32_t    _astubsLen = 0)
-      : id(0)
-      , kind(_kind)
-      , src(s)
-      , md5(_md5)
-      , funcName(_funcName)
-      , bcStopOffset(0)
-      , aStart(_aStart)
-      , aLen(_aLen)
-      , astubsStart(_astubsStart)
-      , astubsLen(_astubsLen)
-    { }
-
-  TransRec(SrcKey                   s,
-           MD5                      _md5,
-           std::string              _funcName,
-           TransKind                _kind,
-           const Tracelet*          t,
-           TCA                      _aStart = 0,
-           uint32_t                 _aLen = 0,
-           TCA                      _astubsStart = 0,
-           uint32_t                 _astubsLen = 0,
-           std::vector<TransBCMapping>  _bcMapping =
-             std::vector<TransBCMapping>());
-
-  void setID(TransID newID) { id = newID; }
-  std::string print(uint64_t profCount) const;
-};
 
 /*
  * The information about the context a translation is ocurring
@@ -328,10 +206,10 @@ struct TranslArgs {
     : m_sk(sk)
     , m_align(align)
     , m_interp(false)
+    , m_dryRun(false)
     , m_setFuncBody(false)
     , m_transId(kInvalidTransID)
     , m_region(nullptr)
-    , m_dryRun(false)
   {}
 
   TranslArgs& sk(const SrcKey& sk) {
@@ -346,8 +224,16 @@ struct TranslArgs {
     m_interp = interp;
     return *this;
   }
+  TranslArgs& dryRun(bool dry) {
+    m_dryRun = dry;
+    return *this;
+  }
   TranslArgs& setFuncBody() {
     m_setFuncBody = true;
+    return *this;
+  }
+  TranslArgs& flags(TransFlags flags) {
+    m_flags = flags;
     return *this;
   }
   TranslArgs& transId(TransID transId) {
@@ -358,18 +244,15 @@ struct TranslArgs {
     m_region = region;
     return *this;
   }
-  TranslArgs& dryRun(bool dry) {
-    m_dryRun = dry;
-    return *this;
-  }
 
   SrcKey m_sk;
   bool m_align;
   bool m_interp;
+  bool m_dryRun;
   bool m_setFuncBody;
+  TransFlags m_flags;
   TransID m_transId;
   JIT::RegionDescPtr m_region;
-  bool m_dryRun;
 };
 
 class Translator;
@@ -379,51 +262,11 @@ extern Translator* tx;
  * Translator annotates a tracelet with input/output locations/types.
  */
 struct Translator {
-  // kMaxInlineReturnDecRefs is the maximum ref-counted locals to
-  // generate an inline return for.
-  static const int kMaxInlineReturnDecRefs = 1;
-
   static const int MaxJmpsTracedThrough = 5;
 
   JIT::UniqueStubs uniqueStubs;
 
 private:
-  friend struct TraceletContext;
-
-  void analyzeCallee(TraceletContext&,
-                     Tracelet& parent,
-                     NormalizedInstruction* fcall);
-  void handleAssertionEffects(Tracelet&,
-                              const NormalizedInstruction&,
-                              TraceletContext&,
-                              int currentStackOffset);
-  void getOutputs(Tracelet& t,
-                  NormalizedInstruction* ni,
-                  int& currentStackOffset,
-                  bool& varEnvTaint);
-  void relaxDeps(Tracelet& tclet, TraceletContext& tctxt);
-  void constrainDep(const DynLocation* loc,
-                    NormalizedInstruction* firstInstr,
-                    GuardType specType,
-                    GuardType& relxType);
-  DataTypeCategory getOperandConstraintCategory(NormalizedInstruction* instr,
-                                                size_t opndIdx,
-                                                const GuardType& specType);
-  GuardType getOperandConstraintType(NormalizedInstruction* instr,
-                                     size_t                 opndIdx,
-                                     const GuardType&       specType);
-
-  void constrainOperandType(GuardType&             relxType,
-                            NormalizedInstruction* instr,
-                            size_t                 opndIdx,
-                            const GuardType&       specType);
-
-
-  RuntimeType liveType(Location l, const Unit &u, bool specialize = false);
-  RuntimeType liveType(const Cell* outer,
-                       const Location& l,
-                       bool specialize = false);
-
   void createBlockMaps(const RegionDesc&        region,
                        BlockIdToIRBlockMap&     blockIdToIRBlock,
                        BlockIdToRegionBlockMap& blockIdToRegionBlock);
@@ -448,16 +291,15 @@ public:
   void traceEnd();
   void traceFree();
 
-  void requestResetHighLevelTranslator();
-
 public:
   /* translateRegion reads from the RegionBlacklist to determine when
    * to interpret an instruction, and adds failed instructions to the
    * blacklist so they're interpreted on the next attempt. */
-  typedef hphp_hash_set<SrcKey, SrcKey::Hasher> RegionBlacklist;
+  typedef ProfSrcKeySet RegionBlacklist;
   TranslateResult translateRegion(const RegionDesc& region,
                                   bool bcControlFlow,
-                                  RegionBlacklist& interp);
+                                  RegionBlacklist& interp,
+                                  TransFlags trflags = TransFlags{});
 
 private:
   typedef std::map<TCA, TransID> TransDB;
@@ -486,7 +328,6 @@ public:
   static Lease& WriteLease() {
     return s_writeLease;
   }
-  static RuntimeType outThisObjectType();
 
   const TransDB& getTransDB() const {
     return m_transDB;
@@ -533,24 +374,7 @@ public:
     return m_srcDB;
   }
 
-  /*
-   * Create a Tracelet for the given SrcKey, which must actually be
-   * the current VM frame.
-   *
-   * XXX The analysis pass will inspect the live state of the VM stack
-   * as needed to determine the current types of in-flight values.
-   */
-  std::unique_ptr<Tracelet> analyze(SrcKey sk,
-                                    const TypeMap& = TypeMap(),
-                                    int32_t stackSlackUsedForInlining = 0);
-
-  void postAnalyze(NormalizedInstruction* ni, SrcKey& sk,
-                   Tracelet& t, TraceletContext& tas);
   static bool liveFrameIsPseudoMain();
-
-  inline bool stateIsDirty() {
-    return tl_regState == VMRegState::DIRTY;
-  }
 
   inline bool isTransDBEnabled() const {
     return debug || RuntimeOption::EvalDumpTC;
@@ -569,7 +393,6 @@ private:
   std::unique_ptr<ProfData> m_profData;
 
 private:
-  int m_analysisDepth;
   bool m_useAHot;
 
 public:
@@ -585,11 +408,6 @@ public:
   }
   void setMode(TransKind mode) {
     m_mode = mode;
-  }
-
-  int analysisDepth() const {
-    assert(m_analysisDepth >= 0);
-    return m_analysisDepth;
   }
 
   bool useAHot() const {
@@ -655,6 +473,7 @@ opcodeControlFlowInfo(const Op instr) {
     case Op::FCall:
     case Op::FCallD:
     case Op::FCallArray:
+    case Op::FCallUnpack:
     case Op::ContEnter:
     case Op::ContRaise:
     case Op::Incl:
@@ -760,8 +579,6 @@ bool outputIsPredicted(NormalizedInstruction& inst);
 bool callDestroysLocals(const NormalizedInstruction& inst,
                         const Func* caller);
 int locPhysicalOffset(Location l, const Func* f = nullptr);
-bool shouldAnalyzeCallee(const NormalizedInstruction*, const FPIEnt*,
-                         const Op, const int);
 
 namespace InstrFlags {
 enum OutTypeConstraints {
@@ -855,6 +672,10 @@ struct InstrInfo {
 const InstrInfo& getInstrInfo(Op op);
 
 typedef const int COff; // Const offsets
+
+inline bool isNativeImplCall(const Func* funcd, int numArgs) {
+  return funcd && funcd->methInfo() && numArgs == funcd->numParams();
+}
 
 } } // HPHP::JIT
 

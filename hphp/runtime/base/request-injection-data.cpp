@@ -25,6 +25,7 @@
 
 #include "hphp/util/logger.h"
 #include "hphp/runtime/base/ini-setting.h"
+#include "hphp/runtime/base/rds-header.h"
 #include "hphp/runtime/base/thread-info.h"
 #include "hphp/runtime/ext/ext_string.h"
 
@@ -243,6 +244,10 @@ void RequestInjectionData::onTimeout() {
   m_timerActive.store(false, std::memory_order_relaxed);
 }
 
+/*
+ * NB: this function must be nothrow when `seconds' is zero.  RPCRequestHandler
+ * makes use of this.
+ */
 void RequestInjectionData::setTimeout(int seconds) {
 #ifndef __APPLE__
   m_timeoutSeconds = seconds > 0 ? seconds : 0;
@@ -359,6 +364,14 @@ void RequestInjectionData::clearTimedOutFlag() {
 
 void RequestInjectionData::setSignaledFlag() {
   getConditionFlags()->fetch_or(RequestInjectionData::SignaledFlag);
+}
+
+void RequestInjectionData::setAsyncEventHookFlag() {
+  getConditionFlags()->fetch_or(RequestInjectionData::AsyncEventHookFlag);
+}
+
+void RequestInjectionData::clearAsyncEventHookFlag() {
+  getConditionFlags()->fetch_and(~RequestInjectionData::AsyncEventHookFlag);
 }
 
 void RequestInjectionData::setEventHookFlag() {

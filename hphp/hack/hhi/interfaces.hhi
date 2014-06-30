@@ -32,6 +32,14 @@ interface Iterator<Tv> extends Traversable<Tv> {
   public function valid(): bool;
 }
 
+interface AsyncIterator<Tv> {
+  public function next(): Awaitable<?(mixed, Tv)>;
+}
+
+interface AsyncKeyedIterator<Tk, Tv> extends AsyncIterator<Tv> {
+  public function next(): Awaitable<?(Tk, Tv)>;
+}
+
 interface KeyedIterator<Tk, Tv> extends KeyedTraversable<Tk,Tv>, Iterator<Tv> {
   public function key(): Tk;
 }
@@ -109,16 +117,6 @@ interface ArrayAccess<Tk, Tv> {
 
 interface Awaitable<T> {
   public function getWaitHandle(): WaitHandle<T>;
-}
-
-interface Continuation<Tv> extends KeyedIterator<int, Tv> {
-  public function getOrigFuncName(): string;
-  public function send($v): void;
-  public function raise(Exception $e): void;
-  public function getLabel(): int;
-  public function update(int $label, Tv $value): void;
-  public function num_args(): int;
-  public function get_arg(int $index): mixed;
 }
 
 interface ConstCollection<Te> extends Countable {

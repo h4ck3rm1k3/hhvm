@@ -21,6 +21,10 @@
 #include "folly/Exception.h"
 #include "folly/Traits.h"
 
+// Ignore -Wformat-nonliteral warnings within this file
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wformat-nonliteral"
+
 namespace folly {
 
 namespace detail {
@@ -908,6 +912,11 @@ struct IndexableTraitsSeq : public FormatTraitsBase {
   static const value_type& at(const C& c, int idx) {
     return c.at(idx);
   }
+
+  static const value_type& at(const C& c, int idx,
+                              const value_type& dflt) {
+    return (idx >= 0 && idx < c.size()) ? c.at(idx) : dflt;
+  }
 };
 
 // Base class for associative types (maps)
@@ -916,6 +925,11 @@ struct IndexableTraitsAssoc : public FormatTraitsBase {
   typedef typename C::value_type::second_type value_type;
   static const value_type& at(const C& c, int idx) {
     return c.at(static_cast<typename C::key_type>(idx));
+  }
+  static const value_type& at(const C& c, int idx,
+                              const value_type& dflt) {
+    auto pos = c.find(static_cast<typename C::key_type>(idx));
+    return pos != c.end() ? pos->second : dflt;
   }
 };
 
@@ -987,6 +1001,28 @@ class FormatValue<
   const T& val_;
 };
 
+template <class Container, class Value>
+class FormatValue<
+  detail::DefaultValueWrapper<Container, Value>,
+  typename detail::IndexableTraits<Container>::enabled> {
+ public:
+  explicit FormatValue(const detail::DefaultValueWrapper<Container, Value>& val)
+    : val_(val) { }
+
+  template <class FormatCallback>
+  void format(FormatArg& arg, FormatCallback& cb) const {
+    FormatValue<typename std::decay<
+      typename detail::IndexableTraits<Container>::value_type>::type>(
+          detail::IndexableTraits<Container>::at(
+              val_.container,
+              arg.splitIntKey(),
+              val_.defaultValue)).format(arg, cb);
+  }
+
+ private:
+  const detail::DefaultValueWrapper<Container, Value>& val_;
+};
+
 namespace detail {
 
 // Define enabled, key_type, convert from StringPiece to the key types
@@ -1027,6 +1063,11 @@ template <class T> struct KeyableTraitsAssoc : public FormatTraitsBase {
   typedef typename T::value_type::second_type value_type;
   static const value_type& at(const T& map, StringPiece key) {
     return map.at(KeyFromStringPiece<key_type>::convert(key));
+  }
+  static const value_type& at(const T& map, StringPiece key,
+                              const value_type& dflt) {
+    auto pos = map.find(KeyFromStringPiece<key_type>::convert(key));
+    return pos != map.end() ? pos->second : dflt;
   }
 };
 
@@ -1070,6 +1111,28 @@ class FormatValue<
 
  private:
   const T& val_;
+};
+
+template <class Container, class Value>
+class FormatValue<
+  detail::DefaultValueWrapper<Container, Value>,
+  typename detail::KeyableTraits<Container>::enabled> {
+ public:
+  explicit FormatValue(const detail::DefaultValueWrapper<Container, Value>& val)
+    : val_(val) { }
+
+  template <class FormatCallback>
+  void format(FormatArg& arg, FormatCallback& cb) const {
+    FormatValue<typename std::decay<
+      typename detail::KeyableTraits<Container>::value_type>::type>(
+          detail::KeyableTraits<Container>::at(
+              val_.container,
+              arg.splitKey(),
+              val_.defaultValue)).format(arg, cb);
+  }
+
+ private:
+  const detail::DefaultValueWrapper<Container, Value>& val_;
 };
 
 // Partial specialization of FormatValue for pairs
@@ -1167,3 +1230,5 @@ toAppend(const Formatter<containerMode, Args...>& value, Tgt * result) {
 }
 
 }  // namespace folly
+
+#pragma GCC diagnostic pop

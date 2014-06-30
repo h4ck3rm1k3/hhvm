@@ -83,7 +83,9 @@ const int kIRLevel = 1;
 const int kCodeGenLevel = 2;
 const int kOptLevel = 3;
 const int kRegAllocLevel = 4;
+const int kRelocationLevel = 4;
 const int kExtraLevel = 6;
+const int kExtraExtraLevel = 7;
 
 void printUnit(int level, const IRUnit&, const char* caption,
                const RegAllocInfo* regs = nullptr, AsmInfo* ai = nullptr,

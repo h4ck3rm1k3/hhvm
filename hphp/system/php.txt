@@ -6,10 +6,11 @@ hphp/system/php/lang/pinitSentinel.php
 hphp/system/php/lang/string.php
 hphp/system/php/lang/resource.php
 
+hphp/system/php/lang/AsyncIterator.ns.php
+hphp/system/php/lang/AsyncKeyedIterator.ns.php
 hphp/system/php/lang/Traversable.ns.php
 hphp/system/php/lang/Iterator.ns.php
 hphp/system/php/lang/IteratorAggregate.ns.php
-hphp/system/php/lang/AsyncIterator.ns.php
 hphp/system/php/lang/KeyedIterator.ns.php
 hphp/system/php/lang/KeyedIterable.ns.php
 hphp/system/php/lang/Exception.php
@@ -42,6 +43,7 @@ hphp/system/php/spl/iterators/CallbackFilterIterator.php
 hphp/system/php/spl/iterators/RecursiveFilterIterator.php
 hphp/system/php/spl/iterators/RegexIterator.php
 hphp/system/php/spl/iterators/RecursiveRegexIterator.php
+hphp/system/php/spl/iterators/ParentIterator.php
 
 hphp/system/php/spl/iterators/ArrayIterator.php
 hphp/system/php/spl/iterators/RecursiveArrayIterator.php

@@ -17,11 +17,13 @@
 
 #include "hphp/runtime/ext/ext_xenon.h"
 #include "hphp/runtime/ext/ext_function.h"
+#include "hphp/runtime/ext/asio/async_function_wait_handle.h"
+#include "hphp/runtime/ext/asio/resumable_wait_handle.h"
 #include "hphp/runtime/ext/asio/waitable_wait_handle.h"
-#include "hphp/runtime/ext/ext_asio.h"
 #include "hphp/runtime/base/request-injection-data.h"
 #include "hphp/runtime/base/thread-info.h"
 #include "hphp/runtime/base/runtime-option.h"
+#include "hphp/runtime/vm/vm-regs.h"
 #include <signal.h>
 #include <vector>
 #include <time.h>
@@ -60,7 +62,7 @@ void *s_waitThread(void *arg) {
 struct XenonRequestLocalData : public RequestEventHandler  {
   XenonRequestLocalData();
   virtual ~XenonRequestLocalData();
-  void log(bool skipFirst);
+  void log(Xenon::SampleType t);
   Array logAsyncStack();
   Array createResponse();
 
@@ -70,8 +72,6 @@ struct XenonRequestLocalData : public RequestEventHandler  {
 
   // an array of (php, async) stacks
   Array m_stackSnapshots;
-  // number of times we invoked, but the async stack was invalid
-  int m_asyncInvalidCount;
 };
 IMPLEMENT_STATIC_REQUEST_LOCAL(XenonRequestLocalData, s_xenonData);
 
@@ -85,7 +85,7 @@ const StaticString
   s_type("type"),
   s_line("line"),
   s_time("time"),
-  s_asyncInvalidCount("asyncInvalidCount"),
+  s_isWait("ioWaitSample"),
   s_phpStack("phpStack"),
   s_asyncStack("asyncStack");
 
@@ -205,14 +205,16 @@ void Xenon::stop() {
 // meaning that if Xenon's Surprise flag has been turned on by someone, we
 // should log the stacks.  If we are in XenonForceAlwaysOn, do not clear
 // the Surprise flag.  The data is gathered in thread local storage.
-void Xenon::log(bool skipFirst) {
+// If the sample is Enter, then do not record this function name because it
+// hasn't done anything.  The sample belongs to the previous function.
+void Xenon::log(SampleType t) {
   RequestInjectionData *rid = &ThreadInfo::s_threadInfo->m_reqInjectionData;
   if (rid->checkXenonSignalFlag()) {
     if (!RuntimeOption::XenonForceAlwaysOn) {
       rid->clearXenonSignalFlag();
     }
-    TRACE(1, "Xenon::log\n");
-    s_xenonData->log(skipFirst);
+    TRACE(1, "Xenon::log %s\n", (t == IOWaitSample) ? "IOWait" : "Normal");
+    s_xenonData->log(t);
   }
 }
 
@@ -241,18 +243,10 @@ XenonRequestLocalData::~XenonRequestLocalData() {
 }
 
 Array XenonRequestLocalData::logAsyncStack() {
+  VMRegAnchor _;
   Array bt;
-  auto session = AsioSession::Get();
-  // we need this check here to see if the asio is in a valid state for queries
-  // if it is not, then return
-  // calling getCurrentWaitHandle directly while asio is not in a valid state
-  // will assert, so we need to check this ourselves before invoking it
-  if (session->isInContext() && !session->getCurrentContext()->isRunning()) {
-    ++m_asyncInvalidCount;
-    return bt;
-  }
 
-  auto currentWaitHandle = session->getCurrentWaitHandle();
+  auto currentWaitHandle = c_ResumableWaitHandle::getRunning(vmfp());
   if (currentWaitHandle == nullptr) {
     // if we have a nullptr, then we have no async stack to store for this log
     return bt;
@@ -290,26 +284,27 @@ Array XenonRequestLocalData::createResponse() {
     element.set(s_time, frame[s_time], true);
     element.set(s_phpStack, parsePhpStack(frame[s_phpStack].toArray()), true);
     element.set(s_asyncStack, frame[s_asyncStack], true);
+    element.set(s_isWait, frame[s_isWait], true);
     stacks.append(element);
   }
-  stacks.set(s_asyncInvalidCount, m_asyncInvalidCount, true);
   return stacks;
 }
 
-void XenonRequestLocalData::log(bool skipFirst) {
+void XenonRequestLocalData::log(Xenon::SampleType t) {
   TRACE(1, "XenonRequestLocalData::log\n");
   time_t now = time(nullptr);
   Array snapshot;
   snapshot.set(s_time, now, true);
+  bool skipFirst = (t == Xenon::EnterSample) ? true : false;
   snapshot.set(s_phpStack, g_context->debugBacktrace(skipFirst, true, false,
     nullptr, true), true);
   snapshot.set(s_asyncStack, logAsyncStack(), true);
+  snapshot.set(s_isWait, (t == Xenon::IOWaitSample));
   m_stackSnapshots.append(snapshot);
 }
 
 void XenonRequestLocalData::requestInit() {
   TRACE(1, "XenonRequestLocalData::requestInit\n");
-  m_asyncInvalidCount = 0;
   m_stackSnapshots = Array::Create();
   if (RuntimeOption::XenonForceAlwaysOn) {
     ThreadInfo::s_threadInfo->m_reqInjectionData.setXenonSignalFlag();
@@ -336,7 +331,7 @@ static Array HHVM_FUNCTION(xenon_get_data, void) {
     TRACE(1, "xenon_get_data\n");
     return s_xenonData->createResponse();
   }
-  return empty_array;
+  return empty_array();
 }
 
 class xenonExtension : public Extension {

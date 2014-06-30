@@ -383,6 +383,10 @@ void ObjectData::o_getArray(Array& props, bool pubOnly /* = false */) const {
   }
 }
 
+// a constant for arrayobjects that changes the way the array is
+// converted to an object
+const int64_t ARRAYOBJ_STD_PROP_LIST = 1;
+
 Array ObjectData::o_toArray(bool pubOnly /* = false */) const {
   // We can quickly tell if this object is a collection, which lets us avoid
   // checking for each class in turn if it's not one.
@@ -411,6 +415,16 @@ Array ObjectData::o_toArray(bool pubOnly /* = false */) const {
     assert(instanceof(c_SimpleXMLElement::classof()));
     return c_SimpleXMLElement::ToArray(this);
   } else if (UNLIKELY(instanceof(SystemLib::s_ArrayObjectClass))) {
+    bool visible, accessible, unset;
+    auto flags = this->getProp(
+      SystemLib::s_ArrayObjectClass, StaticString("flags").get(),
+      visible, accessible, unset);
+    if (UNLIKELY(!unset && flags->m_type == KindOfInt64 &&
+                 flags->m_data.num == ARRAYOBJ_STD_PROP_LIST)) {
+      Array ret(ArrayData::Create());
+      o_getArray(ret, true);
+      return ret;
+    }
     return convert_to_array(this, SystemLib::s_ArrayObjectClass);
   } else if (UNLIKELY(instanceof(SystemLib::s_ArrayIteratorClass))) {
     return convert_to_array(this, SystemLib::s_ArrayIteratorClass);
@@ -421,10 +435,37 @@ Array ObjectData::o_toArray(bool pubOnly /* = false */) const {
   }
 }
 
+namespace {
+
+size_t getPropertyIfAccessible(ObjectData* obj,
+                               Class* ctx,
+                               const StringData* key,
+                               bool getRef,
+                               Array& properties,
+                               size_t propLeft) {
+  bool visible, accessible, unset;
+  auto val = obj->getProp(ctx, key, visible, accessible, unset);
+  if (accessible && val->m_type != KindOfUninit && !unset) {
+    --propLeft;
+    if (getRef) {
+      if (val->m_type != KindOfRef) {
+        tvBox(val);
+      }
+      properties.setRef(StrNR(key), tvAsVariant(val), true /* isKey */);
+    } else {
+      properties.set(StrNR(key), tvAsCVarRef(val), true /* isKey */);
+    }
+  }
+  return propLeft;
+}
+
+}
+
 Array ObjectData::o_toIterArray(const String& context,
                                 bool getRef /* = false */) {
   Array* dynProps = nullptr;
-  size_t size = m_cls->declPropNumAccessible();
+  size_t accessibleProps = m_cls->declPropNumAccessible();
+  size_t size = accessibleProps;
   if (getAttribute(HasDynPropArr)) {
     dynProps = &dynPropArray();
     size += dynProps->size();
@@ -445,20 +486,23 @@ Array ObjectData::o_toIterArray(const String& context,
 
     for (size_t i = 0; i < numProps; ++i) {
       auto key = const_cast<StringData*>(props[i].name());
-      bool visible, accessible, unset;
-      auto val = getProp(ctx, key, visible, accessible, unset);
-      if (accessible && val->m_type != KindOfUninit && !unset) {
-        if (getRef) {
-          if (val->m_type != KindOfRef) {
-            tvBox(val);
-          }
-          retArray.setRef(StrNR(key), tvAsVariant(val), true /* isKey */);
-        } else {
-          retArray.set(StrNR(key), tvAsCVarRef(val), true /* isKey */);
-        }
-      }
+      accessibleProps = getPropertyIfAccessible(
+          this, ctx, key, getRef, retArray, accessibleProps);
     }
     klass = klass->parent();
+  }
+  if (!RuntimeOption::RepoAuthoritative && accessibleProps > 0) {
+    // we may have properties from traits
+    const auto* props = m_cls->declProperties();
+    auto numDeclProp = m_cls-> numDeclProperties();
+    for (size_t i = 0; i < numDeclProp; i++) {
+      const auto* key = props[i].m_name.get();
+      if (!retArray.get()->exists(key)) {
+        accessibleProps = getPropertyIfAccessible(
+            this, ctx, key, getRef, retArray, accessibleProps);
+        if (accessibleProps == 0) break;
+      }
+    }
   }
 
   // Now get dynamic properties.
@@ -601,7 +645,7 @@ const StaticString
 inline Array getSerializeProps(const ObjectData* obj,
                                VariableSerializer* serializer) {
   if (serializer->getType() == VariableSerializer::Type::VarExport) {
-    Array props;
+    Array props = Array::Create();
     for (ArrayIter iter(obj->o_toArray()); iter; ++iter) {
       auto key = iter.first().toString();
       // Jump over any class attribute mangling
@@ -644,7 +688,7 @@ inline Array getSerializeProps(const ObjectData* obj,
     return ret.toArray();
   }
   if (ret.isNull()) {
-    return empty_array;
+    return empty_array();
   }
   raise_error("__debugInfo() must return an array");
   not_reached();
@@ -991,7 +1035,6 @@ void ObjectData::DeleteObject(ObjectData* objectData) {
 
   assert(!cls->preClass()->builtinObjSize());
   assert(!cls->preClass()->builtinODOffset());
-  objectData->~ObjectData();
 
   // ObjectData subobject is logically destructed now---don't access
   // objectData->foo for anything.
@@ -1002,6 +1045,8 @@ void ObjectData::DeleteObject(ObjectData* objectData) {
   for (; prop != stop; ++prop) {
     tvRefcountedDecRef(prop);
   }
+
+  objectData->~ObjectData();
 
   auto const size = sizeForNProps(nProps);
   if (LIKELY(size <= kMaxSmartSize)) {
@@ -1755,7 +1800,7 @@ String ObjectData::invokeToString() {
     );
     // If the user error handler decides to allow execution to continue,
     // we return the empty string.
-    return empty_string;
+    return empty_string();
   }
   TypedValue tv;
   g_context->invokeFuncFew(&tv, method, this);
@@ -1768,7 +1813,7 @@ String ObjectData::invokeToString() {
       m_cls->preClass()->name()->data());
     // If the user error handler decides to allow execution to continue,
     // we return the empty string.
-    return empty_string;
+    return empty_string();
   }
   String ret = tv.m_data.pstr;
   decRefStr(tv.m_data.pstr);

@@ -44,6 +44,8 @@ namespace HPHP {
 #define IOP_PASS_ARGS   pc
 #define IOP_PASS(pc)    pc
 
+#define EVAL_FILENAME_SUFFIX ") : eval()'d code"
+
 ALWAYS_INLINE
 void SETOP_BODY_CELL(Cell* lhs, SetOpOp op, Cell* rhs) {
   assert(cellIsPlausible(*lhs));
@@ -62,15 +64,8 @@ void SETOP_BODY_CELL(Cell* lhs, SetOpOp op, Cell* rhs) {
   case SetOpOp::AndEqual:       cellBitAndEq(*lhs, *rhs); return;
   case SetOpOp::OrEqual:        cellBitOrEq(*lhs, *rhs);  return;
   case SetOpOp::XorEqual:       cellBitXorEq(*lhs, *rhs); return;
-
-  case SetOpOp::SlEqual:
-    cellCastToInt64InPlace(lhs);
-    lhs->m_data.num <<= cellToInt(*rhs);
-    return;
-  case SetOpOp::SrEqual:
-    cellCastToInt64InPlace(lhs);
-    lhs->m_data.num >>= cellToInt(*rhs);
-    return;
+  case SetOpOp::SlEqual:        cellShlEq(*lhs, *rhs); return;
+  case SetOpOp::SrEqual:        cellShrEq(*lhs, *rhs); return;
   case SetOpOp::PlusEqualO:     cellAddEqO(*lhs, *rhs); return;
   case SetOpOp::MinusEqualO:    cellSubEqO(*lhs, *rhs); return;
   case SetOpOp::MulEqualO:      cellMulEqO(*lhs, *rhs); return;
@@ -168,7 +163,7 @@ class VarEnv {
 
   VarEnv* clone(ActRec* fp) const;
 
-  void suspend(ActRec* oldFP, ActRec* newFP);
+  void suspend(const ActRec* oldFP, ActRec* newFP);
   void enterFP(ActRec* oldFP, ActRec* newFP);
   void exitFP(ActRec* fp);
 
@@ -273,30 +268,49 @@ struct ActRec {
    * constructors exit via an exception.
    */
 
+  static constexpr int kNumArgsBits = 29;
+  static constexpr int kNumArgsMask = (1 << kNumArgsBits) - 1;
+  static constexpr int kFlagsMask   = ~kNumArgsMask;
+
+  static constexpr int kLocalsDecRefdShift = kNumArgsBits;
+  static constexpr int kResumedShift       = kNumArgsBits + 1;
+  static constexpr int kFPushCtorShift     = kNumArgsBits + 2;
+
+  static_assert(kFPushCtorShift <= 8 * sizeof(int32_t) - 1,
+                "Out of bits in ActRec");
+
+  static constexpr int kLocalsDecRefdMask = 1 << kLocalsDecRefdShift;
+  static constexpr int kResumedMask       = 1 << kResumedShift;
+  static constexpr int kFPushCtorMask     = 1 << kFPushCtorShift;
+
   int32_t numArgs() const {
-    return m_numArgsAndFlags & ~(7u << 29);
+    return m_numArgsAndFlags & kNumArgsMask;
   }
 
   bool localsDecRefd() const {
-    return m_numArgsAndFlags & (1u << 29);
+    return m_numArgsAndFlags & kLocalsDecRefdMask;
   }
 
   bool resumed() const {
-    return m_numArgsAndFlags & (1u << 30);
+    return m_numArgsAndFlags & kResumedMask;
+  }
+
+  void setResumed() {
+    m_numArgsAndFlags |= kResumedMask;
   }
 
   bool isFromFPushCtor() const {
-    return m_numArgsAndFlags & (1u << 31);
+    return m_numArgsAndFlags & kFPushCtorMask;
   }
 
   static inline uint32_t
   encodeNumArgs(uint32_t numArgs, bool localsDecRefd, bool resumed,
                 bool isFPushCtor) {
-    assert((numArgs & (1u << 29)) == 0);
+    assert((numArgs & kFlagsMask) == 0);
     return numArgs |
-      (localsDecRefd << 29) |
-      (resumed << 30) |
-      (isFPushCtor << 31);
+      (localsDecRefd << kLocalsDecRefdShift) |
+      (resumed       << kResumedShift) |
+      (isFPushCtor   << kFPushCtorShift);
   }
 
   void initNumArgs(uint32_t numArgs) {
@@ -317,8 +331,8 @@ struct ActRec {
   }
 
   void setLocalsDecRefd() {
-    assert(!(m_numArgsAndFlags & (1 << 29)));
-    m_numArgsAndFlags |= 1 << 29;
+    assert(!localsDecRefd());
+    m_numArgsAndFlags |= kLocalsDecRefdMask;
   }
 
   static void* encodeThis(ObjectData* obj, Class* cls) {
@@ -591,9 +605,8 @@ public:
     return m_top;
   }
 
-  static inline size_t topOfStackOffset() {
-    Stack *that = 0;
-    return (size_t)&that->m_top;
+  static constexpr size_t topOfStackOffset() {
+    return offsetof(Stack, m_top);
   }
 
   static TypedValue* frameStackBase(const ActRec* fp);

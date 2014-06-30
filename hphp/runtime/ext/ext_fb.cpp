@@ -33,7 +33,7 @@
 #include "hphp/util/logger.h"
 #include "hphp/runtime/base/code-coverage.h"
 #include "hphp/runtime/base/externals.h"
-#include "hphp/runtime/base/file-repository.h"
+#include "hphp/runtime/base/unit-cache.h"
 #include "hphp/runtime/base/intercept.h"
 #include "hphp/runtime/base/runtime-option.h"
 #include "hphp/runtime/base/stat-cache.h"
@@ -126,7 +126,7 @@ Variant f_fb_serialize(const Variant& thing) {
     s.setSize(len);
     return s;
   } catch (const HPHP::serialize::SerializeError&) {
-    return null_variant;
+    return init_null();
   }
 }
 
@@ -463,7 +463,7 @@ Variant f_fb_compact_serialize(const Variant& thing) {
 
   StringBuffer sb;
   if (fb_compact_serialize_variant(sb, thing, 0)) {
-    return uninit_null();
+    return init_null();
   }
 
   return sb.detach();
@@ -829,7 +829,7 @@ static String fb_utf8_substr_simple(const String& str, int32_t firstCodePoint,
   if (str.size() <= 0 ||
       str.size() > INT_MAX ||
       firstCodePoint >= srcLenBytes) {
-    return empty_string;
+    return empty_string();
   }
 
   // Cannot be more code points than bytes in input.  This typically reduces
@@ -850,7 +850,7 @@ static String fb_utf8_substr_simple(const String& str, int32_t firstCodePoint,
                             (uint64_t)numDesiredCodePoints *
                             U8_LENGTH(SUBSTITUTION_CHARACTER));
   if (dstMaxLenBytes > INT_MAX) {
-    return empty_string; // Too long.
+    return empty_string(); // Too long.
   }
   String dstStr(dstMaxLenBytes, ReserveString);
   char* dstBuf = dstStr.bufferSlice().ptr;
@@ -882,7 +882,7 @@ static String fb_utf8_substr_simple(const String& str, int32_t firstCodePoint,
     dstStr.shrink(dstPosBytes);
     return dstStr;
   }
-  return empty_string;
+  return empty_string();
 }
 
 String f_fb_utf8_substr(const String& str, int start,
@@ -906,7 +906,7 @@ String f_fb_utf8_substr(const String& str, int start,
   }
 
   if (start < 0 || length <= 0) {
-    return empty_string; // Empty result
+    return empty_string(); // Empty result
   }
 
   return fb_utf8_substr_simple(str, start, length);

@@ -30,15 +30,15 @@ namespace HPHP { namespace JIT { namespace ARM {
 
 struct CodeGenerator : public JIT::CodeGenerator {
 
-  CodeGenerator(const IRUnit& unit, CodeBlock& mainCode, CodeBlock& stubsCode,
-                CodeBlock& unusedCode, JIT::MCGenerator* mcg,
+  CodeGenerator(const IRUnit& unit, CodeBlock& mainCode, CodeBlock& coldCode,
+                CodeBlock& frozenCode, JIT::MCGenerator* mcg,
                 CodegenState& state)
       : m_unit(unit)
       , m_mainCode(mainCode)
-      , m_stubsCode(stubsCode)
-      , m_unusedCode(unusedCode)
+      , m_coldCode(coldCode)
+      , m_frozenCode(frozenCode)
       , m_as(mainCode)
-      , m_astubs(stubsCode)
+      , m_acold(coldCode)
       , m_mcg(mcg)
       , m_state(state)
       , m_curInst(nullptr)
@@ -48,7 +48,7 @@ struct CodeGenerator : public JIT::CodeGenerator {
   virtual ~CodeGenerator() {
   }
 
-  Address cgInst(IRInstruction* inst) override;
+  void cgInst(IRInstruction* inst) override;
 
  private:
   template<class Then>
@@ -73,8 +73,6 @@ struct CodeGenerator : public JIT::CodeGenerator {
 
   const Func* curFunc() const { return m_curInst->marker().func(); }
   bool resumed() const { return m_curInst->marker().resumed(); }
-
-  void emitJumpToBlock(CodeBlock& cb, Block* target, ConditionCode cc);
 
   void emitCompareInt(IRInstruction* inst);
   void emitCompareIntAndSet(IRInstruction* inst,
@@ -140,14 +138,17 @@ struct CodeGenerator : public JIT::CodeGenerator {
 
   const IRUnit&               m_unit;
   CodeBlock&                  m_mainCode;
-  CodeBlock&                  m_stubsCode;
-  CodeBlock&                  m_unusedCode;
+  CodeBlock&                  m_coldCode;
+  CodeBlock&                  m_frozenCode;
   vixl::MacroAssembler        m_as;
-  vixl::MacroAssembler        m_astubs;
+  vixl::MacroAssembler        m_acold;
   MCGenerator*                m_mcg;
   CodegenState&               m_state;
   IRInstruction*              m_curInst;
 };
+
+void emitJumpToBlock(CodeBlock& cb, Block* target, ConditionCode cc,
+                     CodegenState& state);
 
 }}}
 

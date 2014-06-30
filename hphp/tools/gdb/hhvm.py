@@ -127,8 +127,11 @@ class ArrayDataPrinter:
 
     def to_string(self):
         if self.kind == self.proxyKind():
-            return "ProxyArr: %s" % (self.val['m_ad'].dereference())
-        return "%d elements (kind==%d)" % (self.val['m_size'], self.kind)
+            return "ProxyArr: %s" % (
+                self.val['m_ref'].dereference()['m_tv']
+                        ['m_data']['parr'].dereference())
+        else:
+            return "%d elements (kind==%d)" % (self.val['m_size'], self.kind)
 
     def proxyKind(self):
         return gdb.lookup_global_symbol('HPHP::ArrayData::kProxyKind').value()
@@ -229,6 +232,30 @@ class SmartPtrPrinter:
             return "SmartPtr<%s>" % tag
         return "SmartPtr<%s>(Null)" % tag
 
+class LowStringPtrPrinter:
+    RECOGNIZE = '^HPHP::(LowPtr<HPHP::StringData.*>|LowStringPtr)$'
+
+    def __init__(self, val):
+        self.val = val
+
+    def to_string(self):
+        ptr = self.val['m_raw'].cast(gdb.lookup_type('HPHP::StringData').pointer())
+        if ptr:
+            return "LowStringPtr '%s'" % string_data_val(ptr.dereference())
+        return "LowStringPtr(Null)"
+
+class LowClassPtrPrinter:
+    RECOGNIZE = '^HPHP::(LowPtr<HPHP::Class.*>|LowClassPtr)$'
+
+    def __init__(self, val):
+        self.val = val
+
+    def to_string(self):
+        ptr = self.val['m_raw'].cast(gdb.lookup_type('HPHP::Class').pointer())
+        if ptr:
+            return "LowClassPtr '%s'" % ptr
+        return "LowClassPtr(Null)"
+
 class RefDataPrinter:
     RECOGNIZE = '^HPHP::RefData$'
     def __init__(self, val):
@@ -259,6 +286,8 @@ printer_classes = [
     ArrayDataPrinter,
     ObjectDataPrinter,
     SmartPtrPrinter,
+    LowStringPtrPrinter,
+    LowClassPtrPrinter,
     RefDataPrinter,
     ResourceDataPrinter,
     ClassPrinter,

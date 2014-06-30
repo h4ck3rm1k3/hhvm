@@ -240,7 +240,7 @@ abstract class ReflectionFunctionAbstract implements Reflector {
 
   abstract public function getAttributesRecursive(): array;
 
-  abstract public function getAttributeRecursive(string $name);
+  abstract public function getAttributeRecursive($name);
 
   <<__Native>>
   public function getNumberOfParameters(): int;
@@ -298,7 +298,86 @@ abstract class ReflectionFunctionAbstract implements Reflector {
     }
     return $count;
   }
+
+  /**
+   * ( excerpt from
+   * http://www.php.net/manual/en/reflectionfunctionabstract.isdeprecated.php
+   * )
+   *
+   * Returns whether the function is deprecated.
+   */
+  public function isDeprecated(): bool {
+    return false; // not supported in HHVM
+  }
+
+  public function getExtension() {
+    // FIXME: HHVM doesn't support this
+    return null;
+  }
+
+  public function getExtensionName() {
+    return null;
+  }
+
+  // Implementation of __toString
+  final protected function toString(
+    $type,
+    array $preAttrs = [],
+    array $funcAttrs = [],
+  ): string {
+    $ret = '';
+    if ($doc = $this->getDocComment()) {
+      $ret .= $doc . "\n";
+    }
+    $ret .= "$type [ <";
+    if ($this->isInternal()) {
+      $ret .= 'internal';
+      if ($this->isDeprecated()) {
+        $ret .= ', deprecated';
+      }
+      if ($extensionName = $this->getExtensionName()) {
+        $ret .= ':' . $extensionName;
+      }
+    } else {
+      $ret .= 'user';
+    }
+    if ($preAttrs) {
+      $ret .= ', ' . implode(', ', $preAttrs);
+    }
+    $ret .= '> ';
+    if ($funcAttrs) {
+      $ret .= implode(' ', $funcAttrs) . ' ';
+    }
+    $ret .= ($type == 'Method') ? 'method ' : 'function ';
+    if ($this->returnsReference()) {
+      $ret .= '&';
+    }
+    $ret .= $this->getName() . " ] {\n";
+
+    if ($this->getStartLine() > 0) {
+      $ret .= "  @@ {$this->getFilename()} " .
+              "{$this->getStartLine()} - {$this->getEndLine()}\n";
+    }
+
+    if ($this->isClosure()) {
+      // TODO: Not enough info
+    }
+
+    $params = $this->getParameters();
+    $ret .= "\n  - Parameters [" . count($params) . "] {\n  ";
+    foreach ($params as $param) {
+      $ret .= '  ' . str_replace("\n", "\n  ", (string)$param);
+    }
+    $ret .= "}\n";
+
+    $ret .= "}\n";
+    return $ret;
+  }
 }
+
+<<__Native>>
+function hphp_miarray(): array;
+
 
 /**
  * ( excerpt from http://php.net/manual/en/class.reflectionfunction.php )
@@ -403,16 +482,12 @@ class ReflectionFunction extends ReflectionFunctionAbstract {
   }
 
   /**
-   * ( excerpt from http://php.net/manual/en/reflectionmethod.tostring.php )
+   * ( excerpt from http://php.net/manual/en/reflectionfunction.tostring.php )
    *
-   * Returns the string representation of the Reflection method object.
-   *
-   * @return     mixed   A string representation of this ReflectionMethod
-   *                     instance.
+   * @return     string  A representation of this ReflectionFunction.
    */
   public function __toString(): string {
-    // TODO
-    return '';
+    return $this->toString($this->isClosure() ? 'Closure' : 'Function');
   }
 
   // Prevent cloning
@@ -502,6 +577,19 @@ class ReflectionFunction extends ReflectionFunctionAbstract {
     return hphp_invoke($this->getName(), array_values($args));
   }
 
+  /**
+   * ( excerpt from
+   * http://docs.hhvm.com/manual/en/reflectionfunction.isdisabled.php )
+   *
+   * Checks if the function is disabled, via the disable_functions directive.
+   *
+   * @return     bool   TRUE if it's disable, otherwise FALSE
+   */
+  public function isDisabled(): bool {
+    // FIXME: HHVM doesn't support the disable_functions directive.
+    return false;
+  }
+
   <<__Native>>
   private function getClosureScopeClassname(object $closure): string;
 
@@ -517,7 +605,7 @@ class ReflectionFunction extends ReflectionFunctionAbstract {
     return $this->getAttributes();
   }
 
-  public function getAttributeRecursive(string $name) {
+  public function getAttributeRecursive($name) {
     return $this->getAttribute($name);
   }
 }
@@ -543,25 +631,42 @@ class ReflectionMethod extends ReflectionFunctionAbstract {
    *
    * Constructs a new ReflectionMethod.
    *
+   * Format 1:
+   *
    * @cls        mixed   Classname or object (instance of the class) that
    *                     contains the method.
-   * @name       mixed   Name of the method.
+   * @name       string  Name of the method.
+   *
+   * Format 2:
+   *
+   * @class_and_method string  Class name and method, separated by ::
    */
-  public function __construct(mixed $cls, string $name = '') {
-    if (!$name && is_string($cls)) {
-      $arr = explode('::', $cls, 3);
+  public function __construct(...) {
+    $args = func_get_args();
+    if (count($args) == 0 || count($args) > 2) {
+      throw new Exception(
+        'ReflectionMethod::__construct() takes either 1 or 2 arguments');
+    }
+
+    if (count($args) == 1) {
+      $arr = explode('::', $args[0], 3);
       if (count($arr) !== 2) {
         throw new ReflectionException("$cls is not a valid method name");
       }
       list($cls, $name) = $arr;
       $classname = $cls;
     } else {
+      $cls = $args[0];
+      $name = (string) $args[1];
+
       $classname = is_object($cls) ? get_class($cls) : $cls;
+      $method = $args[1];
     }
 
     $this->originalClass = $classname;
-    if (!$this->__init($cls, $name)) {
-      throw new ReflectionException("Method $classname::$name does not exist");
+    if (!$this->__init($cls, (string) $name)) {
+      throw new ReflectionException(
+        "Method $classname::$name() does not exist");
     }
   }
 
@@ -599,14 +704,47 @@ class ReflectionMethod extends ReflectionFunctionAbstract {
   /**
    * ( excerpt from http://php.net/manual/en/reflectionmethod.tostring.php )
    *
-   * Returns the string representation of the Reflection method object.
-   *
-   * @return     mixed   A string representation of this ReflectionMethod
-   *                     instance.
+   * @return     string  A string representation of this ReflectionMethod.
    */
   public function __toString(): string {
-    // TODO
-    return '';
+    $preAttrs = [];
+
+    $decl_class = $this->getDeclaringClassname();
+    if ($this->originalClass !== $decl_class) {
+      $preAttrs[] = "inherits $decl_class";
+    } else if ($proto_cls = $this->getPrototypeClassname()) {
+      $preAttrs[] = interface_exists($proto_cls, false)
+        ? 'implements '.$proto_cls
+        : 'overrides '.$proto_cls;
+    }
+
+    if ($this->isConstructor()) {
+      $preAttrs[] = 'ctor';
+    }
+    if ($this->isDestructor()) {
+      $preAttrs[] = 'dtor';
+    }
+
+    $funcAttrs = [];
+    if ($this->isAbstract()) {
+      $funcAttrs[] = 'abstract';
+    }
+    if ($this->isFinal()) {
+      $funcAttrs[] = 'final';
+    }
+    if ($this->isStatic()) {
+      $funcAttrs[] = 'static';
+    }
+
+    if ($this->isPrivate()) {
+      $funcAttrs[] = 'private';
+    } elseif ($this->isProtected()) {
+      $funcAttrs[] = 'protected';
+    } else {
+      $funcAttrs[] = 'public';
+    }
+
+    return $this->toString('Method', $preAttrs, $funcAttrs);
   }
 
   // Prevent cloning
@@ -896,7 +1034,7 @@ class ReflectionMethod extends ReflectionFunctionAbstract {
   <<__Native>>
   private function getPrototypeClassname(): string; // ?string
 
-  public function getAttributeRecursive(string $name) {
+  public function getAttributeRecursive($name) {
     $attrs = $this->getAttributes();
     if (isset($attrs[$name])) {
       return $attrs[$name];
@@ -931,7 +1069,7 @@ class ReflectionMethod extends ReflectionFunctionAbstract {
  * The ReflectionClass class reports information about a class.
  */
 <<__NativeData('ReflectionClassHandle')>>
-class ReflectionClass implements Reflector {
+class ReflectionClass implements Reflector, Serializable {
   const int IS_IMPLICIT_ABSTRACT = 16;
   const int IS_EXPLICIT_ABSTRACT = 32;
   const int IS_FINAL = 64;
@@ -960,20 +1098,151 @@ class ReflectionClass implements Reflector {
     }
   }
 
+  public function serialize() {
+    return serialize(['name' => $this->getName()]);
+  }
+
+  public function unserialize($string) {
+    $this->__init(unserialize($string)['name']);
+  }
+
   <<__Native>>
   private function __init(string $name): string;
 
   /**
    * ( excerpt from http://php.net/manual/en/reflectionclass.tostring.php )
    *
-   * Returns the string representation of the ReflectionClass object.
-   *
-   * @return     string  A string representation of this ReflectionClass
-   *                     instance.
+   * @return     string  A string representation of this ReflectionClass.
    */
   public function __toString(): string {
-    // TODO
-    return '';
+    $ret = '';
+    if ($docComment = $this->getDocComment()) {
+      $ret .= $docComment . "\n";
+    }
+    if ($this instanceof ReflectionObject) {
+      $ret .= 'Object of class [ ';
+    } elseif ($this->isInterface()) {
+      $ret .= 'Interface [ ';
+    } elseif ($this->isTrait()) {
+      $ret .= 'Trait [ ';
+    } else {
+      $ret .= 'Class [ ';
+    }
+    if ($this->isInternal()) {
+      $ret .= '<internal:';
+      if ($extensionName = $this->getExtensionName()) {
+        $ret .= ':' . $extensionName;
+      }
+      $ret .= '> ';
+    } else {
+      $ret .= '<user> ';
+    }
+    if ($this->isIterateable()) {
+      $ret .= '<iterable> ';
+    }
+    if ($this->isInterface()) {
+      $ret .= 'interface ';
+    } elseif ($this->isTrait()) {
+      $ret .= 'trait ';
+    } else {
+      if ($this->isAbstract()) {
+        $ret .= 'abstract ';
+      }
+      if ($this->isFinal()) {
+        $ret .= 'final ';
+      }
+      $ret .= 'class ';
+    }
+    $ret .= $this->getName();
+    if ($parent = $this->getParentName()) {
+      $ret .= " extends $parent";
+    }
+    if ($ifaces = $this->getInterfaceNames()) {
+      if ($this->isInterface()) {
+        $ret .= ' extends ';
+      } else {
+        $ret .= ' implements ';
+      }
+      $ret .= implode(', ', $ifaces);
+    }
+    $ret .= " ] {\n";
+    if ($this->getStartLine() > 0) {
+      $ret .= "  @@ {$this->getFilename()} " .
+              "{$this->getStartLine()}-{$this->getEndLine()}\n";
+    }
+
+    $consts = $this->getConstants();
+    $ret .= "\n  - Constants [" . count($consts) . "] {\n";
+    foreach ($consts as $k => $v) {
+      $ret .= '    Constant [ ' . gettype($v) . " $k {" . (string)$v . "}\n";
+    }
+    $ret .= "  }\n";
+
+    /* Static Properties */
+    $props = $this->getProperties();
+    $numStaticProps = 0;
+    $numDynamicProps = 0;
+    foreach ($props as $prop) {
+      if ($prop->isStatic()) {
+        ++$numStaticProps;
+      } elseif (!$prop->isDefault()) {
+        ++$numDynamicProps;
+      }
+    }
+    $ret .= "\n  - Static properties [{$numStaticProps}] {\n  ";
+    foreach ($props as $prop) {
+      if (!$prop->isStatic()) { continue;}
+      $ret .= '  ' . str_replace("\n", "\n  ", (string)$prop);
+    }
+    $ret .= "}\n";
+
+    /* Static Methods  */
+    $funcs = $this->getMethods();
+    $numStaticFuncs = 0;
+    foreach ($funcs as $func) {
+      if ($func->isStatic()) ++$numStaticFuncs;
+    }
+    $ret .= "\n  - Static methods [{$numStaticFuncs}] {\n";
+    foreach ($funcs as $func) {
+      if (!$func->isStatic()) continue;
+      $ret .= '    ' . str_replace("\n", "\n    ",
+                                   rtrim((string)$func, "\n")) . "\n";
+    }
+    $ret .= "  }\n";
+
+    /* Declared Instance Properties */
+    $numMemberProps = count($props) - ($numStaticProps + $numDynamicProps);
+    $ret .= "\n  - Properties [{$numMemberProps}] {\n  ";
+    foreach ($props as $prop) {
+      if ($prop->isStatic()) continue;
+      if (!$prop->isDefault()) continue;
+      $ret .= '  ' . str_replace("\n", "\n  ", (string)$prop);
+    }
+    $ret .= "}\n";
+
+    /* Dynamic Instance Properties */
+    if ($numDynamicProps) {
+      $ret .= "\n  - Dynamic Properties [{$numDynamicProps}] {\n  ";
+      foreach ($props as $prop) {
+        if ($prop->isStatic()) continue;
+        if ($prop->isDefault()) continue;
+        $ret .= '  ' . str_replace("\n", "\n  ", (string)$prop);
+      }
+      $ret .= "}\n";
+    }
+
+    /* Instance Methods */
+    $numMemberFuncs = count($funcs) - $numStaticFuncs;
+    $ret .= "\n  - Methods [{$numMemberFuncs}] {\n";
+    foreach ($funcs as $func) {
+      if ($func->isStatic()) continue;
+      $ret .= '    ' . str_replace("\n", "\n    ",
+                                   rtrim((string)$func, "\n")) . "\n";
+    }
+    $ret .= "  }\n";
+
+    $ret .= "}\n";
+    return preg_replace("/(^|\n)\s+(\n|$)/", "\n\n", $ret);
   }
 
   // Prevent cloning
@@ -1692,8 +1961,7 @@ class ReflectionClass implements Reflector {
    * @return     bool   Returns TRUE on success or FALSE on failure.
    */
   public function isIterateable(): bool {
-    // XXX: is this correct? perhaps this should be Traversable?
-    return $this->isSubclassOf(ArrayAccess::class);
+    return $this->isSubclassOf(\Traversable::class);
   }
 
   /**

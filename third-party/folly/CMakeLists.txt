@@ -23,6 +23,8 @@ list(REMOVE_ITEM files
   ${FOLLY_DIR}/build/GenerateFingerprintTables.cpp
   ${FOLLY_DIR}/detail/Clock.cpp
   ${FOLLY_DIR}/detail/Futex.cpp
+  ${FOLLY_DIR}/LifoSem.cpp
+  ${FOLLY_DIR}/detail/MemoryIdler.cpp
   ${FOLLY_DIR}/experimental/File.cpp
   ${FOLLY_DIR}/experimental/exception_tracer/ExceptionTracer.cpp
   ${FOLLY_DIR}/experimental/exception_tracer/ExceptionTracerBenchmark.cpp
@@ -39,13 +41,12 @@ list(REMOVE_ITEM files
   ${FOLLY_DIR}/io/async/AsyncTimeout.cpp
   ${FOLLY_DIR}/io/async/EventBase.cpp
   ${FOLLY_DIR}/io/async/Request.cpp
+  ${FOLLY_DIR}/wangle/ThreadGate.cpp
   )
 
 # Remove non-portable items
 if (NOT LINUX)
   list(REMOVE_ITEM files
-    ${FOLLY_DIR}/LifoSem.cpp
-    ${FOLLY_DIR}/detail/MemoryIdler.cpp
     ${FOLLY_DIR}/experimental/symbolizer/Symbolizer.cpp
     ${FOLLY_DIR}/experimental/symbolizer/Dwarf.cpp
     ${FOLLY_DIR}/experimental/symbolizer/Elf.cpp

@@ -44,6 +44,7 @@ TRACE_SET_MOD(hhbbc);
 
 const StaticString s_86pinit("86pinit");
 const StaticString s_86sinit("86sinit");
+const StaticString s_AsyncGenerator("AsyncGenerator");
 const StaticString s_Generator("Generator");
 const StaticString s_http_response_header("http_response_header");
 const StaticString s_php_errormsg("php_errormsg");
@@ -52,18 +53,28 @@ const StaticString s_php_errormsg("php_errormsg");
 
 State entry_state(const Index& index,
                   Context const ctx,
-                  ClassAnalysis* clsAnalysis) {
+                  ClassAnalysis* clsAnalysis,
+                  const std::vector<Type>* knownArgs) {
   auto ret = State{};
   ret.initialized = true;
   ret.thisAvailable = index.lookup_this_available(ctx.func);
   ret.locals.resize(ctx.func->locals.size());
   ret.iters.resize(ctx.func->iters.size());
 
+  // TODO(#3788877): when we're doing a context sensitive
+  // analyze_func_inline, thisAvailable and specific type of $this
+  // should be able to come from the call context.
+
   auto locId = uint32_t{0};
   for (; locId < ctx.func->params.size(); ++locId) {
     // Parameters may be Uninit (i.e. no InitCell).  Also note that if
     // a function takes a param by ref, it might come in as a Cell
     // still if FPassC was used.
+    if (knownArgs) {
+      ret.locals[locId] = locId < knownArgs->size() ? (*knownArgs)[locId]
+                                                    : TUninit;
+      continue;
+    }
     ret.locals[locId] = ctx.func->params[locId].byRef ? TGen : TCell;
   }
 
@@ -138,13 +149,14 @@ Context adjust_closure_context(Context ctx) {
 
 FuncAnalysis do_analyze(const Index& index,
                         Context const inputCtx,
-                        ClassAnalysis* clsAnalysis) {
+                        ClassAnalysis* clsAnalysis,
+                        const std::vector<Type>* knownArgs) {
   assert(inputCtx.func != inputCtx.unit->pseudomain.get() &&
          "pseudomains not supported");
-  FTRACE(2, "{:-^70}\n", "Analyze");
 
   auto const ctx = adjust_closure_context(inputCtx);
   FuncAnalysis ai(ctx);
+  FTRACE(2, "{:-^70}\n-- {}\n", "Analyze", show(ctx));
 
   auto rpoId = [&] (borrowed_ptr<php::Block> blk) {
     return ai.bdata[blk->id].rpoId;
@@ -166,8 +178,8 @@ FuncAnalysis do_analyze(const Index& index,
    * places the function could be entered, so they all must be visited
    * at least once (add them to incompleteQ).
    */
-  {
-    auto const entryState = entry_state(index, ctx, clsAnalysis);
+  auto const entryState = entry_state(index, ctx, clsAnalysis, knownArgs);
+  if (!knownArgs) {
     for (auto& param : ctx.func->params) {
       if (auto const dv = param.dvEntryPoint) {
         ai.bdata[dv->id].stateIn = entryState;
@@ -176,6 +188,27 @@ FuncAnalysis do_analyze(const Index& index,
     }
     ai.bdata[ctx.func->mainEntry->id].stateIn = entryState;
     incompleteQ.insert(rpoId(ctx.func->mainEntry));
+  } else {
+    // When we have known args, we only need to add one of the entry
+    // points to the initial state, since we know how many arguments
+    // were passed.
+    auto const nParams = ctx.func->params.size();
+    auto const useDvInit = [&] {
+      if (knownArgs->size() >= nParams) return false;
+      for (auto i = knownArgs->size(); i < nParams; ++i) {
+        if (auto const dv = ctx.func->params[i].dvEntryPoint) {
+          ai.bdata[dv->id].stateIn = entryState;
+          incompleteQ.insert(rpoId(dv));
+          return true;
+        }
+      }
+      return false;
+    }();
+
+    if (!useDvInit) {
+      ai.bdata[ctx.func->mainEntry->id].stateIn = entryState;
+      incompleteQ.insert(rpoId(ctx.func->mainEntry));
+    }
   }
 
   /*
@@ -259,19 +292,18 @@ FuncAnalysis do_analyze(const Index& index,
 
   ai.closureUseTypes = std::move(collect.closureUseTypes);
 
-  /*
-   * Async functions always return WaitH<T>, where T is the type returned
-   * internally.
-   */
-  if (ctx.func->isAsync) {
-    ai.inferredReturn = wait_handle(index, ai.inferredReturn);
-  }
-
-  /*
-   * Generators always return Generator object.
-   */
   if (ctx.func->isGenerator) {
-    ai.inferredReturn = objExact(index.builtin_class(s_Generator.get()));
+    if (ctx.func->isAsync) {
+      // Async generators always return AsyncGenerator object.
+      ai.inferredReturn = objExact(index.builtin_class(s_AsyncGenerator.get()));
+    } else {
+      // Non-async generators always return Generator object.
+      ai.inferredReturn = objExact(index.builtin_class(s_Generator.get()));
+    }
+  } else if (ctx.func->isAsync) {
+    // Async functions always return WaitH<T>, where T is the type returned
+    // internally.
+    ai.inferredReturn = wait_handle(index, ai.inferredReturn);
   }
 
   /*
@@ -383,7 +415,16 @@ FuncAnalysis::FuncAnalysis(Context ctx)
 FuncAnalysis analyze_func(const Index& index, Context const ctx) {
   Trace::Bump bumper{Trace::hhbbc, kSystemLibBump,
     is_systemlib_part(*ctx.unit)};
-  return do_analyze(index, ctx, nullptr);
+  return do_analyze(index, ctx, nullptr, nullptr);
+}
+
+FuncAnalysis analyze_func_inline(const Index& index,
+                                 Context const ctx,
+                                 std::vector<Type> args) {
+  FTRACE(2, "{:.^70}\n", "Inline Interp");
+  SCOPE_EXIT { FTRACE(2, "{:.^70}\n", "End Inline Interp"); };
+  assert(!ctx.func->isClosureBody);
+  return do_analyze(index, ctx, nullptr, &args);
 }
 
 ClassAnalysis analyze_class(const Index& index, Context const ctx) {
@@ -469,14 +510,16 @@ ClassAnalysis analyze_class(const Index& index, Context const ctx) {
     do_analyze(
       index,
       Context { ctx.unit, f, ctx.cls },
-      &clsAnalysis
+      &clsAnalysis,
+      nullptr
     );
   }
   if (auto f = find_method(ctx.cls, s_86sinit.get())) {
     do_analyze(
       index,
       Context { ctx.unit, f, ctx.cls },
-      &clsAnalysis
+      &clsAnalysis,
+      nullptr
     );
   }
 
@@ -532,7 +575,8 @@ ClassAnalysis analyze_class(const Index& index, Context const ctx) {
         do_analyze(
           index,
           Context { ctx.unit, borrow(f), ctx.cls },
-          &clsAnalysis
+          &clsAnalysis,
+          nullptr
         )
       );
     }
@@ -543,7 +587,8 @@ ClassAnalysis analyze_class(const Index& index, Context const ctx) {
         do_analyze(
           index,
           Context { ctx.unit, invoke, c },
-          &clsAnalysis
+          &clsAnalysis,
+          nullptr
         )
       );
     }

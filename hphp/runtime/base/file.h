@@ -63,14 +63,16 @@ public:
                        int options = 0, const Variant& context = uninit_null());
 
   static bool IsVirtualDirectory(const String& filename);
-  static bool IsPlainFilePath(const String& filename);
+  static bool IsPlainFilePath(const String& filename) {
+    return filename.find("://") == String::npos;
+  }
 
 public:
   static const int USE_INCLUDE_PATH;
 
   explicit File(bool nonblocking = true,
                 const String& wrapper_type = null_string,
-                const String& stream_type = empty_string);
+                const String& stream_type = empty_string_ref);
   virtual ~File();
 
   static StaticString& classnameof() {
@@ -180,9 +182,9 @@ public:
   String readLine(int64_t maxlen = 0);
 
   /**
-   * Read one record a time. Returns a null string on failure or eof.
+   * Read one record a time. Returns a false on failure or eof.
    */
-  String readRecord(const String& delimiter, int64_t maxlen = 0);
+  Variant readRecord(const String& delimiter, int64_t maxlen = 0);
 
   /**
    * Read entire file and print it out.

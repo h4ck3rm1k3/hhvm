@@ -91,7 +91,7 @@ String f_htmlspecialchars(const String& str, int quote_style = k_ENT_COMPAT,
                           bool double_encode = true);
 String f_fb_htmlspecialchars(const String& str, int quote_style = k_ENT_COMPAT,
                              const String& charset = "ISO-8859-1",
-                             const Array& extra = empty_array);
+                             const Array& extra = empty_array_ref);
 String f_quoted_printable_encode(const String& str);
 String f_quoted_printable_decode(const String& str);
 Variant f_convert_uudecode(const String& data);
@@ -152,6 +152,7 @@ Variant f_strrchr(const String& haystack, const Variant& needle);
 Variant f_strstr(const String& haystack, const Variant& needle, bool before_needle = false);
 Variant f_stristr(const String& haystack, const Variant& needle);
 Variant f_strpbrk(const String& haystack, const String& char_list);
+bool str_contains_any_of(const String& haystack, const String& char_list);
 
 Variant f_strchr(const String& haystack, const Variant& needle);
 

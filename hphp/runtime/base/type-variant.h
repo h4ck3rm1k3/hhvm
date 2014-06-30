@@ -70,6 +70,7 @@ struct Variant : private TypedValue {
   enum class CellCopy {};
   enum class CellDup {};
   enum class ArrayInitCtor {};
+  enum class StrongBind {};
 
   Variant() { m_type = KindOfUninit; }
   explicit Variant(NullInit) { m_type = KindOfNull; }
@@ -103,9 +104,6 @@ struct Variant : private TypedValue {
   /* implicit */ Variant(ObjectData *v);
   /* implicit */ Variant(ResourceData *v);
   /* implicit */ Variant(RefData *r);
-
-  /* implicit */ Variant(CVarStrongBind v);
-  /* implicit */ Variant(CVarWithRefBind v);
 
   /*
    * Creation constructor from ArrayInit that avoids a null check.
@@ -157,6 +155,8 @@ struct Variant : private TypedValue {
     }
   }
 
+  Variant(Variant& v, StrongBind) { constructRefHelper(v); }
+
   Variant& operator=(const Variant& v) {
     return assign(v);
   }
@@ -168,7 +168,7 @@ struct Variant : private TypedValue {
    * unbox refs and turn uninits to null.
    */
 
-  Variant(Variant&& v) {
+  Variant(Variant&& v) noexcept {
     if (UNLIKELY(v.m_type == KindOfRef)) {
       // We can't avoid the refcounting when it's a ref.  Do basically
       // what a copy would have done.
@@ -528,8 +528,6 @@ struct Variant : private TypedValue {
   Variant &assign(const Variant& v);
   Variant &assignRef(Variant& v);
 
-  Variant &operator=(CVarWithRefBind v) { return setWithRef(variant(v)); }
-
   Variant &operator=(const StaticString &v) {
     set(v);
     return *this;
@@ -749,7 +747,6 @@ struct Variant : private TypedValue {
     return m_data.pref->var();
   }
 
-  ObjectData *getArrayAccess() const;
   int64_t getNumData() const { return m_data.num; }
   void setEvalScalar();
 
@@ -968,7 +965,8 @@ public:
   template <class T> /* implicit */ VRefParamValue(const T &v) : m_var(v) {}
 
   /* implicit */ VRefParamValue() : m_var(Variant::NullInit()) {}
-  /* implicit */ VRefParamValue(RefResult v) : m_var(strongBind(v)) {}
+  /* implicit */ VRefParamValue(RefResult v)
+    : m_var(const_cast<Variant&>(variant(v)), Variant::StrongBind{}) {} // XXX
   template <typename T>
   Variant &operator=(const T &v) const {
     m_var = v;
@@ -986,7 +984,7 @@ public:
 
   explicit operator bool   () const { return m_var.toBoolean();}
   operator int    () const { return m_var.toInt32();}
-  operator int64_t  () const { return m_var.toInt64();}
+  operator int64_t() const { return m_var.toInt64();}
   operator double () const { return m_var.toDouble();}
   operator String () const { return m_var.toString();}
   operator Array  () const { return m_var.toArray();}
@@ -1019,13 +1017,6 @@ private:
 inline VRefParam directRef(const Variant& v) {
   return *(VRefParamValue*)&v;
 }
-
-/*
-  these two classes are just to help choose the correct
-  overload.
-*/
-class VariantStrongBind { private: Variant m_var; };
-class VariantWithRefBind { private: Variant m_var; };
 
 ///////////////////////////////////////////////////////////////////////////////
 // VarNR
@@ -1143,11 +1134,11 @@ inline void Array::setWithRef(const Variant& k, const Variant& v,
   lvalAt(k, isKey ? AccessFlags::Key : AccessFlags::None).setWithRef(v);
 }
 
-inline Variant uninit_null() {
+ALWAYS_INLINE Variant uninit_null() {
   return Variant();
 }
 
-inline Variant init_null() {
+ALWAYS_INLINE Variant init_null() {
   return Variant(Variant::NullInit());
 }
 
@@ -1182,6 +1173,12 @@ inline RefData::~RefData() {
 inline Array& forceToArray(Variant& var) {
   if (!var.isArray()) var = Variant(Array::Create());
   return var.toArrRef();
+}
+
+//////////////////////////////////////////////////////////////////////
+
+ALWAYS_INLINE Variant empty_string_variant() {
+  return Variant(staticEmptyString(), Variant::StaticStrInit{});
 }
 
 //////////////////////////////////////////////////////////////////////

@@ -41,14 +41,7 @@ namespace {
 }
 
 void c_GenMapWaitHandle::ti_setoncreatecallback(const Variant& callback) {
-  if (!callback.isNull() &&
-      (!callback.isObject() ||
-       !callback.getObjectData()->instanceof(c_Closure::classof()))) {
-    Object e(SystemLib::AllocInvalidArgumentExceptionObject(
-      "Unable to set GenMapWaitHandle::onCreate: on_create_cb not a closure"));
-    throw e;
-  }
-  AsioSession::Get()->setOnGenMapCreateCallback(callback.getObjectDataOrNull());
+  AsioSession::Get()->setOnGenMapCreateCallback(callback);
 }
 
 Object c_GenMapWaitHandle::ti_create(const Variant& dependencies) {
@@ -105,10 +98,10 @@ Object c_GenMapWaitHandle::ti_create(const Variant& dependencies) {
   }
 
   if (exception.isNull()) {
-    return c_StaticWaitHandle::CreateSucceeded(
-      make_tv<KindOfObject>(deps.get()));
+    return Object::attach(c_StaticWaitHandle::CreateSucceeded(
+      make_tv<KindOfObject>(deps.detach())));
   } else {
-    return c_StaticWaitHandle::CreateFailed(exception.get());
+    return Object::attach(c_StaticWaitHandle::CreateFailed(exception.detach()));
   }
 }
 
@@ -124,12 +117,14 @@ void c_GenMapWaitHandle::initialize(const Object& exception, c_Map* deps, ssize_
     } catch (const Object& cycle_exception) {
       putException(m_exception, cycle_exception.get());
       m_iterPos = m_deps->iter_next(m_iterPos);
+      incRefCount();
       onUnblocked();
       return;
     }
   }
 
   blockOn(child);
+  incRefCount();
 }
 
 void c_GenMapWaitHandle::onUnblocked() {
@@ -166,6 +161,7 @@ void c_GenMapWaitHandle::onUnblocked() {
     }
   }
 
+  auto const parentChain = getFirstParent();
   if (m_exception.isNull()) {
     setState(STATE_SUCCEEDED);
     tvWriteObject(m_deps.get(), &m_resultOrException);
@@ -176,7 +172,8 @@ void c_GenMapWaitHandle::onUnblocked() {
   }
 
   m_deps = nullptr;
-  done();
+  UnblockChain(parentChain);
+  decRefObj(this);
 }
 
 String c_GenMapWaitHandle::getName() {

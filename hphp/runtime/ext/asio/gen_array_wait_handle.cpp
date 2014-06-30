@@ -42,14 +42,7 @@ namespace {
 }
 
 void c_GenArrayWaitHandle::ti_setoncreatecallback(const Variant& callback) {
-  if (!callback.isNull() &&
-      (!callback.isObject() ||
-       !callback.getObjectData()->instanceof(c_Closure::classof()))) {
-    Object e(SystemLib::AllocInvalidArgumentExceptionObject(
-      "Unable to set GenArrayWaitHandle::onCreate: on_create_cb not a closure"));
-    throw e;
-  }
-  AsioSession::Get()->setOnGenArrayCreateCallback(callback.getObjectDataOrNull());
+  AsioSession::Get()->setOnGenArrayCreateCallback(callback);
 }
 
 NEVER_INLINE __attribute__((noreturn))
@@ -74,8 +67,8 @@ Object c_GenArrayWaitHandle::ti_create(const Array& inputDependencies) {
          depCopy->kind() == ArrayData::kEmptyKind);
 
   if (depCopy->kind() == ArrayData::kEmptyKind) {
-    auto const empty = make_tv<KindOfArray>(depCopy.get());
-    return c_StaticWaitHandle::CreateSucceeded(empty);
+    auto const empty = make_tv<KindOfArray>(depCopy.detach());
+    return Object::attach(c_StaticWaitHandle::CreateSucceeded(empty));
   }
 
   Object exception;
@@ -134,10 +127,10 @@ Object c_GenArrayWaitHandle::ti_create(const Array& inputDependencies) {
   // that's all we give back.  Otherwise give back the array of
   // results.
   if (exception.isNull()) {
-    return c_StaticWaitHandle::CreateSucceeded(
-      make_tv<KindOfArray>(depCopy.get()));
+    return Object::attach(c_StaticWaitHandle::CreateSucceeded(
+      make_tv<KindOfArray>(depCopy.detach())));
   } else {
-    return c_StaticWaitHandle::CreateFailed(exception.get());
+    return Object::attach(c_StaticWaitHandle::CreateFailed(exception.detach()));
   }
 }
 
@@ -153,12 +146,14 @@ void c_GenArrayWaitHandle::initialize(const Object& exception, const Array& deps
     } catch (const Object& cycle_exception) {
       putException(m_exception, cycle_exception.get());
       m_iterPos = m_deps->iter_advance(m_iterPos);
+      incRefCount();
       onUnblocked();
       return;
     }
   }
 
   blockOn(child);
+  incRefCount();
 }
 
 void c_GenArrayWaitHandle::onUnblocked() {
@@ -198,6 +193,7 @@ void c_GenArrayWaitHandle::onUnblocked() {
 
   m_iterPos = arrIter.currentPos();
 
+  auto const parentChain = getFirstParent();
   if (m_exception.isNull()) {
     setState(STATE_SUCCEEDED);
     cellDup(make_tv<KindOfArray>(m_deps.get()), m_resultOrException);
@@ -208,7 +204,8 @@ void c_GenArrayWaitHandle::onUnblocked() {
   }
 
   m_deps = nullptr;
-  done();
+  UnblockChain(parentChain);
+  decRefObj(this);
 }
 
 String c_GenArrayWaitHandle::getName() {

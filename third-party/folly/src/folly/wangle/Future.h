@@ -30,6 +30,7 @@
 namespace folly { namespace wangle {
 
 template <typename T> struct isFuture;
+template <class> class Later;
 
 template <class T>
 class Future {
@@ -41,7 +42,7 @@ class Future {
   Future& operator=(Future const&) = delete;
 
   // movable
-  Future(Future&&);
+  Future(Future&&) noexcept;
   Future& operator=(Future&&);
 
   ~Future();
@@ -59,39 +60,13 @@ class Future {
   typename std::add_lvalue_reference<const T>::type
   value() const;
 
-  /// Returns a future which will call back on the other side of executor.
+  /// Returns a Later which will call back on the other side of executor.
   ///
-  ///   f.via(e).then(a); // safe
+  ///   f.via(e).then(a).then(b).launch();
   ///
-  ///   f.via(e).then(a).then(b); // faux pas
-  ///
-  /// a will definitely execute in the intended thread, but b may execute
-  /// either in that thread, or in the current thread. If you need to
-  /// guarantee where b executes, use a Later.
+  /// a and b will execute in the same context (the far side of e)
   template <typename Executor>
-  Future<T> via(Executor* executor);
-
-  /// Deprecated alias for via
-  template <typename Executor>
-  Future<T> executeWithSameThread(Executor* executor) {
-    return via(executor);
-  }
-
-  /**
-     Thread-safe version of executeWith
-
-     Since an executor would likely start executing the Future chain
-     right away, it would be a race condition to call:
-     Future.executeWith(...).then(...), as there would be race
-     condition between the then and the running Future.
-     Instead, you may pass in a Promise so that we can set up
-     the rest of the chain in advance, without any racey
-     modifications of the continuation
-
-     Deprecated. Use a Later.
-   */
-  template <typename Executor>
-  void executeWith(Executor* executor, Promise<T>&& cont_promise);
+  Later<T> via(Executor* executor);
 
   /** True when the result (or exception) is ready. */
   bool isReady() const;
@@ -111,7 +86,8 @@ class Future {
     */
   /* TODO n3428 and other async frameworks have something like then(scheduler,
      Future), we probably want to support a similar API (instead of
-     executeWith). */
+     via. or rather, via should return a cold future (Later) and we provide
+     then(scheduler, Future) ). */
   template <class F>
   typename std::enable_if<
     !isFuture<typename std::result_of<F(Try<T>&&)>::type>::value,
@@ -196,10 +172,13 @@ class Future {
   /// Exceptions still propagate.
   Future<void> then();
 
-  /// Use of this method is advanced wizardry.
-  /// XXX should this be protected?
+  /// This is not the method you're looking for.
+  ///
+  /// This needs to be public because it's used by make* and when*, and it's
+  /// not worth listing all those and their fancy template signatures as
+  /// friends. But it's not for public consumption.
   template <class F>
-  void setContinuation(F&& func);
+  void setCallback_(F&& func);
 
  private:
   typedef detail::FutureObject<T>* objPtr;
@@ -258,6 +237,10 @@ template <class T, class E>
 typename std::enable_if<std::is_base_of<std::exception, E>::value, Future<T>>::type
 makeFuture(E const& e);
 
+/** Make a Future out of a Try */
+template <class T>
+Future<T> makeFuture(Try<T>&& t);
+
 /** When all the input Futures complete, the returned Future will complete.
   Errors do not cause early termination; this Future will always succeed
   after all its Futures have finished (whether successfully or with an
@@ -309,6 +292,25 @@ Future<std::vector<std::pair<
   Try<typename std::iterator_traits<InputIterator>::value_type::value_type>>>>
 whenN(InputIterator first, InputIterator last, size_t n);
 
+/** Wait for the given future to complete on a semaphore. Returns a completed
+ * future containing the result.
+ *
+ * NB if the promise for the future would be fulfilled in the same thread that
+ * you call this, it will deadlock.
+ */
+template <class T>
+Future<T> waitWithSemaphore(Future<T>&& f);
+
+/** Wait for up to `timeout` for the given future to complete. Returns a future
+ * which may or may not be completed depending whether the given future
+ * completed in time
+ *
+ * Note: each call to this starts a (short-lived) thread and allocates memory.
+ */
+template <typename T, class Duration>
+Future<T> waitWithSemaphore(Future<T>&& f, Duration timeout);
+
 }} // folly::wangle
 
 #include "Future-inl.h"
+#include "Later.h"
