@@ -1,4 +1,4 @@
-hhvm (3.1+20140526-1) UNRELEASED; urgency=low
+hhvm (3.1+20140630-1) UNRELEASED; urgency=low
 
   [ David Martínez Moreno ]
   * Initial release (closes: #727085).
@@ -21,4 +21,4 @@ hhvm (3.1+20140526-1) UNRELEASED; urgency=low
     - use_system_double-conversion: Use the system's double-conversion
       library and remove the one in third-party.
 
- -- Faidon Liambotis <paravoid@debian.org>  Mon, 26 May 2014 20:18:02 +0300
+ -- Faidon Liambotis <paravoid@debian.org>  Mon, 30 Jun 2014 17:22:40 +0000
