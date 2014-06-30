@@ -45,12 +45,13 @@ Last-Update: 2014-05-26
  # ICU
  find_package(ICU REQUIRED)
  if (ICU_FOUND)
-@@ -443,8 +447,9 @@ macro(hphp_link target)
+@@ -443,9 +447,10 @@ macro(hphp_link target)
      target_link_libraries(${target} ${RT_LIB})
    endif()
  
 +  target_link_libraries(${target} ${LIBSQLITE3_LIBRARY})
 +
+   target_link_libraries(${target} fastlz)
    target_link_libraries(${target} timelib)
 -  target_link_libraries(${target} sqlite3)
    target_link_libraries(${target} lz4)
@@ -58,18 +59,18 @@ Last-Update: 2014-05-26
    target_link_libraries(${target} folly)
 --- a/CMake/HPHPSetup.cmake
 +++ b/CMake/HPHPSetup.cmake
-@@ -155,7 +155,6 @@ add_definitions(-DHPHP_OSS=1)
- # later versions of binutils don't play well without automake
+@@ -156,7 +156,6 @@ add_definitions(-DHPHP_OSS=1)
  add_definitions(-DPACKAGE=hhvm -DPACKAGE_VERSION=Release)
  
+ include_directories("${TP_DIR}/fastlz")
 -include_directories("${TP_DIR}/libsqlite3")
  include_directories("${TP_DIR}/timelib")
  include_directories("${TP_DIR}/libafdt/src")
  include_directories("${TP_DIR}/libmbfl")
 --- a/third-party/CMakeLists.txt
 +++ b/third-party/CMakeLists.txt
-@@ -26,7 +26,6 @@ set(THIRD_PARTY_HEADERS)
- list(APPEND THIRD_PARTY_MODULES
+@@ -27,7 +27,6 @@ list(APPEND THIRD_PARTY_MODULES
+   fastlz
    libafdt
    libmbfl
 -  libsqlite3

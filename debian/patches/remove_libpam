@@ -45,8 +45,8 @@ Last-Update: 2014-05-26
  FIND_LIBRARY(CRYPT_LIB NAMES xcrypt crypt crypto)
  if (LINUX OR FREEBSD)
    FIND_LIBRARY (RT_LIB rt)
-@@ -472,10 +467,6 @@ macro(hphp_link target)
-     target_link_libraries(${target} ${EDITLINE_LIBRARIES})
+@@ -473,10 +468,6 @@ macro(hphp_link target)
+     target_link_libraries(${target} ${READLINE_LIBRARY})
    endif()
  
 -  if (PAM_LIBRARY)

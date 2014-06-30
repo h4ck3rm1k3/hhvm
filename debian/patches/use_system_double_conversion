@@ -42,12 +42,13 @@ Last-Update: 2014-05-26
  # ICU
  find_package(ICU REQUIRED)
  if (ICU_FOUND)
-@@ -453,9 +457,9 @@ macro(hphp_link target)
+@@ -453,10 +457,10 @@ macro(hphp_link target)
  
    target_link_libraries(${target} ${LIBSQLITE3_LIBRARY})
    target_link_libraries(${target} ${LZ4_LIBRARY})
 +  target_link_libraries(${target} ${DOUBLE_CONVERSION_LIBRARY})
  
+   target_link_libraries(${target} fastlz)
    target_link_libraries(${target} timelib)
 -  target_link_libraries(${target} double-conversion)
    target_link_libraries(${target} folly)
@@ -55,7 +56,7 @@ Last-Update: 2014-05-26
  
 --- a/third-party/CMakeLists.txt
 +++ b/third-party/CMakeLists.txt
-@@ -27,7 +27,6 @@ list(APPEND THIRD_PARTY_MODULES
+@@ -28,7 +28,6 @@ list(APPEND THIRD_PARTY_MODULES
    libafdt
    libmbfl
    timelib
@@ -65,7 +66,7 @@ Last-Update: 2014-05-26
    list(APPEND THIRD_PARTY_MODULES ti)
 --- a/CMake/HPHPSetup.cmake
 +++ b/CMake/HPHPSetup.cmake
-@@ -160,7 +160,6 @@ include_directories("${TP_DIR}/libafdt/s
+@@ -161,7 +161,6 @@ include_directories("${TP_DIR}/libafdt/s
  include_directories("${TP_DIR}/libmbfl")
  include_directories("${TP_DIR}/libmbfl/mbfl")
  include_directories("${TP_DIR}/libmbfl/filter")
