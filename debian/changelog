@@ -20,5 +20,7 @@ hhvm (3.1+20140630-1) UNRELEASED; urgency=low
       in third-party.
     - use_system_double-conversion: Use the system's double-conversion
       library and remove the one in third-party.
+    - public_headers_system: add header files from hphp/system/ too as at
+      least systemlib.h is needed to build an extension.
 
  -- Faidon Liambotis <paravoid@debian.org>  Mon, 30 Jun 2014 17:22:40 +0000

@@ -5,3 +5,4 @@ use_system_double_conversion
 remove_libpam
 fix_freetype_include
 typos
+public_headers_system
