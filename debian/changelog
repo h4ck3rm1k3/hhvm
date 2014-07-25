@@ -1,4 +1,4 @@
-hhvm (3.1+20140630-1) UNRELEASED; urgency=low
+hhvm (3.2.0-1) UNRELEASED; urgency=low
 
   [ David Martínez Moreno ]
   * Initial release (closes: #727085).
@@ -10,7 +10,6 @@ hhvm (3.1+20140630-1) UNRELEASED; urgency=low
       third-party.
     - typos: Lots of typos, most of them detected by lintian. Added the
       false positives to a lintian override file.
-    - remove_libpam: Disable libpam CMake and linking code.
     - use_system_libsqlite: Use the system's libsqlite3 and remove the one
       in third-party.
 
@@ -23,4 +22,4 @@ hhvm (3.1+20140630-1) UNRELEASED; urgency=low
     - public_headers_system: add header files from hphp/system/ too as at
       least systemlib.h is needed to build an extension.
 
- -- Faidon Liambotis <paravoid@debian.org>  Mon, 30 Jun 2014 17:22:40 +0000
+ -- David Martínez Moreno <ender@debian.org>  Fri, 25 Jul 2014 08:55:40 +0200

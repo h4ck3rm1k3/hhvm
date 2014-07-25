@@ -1,8 +1,6 @@
-use_system_libzip
-use_system_libsqlite3
-use_system_lz4
-use_system_double_conversion
-remove_libpam
-fix_freetype_include
-typos
-public_headers_system
+use_system_libzip.patch
+use_system_libsqlite3.patch
+use_system_lz4.patch
+use_system_double_conversion.patch
+fix_freetype_include.patch
+typos.patch
