@@ -15,4 +15,4 @@ Index: hhvm/third-party/CMakeLists.txt
 -  double-conversion
    folly)
  if(ENABLE_FASTCGI)
-   list(APPEND THIRD_PARTY_MODULES proxygen)
+   list(APPEND THIRD_PARTY_MODULES ti)

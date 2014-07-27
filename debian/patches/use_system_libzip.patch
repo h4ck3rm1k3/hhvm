@@ -16,5 +16,5 @@ Index: hhvm/third-party/CMakeLists.txt
 -  libzip)
 +  folly)
  if(ENABLE_FASTCGI)
-   list(APPEND THIRD_PARTY_MODULES proxygen)
+   list(APPEND THIRD_PARTY_MODULES ti)
    list(APPEND THIRD_PARTY_MODULES thrift)
