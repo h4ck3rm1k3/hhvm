@@ -16,6 +16,8 @@ hhvm (3.2.0+dfsg-1) UNRELEASED; urgency=low
       in third-party.
     - fix_hphp_lexer: Add a missing semicolon in the HPHP lexer, already
       merged upstream.
+    - link_libiconv_hook: The iconv library in Debian is called libiconv_hook,
+      so change the CMake detection script to account for that.
 
   [ Faidon Liambotis ]
   * debian/patches:

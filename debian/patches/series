@@ -5,3 +5,4 @@ use_system_double_conversion.patch
 fix_freetype_include.patch
 typos.patch
 fix_hphp_lexer.patch
+link_libiconv_hook.patch
