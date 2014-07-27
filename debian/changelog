@@ -1,9 +1,11 @@
-hhvm (3.2.0-1) UNRELEASED; urgency=low
+hhvm (3.2.0+dfsg-1) UNRELEASED; urgency=low
 
   [ David Martínez Moreno ]
   * Initial release (closes: #727085).
   * debian/rules: Build the package with --as-needed to remove a couple of
     bogus dependencies,
+  * Added debian/repack to create DFSG-compliant tarballs.
+  * Added debian/README.source to cover the above procedure.
   * debian/patches:
     - fix_freetype_include: Bad include in libgd.
     - use_system_libzip: Use the system's libzip and remove the one in
@@ -22,4 +24,5 @@ hhvm (3.2.0-1) UNRELEASED; urgency=low
     - public_headers_system: add header files from hphp/system/ too as at
       least systemlib.h is needed to build an extension.
 
- -- David Martínez Moreno <ender@debian.org>  Fri, 25 Jul 2014 08:55:40 +0200
+
+ -- David Martínez Moreno <ender@debian.org>  Sat, 26 Jul 2014 23:35:30 -0700

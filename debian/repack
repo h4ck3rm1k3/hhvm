@@ -1,0 +1,68 @@
+#!/bin/bash
+# Script to clone the HHVM repo from Github, get the proper git submodules
+# initialized, remove files not compatible with DFSG and repack it as tar.xz.
+# It uses git, sed, xz, wget and tar.
+
+# Copyright 2014 David Martínez Moreno <ender@debian.org>
+# Under GPL v2 license or later.
+
+if [ $# -ne 1 ]; then
+    echo "Usage: $0 HHVM_tag_from_github" >&2
+    echo "Example: $0 HHVM-3.2.0" >&2
+    exit 1
+fi
+
+if ! $(git --version &> /dev/null); then
+    echo 'Unable to use git, please install it or put it in my PATH!' >&2
+    exit 1
+fi
+
+hhvm_version=$(basename $1 | sed -E 's,.*-([0-9.]+)\..*,\1,')
+working_dir="$(mktemp -d)"
+non_dfsg_files=(
+    # JSON license, not used when USE_JSONC is passed.
+    hphp/runtime/ext/json/JSON_parser.cpp
+    )
+exit_sigspecs="ERR EXIT SIGTERM SIGHUP SIGINT SIGQUIT"
+
+function cleanup_exit() {
+    exit_status=$?
+    trap - $exit_sigspecs
+
+    rm -rf "${working_dir}"
+    printf "Cleaned up working directory ‘${working_dir}’\n"
+
+    exit $exit_status
+}
+trap cleanup_exit $exit_sigspecs
+
+echo 'Cloning HHVM repo!'
+pushd $working_dir
+git clone git@github.com:facebook/hhvm.git
+pushd hhvm
+git co $1
+echo 'Initializing git submodules!'
+git submodule update --init --recursive
+popd
+popd
+
+hhvm_version=$(echo $1 | sed -E 's,.*-([0-9.]+)$,\1,')
+
+echo 'Removing .git artifacts!'
+find $working_dir/hhvm -name .git | xargs --no-run-if-empty rm -rf
+echo 'Removing non-DFSG-compliant files!'
+for bad_file in "${non_dfsg_files[@]}"
+do
+    rm -v $working_dir/hhvm/$bad_file
+done
+
+mv $working_dir/hhvm $working_dir/hhvm-$hhvm_version+dfsg
+dfsg_tar="hhvm-${hhvm_version}+dfsg.tar.xz"
+if [ -f "../$dfsg_tar" ]; then
+    echo "The destination file ../$dfsg_tar already exists!!"
+    echo -n "Do you want to overwrite it? Press Enter to do it, Ctrl-C otherwise [Y]: "
+    read a
+fi
+
+echo 'Rebuilding the orig.tar.xz!'
+tar Jcf ../$dfsg_tar -C $working_dir hhvm-${hhvm_version}+dfsg
