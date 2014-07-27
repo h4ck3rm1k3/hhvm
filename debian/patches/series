@@ -4,3 +4,4 @@ use_system_lz4.patch
 use_system_double_conversion.patch
 fix_freetype_include.patch
 typos.patch
+fix_hphp_lexer.patch

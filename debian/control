@@ -32,7 +32,9 @@ Build-Depends: debhelper (>= 9.0.0),
   libfreetype6-dev,
   libgoogle-glog-dev,
   libiberty-dev,
+  libiconv-hook-dev,
   libicu-dev,
+  libinotifytools0-dev,
   libjemalloc-dev,
   libjpeg62-dev | libjpeg-dev,
   libjson-c-dev,
@@ -64,7 +66,7 @@ Vcs-Browser: http://anonscm.debian.org/gitweb/?p=collab-maint/hhvm.git;a=summary
 Package: hhvm
 Architecture: amd64
 Depends: ${shlibs:Depends}, ${misc:Depends}
-Description: HipHop Virtual Machine, a JIT replacement for PHP
+Description: HipHop Virtual Machine, a JIT replacement for PHP - main runtime
  HHVM is an open-source virtual machine designed for executing programs
  written in Hack and PHP. HHVM uses a just-in-time (JIT) compilation
  approach to achieve superior performance while maintaining the development
@@ -78,7 +80,7 @@ Architecture: amd64
 Depends: hhvm (= ${binary:Version}), ${misc:Depends}
 Section: debug
 Priority: extra
-Description: HipHop Virtual Machine, a JIT replacement for PHP
+Description: HipHop Virtual Machine, a JIT replacement for PHP - debugging symbols
  HHVM is an open-source virtual machine designed for executing programs
  written in Hack and PHP. HHVM uses a just-in-time (JIT) compilation
  approach to achieve superior performance while maintaining the development
@@ -94,7 +96,7 @@ Architecture: amd64
 Depends: ${misc:Depends}, cmake
 Section: libdevel
 Priority: extra
-Description: HipHop Virtual Machine, a JIT replacement for PHP
+Description: HipHop Virtual Machine, a JIT replacement for PHP - development files
  HHVM is an open-source virtual machine designed for executing programs
  written in Hack and PHP. HHVM uses a just-in-time (JIT) compilation
  approach to achieve superior performance while maintaining the development

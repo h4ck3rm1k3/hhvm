@@ -14,6 +14,8 @@ hhvm (3.2.0+dfsg-1) UNRELEASED; urgency=low
       false positives to a lintian override file.
     - use_system_libsqlite: Use the system's libsqlite3 and remove the one
       in third-party.
+    - fix_hphp_lexer: Add a missing semicolon in the HPHP lexer, already
+      merged upstream.
 
   [ Faidon Liambotis ]
   * debian/patches:
@@ -23,6 +25,5 @@ hhvm (3.2.0+dfsg-1) UNRELEASED; urgency=low
       library and remove the one in third-party.
     - public_headers_system: add header files from hphp/system/ too as at
       least systemlib.h is needed to build an extension.
-
 
  -- David Martínez Moreno <ender@debian.org>  Sat, 26 Jul 2014 23:35:30 -0700
