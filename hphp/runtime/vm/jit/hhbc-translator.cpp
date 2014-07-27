@@ -158,6 +158,12 @@ SSATmp* HhbcTranslator::pop(Type type, TypeConstraint tc) {
     uint32_t stackOff = m_irb->stackDeficit();
     m_irb->incStackDeficit();
     m_irb->constrainStack(stackOff, tc);
+
+    // pop() is usually called with Cell or Gen. Don't rely
+    // on the simplifier to get a better type for the LdStack.
+    auto const info = getStackValue(m_irb->sp(), stackOff);
+    type = std::min(type, info.knownType);
+
     auto value = gen(LdStack, type, StackOffset(stackOff), m_irb->sp());
     FTRACE(2, "HhbcTranslator popping {}\n", *value->inst());
     return value;
@@ -317,13 +323,12 @@ void HhbcTranslator::beginInlining(unsigned numParams,
                                         target});
   updateMarker();
 
-  always_assert_log(
+  always_assert_flog(
     findSpillFrame(calleeSP),
-    [&] {
-      return folly::format("Couldn't find SpillFrame for inlined call on sp {}."
-                           " Was the FPush instruction interpreted?\n{}",
-                           *calleeSP->inst(), m_irb->unit().toString()).str();
-    });
+    "Couldn't find SpillFrame for inlined call on sp {}."
+    " Was the FPush instruction interpreted?\n{}",
+    *calleeSP->inst(), m_irb->unit()
+  );
 
   auto const calleeFP = gen(DefInlineFP, data, calleeSP, prevSP, m_irb->fp());
   gen(
@@ -2723,12 +2728,17 @@ void HhbcTranslator::emitFPushCtorD(int32_t numParams, int32_t classNameStrId) {
     }
   }
 
-  auto const ssaCls =
-    persistentCls ? cns(cls)
-                  : gen(LdClsCached, makeCatch(), cns(className));
-  auto const obj =
-    fastAlloc ? emitAllocObjFast(cls)
-              : gen(AllocObj, makeCatch(), ssaCls);
+  auto ssaCls = persistentCls ? cns(cls)
+                              : gen(LdClsCached, makeCatch(), cns(className));
+  if (!ssaCls->isConst() && uniqueCls) {
+    // If the Class is unique but not persistent, it's safe to use it as a
+    // const after the LdClsCached, which will throw if the class can't be
+    // defined.
+    ssaCls = cns(cls);
+  }
+
+  auto const obj = fastAlloc ? emitAllocObjFast(cls)
+                             : gen(AllocObj, makeCatch(), ssaCls);
   gen(IncRef, obj);
   emitFPushCtorCommon(ssaCls, obj, func, numParams);
 }
@@ -4103,7 +4113,8 @@ void HhbcTranslator::emitProfiledGuard(Type type, const char* location,
   // We really do want to check for exact equality here: if type is StaticStr
   // there's nothing for us to do, and we don't support guarding on CountedStr.
   if (type != Type::Str ||
-      (tx->mode() != TransKind::Profile && tx->mode() != TransKind::Optimize)) {
+      (mcg->tx().mode() != TransKind::Profile &&
+       mcg->tx().mode() != TransKind::Optimize)) {
     return doGuard(type);
   }
 
@@ -4257,57 +4268,38 @@ void HhbcTranslator::assertTypeStack(uint32_t idx, Type type) {
 }
 
 /*
- * Creates a RuntimeType struct from a program location. This needs access to
- * more than just the location's type because RuntimeType includes known
- * constant values. All accesses to the stack and locals use DataTypeGeneric so
- * this function should only be used for inspecting state; when the values are
- * actually used they must be constrained further.
+ * Returns the Type of the given location. All accesses to the stack and locals
+ * use DataTypeGeneric so this function should only be used for inspecting
+ * state; when the values are actually used they must be constrained further.
  */
-RuntimeType HhbcTranslator::rttFromLocation(const Location& loc) {
-  Type t;
-  SSATmp* val = nullptr;
+Type HhbcTranslator::typeFromLocation(const Location& loc) {
   switch (loc.space) {
     case Location::Stack: {
       auto i = loc.offset;
       assert(i >= 0);
       if (i < m_irb->evalStack().size()) {
-        val = top(DataTypeGeneric, i);
-        t = val->type();
+        return top(DataTypeGeneric, i)->type();
       } else {
         auto stackVal =
           getStackValue(m_irb->sp(),
                         i - m_irb->evalStack().size() + m_irb->stackDeficit());
-        val = stackVal.value;
-        t = stackVal.knownType;
-        if (!val && t == Type::StackElem) return RuntimeType(KindOfAny);
+        return stackVal.knownType;
       }
     } break;
     case Location::Local: {
       auto l = loc.offset;
-      val = m_irb->localValue(l, DataTypeGeneric);
-      t = val ? val->type() : m_irb->localType(l, DataTypeGeneric);
+      return m_irb->localType(l, DataTypeGeneric);
     } break;
     case Location::Litstr:
-      return RuntimeType(curUnit()->lookupLitstrId(loc.offset));
+      return Type::cns(curUnit()->lookupLitstrId(loc.offset));
     case Location::Litint:
-      return RuntimeType(loc.offset);
+      return Type::cns(loc.offset);
     case Location::This:
-      return RuntimeType(KindOfObject, KindOfNone, curFunc()->cls());
-    case Location::Invalid:
-    case Location::Iter:
-      not_reached();
-  }
+      return Type::Obj.specialize(curFunc()->cls());
 
-  assert(IMPLIES(val, val->type().equals(t)));
-  if (val && val->isConst()) {
-    // RuntimeType holds constant Bool, Int, Str, and Cls.
-    if (val->isA(Type::Bool)) return RuntimeType(val->boolVal());
-    if (val->isA(Type::Int))  return RuntimeType(val->intVal());
-    if (val->isA(Type::Str))  return RuntimeType(val->strVal());
-    if (val->isA(Type::Cls))  return RuntimeType(val->clsVal());
+    default:
+      always_assert(false && "Bad location in typeFromLocation");
   }
-
-  return t.toRuntimeType();
 }
 
 static uint64_t packBitVec(const std::vector<bool>& bits, unsigned i) {
@@ -5222,7 +5214,7 @@ folly::Optional<Type> HhbcTranslator::ratToAssertType(RepoAuthType rat) const {
     {
       auto ty = [&] {
         auto const cls = Unit::lookupUniqueClass(rat.clsName());
-        return classIsPersistentOrCtxParent(cls)
+        return classIsUniqueOrCtxParent(cls)
           ? Type::Obj.specialize(cls)
           : Type::Obj;
       }();

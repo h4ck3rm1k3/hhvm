@@ -210,6 +210,7 @@ bad_tests = (
     '/ext/standard/tests/file/copy_variation8.php',
 
     # flaky: t3851970
+    '/ext/standard/tests/general_functions/proc_open02.php',
     '/ext/ftp/tests/bug39458.php',
     '/ext/standard/tests/file/rename_variation3.php',
     '/ext/standard/tests/file/mkdir-003.php',
@@ -749,6 +750,9 @@ other_files = (
     '/ext/xmlreader/tests/relaxNG.rng',
     '/ext/xmlreader/tests/relaxNG2.rng',
     '/ext/xmlreader/tests/relaxNG3.rng',
+    '/ext/xsl/tests/53965/collection.xml',
+    '/ext/xsl/tests/53965/collection.xsl',
+    '/ext/xsl/tests/53965/include.xsl',
     '/ext/xsl/tests/area_list.xsl',
     '/ext/xsl/tests/area_name.xml',
     '/ext/xsl/tests/bug49634.xml',

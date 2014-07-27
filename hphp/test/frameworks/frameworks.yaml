@@ -71,12 +71,9 @@
     url: https://github.com/composer/composer.git
     # master is the only available branch
     branch: master
-    commit: 5d4900e79d5ea08118782345fb97e23e6ab1e4f0
+    commit: 8881cec1742cc7e56bfc0e33b08f785ae53b78dc
     install_root: composer
     test_root: composer
-    clowns:
-     # https://github.com/composer/composer/issues/3049 - fails on PHP5 too
-     - composer/tests/Composer/Test/Json/JsonFileTest.php
   doctrine2:
     url: https://github.com/doctrine/doctrine2.git
     # Stable is 2.4.2, but need master since we have pull requests.
@@ -645,3 +642,9 @@
     commit: 45e0f801d896258022c6a70a7738b991cb19aafe
     install_root: html5php
     test_root: html5php      
+  twital:
+    url: https://github.com/goetas/twital.git
+    branch: master
+    commit: 9f5d2f66bea26fc590ec003f2488568b34bafe72
+    install_root: twital
+    test_root: twital

@@ -176,36 +176,8 @@ let hh_check ?(check_mode=true) fn =
       error [l]
     end
 
-let autocomplete_result_to_json res =
-  let name = res.Autocomplete.name in
-  let pos = res.Autocomplete.pos in
-  let ty = res.Autocomplete.ty in
-  match pos, ty with
-  | None, None ->
-      JAssoc [ "name", JString name;
-             ]
-  | Some p, None ->
-      JAssoc [ "name", JString name;
-               "pos", pos_to_json p;
-             ]
-  | None, Some type_ ->
-      JAssoc [ "name", JString name;
-               "type", JString type_;
-             ]
-  | Some p, Some type_ ->
-    JAssoc [ "name", JString name;
-             "type", JString type_;
-             "pos", pos_to_json p;
-           ]
-
 let hh_auto_complete fn =
   AutocompleteService.attach_hooks();
-  Autocomplete.auto_complete := true;
-  Autocomplete.auto_complete_result := SMap.empty;
-  Autocomplete.auto_complete_for_global := "";
-  Autocomplete.argument_global_type := None;
-  Autocomplete.auto_complete_pos := None;
-  Autocomplete.auto_complete_vars := SMap.empty;
   let content = Hashtbl.find files fn in
   try
     let {Parser_hack.is_hh_file; comments; ast} =
@@ -236,19 +208,16 @@ let hh_auto_complete fn =
       | Some Autocomplete.Acvar -> "var"
       | None -> "none" in
     let result = AutocompleteService.get_results [] [] in
-    let result = SMap.fold
-        (fun _ res acc -> (autocomplete_result_to_json res) :: acc)
-        result
-        [] in
+    let result =
+      List.map AutocompleteService.autocomplete_result_to_json result
+    in
     AutocompleteService.detach_hooks();
-    Autocomplete.auto_complete := false;
     output_json (JAssoc [ "completions",     JList result;
                           "completion_type", JString completion_type_str;
                           "internal_error",  JBool false;
                         ])
   with _ ->
     AutocompleteService.detach_hooks();
-    Autocomplete.auto_complete := false;
     output_json (JAssoc [ "internal_error", JBool true;
                         ])
 

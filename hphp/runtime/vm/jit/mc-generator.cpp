@@ -628,7 +628,7 @@ MCGenerator::getFuncPrologue(Func* func, int nPassed, ActRec* ar,
     auto ret = backEnd().emitFuncPrologue(code.main(), code.cold(), func,
                                           funcIsMagic, nPassed,
                                           start, aStart);
-    m_fixups.process();
+    m_fixups.process(nullptr);
     return ret;
   }();
 
@@ -1522,7 +1522,7 @@ MCGenerator::recordSyncPoint(CodeAddress frontier, Offset pcOff, Offset spOff) {
 }
 
 void
-CodeGenFixups::process() {
+CodeGenFixups::process(GrowableVector<IncomingBranch>* inProgressTailBranches) {
   for (uint i = 0; i < m_pendingFixups.size(); i++) {
     TCA tca = m_pendingFixups[i].m_tca;
     assert(mcg->isValidCodeAddress(tca));
@@ -1539,6 +1539,7 @@ CodeGenFixups::process() {
     mcg->getJmpToTransIDMap().insert(elm);
   }
   m_pendingJmpTransIDs.clear();
+
   /*
    * Currently these are only used by the relocator,
    * so there's nothing left to do here.
@@ -1551,6 +1552,11 @@ CodeGenFixups::process() {
   m_codePointers.clear();
   m_bcMap.clear();
   m_alignFixups.clear();
+
+  if (inProgressTailBranches) {
+    m_inProgressTailJumps.swap(*inProgressTailBranches);
+  }
+  assert(m_inProgressTailJumps.empty());
 }
 
 void CodeGenFixups::clear() {
@@ -1562,6 +1568,7 @@ void CodeGenFixups::clear() {
   m_codePointers.clear();
   m_bcMap.clear();
   m_alignFixups.clear();
+  m_inProgressTailJumps.clear();
 }
 
 bool CodeGenFixups::empty() const {
@@ -1573,7 +1580,8 @@ bool CodeGenFixups::empty() const {
     m_addressImmediates.empty() &&
     m_codePointers.empty() &&
     m_bcMap.empty() &&
-    m_alignFixups.empty();
+    m_alignFixups.empty() &&
+    m_inProgressTailJumps.empty();
 }
 
 void
@@ -1602,14 +1610,12 @@ MCGenerator::translateWork(const TranslArgs& args) {
     undoAfrozen.undo();
     undoGlobalData.undo();
     m_fixups.clear();
-    srcRec.clearInProgressTailJumps();
   };
 
   auto assertCleanState = [&] {
     assert(code.main().frontier() == start);
     assert(code.frozen().frontier() == frozenStart);
     assert(m_fixups.empty());
-    assert(srcRec.inProgressTailJumps().empty());
   };
 
   PostConditions pconds;
@@ -1766,14 +1772,16 @@ MCGenerator::translateWork(const TranslArgs& args) {
     reportTraceletToVtune(sk.unit(), sk.func(), tr);
   }
 
-  m_fixups.process();
+  GrowableVector<IncomingBranch> inProgressTailBranches;
+  m_fixups.process(&inProgressTailBranches);
 
   // SrcRec::newTranslation() makes this code reachable. Do this last;
   // otherwise there's some chance of hitting in the reader threads whose
   // metadata is not yet visible.
   TRACE(1, "newTranslation: %p  sk: (func %d, bcOff %d)\n",
         start, sk.getFuncId(), sk.offset());
-  srcRec.newTranslation(start);
+  srcRec.newTranslation(start, inProgressTailBranches);
+
   TRACE(1, "mcg: %zd-byte tracelet\n", code.main().frontier() - start);
   if (Trace::moduleEnabledRelease(Trace::tcspace, 1)) {
     Trace::traceRelease("%s", getUsage().c_str());
@@ -1801,11 +1809,9 @@ void MCGenerator::traceCodeGen() {
     unit.collectPostConditions();
   }
 
-  auto regs = allocateRegs(unit);
-  assert(checkRegisters(unit, regs)); // calls checkCfg internally.
-
   recordBCInstr(OpTraceletGuard, code.main(), code.main().frontier(), false);
-  genCode(unit, this, regs);
+  always_assert(this == mcg);
+  genCode(unit);
 
   m_numHHIRTrans++;
 }
@@ -2040,7 +2046,7 @@ bool MCGenerator::addDbgGuards(const Unit* unit) {
       addDbgGuardImpl(sk, sr);
     }
   }
-  mcg->cgFixups().process();
+  mcg->cgFixups().process(nullptr);
   Translator::WriteLease().drop();
   HPHP::Timer::GetMonotonicTime(tsEnd);
   int64_t elapsed = gettime_diff_us(tsBegin, tsEnd);
@@ -2078,7 +2084,7 @@ bool MCGenerator::addDbgGuard(const Func* func, Offset offset, bool resumed) {
       addDbgGuardImpl(sk, sr);
     }
   }
-  mcg->cgFixups().process();
+  mcg->cgFixups().process(nullptr);
   Translator::WriteLease().drop();
   return true;
 }
@@ -2216,8 +2222,14 @@ void MCGenerator::setJmpTransID(TCA jmp) {
 }
 
 void RelocationInfo::recordAddress(TCA src, TCA dest, int range) {
-  assert(m_destSize == size_t(-1) || dest - m_dest >= m_destSize);
-  m_destSize = dest - m_dest;
+  if (!m_dest) {
+    assert(m_destSize == size_t(-1));
+    m_dest = dest;
+    m_destSize = range;
+  } else {
+    assert(dest - m_dest + range >= m_destSize);
+    m_destSize = dest - m_dest + range;
+  }
   m_adjustedAddresses.emplace(src, std::make_pair(dest, range));
 }
 

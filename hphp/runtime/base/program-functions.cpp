@@ -584,7 +584,7 @@ void execute_command_line_begin(int argc, char **argv, int xhprof,
     serverArr.set(s_argc, php_global(s_argc));
     serverArr.set(s_PWD, g_context->getCwd());
     char hostname[1024];
-    if (!gethostname(hostname, 1024)) {
+    if (RuntimeOption::ServerExecutionMode() && !gethostname(hostname, 1024)) {
       serverArr.set(s_HOSTNAME, String(hostname, CopyString));
     }
 
@@ -1300,6 +1300,12 @@ static int execute_program_impl(int argc, char** argv) {
   compile_file(0, 0, MD5(), 0);
 
   if (!po.lint.empty()) {
+    Logger::LogHeader = false;
+    Logger::LogLevel = Logger::LogInfo;
+    Logger::UseCronolog = false;
+    Logger::UseLogFile = true;
+    Logger::SetNewOutput(nullptr);
+
     if (po.isTempFile) {
       tempFile = po.lint;
     }

@@ -623,9 +623,11 @@ and expr_ is_lvalue env (p, e) =
   | Array (x :: rl as l) ->
       check_consistent_fields x rl;
       let env, value = TUtils.in_var env (Reason.Rnone, Tunresolved []) in
-      let env, values = lfold field_value env l in
+      let env, values =
+        fold_left_env (apply_for_env_fold field_value) env [] l in
       let has_unknown = List.exists (fun (_, ty) -> ty = Tany) values in
-      let env, values = lfold TUtils.unresolved env values in
+      let env, values =
+        fold_left_env (apply_for_env_fold TUtils.unresolved) env [] values in
       let unify_value = Type.unify p Reason.URarray_value in
       let env, value =
         if has_unknown (* If one of the values comes from PHP land,
@@ -640,8 +642,10 @@ and expr_ is_lvalue env (p, e) =
           env, (Reason.Rwitness p, Tarray (true, Some value, None))
       | Nast.AFkvalue _ ->
           let env, key = TUtils.in_var env (Reason.Rnone, Tunresolved []) in
-          let env, keys = lfold field_key env l in
-          let env, keys = lfold TUtils.unresolved env keys in
+          let env, keys =
+            fold_left_env (apply_for_env_fold field_key) env [] l in
+          let env, keys =
+            fold_left_env (apply_for_env_fold TUtils.unresolved) env [] keys in
           let unify_key = Type.unify p Reason.URarray_key in
           let env, key = fold_left_env unify_key env key keys in
           env, (Reason.Rwitness p, Tarray (true, Some key, Some value))
@@ -713,10 +717,10 @@ and expr_ is_lvalue env (p, e) =
       let env = string2 env idl in
       env, (Reason.Rwitness p, Tprim Tstring)
   | Fun_id x ->
-      Typing_hooks.dispatch_id_hook x;
+      Typing_hooks.dispatch_id_hook x env;
       fun_type_of_id env x
   | Id ((cst_pos, cst_name) as id) ->
-      Typing_hooks.dispatch_id_hook id;
+      Typing_hooks.dispatch_id_hook id env;
       (match Env.get_gconst env cst_name with
       | None when Env.is_strict env ->
           Errors.unbound_global cst_pos;
@@ -982,6 +986,7 @@ and expr_ is_lvalue env (p, e) =
       Async.overload_extract_from_awaitable env p rty
   | Special_func func -> special_func env p func
   | New (c, el) ->
+      Typing_hooks.dispatch_new_id_hook c env;
       Typing_utils.process_static_find_ref c (p, "__construct");
       let check_not_abstract = true in
       let env, ty = new_object ~check_not_abstract p env c el in
@@ -1415,7 +1420,7 @@ and dispatch_call p env call_type (fpos, fun_expr as e) el =
       end
   | Fun_id x
   | Id x ->
-      Typing_hooks.dispatch_id_hook x;
+      Typing_hooks.dispatch_id_hook x env;
       let env, fty = fun_type_of_id env x in
       let env, fty = Env.expand_type env fty in
       let env, fty = Inst.instantiate_fun env fty el in
@@ -1628,6 +1633,11 @@ and array_get is_lvalue p env ty1 ety1 e2 ty2 =
       let env, ty1 = Typing_tdef.expand_typedef env (fst ety1) x argl in
       let env, ety1 = Env.expand_type env ty1 in
       array_get is_lvalue p env ty1 ety1 e2 ty2
+  | Tabstract (_, _, Some ty) ->
+      let env, ety = Env.expand_type env ty in
+      Errors.try_
+        (fun () -> array_get is_lvalue p env ty ety e2 ty2)
+        (fun _ -> error_array env p ety1)
   | _ -> error_array env p ety1
 
 and array_append is_lvalue p env ty1 =
@@ -1654,6 +1664,10 @@ and array_append is_lvalue p env ty1 =
   | Tapply ((_, x), argl) when Typing_env.is_typedef env x ->
       let env, ty1 = Typing_tdef.expand_typedef env (fst ety1) x argl in
       array_append is_lvalue p env ty1
+  | Tabstract (_, _, Some ty) ->
+      Errors.try_
+        (fun () -> array_append is_lvalue p env ty)
+        (fun _ -> error_array_append env p ety1)
   | _ ->
       error_array_append env p ety1
 
@@ -2150,6 +2164,7 @@ and call_ pos env fty el =
       call_ pos env fty el
   | _, (Tany | Tunresolved []) ->
       let env, _ = lmap expr env el in
+      Typing_hooks.dispatch_fun_call_hooks [] (List.map fst el) env;
       env, (Reason.Rnone, Tany)
   | r, Tunresolved tyl ->
       let env, retl = lmap (fun env ty -> call pos env ty el) env tyl in
@@ -2161,6 +2176,7 @@ and call_ pos env fty el =
       let pos_tyl = List.combine (List.map fst el) tyl in
       Typing_utils.process_arg_info ft.ft_params pos_tyl env;
       let env = wfold_left2 call_param env ft.ft_params pos_tyl in
+      Typing_hooks.dispatch_fun_call_hooks ft.ft_params (List.map fst el) env;
       env, ft.ft_ret
   | r2, Tanon (arity_min, arity_max, id) ->
       let env, tyl = lmap expr env el in
@@ -2252,6 +2268,8 @@ and binop p env bop p1 ty1 p2 ty2 =
           env, (Reason.Rarith_ret p, Tprim Tint)
       | rty1, _ ->
           (* Either side is unknown, unknown *)
+          (* TODO um, what? This seems very wrong, particularly where "newtype
+           * as" is concerned. *)
           env, rty1)
   | Ast.Slash ->
       let env, ty1 = TUtils.fold_unresolved env ty1 in
@@ -2287,9 +2305,14 @@ and binop p env bop p1 ty1 p2 ty2 =
       env, (Reason.Rcomp p, Tprim Tbool)
   | Ast.Lt | Ast.Lte  | Ast.Gt  | Ast.Gte  ->
       let ty_num = (Reason.Rcomp p, Tprim Nast.Tnum) in
-      if (SubType.is_sub_type env ty_num ty1) && (SubType.is_sub_type env ty_num ty2)
+      let ty_string = (Reason.Rcomp p, Tprim Nast.Tstring) in
+      let both_sub ty =
+        SubType.is_sub_type env ty ty1 && SubType.is_sub_type env ty ty2 in
+      if both_sub ty_num || both_sub ty_string
       then env, (Reason.Rcomp p, Tprim Tbool)
       else
+        (* TODO this is questionable; PHP's semantics for conversions with "<"
+         * are pretty crazy and we may want to just disallow this? *)
         let env, ty = Type.unify p Reason.URnone env ty1 ty2 in
         env, (Reason.Rcomp p, Tprim Tbool)
   | Ast.Dot ->
@@ -2300,8 +2323,8 @@ and binop p env bop p1 ty1 p2 ty2 =
   | Ast.BArbar ->
       env, (Reason.Rlogic_ret p, Tprim Tbool)
   | Ast.Amp  | Ast.Bar  | Ast.Ltlt  | Ast.Gtgt ->
-      let env, ty1 = Type.unify p Reason.URnone env ty1 (Reason.Rbitwise p1, Tprim Tint) in
-      let env, ty2 = Type.unify p Reason.URnone env ty2 (Reason.Rbitwise p2, Tprim Tint) in
+      let env = Type.sub_type p Reason.URnone env (Reason.Rbitwise p1, Tprim Tint) ty1 in
+      let env = Type.sub_type p Reason.URnone env (Reason.Rbitwise p2, Tprim Tint) ty2 in
       env, (Reason.Rbitwise_ret p, Tprim Tint)
   | Ast.Eq _ ->
       assert false

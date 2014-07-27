@@ -90,6 +90,7 @@ struct CodeGenFixups {
   std::set<TCA*> m_codePointers;
   std::vector<TransBCMapping> m_bcMap;
   std::multimap<TCA,std::pair<int,int>> m_alignFixups;
+  GrowableVector<IncomingBranch> m_inProgressTailJumps;
 
   CodeBlock* m_tletMain{nullptr};
   CodeBlock* m_tletCold{nullptr};
@@ -101,14 +102,14 @@ struct CodeGenFixups {
     m_tletFrozen = frozen;
   }
 
-  void process();
+  void process(GrowableVector<IncomingBranch>* inProgressTailBranches);
   bool empty() const;
   void clear();
 };
 
 struct RelocationInfo {
-  RelocationInfo(TCA start, TCA end, TCA dest) :
-      m_start(start), m_end(end), m_dest(dest) {}
+  RelocationInfo(TCA start, TCA end) :
+      m_start(start), m_end(end) {}
 
   TCA start() const { return m_start; }
   TCA end() const { return m_end; }
@@ -127,7 +128,7 @@ struct RelocationInfo {
  private:
   TCA m_start;
   TCA m_end;
-  TCA m_dest;
+  TCA m_dest{nullptr};
   size_t m_destSize{size_t(-1)};
   /*
    * maps from src address, to range of destination addresse
@@ -386,33 +387,6 @@ const size_t kMaxNumTrampolines = kTrampolinesBlockSize /
 TCA fcallHelper(ActRec* ar, void* sp);
 TCA funcBodyHelper(ActRec* ar, void* sp);
 int64_t decodeCufIterHelper(Iter* it, TypedValue func);
-
-bool isNormalPropertyAccess(const NormalizedInstruction& i,
-                            int propInput,
-                            int objInput);
-
-struct PropInfo {
-  PropInfo()
-    : offset(-1)
-    , repoAuthType{}
-  {}
-  explicit PropInfo(int offset, RepoAuthType repoAuthType)
-    : offset(offset)
-    , repoAuthType{repoAuthType}
-  {}
-
-  int offset;
-  RepoAuthType repoAuthType;
-};
-
-PropInfo getPropertyOffset(const NormalizedInstruction& ni,
-                           Class* contextClass,
-                           const Class*& baseClass,
-                           const MInstrInfo& mii,
-                           unsigned mInd, unsigned iInd);
-PropInfo getFinalPropertyOffset(const NormalizedInstruction&,
-                                Class* contextClass,
-                                const MInstrInfo&);
 
 // Both emitIncStat()s push/pop flags but don't clobber any registers.
 extern void emitIncStat(CodeBlock& cb, uint64_t* tl_table, uint32_t index,
