@@ -22,6 +22,14 @@ working_dir="$(mktemp -d)"
 non_dfsg_files=(
     # JSON license, not used when USE_JSONC is passed.
     hphp/runtime/ext/json/JSON_parser.cpp
+    # We use double-conversion from Debian. DFSG-free but not needed.
+    third-party/double-conversion
+    # We use liblz4 from Debian. DFSG-free but not needed.
+    third-party/lz4
+    # We use libsqlite3 from Debian. DFSG-free but not needed.
+    third-party/libsqlite3
+    # We use libzip from Debian. DFSG-free but not needed.
+    third-party/libzip
     )
 exit_sigspecs="ERR EXIT SIGTERM SIGHUP SIGINT SIGQUIT"
 
@@ -38,7 +46,7 @@ trap cleanup_exit $exit_sigspecs
 
 echo 'Cloning HHVM repo!'
 pushd $working_dir
-git clone git@github.com:facebook/hhvm.git
+git clone https://github.com/facebook/hhvm.git
 pushd hhvm
 git co $1
 echo 'Initializing git submodules!'
@@ -53,7 +61,8 @@ find $working_dir/hhvm -name .git | xargs --no-run-if-empty rm -rf
 echo 'Removing non-DFSG-compliant files!'
 for bad_file in "${non_dfsg_files[@]}"
 do
-    rm -v $working_dir/hhvm/$bad_file
+    echo "Deleting $bad_file from the checkout!"
+    rm -rf $working_dir/hhvm/$bad_file
 done
 
 mv $working_dir/hhvm $working_dir/hhvm-$hhvm_version+dfsg

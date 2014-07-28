@@ -1,12 +1,6 @@
 - Add init script, systemd unit and upstart job, possibly reusing code from the
   php5-fpm package
-- Fix bison issue and reenable make-lexer/make-parser
-- Workaround the json-is-evil issue
-  - dfsg-remove /hphp/runtime/ext/json/JSON_parser.cpp
-  - rewrite ./hphp/runtime/base/utf8-decode.cpp
 - Fix the clean targets as it's not possible to rebuild HHVM after a successful build.
-- Finish with 02_use_system_libzip.patch because we have to support the case when
-  libzip 0.11 or later is not present.
 - debian/copyright: Review the following directories:
   * hphp
   * hphp/runtime
