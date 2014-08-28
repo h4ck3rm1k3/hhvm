@@ -5,8 +5,8 @@ Comment: HHVM stands for "HipHop for PHP Virtual Machine".  That name
  respects the PHP license.
 
 Files: CMake/FindBISON.cmake CMake/FindFLEX.cmake
-Copyright: 2006, Tristan Carel
-License: BSD
+Copyright: 2006 Tristan Carel
+License: BSD-3-clause
 
 Files: CMake/FindBoost.cmake
 Copyright: 2006-2009 Kitware, Inc.
@@ -25,9 +25,11 @@ Files: CMake/FindMySQL.cmake
 Copyright: 1995-2007 MySQL AB
 License: GPL-2
 Comment: Although they talk in the header about exceptions, I checked
- them and they are only for MySQL drivers, not for the build system.
+ them and they are only for MySQL drivers, not for the build system, so
+ this is simply GPL-2.
 
 Files: CMake/HPHPFindLibs.cmake
+       hphp/zend/html-table*
 Copyright: 2010 Facebook, Inc. (http://www.facebook.com)
            1997-2010 The PHP Group
 License: PHP-3.01
@@ -48,6 +50,44 @@ Files: hphp/neo/wildmat.*
 Copyright: 1986-1991 Rich Salz <rsalz@osf.org>
 License: Wildmat
 
+Files: hphp/util/asm-x64.h
+Copyright: 2009 Andrew J. Paroski
+           2010-2014 Facebook, Inc. (http://www.facebook.com)
+License: PHP-3.01 and BSD-3-clause
+
+Files: hphp/util/compression.cpp
+Copyright: 1995-2005 Jean-loup Gailly and Mark Adler
+           1997-2010 The PHP Group
+           2010-2014 Facebook, Inc. (http://www.facebook.com)
+License: PHP-3.01 and zlib
+
+Files: hphp/util/cronoutils.*
+Copyright: 1996-1999 by Ford & Mason Ltd
+License: Apache-1.0
+
+Files: hphp/util/safesort.h
+Copyright: 2009-2012 LLVM Team, University of Illinois at
+                     Urbana-Champaign.  Additional contributors can be
+                     found at:
+                     http://llvm.org/svn/llvm-project/libcxx/trunk/CREDITS.TXT
+License: Illinois-NCSA or MIT
+
+Files: hphp/vixl/*
+Copyright: 2013 ARM Limited
+License: BSD-3-clause
+
+Files: hphp/zend/crypt-blowfish.c
+       hphp/zend/crypt-blowfish.h
+Copyright: 1998-2011 Solar Designer <solar at openwall.com>
+License: public-domain
+
+Files: hphp/zend/zend-html.*
+       hphp/zend/zend-sha1.*
+       hphp/zend/zend-string.*
+Copyright: 2010-2014 Facebook, Inc. (http://www.facebook.com)
+           1998-2010 Zend Technologies Ltd. (http://www.zend.com)
+License: Zend-2.00
+
 Files: debian/*
 Copyright: 2014 David Martínez Moreno <ender@debian.org>
            2014 Faidon Liambotis <paravoid@debian.org>
@@ -56,31 +96,6 @@ License: GPL-2+
 Files: *
 Copyright: 2010-2014 Facebook, Inc. (http://www.facebook.com)
 License: PHP-3.01
-
-License: BSD
- Redistribution and use in source and binary forms, with or without
- modification, are permitted provided that the following conditions
- are met:
- 1. Redistributions of source code must retain the above copyright
-    notice, this list of conditions and the following disclaimer.
- 2. Redistributions in binary form must reproduce the above copyright
-    notice, this list of conditions and the following disclaimer in the
-    documentation and/or other materials provided with the distribution.
- 3. Neither the name of the University nor the names of its contributors
-    may be used to endorse or promote products derived from this software
-    without specific prior written permission.
- .
- THIS SOFTWARE IS PROVIDED BY THE REGENTS AND CONTRIBUTORS ``AS IS'' AND
- ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
- ARE DISCLAIMED.  IN NO EVENT SHALL THE REGENTS OR CONTRIBUTORS BE LIABLE
- FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
- OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
- HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
- LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
- OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
- SUCH DAMAGE.
 
 License: PHP-3.01
  Redistribution and use in source and binary forms, with or without
@@ -216,13 +231,264 @@ License: Bison-GPL-3+
  version 2.2 of Bison.
 
 License: Clearsilver
- FIXME, on the plane with no Internec.
+ Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are
+met:
+    * Redistributions of source code must retain the above copyright
+notice, this list of conditions and the following disclaimer.
+    * Redistributions in binary form must reproduce the above
+copyright notice, this list of conditions and the following disclaimer
+in the documentation and/or other materials provided with the
+distribution.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 License: Free
  This software is open source. Permission to use, copy, modify, and
- distribute this software for any purpose and without fee is hereby granted,
- provided that the above copyright notice appear in all copies.  No
- warranty of any kind is expressed or implied.  Use at your own risk.
+ distribute this software for any purpose and without fee is hereby
+ granted, provided that the above copyright notice appear in all
+ copies.  No warranty of any kind is expressed or implied.  Use at
+ your own risk.
 
 License: Wildmat
- FIXME, files without license info!!
+ Redistribution and use in any form are permitted provided that the
+ following restrictions are are met:
+     1.  Source distributions must retain this entire copyright notice
+         and comment.
+     2.  Binary distributions must include the acknowledgement ``This
+         product includes software developed by Rich Salz'' in the
+         documentation or other materials provided with the
+         distribution.  This must not be represented as an endorsement
+         or promotion without specific prior written permission.
+     3.  The origin of this software must not be misrepresented, either
+         by explicit claim or by omission.  Credits must appear in the
+         source and documentation.
+     4.  Altered versions must be plainly marked as such in the source
+         and documentation and must not be misrepresented as being the
+         original software.
+ THIS SOFTWARE IS PROVIDED ``AS IS'' AND WITHOUT ANY EXPRESS OR IMPLIED
+ WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED WARRANTIES OF
+ MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE.
+
+License: Zend-2.00
+ Redistribution and use in source and binary forms, with or without
+ modification, is permitted provided that the following conditions
+ are met:
+   1. Redistributions of source code must retain the above copyright
+      notice, this list of conditions and the following disclaimer.
+   2. Redistributions in binary form must reproduce the above
+      copyright notice, this list of conditions and the following
+      disclaimer in the documentation and/or other materials provided
+      with the distribution.
+   3. The names "Zend" and "Zend Engine" must not be used to endorse
+      or promote products derived from this software without prior
+      permission from Zend Technologies Ltd. For written permission,
+      please contact license@zend.com.
+   4. Zend Technologies Ltd. may publish revised and/or new versions
+      of the license from time to time. Each version will be given a
+      distinguishing version number.
+      Once covered code has been published under a particular version
+      of the license, you may always continue to use it under the
+      terms of that version. You may also choose to use such covered
+      code under the terms of any subsequent version of the license
+      published by Zend Technologies Ltd. No one other than Zend
+      Technologies Ltd. has the right to modify the terms applicable
+      to covered code created under this License.
+   5. Redistributions of any form whatsoever must retain the following
+      acknowledgment:
+      "This product includes the Zend Engine, freely available at
+      http://www.zend.com"
+   6. All advertising materials mentioning features or use of this
+      software must display the following acknowledgment:
+      "The Zend Engine is freely available at http://www.zend.com"
+ THIS SOFTWARE IS PROVIDED BY ZEND TECHNOLOGIES LTD. ``AS IS'' AND
+ ANY EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
+ THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A
+ PARTICULAR PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL ZEND
+ TECHNOLOGIES LTD.  BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+ SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+ LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF
+ USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+ ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT
+ OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ SUCH DAMAGE.
+
+License: BSD-3-clause
+ Redistribution and use in source and binary forms, with or without
+ modification, are permitted provided that the following conditions
+ are met:
+ .
+ 1) Redistributions of source code must retain the above copyright
+ notice, this list of conditions and the following disclaimer.
+ .
+ 2) Redistributions in binary form must reproduce the above copyright
+ notice, this list of conditions and the following disclaimer in the
+ documentation and/or other materials provided with the distribution.
+ .
+ 3) Neither the name of the ORGANIZATION nor the names of its
+ contributors may be used to endorse or promote products derived from
+ this software without specific prior written permission.
+ .
+ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+ "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+ LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+ A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+ HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+ INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+ BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+ OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED
+ AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+ LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY
+ WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+ POSSIBILITY OF SUCH DAMAGE.
+
+License: zlib
+ This software is provided 'as-is', without any express or implied
+ warranty.  In no event will the authors be held liable for any damages
+ arising from the use of this software.
+ .
+ Permission is granted to anyone to use this software for any purpose,
+ including commercial applications, and to alter it and redistribute it
+ freely, subject to the following restrictions:
+ .
+ 1. The origin of this software must not be misrepresented; you must not
+    claim that you wrote the original software. If you use this software
+    in a product, an acknowledgment in the product documentation would be
+    appreciated but is not required.
+ 2. Altered source versions must be plainly marked as such, and must not be
+    misrepresented as being the original software.
+ 3. This notice may not be removed or altered from any source distribution.
+
+License: Apache-1.0
+ Redistribution and use in source and binary forms, with or without
+ modification, are permitted provided that the following conditions are
+ met:
+ .
+ 1. Redistributions of source code must retain the above copyright
+ notice, this list of conditions and the following disclaimer.
+ .
+ 2. Redistributions in binary form must reproduce the above copyright
+ notice, this list of conditions and the following disclaimer in the
+ documentation and/or other materials provided with the distribution.
+ .
+ 3. All advertising materials mentioning features or use of this
+ software must display the following acknowledgment:
+ "This product includes software developed by the Apache Group for use
+ in the Apache HTTP server project (http://www.apache.org/)."
+ .
+ 4. The names "Apache Server" and "Apache Group" must not be used to
+ endorse or promote products derived from this software without prior
+ written permission. For written permission, please contact
+ apache@apache.org.
+ .
+ 5. Products derived from this software may not be called "Apache" nor
+ may "Apache" appear in their names without prior written permission of
+ the Apache Group.
+ .
+ 6. Redistributions of any form whatsoever must retain the following
+ acknowledgment:
+ "This product includes software developed by the Apache Group for use
+ in the Apache HTTP server project (http://www.apache.org/)."
+ .
+ THIS SOFTWARE IS PROVIDED BY THE APACHE GROUP ``AS IS'' AND ANY
+ EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+ PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE APACHE GROUP OR ITS
+ CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
+ EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
+ PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
+ PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
+ LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
+ NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ .
+ This software consists of voluntary contributions made by many
+ individuals on behalf of the Apache Group and was originally based on
+ public domain software written at the National Center for
+ Supercomputing Applications, University of Illinois, Urbana-Champaign.
+ For more information on the Apache Group and the Apache HTTP server
+ project, please see http://www.apache.org/.
+
+License: public-domain
+ No copyright is claimed, and the software is hereby placed in the public
+ domain. In case this attempt to disclaim copyright and place the software
+ in the public domain is deemed null and void, then the software is
+ Copyright (c) 1998-2011 Solar Designer and it is hereby released to the
+ general public under the following terms:
+ .
+ Redistribution and use in source and binary forms, with or without
+ modification, are permitted.
+ .
+ There's ABSOLUTELY NO WARRANTY, express or implied.
+ .
+ It is my intent that you should be able to use this on your system,
+ as part of a software package, or anywhere else to improve security,
+ ensure compatibility, or for any other purpose. I would appreciate
+ it if you give credit where it is due and keep your modifications in
+ the public domain as well, but I don't require that in order to let
+ you place this code and any modifications you make under a license
+ of your choice.
+
+License: Illinois-NCSA
+ Permission is hereby granted, free of charge, to any person obtaining
+ a copy of this software and associated documentation files (the
+ "Software"), to deal with the Software without restriction, including
+ without limitation the rights to use, copy, modify, merge, publish,
+ distribute, sublicense, and/or sell copies of the Software, and to
+ permit persons to whom the Software is furnished to do so, subject to
+ the following conditions:
+ .
+     * Redistributions of source code must retain the above copyright
+       notice, this list of conditions and the following disclaimers.
+ .
+     * Redistributions in binary form must reproduce the above
+     * copyright notice, this list of conditions and the following
+       disclaimers in the documentation and/or other materials
+       provided with the distribution.
+ .
+     * Neither the names of the LLVM Team, University of Illinois at
+       Urbana-Champaign, nor the names of its contributors may be used
+       to endorse or promote products derived from this Software
+       without specific prior written permission.
+ .
+ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+ NONINFRINGEMENT.  IN NO EVENT SHALL THE CONTRIBUTORS OR COPYRIGHT
+ HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+ IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS WITH THE
+ SOFTWARE.
+
+License: MIT
+ Permission is hereby granted, free of charge, to any person obtaining
+ a copy of this software and associated documentation files (the
+ "Software"), to deal in the Software without restriction, including
+ without limitation the rights to use, copy, modify, merge, publish,
+ distribute, sublicense, and/or sell copies of the Software, and to
+ permit persons to whom the Software is furnished to do so, subject to
+ the following conditions:
+ .
+ The above copyright notice and this permission notice shall be
+ included
+ in all copies or substantial portions of the Software.
+ .
+ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+ NONINFRINGEMENT.
+ IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+ CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+ TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.

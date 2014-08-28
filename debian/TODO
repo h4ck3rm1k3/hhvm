@@ -19,9 +19,6 @@
   * hphp/third_party/ti
   * hphp/third_party/timelib
   * hphp/tools
-  * hphp/util
-  * hphp/vixl
-  * hphp/zend
   * hphp/submodules
 - Write a manpage for hhvm and hphpize.
 - Talk to the PHP team to make the binaries alternatives for /usr/bin/php.
