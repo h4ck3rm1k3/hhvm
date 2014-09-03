@@ -29,12 +29,15 @@ Comment: Although they talk in the header about exceptions, I checked
  this is simply GPL-2.
 
 Files: CMake/HPHPFindLibs.cmake
+       hphp/runtime/base/dummy-resource.*
+       hphp/runtime/server/upload*
        hphp/zend/html-table*
-Copyright: 2010 Facebook, Inc. (http://www.facebook.com)
+Copyright: 2010-2014 Facebook, Inc. (http://www.facebook.com)
            1997-2010 The PHP Group
 License: PHP-3.01
 
-Files: hphp/compiler/parser/hphp.tab.cpp hphp/parser/hphp.tab.cpp
+Files: hphp/compiler/parser/hphp.tab.cpp
+       hphp/parser/hphp.tab.cpp
 Copyright: 1984, 1989-1990, 2000-2011 Free Software Foundation, Inc.
 License: Bison-GPL-3+
 
@@ -42,13 +45,106 @@ Files: hphp/neo/neo* hphp/neo/ulist* hphp/neo/ulocks.c
 Copyright: 2001-2004 Brandon Long
 License: Clearsilver
 
-Files: hphp/neo/neo* hphp/neo/ulist* hphp/neo/ulocks.c
+Files: hphp/neo/ulocks.h
 Copyright: 1998-2000 Scott Shambarger <scott@shambarger.net>
 License: Free
 
 Files: hphp/neo/wildmat.*
 Copyright: 1986-1991 Rich Salz <rsalz@osf.org>
 License: Wildmat
+
+Files: hphp/runtime/base/ini-parser/*
+       hphp/runtime/base/intl-convert.*
+       hphp/runtime/base/utf8-decode.cpp
+       hphp/runtime/base/zend-*
+Copyright: 2010-2014 Facebook, Inc. (http://www.facebook.com)
+           1998-2010 Zend Technologies Ltd. (http://www.zend.com)
+License: PHP-3.01
+
+Files: hphp/runtime/base/stat-cache.cpp
+Copyright: 2003 Constantin S. Svintsoff <kostik@iclub.nsu.ru>
+           2010-2014 Facebook, Inc. (http://www.facebook.com)
+License: BSD-3-clause and PHP-3.01
+
+Files: hphp/runtime/ext/bcmath/*
+Copyright: 1991, 1992, 1993, 1994, 1997 Free Software Foundation, Inc.
+           2000 Philip A. Nelson
+License: LGPL-2.1
+
+Files: hphp/runtime/ext/libmagic/*
+Copyright: 2010-2014 Facebook, Inc. (http://www.facebook.com)
+           1997-2010 The PHP Group
+           1986-1995 Ian F. Darwin and others
+           1995-2013 Christos Zoulas and others
+License: PHP-3.01 and BSD-2-clause
+
+Files: hphp/runtime/ext/gd/libgd/*
+Copyright: 2010-2014 Facebook, Inc. (http://www.facebook.com)
+           1997-2010 The PHP Group
+           1994-2002 Cold Spring Harbor Laboratory
+           1996-2002 Thomas Boutell (Boutell.Com, Inc.)
+           1999-2002 Philip Warner
+           1999-2002 Greg Roelofs
+           1999-2002 John Ellson <ellson@lucent.com>
+           2000-2002 Maurice Szmurlo <Maurice.Szmurlo@info.unicaen.fr>
+           2000-2002 Johan Van den Brande <johan@vandenbrande.com>
+           2000-2002 Doug Becker <thebeckers@home.com>
+           2000-2007 Pierre-Alain Joye <pierre@libgd.org>
+           2000-2002 Doug Becker
+           1991-2002 Thomas G. Lane
+License: GD
+
+Files: hphp/runtime/ext/*
+Copyright: 2010-2014 Facebook, Inc. (http://www.facebook.com)
+           1997-2010 The PHP Group
+License: PHP-3.01
+
+Files: hphp/runtime/ext_zend_compat/ftp/*
+Copyright: 1997-2010 The PHP Group
+License: PHP-3.01
+
+Files: hphp/runtime/ext_zend_compat/php-src/*
+Copyright: 1997-2013 The PHP Group
+License: Zend-2.00
+
+Files: hphp/runtime/ext_zend_compat/calendar/dow.cpp
+       hphp/runtime/ext_zend_compat/calendar/french.cpp
+       hphp/runtime/ext_zend_compat/calendar/gregor.cpp
+       hphp/runtime/ext_zend_compat/calendar/jewish.cpp
+       hphp/runtime/ext_zend_compat/calendar/julian.cpp
+       hphp/runtime/ext_zend_compat/calendar/sdncal.h
+Copyright: 1993-1995, Scott E. Lee
+License: Free
+
+Files: hphp/runtime/ext_zend_compat/mongo/*
+Copyright: 2009-2013 10gen, Inc.
+License: Apache-2.0
+
+Files: hphp/runtime/ext_zend_compat/oauth/*
+Copyright: 2008, Yahoo! Inc.
+License: BSD-3-clause
+
+Files: hphp/runtime/ext_zend_compat/yaml/*
+Copyright: 2007 Ryusuke SEKIYAMA
+           2009 Keynetics Inc.
+           2012 Bryan Davis
+License: MIT
+
+Files: hphp/runtime/vm/jit/vtune/*
+Copyright: 2005-2013 Intel Corporation
+License: BSD-3-clause
+
+Files: hphp/runtime/*
+Copyright: 2010-2014 Facebook, Inc. (http://www.facebook.com)
+License: PHP-3.01
+
+Files: hphp/test/frameworks/spyc/*
+Copyright: 2006-2011 Vladimir Andersen
+License: MIT
+
+Files: hphp/test/slow/ext_imagick/php_imagick_tests/*
+Copyright: 1999-2011 The PHP Group
+License: PHP-3.01
 
 Files: hphp/util/asm-x64.h
 Copyright: 2009 Andrew J. Paroski
@@ -76,6 +172,10 @@ Files: hphp/vixl/*
 Copyright: 2013 ARM Limited
 License: BSD-3-clause
 
+Files: hphp/system/php/password/password.php
+Copyright: 2012 Anthony Ferrara <ircmaxell@php.net>
+License: MIT
+
 Files: hphp/zend/crypt-blowfish.c
        hphp/zend/crypt-blowfish.h
 Copyright: 1998-2011 Solar Designer <solar at openwall.com>
@@ -87,6 +187,42 @@ Files: hphp/zend/zend-html.*
 Copyright: 2010-2014 Facebook, Inc. (http://www.facebook.com)
            1998-2010 Zend Technologies Ltd. (http://www.zend.com)
 License: Zend-2.00
+
+Files: hphp/vixl/*
+Copyright: 2013 ARM Limited
+License: BSD-3-clause
+
+Files: third-party/fastlz/*
+Copyright: 2005-2007 Ariya Hidayat <ariya@kde.org>
+License: MIT
+
+Files: third-party/folly/*
+Copyright: 2010-2014 Facebook, Inc. (http://www.facebook.com)
+License: Apache-2.0
+
+Files: third-party/libafdt/src/strlcpy.c
+Copyright: 1998 Todd C. Miller <Todd.Miller@courtesan.com>
+License: MIT
+
+Files: third-party/libafdt/*
+Copyright: David Reiss and Facebook, Inc. (http://www.facebook.com)
+License: MIT
+
+Files: third-party/libmbfl/*
+Copyright: 1998,1999,2000,2001 HappySize, Inc.
+License: LGPL-2.1
+
+Files: third-party/thrift/*
+Copyright: 2006-2014 Facebook, Inc. (http://www.facebook.com)
+License: Apache-2.0
+
+Files: third-party/ti/*
+Copyright: 2004-2014 Facebook, Inc. (http://www.facebook.com)
+License: Apache-2.0
+
+Files: third-party/timelib/*
+Copyright: 1997-2014 The PHP Group
+License: PHP-3.01
 
 Files: debian/*
 Copyright: 2014 David Martínez Moreno <ender@debian.org>
@@ -200,6 +336,24 @@ License: GPL-3+
  On Debian systems, the complete text of the GNU General
  Public License version 3 can be found in "/usr/share/common-licenses/GPL-3".
 
+License: LGPL-2.1
+ This library is free software; you can redistribute it and/or modify
+ it under the terms of the GNU Lesser General Public License as
+ published by the Free Software Foundation; version 2.1.
+ .
+ This library is distributed in the hope that it will be useful, but
+ WITHOUT ANY WARRANTY; without even the implied warranty of
+ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+ Lesser General Public License for more details.
+ .
+ You should have received a copy of the GNU Lesser General Public
+ License along with this library; if not, write to the Free Software
+ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
+ 02110-1301 USA
+ .
+ On Debian systems, the complete text of the GNU Library General
+ Public License can be found in `/usr/share/common-licenses/LGPL-2-1'.
+
 License: Bison-GPL-3+
  This program is free software: you can redistribute it and/or modify
  it under the terms of the GNU General Public License as published by
@@ -214,8 +368,8 @@ License: Bison-GPL-3+
  You should have received a copy of the GNU General Public License
  along with this program.  If not, see <http://www.gnu.org/licenses/>.
  .
- On Debian systems, the complete text of the GNU General
- Public License version 3 can be found in "/usr/share/common-licenses/GPL-3".
+ On Debian systems, the complete text of the GNU General Public
+ License version 3 can be found in "/usr/share/common-licenses/GPL-3".
  .
  As a special exception, you may create a larger work that contains
  part or all of the Bison parser skeleton and distribute that work
@@ -232,26 +386,26 @@ License: Bison-GPL-3+
 
 License: Clearsilver
  Redistribution and use in source and binary forms, with or without
-modification, are permitted provided that the following conditions are
-met:
-    * Redistributions of source code must retain the above copyright
-notice, this list of conditions and the following disclaimer.
-    * Redistributions in binary form must reproduce the above
-copyright notice, this list of conditions and the following disclaimer
-in the documentation and/or other materials provided with the
-distribution.
-
-THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ modification, are permitted provided that the following conditions are
+ met:
+     * Redistributions of source code must retain the above copyright
+ notice, this list of conditions and the following disclaimer.
+     * Redistributions in binary form must reproduce the above
+ copyright notice, this list of conditions and the following disclaimer
+ in the documentation and/or other materials provided with the
+ distribution.
+ .
+ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+ "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+ LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+ A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+ OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+ SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+ LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+ DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 License: Free
  This software is open source. Permission to use, copy, modify, and
@@ -420,6 +574,22 @@ License: Apache-1.0
  For more information on the Apache Group and the Apache HTTP server
  project, please see http://www.apache.org/.
 
+License: Apache-2.0
+ Licensed under the Apache License, Version 2.0 (the "License"); you
+ may not use this file except in compliance with the License. You may
+ obtain a copy of the License at
+ .
+ http://www.apache.org/licenses/LICENSE-2.0
+ .
+ Unless required by applicable law or agreed to in writing, software
+ distributed under the License is distributed on an "AS IS" BASIS,
+ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
+ implied. See the License for the specific language governing
+ permissions and limitations under the License.
+ .
+ On Debian systems, the complete text of the Apache 2.0 License
+ can be found in "/usr/share/common-licenses/Apache-2.0".
+
 License: public-domain
  No copyright is claimed, and the software is hereby placed in the public
  domain. In case this attempt to disclaim copyright and place the software
@@ -481,8 +651,7 @@ License: MIT
  the following conditions:
  .
  The above copyright notice and this permission notice shall be
- included
- in all copies or substantial portions of the Software.
+ included in all copies or substantial portions of the Software.
  .
  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
  EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
@@ -492,3 +661,19 @@ License: MIT
  CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+License: GD
+ Permission has been granted to copy, distribute and modify gd in any
+ context without fee, including a commercial application, provided that
+ this notice is present in user-accessible supporting documentation.
+ .
+ This does not affect your ownership of the derived work itself, and the
+ intent is to assure proper credit for the authors of gd, not to
+ interfere with your productive use of gd. If you have questions, ask.
+ "Derived works" includes all programs that utilize the library. Credit
+ must be given in user-accessible documentation.
+ .
+ This software is provided "AS IS." The copyright holders disclaim all
+ warranties, either express or implied, including but not limited to
+ implied warranties of merchantability and fitness for a particular
+ purpose, with respect to this code and accompanying documentation.
