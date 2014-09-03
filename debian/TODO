@@ -5,3 +5,4 @@
 - Add update-alternatives logic for /usr/bin/php and friends.
 - Write some examples or automatic scripts to create config in Apache/nginx/etc.
 - Finish pfff packaging & provide the optional OCaml components (type checker)
+- Package vim-hack plugin from https://github.com/hhvm/vim-hack.

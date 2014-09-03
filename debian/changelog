@@ -1,12 +1,18 @@
 hhvm (3.2.0+dfsg1-1) UNRELEASED; urgency=low
 
   [ David Martínez Moreno ]
-  * Initial release (closes: #727085).
-  * Prepared a new 3.2.0 release without libzip, lz4 and such, and update TODO.
-  * debian/rules: Build the package with --as-needed to remove a couple of
-    bogus dependencies,
+  * Initial release.  Lots of thanks to Faidon Liambotis, without whom this
+    would have been way worse than it was.  This has been a many-month effort
+    and he was pushing all over the place.  Also I'm extending my thanks to
+    my coworker at Facebook Paul Tarjan to make me not forget about HHVM. I
+    can't believe it's done! (closes: #727085).
+  * Prepared a new 3.2.0 release without libzip, lz4 and such, and update
+    TODO.  There's a script in debian/repack to make new tarballs from the
+    upstream ones.
   * Added debian/repack to create DFSG-compliant tarballs.
   * Added debian/README.source to cover the above procedure.
+  * debian/rules: Build the package with -Wl,--as-needed to remove a couple of
+    bogus dependencies,
   * debian/patches:
     - fix_freetype_include: Bad include in libgd.
     - use_system_libzip: Use the system's libzip and remove the one in
@@ -29,4 +35,4 @@ hhvm (3.2.0+dfsg1-1) UNRELEASED; urgency=low
     - public_headers_system: add header files from hphp/system/ too as at
       least systemlib.h is needed to build an extension.
 
- -- David Martínez Moreno <ender@debian.org>  Tue, 29 Jul 2014 08:58:58 -0700
+ -- David Martínez Moreno <ender@debian.org>  Wed,  3 Sep 2014 13:40:58 -0700
