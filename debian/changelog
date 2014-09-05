@@ -1,4 +1,4 @@
-hhvm (3.2.0+dfsg1-1) UNRELEASED; urgency=low
+hhvm (3.2.0+dfsg1-1) unstable; urgency=low
 
   [ David Martínez Moreno ]
   * Initial release.  Lots of thanks to Faidon Liambotis, without whom this
@@ -15,27 +15,25 @@ hhvm (3.2.0+dfsg1-1) UNRELEASED; urgency=low
     bogus dependencies,
   * debian/patches:
     - fix_freetype_include: Bad include in libgd.
-    - use_system_libzip: Use the system's libzip and remove the one in
-      third-party.
+    - use_system_libzip: Use the system's libzip.
     - typos: Lots of typos, most of them detected by lintian. Added the
       false positives to a lintian override file.
-    - use_system_libsqlite: Use the system's libsqlite3 and remove the one
-      in third-party.
+    - use_system_libsqlite: Use the system's libsqlite3.
     - fix_hphp_lexer: Add a missing semicolon in the HPHP lexer, already
       merged upstream.
     - link_libiconv_hook: The iconv library in Debian is called libiconv_hook,
       so change the CMake detection script to account for that.
+    - fix_ldflags: Fix LDFLAGS injection of hardening flags.
   * Copied from upstream git debian/hhvm.1.ronn and converted for now to
     troff, and imported manually too hh_client/hh_server into debian/.
   * debian/postinst: Make HHVM an alternative with score 40 for php.
 
   [ Faidon Liambotis ]
   * debian/patches:
-    - use_system_lz4: Use the system's liblz4 and remove the one
-      in third-party.
+    - use_system_lz4: Use the system's liblz4.
     - use_system_double-conversion: Use the system's double-conversion
       library and remove the one in third-party.
     - public_headers_system: add header files from hphp/system/ too as at
       least systemlib.h is needed to build an extension.
 
- -- David Martínez Moreno <ender@debian.org>  Wed,  3 Sep 2014 13:40:58 -0700
+ -- David Martínez Moreno <ender@debian.org>  Fri, 05 Sep 2014 15:55:18 -0700

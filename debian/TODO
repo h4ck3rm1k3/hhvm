@@ -6,3 +6,4 @@
 - Package vim-hack plugin from https://github.com/hhvm/vim-hack.
 - Integrate the hhvm/hh_* man pages into the normal build process instead of having them
   under debian/.
+- Fix relro flags in hhvm and hh_client/server binaries.

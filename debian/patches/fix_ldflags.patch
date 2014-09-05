@@ -1,0 +1,19 @@
+Description: Honor LDFLAGS while building the HHVM Hack tools.
+ Due to the way we do the compilation, we cannot inject anything in the LDFLAGS
+ variable to make hardening possible.
+Author: David Martínez Moreno <ender@debian.org>
+Forwarded: no
+Last-Update: 2014-09-05
+
+Index: hhvm/hphp/hack/CMakeLists.txt
+===================================================================
+--- hhvm.orig/hphp/hack/CMakeLists.txt
++++ hhvm/hphp/hack/CMakeLists.txt
+@@ -19,6 +19,7 @@ if (OCAMLC_FOUND)
+     list(APPEND hackcflags -ccopt -L${pth} -cclib -l${libname})
+   endforeach()
+ 
++  list(APPEND hackcflags -ccopt '$ENV{LDFLAGS}')
+   add_custom_target(
+     hack
+     ALL

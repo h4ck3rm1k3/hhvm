@@ -1,3 +1,4 @@
 version=3
-opts="filenamemangle=s/(?:.*)?v?HHVM-(\d[\d\.]*)\.tar\.gz/hhvm-$1.tar.gz/" \
+opts=dversionmangle=s/\+dfsg\d+$//,\
+filenamemangle=s/(?:.*)?v?HHVM-(\d[\d\.]*)\.tar\.gz/hhvm-$1.tar.gz/ \
   https://github.com/facebook/hhvm/tags (?:.*/)?v?HHVM-(\d[\d\.]*)\.tar\.gz

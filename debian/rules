@@ -3,9 +3,9 @@
 
 #export DH_VERBOSE=1
 # To prevent bogus linkage.
-export LDFLAGS='-Wl,--as-needed'
+LDFLAGS += -Wl,--as-needed
 # Exported variable to make sure that we don't use cursor control in the tests.
-export TRAVIS='bogus'
+export TRAVIS = bogus
 
 %:
 	dh $@ --parallel
@@ -17,6 +17,8 @@ override_dh_auto_build:
 	dh_auto_build
 
 override_dh_auto_configure:
+	printenv
+	echo $(LDFLAGS)
 	dh_auto_configure -- \
 		-DUSE_JSONC=ON \
 		-DFREETYPE_INCLUDE_DIRS=/usr/include/freetype2/ \

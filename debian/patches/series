@@ -6,3 +6,4 @@ fix_freetype_include.patch
 typos.patch
 fix_hphp_lexer.patch
 link_libiconv_hook.patch
+#fix_ldflags.patch
