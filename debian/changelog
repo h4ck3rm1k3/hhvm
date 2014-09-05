@@ -25,6 +25,9 @@ hhvm (3.2.0+dfsg1-1) UNRELEASED; urgency=low
       merged upstream.
     - link_libiconv_hook: The iconv library in Debian is called libiconv_hook,
       so change the CMake detection script to account for that.
+  * Copied from upstream git debian/hhvm.1.ronn and converted for now to
+    troff, and imported manually too hh_client/hh_server into debian/.
+  * debian/postinst: Make HHVM an alternative with score 40 for php.
 
   [ Faidon Liambotis ]
   * debian/patches:

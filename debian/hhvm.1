@@ -1,0 +1,215 @@
+.\" generated with Ronn/v0.7.3
+.\" http://github.com/rtomayko/ronn/tree/0.7.3
+.
+.TH "HHVM" "1" "September 2014" "" ""
+.
+.SH "NAME"
+\fBhhvm\fR \- run PHP and Hack files
+.
+.SH "SYNOPSIS"
+\fBhhvm\fR [options] [ \fB\-f\fR ] file [[\-\-] args\.\.\.]
+.
+.br
+.
+.P
+\fBhhvm\fR \fB\-\-php\fR [options] [\fB\-f\fR] file [[\-\-] args\.\.\.]
+.
+.SH "DESCRIPTION"
+\fBHHVM\fR (aka the HipHop Virtual Machine) is an open\-source virtual machine designed for executing programs written in \fBHack\fR and \fBPHP\fR\. HHVM uses a just\-in\-time compilation approach to run programs\. HHVM should be used standalone for command line (CLI) scripts or together with a FastCGI\-based webserver like nginx or apache to serve websites\.
+.
+.P
+This is the command line interface to HHVM\.
+.
+.P
+The simplest way to parse and execute a program is providing a single parameter of a filename\. Specifying \fB\-f\fR before the filename does this in a more explicit fashion, and allows other options to follow\.
+.
+.P
+HHVM has its own set of options, but also has the ability to behave like php (1) as well\. When the \fB\-\-php\fR flag is specified to HHVM (or the binary is named \fBphp\fR), options available to php (1) can be used\.
+.
+.P
+You may use:
+.
+.P
+\fBsudo /usr/bin/update\-alternatives \-\-install /usr/bin/php php /usr/bin/hhvm 60\fR
+.
+.P
+to force HHVM to be used even if php (1) is installed on the system\.
+.
+.SH "FILES"
+These are the default configuration files for HHVM\. Right now both \fB\.ini\fR and \fB\.hdf\fR are supported as HHVM continues to migrate completely to \fB\.ini\fR\.
+.
+.TP
+\fBphp\.ini\fR
+The default ini settings for HHVM found in \fB/etc/hhvm/php\.ini\fR
+.
+.TP
+\fBconfig\.hdf\fR
+The default hdf options for HHVM found in \fB/etc/hhvm/config\.hdf\fR
+.
+.SH "OPTIONS"
+These are the options you can specify to the HHVM executable\.
+.
+.TP
+\fB\-a\fR, \fB\-\-interactive\fR
+shortcut for \-\-mode debug
+.
+.TP
+\fB\-\-admin\-port\fR, arg (=\-1)
+start admin listener at a specified port
+.
+.TP
+\fB\-\-arg\fR arg
+arguments
+.
+.TP
+\fB\-\-build\-id\fR arg
+unique identifier to compiled server code
+.
+.TP
+\fB\-c\fR, \fB\-\-config\fR
+load specified config (\.hdf or \.ini) file\. Use multiple \fB\-c\fR for multiple config files
+.
+.TP
+\fB\-\-compiler\-id\fR
+display the git hash for the compiler
+.
+.TP
+\fB\-\-count\fR arg (=1)
+how many times to repeat execution
+.
+.TP
+\fB\-d\fR, \fB\-\-define\fR arg
+define an ini setting in the same format ( foo[=bar] ) as provided in a \.ini file
+.
+.TP
+\fB\-\-debug\-cmd\fR arg
+executes this debugger command and returns its output in stdout
+.
+.TP
+\fB\-\-debug\-config\fR arg
+load specified debugger config file
+.
+.TP
+\fB\-\-debug\-extension\fR arg
+PHP file that extends command \'arg\'
+.
+.TP
+\fB\-\-debug\-port\fR arg
+connect to debugger server at specified port
+.
+.TP
+\fB\-\-debug\-sandbox\fR arg (=default)
+initial sandbox to attach to when debugger is started
+.
+.TP
+\fB\-\-extra\-header\fR arg
+extra\-header to add to log lines
+.
+.TP
+\fB\-f\fR, \fB\-\-file\fR arg
+execute specified file
+.
+.TP
+\fB\-h\fR, \fB\-\-debug\-host\fR [=arg(=localhost)]
+connect to debugger server at specified address
+.
+.TP
+\fB\-\-help\fR
+display the hhvm help page (this message)
+.
+.TP
+\fBinstance\-id\fR arg
+unique identifier of server instance
+.
+.TP
+\fB\-l\fR, \fB\-\-lint\fR arg
+lint specified file
+.
+.TP
+\fB\-m\fR, \fB\-\-mode\fR arg (=run)
+run | debug (d) | server (s) | daemon | replay | translate (t)
+.
+.TP
+\fB\-\-no\-config\fR
+don\'t use the default php\.ini
+.
+.TP
+\fB\-\-no\-safe\-access\-check\fR arg (=0)
+whether to ignore safe file access check
+.
+.TP
+\fB\-p\fR, \fB\-\-port\fR arg (=\-1)
+start an HTTP server at the specified port
+.
+.TP
+\fB\-\-php\fR
+emulate the standards php(1) command line
+.
+.TP
+\fB\-\-port\-fd\fR arg (=\-1)
+use specified fd instead of creating a socket
+.
+.TP
+\fB\-\-ssl\-port\-fd\fR arg (=\-1)
+use specified fd for SSL instead of creating a socket
+.
+.TP
+\fB\-\-repo\-schema\fR
+display the repository schema id
+.
+.TP
+\fB\-\-tempfile\fR
+file specified is temporary and removed after execution
+.
+.TP
+\fB\-u\fR, \fB\-\-user\fR arg
+run server under this user account
+.
+.TP
+\fB\-v\fR, \fB\-\-config\-value\fR arg
+individual configuration string in a format of name=value, where name can be any valid configuration for a config file
+.
+.TP
+\fB\-\-version\fR
+display the hhvm version number
+.
+.TP
+\fB\-w\fR, \fB\-\-show\fR arg
+output specified file and do nothing else
+.
+.TP
+\fB\-\-xhprof\-flags\fR arg (=0)
+set XHProf flags
+.
+.SH "EXAMPLES"
+.
+.TP
+Execute a PHP file
+\fB% hhvm foo\.php\fR
+.
+.TP
+Execute a PHP file given a certain configuration
+\fB% hhvm \-c custom\.ini foo\.php\fR
+.
+.TP
+Execute code from the command line using the \fB\-\-php\fR option and \fB\-r\fR
+\fB% hhvm \-\-php \-r \'echo "Hello Everyone!";\'\fR
+.
+.TP
+Execute HHVM in server mode using a specified port
+\fB% hhvm \-m server \-\-port 9090\fR
+.
+.SH "BUGS"
+The list of current known HHVM issues are found at: \fBhttps://github\.com/facebook/hhvm/issues\fR
+.
+.SH "AUTHORS"
+The contributors to HHVM can be found here: \fBhttps://github\.com/facebook/hhvm/graphs/contributors\fR
+.
+.SH "VERSION INFORMATION"
+This manpage describes \fBHHVM\fR, version 3\.0 and greater
+.
+.SH "COPYRIGHT"
+HHVM is licensed under the PHP and Zend licenses except as otherwise noted\. The full license can be found at: \fBhttps://github\.com/facebook/hhvm\fR
+.
+.SH "SEE ALSO"
+php (1), \fBhttp://docs\.hhvm\.com\fR

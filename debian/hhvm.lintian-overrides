@@ -1,2 +1,8 @@
 hhvm: spelling-error-in-binary usr/bin/hhvm tEH the
 hhvm: spelling-error-in-binary usr/bin/hhvm taht that
+hhvm: non-standard-dir-perm var/log/hhvm/ 0750 != 0755
+# PHP has a long tradition of forking off stuff in their own tree.
+# Stock PHP in Debian has those embedded as well.
+hhvm: embedded-library usr/bin/hhvm: libgd
+hhvm: embedded-library usr/bin/hhvm: file
+

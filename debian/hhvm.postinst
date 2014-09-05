@@ -1,0 +1,7 @@
+if [ "$1" = "configure" ]; then
+    update-alternatives \
+    --install /usr/bin/php php /usr/bin/hhvm 40 \
+    --slave /usr/share/man/man1/php.1.gz php.1.gz /usr/share/man/man1/hhvm.1.gz
+fi
+
+#DEBHELPER#

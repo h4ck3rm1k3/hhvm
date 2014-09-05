@@ -5,8 +5,10 @@ Author: David Martínez Moreno <ender@debian.org>
 Forwarded: no
 Last-Update: 2014-03-12
 
---- a/hphp/doc/options.compiler
-+++ b/hphp/doc/options.compiler
+Index: hhvm/hphp/doc/options.compiler
+===================================================================
+--- hhvm.orig/hphp/doc/options.compiler
++++ hhvm/hphp/doc/options.compiler
 @@ -207,7 +207,7 @@ a more precise partitioning.
  
  = GCCOptimization
@@ -16,8 +18,10 @@ Last-Update: 2014-03-12
  optimization level for long functions. It is specified as:
  
    GCCOptimization {
---- a/hphp/neo/neo_hdf.c
-+++ b/hphp/neo/neo_hdf.c
+Index: hhvm/hphp/neo/neo_hdf.c
+===================================================================
+--- hhvm.orig/hphp/neo/neo_hdf.c
++++ hhvm/hphp/neo/neo_hdf.c
 @@ -1482,7 +1482,7 @@ static NEOERR* parse_attr(char **str, HD
      if (*s == '\0' || k_l == 0)
      {
@@ -54,8 +58,10 @@ Last-Update: 2014-03-12
    }
    *str = s+1;
    return STATUS_OK;
---- a/hphp/runtime/ext/ext_domdocument.cpp
-+++ b/hphp/runtime/ext/ext_domdocument.cpp
+Index: hhvm/hphp/runtime/ext/ext_domdocument.cpp
+===================================================================
+--- hhvm.orig/hphp/runtime/ext/ext_domdocument.cpp
++++ hhvm/hphp/runtime/ext/ext_domdocument.cpp
 @@ -415,7 +415,7 @@ static Variant dom_canonicalization(xmlN
        inclusive_ns_prefixes[nscount] = NULL;
      } else {
@@ -65,8 +71,10 @@ Last-Update: 2014-03-12
      }
    }
    if (mode == 1) {
---- a/hphp/system/idl/stream.idl.json
-+++ b/hphp/system/idl/stream.idl.json
+Index: hhvm/hphp/system/idl/stream.idl.json
+===================================================================
+--- hhvm.orig/hphp/system/idl/stream.idl.json
++++ hhvm/hphp/system/idl/stream.idl.json
 @@ -359,7 +359,7 @@
          },
          {
@@ -76,8 +84,10 @@ Last-Update: 2014-03-12
              "flags": [
              ],
              "return": {
---- a/hphp/system/idl/xml.idl.json
-+++ b/hphp/system/idl/xml.idl.json
+Index: hhvm/hphp/system/idl/xml.idl.json
+===================================================================
+--- hhvm.orig/hphp/system/idl/xml.idl.json
++++ hhvm/hphp/system/idl/xml.idl.json
 @@ -117,7 +117,7 @@
                      "name": "separator",
                      "type": "String",
@@ -96,8 +106,10 @@ Last-Update: 2014-03-12
              "flags": [
              ],
              "return": {
---- a/hphp/system/php/spl/iterators/ArrayIterator.php
-+++ b/hphp/system/php/spl/iterators/ArrayIterator.php
+Index: hhvm/hphp/system/php/spl/iterators/ArrayIterator.php
+===================================================================
+--- hhvm.orig/hphp/system/php/spl/iterators/ArrayIterator.php
++++ hhvm/hphp/system/php/spl/iterators/ArrayIterator.php
 @@ -4,7 +4,7 @@
  /**
   * ( excerpt from http://php.net/manual/en/class.arrayiterator.php )
@@ -107,8 +119,10 @@ Last-Update: 2014-03-12
   * iterating over Arrays and Objects.
   *
   * When you want to iterate over the same array multiple times you need to
---- a/hphp/system/php/spl/iterators/RecursiveArrayIterator.php
-+++ b/hphp/system/php/spl/iterators/RecursiveArrayIterator.php
+Index: hhvm/hphp/system/php/spl/iterators/RecursiveArrayIterator.php
+===================================================================
+--- hhvm.orig/hphp/system/php/spl/iterators/RecursiveArrayIterator.php
++++ hhvm/hphp/system/php/spl/iterators/RecursiveArrayIterator.php
 @@ -5,7 +5,7 @@
   * ( excerpt from http://php.net/manual/en/class.recursivearrayiterator.php
   * )
@@ -118,8 +132,10 @@ Last-Update: 2014-03-12
   * iterating over Arrays and Objects in the same way as the ArrayIterator.
   * Additionally it is possible to iterate over the current iterator entry.
   *
---- a/hphp/test/zend/bad/ext/mbstring/tests/htmlent.php
-+++ b/hphp/test/zend/bad/ext/mbstring/tests/htmlent.php
+Index: hhvm/hphp/test/zend/bad/ext/mbstring/tests/htmlent.php
+===================================================================
+--- hhvm.orig/hphp/test/zend/bad/ext/mbstring/tests/htmlent.php
++++ hhvm/hphp/test/zend/bad/ext/mbstring/tests/htmlent.php
 @@ -4,7 +4,7 @@
  // &#64... are must be decoded on input these are not reencoded on output. 
  // If you see &#64;&#65;&#66; on output this means input encoding fails.
@@ -136,8 +152,10 @@ Last-Update: 2014-03-12
 -===DONE===
 \ No newline at end of file
 +===DONE===
---- a/hphp/system/idl/pdo.idl.json
-+++ b/hphp/system/idl/pdo.idl.json
+Index: hhvm/hphp/system/idl/pdo.idl.json
+===================================================================
+--- hhvm.orig/hphp/system/idl/pdo.idl.json
++++ hhvm/hphp/system/idl/pdo.idl.json
 @@ -1066,7 +1066,7 @@
                  },
                  {
@@ -147,3 +165,16 @@ Last-Update: 2014-03-12
                      "flags": [
                      ],
                      "return": {
+Index: hhvm/hphp/runtime/ext/icu/ext_icu_rsrc_bundle.cpp
+===================================================================
+--- hhvm.orig/hphp/runtime/ext/icu/ext_icu_rsrc_bundle.cpp
++++ hhvm/hphp/runtime/ext/icu/ext_icu_rsrc_bundle.cpp
+@@ -18,7 +18,7 @@ static Variant extractValue(ResourceBund
+                             const icu::ResourceBundle& bundle) {
+ #define EXTRACT_ERR(type) \
+   if (U_FAILURE(error)) { \
+-    data->setError(error, "Failed to retreive " #type " value"); \
++    data->setError(error, "Failed to retrieve " #type " value"); \
+     return init_null(); \
+   }
+ 
