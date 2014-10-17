@@ -22,7 +22,8 @@ override_dh_auto_configure:
 	dh_auto_configure -- \
 		-DUSE_JSONC=ON \
 		-DFREETYPE_INCLUDE_DIRS=/usr/include/freetype2/ \
-		-DCMAKE_INSTALL_PREFIX=/usr
+		-DCMAKE_INSTALL_PREFIX=/usr \
+		-DCMAKE_BUILD_TYPE=RelWithDebInfo
 
 ifeq (,$(findstring nocheck,$(DEB_BUILD_OPTIONS)))
 override_dh_auto_test:

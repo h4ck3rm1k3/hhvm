@@ -1,0 +1,38 @@
+Description: Pass -DNDEBUG to RelWithDebInfo's CFLAGS
+ "Rel" in "RelWithDebInfo" stands for "release", so this clearly this
+ isn't a debug build. Plus, there is currently no way to build a regular
+ build but with debugging symbols and RelWithDebInfo should be just that.
+ .
+ Note that there is still another difference between Release and
+ RelWithDebInfo: -O3 vs. -O2, respectively. This patch does not change as
+ that, as presumably an -O2 build is probably a better tradeoff to those
+ who are interested in a production build that allows debugging in
+ realtime.
+Author: Faidon Liambotis <paravoid@debian.org>
+Forwarded: no
+Last-Update: 2014-10-17
+
+--- a/CMake/HPHPCompiler.cmake
++++ b/CMake/HPHPCompiler.cmake
+@@ -18,8 +18,8 @@ if ("${CMAKE_CXX_COMPILER_ID}" STREQUAL
+   set(CMAKE_CXX_FLAGS_MINSIZEREL     "-Os -DNDEBUG")
+   set(CMAKE_C_FLAGS_RELEASE          "-O3 -DNDEBUG")
+   set(CMAKE_CXX_FLAGS_RELEASE        "-O3 -DNDEBUG")
+-  set(CMAKE_C_FLAGS_RELWITHDEBINFO   "-O2 -g")
+-  set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "-O2 -g")
++  set(CMAKE_C_FLAGS_RELWITHDEBINFO   "-O2 -g -DNDEBUG")
++  set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "-O2 -g -DNDEBUG")
+ # using GCC
+ elseif ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "GNU")
+   execute_process(COMMAND ${CMAKE_CXX_COMPILER} -dumpversion OUTPUT_VARIABLE GCC_VERSION)
+@@ -48,8 +48,8 @@ elseif ("${CMAKE_CXX_COMPILER_ID}" STREQ
+   set(CMAKE_CXX_FLAGS_MINSIZEREL     "-Os -DNDEBUG")
+   set(CMAKE_C_FLAGS_RELEASE          "-O3 -DNDEBUG")
+   set(CMAKE_CXX_FLAGS_RELEASE        "-O3 -DNDEBUG")
+-  set(CMAKE_C_FLAGS_RELWITHDEBINFO   "-O2 -g")
+-  set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "-O2 -g")
++  set(CMAKE_C_FLAGS_RELWITHDEBINFO   "-O2 -g -DNDEBUG")
++  set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "-O2 -g -DNDEBUG")
+   set(CMAKE_C_FLAGS                  "${GNUCC49_OPT} -w")
+   set(CMAKE_CXX_FLAGS "-Wall -std=gnu++11 -fno-gcse -fno-omit-frame-pointer -ftemplate-depth-180 -Woverloaded-virtual -Wno-deprecated -Wno-strict-aliasing -Wno-write-strings -Wno-invalid-offsetof -fno-operator-names -Wno-error=array-bounds -Wno-error=switch -Werror=format-security -Wno-unused-result -Wno-sign-compare -Wno-attributes -Wno-maybe-uninitialized -Wno-unused-local-typedefs -fno-canonical-system-headers -Wno-deprecated-declarations ${GNUCC49_OPT} ${GNUCC_PLAT_OPT}")
+ # using Intel C++

@@ -7,3 +7,4 @@ typos.patch
 fix_hphp_lexer.patch
 link_libiconv_hook.patch
 #fix_ldflags.patch
+pass-DNDEBUG-to-RelWithDebInfo.patch
