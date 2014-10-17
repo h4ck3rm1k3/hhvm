@@ -1,0 +1,21 @@
+Description: Disable quicklz primitives.
+ There are GPL code linked to PHP-licensed code in hhvm/runtime/ext/zlib.
+ This is being used internally at Facebook for memcache compression but it's
+ illegal to link those two code bases, so I'm disabling this for now in the
+ builds.  It's very possible that I end up removing the GPL code altogether
+ in the "dfsg1" releases for 3.3 and beyond.
+Author: David Martínez Moreno <ender@debian.org>
+Forwarded: no
+Last-Update: 2014-10-16
+
+--- hhvm-3.2.0+dfsg1.orig/CMake/HPHPFindLibs.cmake
++++ hhvm-3.2.0+dfsg1/CMake/HPHPFindLibs.cmake
+@@ -17,7 +17,7 @@
+ 
+ include(CheckFunctionExists)
+ 
+-add_definitions("-DHAVE_QUICKLZ")
++#add_definitions("-DHAVE_QUICKLZ")
+ 
+ # libdl
+ find_package(LibDL)

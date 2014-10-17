@@ -37,7 +37,6 @@ override_dh_strip:
 override_dh_fixperms:
 		dh_fixperms
 		test -d debian/hhvm && \
-			chmod 0750 debian/hhvm/var/log/hhvm && \
 			chown www-data:www-data \
 			debian/hhvm/var/log/hhvm || true
 

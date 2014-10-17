@@ -8,3 +8,6 @@ fix_hphp_lexer.patch
 link_libiconv_hook.patch
 #fix_ldflags.patch
 pass-DNDEBUG-to-RelWithDebInfo.patch
+disable_quicklz_code.patch
+static_linking_against_libbfd.patch
+add_additional_includes_imagemagick.patch

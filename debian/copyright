@@ -8,15 +8,6 @@ Files: CMake/FindBISON.cmake CMake/FindFLEX.cmake
 Copyright: 2006 Tristan Carel
 License: BSD-3-clause
 
-Files: CMake/FindBoost.cmake
-Copyright: 2006-2009 Kitware, Inc.
-           2006-2008 Andreas Schneider <mail@cynapses.org>
-           2007      Wengo
-           2007      Mike Jackson
-           2008      Andreas Pakulat <apaku@gmx.de>
-           2008-2009 Philip Lowman <philip@yhbt.com>
-License: BSD-3-clause
-
 Files: CMake/FindLibElf.cmake
 Copyright: 2008 Bernhard Walle <bernhard.walle@gmx.de>
 License: BSD-3-clause
@@ -36,8 +27,7 @@ Copyright: 2010-2014 Facebook, Inc. (http://www.facebook.com)
            1997-2010 The PHP Group
 License: PHP-3.01
 
-Files: hphp/compiler/parser/hphp.tab.cpp
-       hphp/parser/hphp.tab.cpp
+Files: hphp/parser/hphp.tab.cpp
 Copyright: 1984, 1989-1990, 2000-2011 Free Software Foundation, Inc.
 License: Bison-GPL-3+
 
@@ -75,7 +65,7 @@ Copyright: 1991, 1992, 1993, 1994, 1997 Free Software Foundation, Inc.
            2000 Philip A. Nelson
 License: LGPL-2.1
 
-Files: hphp/runtime/ext/libmagic/*
+Files: hphp/runtime/ext/fileinfo/libmagic/*
 Copyright: 2010-2014 Facebook, Inc. (http://www.facebook.com)
            1997-2010 The PHP Group
            1986-1995 Ian F. Darwin and others

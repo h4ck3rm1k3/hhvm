@@ -1,10 +1,25 @@
 hhvm (3.2.0+dfsg1-2) UNRELEASED; urgency=medium
 
+   [ Faidon Liambotis ]
    * Fix the build system to be able to build a release build but with
      debugging symbols (which we subsequently strip into hhvm-dbg), and pass
      -DCMAKE_BUILD_TYPE=RelWithDebInfo to configure.
 
- -- Faidon Liambotis <paravoid@debian.org>  Fri, 17 Oct 2014 21:45:53 +0300
+  [ David Martínez Moreno ]
+  * Remove the chmod 750 on /var/log/hhvm as it's really an error on the HHVM
+    packaging.
+  * debian/patches:
+    - disable_quicklz_code: Disable the qlz* primitives, as they are
+      GPL-licensed code linked to PHP-licensed one.
+    - static_linking_against_libbfd: Static linking against libbfd per
+      binutils-dev, backported from HEAD.
+    - add_additional_includes_imagemagick: New ImageMagick broke the build,
+      so add the arch includes to the build.
+  * debian/copyright: Fixed some mistakes discovered with latest lintian.
+  * debian/control: Bumped Standards-Version to to 3.9.6 (no changes)
+  * Added an additional override for lintian on PHP license, with comment.
+
+ -- David Martínez Moreno <ender@debian.org>  Thu, 16 Oct 2014 05:01:02 -0700
 
 hhvm (3.2.0+dfsg1-1) unstable; urgency=low
 

@@ -1,0 +1,19 @@
+Description: Add CMake logic for missing ImageMagick includes.
+ ImageMagick from experimental added an arch header that it was previously
+ not found.
+Author: David Martínez Moreno <ender@fb.com>
+Last-Update: 2014-10-18
+
+Index: hhvm/CMake/FindLibMagickWand.cmake
+===================================================================
+--- hhvm.orig/CMake/FindLibMagickWand.cmake
++++ hhvm/CMake/FindLibMagickWand.cmake
+@@ -21,7 +21,7 @@ endif (LIBMAGICKWAND_LIBRARIES AND LIBMA
+ set (ImageMagick_FIND_QUIETLY TRUE)
+ find_package(ImageMagick COMPONENTS MagickWand MagickCore)
+ if (ImageMagick_MagickWand_FOUND)
+-  set (LIBMAGICKWAND_INCLUDE_DIRS ${ImageMagick_MagickWand_INCLUDE_DIR} CACHE STRING "")
++  set (LIBMAGICKWAND_INCLUDE_DIRS ${ImageMagick_MagickWand_INCLUDE_DIR} ${ImageMagick_MagickCore_ARCH_INCLUDE_DIR} CACHE STRING "")
+   set (LIBMAGICKWAND_LIBRARIES ${ImageMagick_MagickWand_LIBRARY} CACHE STRING "")
+ endif ()
+ if (ImageMagick_MagickCore_FOUND)
