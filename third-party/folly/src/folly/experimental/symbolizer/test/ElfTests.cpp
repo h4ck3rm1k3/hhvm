@@ -16,7 +16,7 @@
 
 #include <gtest/gtest.h>
 
-#include "folly/experimental/symbolizer/Elf.h"
+#include <folly/experimental/symbolizer/Elf.h>
 
 using folly::symbolizer::ElfFile;
 
@@ -59,7 +59,7 @@ TEST_F(ElfTest, PointerValue) {
 
 int main(int argc, char** argv) {
   testing::InitGoogleTest(&argc, argv);
-  google::ParseCommandLineFlags(&argc, &argv, true);
+  gflags::ParseCommandLineFlags(&argc, &argv, true);
   ElfTest::binaryPath = argv[0];
   return RUN_ALL_TESTS();
 }

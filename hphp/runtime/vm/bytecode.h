@@ -478,8 +478,9 @@ inline ActRec* arFromSpOffset(const ActRec *sp, int32_t offset) {
   return arAtOffset(sp, offset);
 }
 
-inline TypedValue* arReturn(ActRec* ar, const Variant& value) {
+inline TypedValue* arReturn(ActRec* ar, Variant&& value) {
   ar->m_r = *value.asTypedValue();
+  tvWriteNull(value.asTypedValue());
   return &ar->m_r;
 }
 
@@ -570,6 +571,7 @@ class Stack {
                       // m_elms.
 
 public:
+  bool isAllocated() { return m_elms != nullptr; }
   void* getStackLowAddress() const { return m_elms; }
   void* getStackHighAddress() const { return m_base; }
   bool isValidAddress(uintptr_t v) {
@@ -578,12 +580,6 @@ public:
   void requestInit();
   void requestExit();
 
-private:
-  void toStringFrame(std::ostream& os, const ActRec* fp,
-                     int offset, const TypedValue* ftop,
-                     const std::string& prefix) const;
-
-public:
   static const int sSurprisePageSize;
   static const unsigned sMinStackElms;
   static void ValidateStackSize();

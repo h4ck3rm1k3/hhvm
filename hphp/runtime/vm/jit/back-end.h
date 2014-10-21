@@ -19,9 +19,10 @@
 #include <iosfwd>
 
 #include "hphp/runtime/vm/jit/types.h"
+#include "hphp/runtime/vm/jit/phys-reg.h"
 #include "hphp/runtime/vm/jit/service-requests.h"
 
-namespace HPHP { namespace JIT {
+namespace HPHP { namespace jit {
 
 struct Abi;
 struct Block;
@@ -33,6 +34,7 @@ struct IRUnit;
 struct PhysReg;
 struct RelocationInfo;
 struct CodeGenFixups;
+struct RegAllocInfo;
 struct AsmInfo;
 
 /*
@@ -119,7 +121,7 @@ class BackEnd {
   virtual TCA emitCallArrayPrologue(Func* func, DVFuncletsVec& dvs) = 0;
   virtual void funcPrologueSmashGuard(TCA prologue, const Func* func) = 0;
   virtual void emitIncStat(CodeBlock& cb, intptr_t disp, int n) = 0;
-  virtual void emitTraceCall(CodeBlock& cb, int64_t pcOff) = 0;
+  virtual void emitTraceCall(CodeBlock& cb, Offset pcOff) = 0;
   virtual void emitFwdJmp(CodeBlock& cb, Block* target,
                           CodegenState& state) = 0;
   virtual void patchJumps(CodeBlock& cb, CodegenState& state, Block* block) = 0;
@@ -162,32 +164,39 @@ class BackEnd {
   virtual bool supportsRelocation() const { return false; }
 
   /*
-   * Relocate the code block described by rel to its ultimate destination,
-   * and return the size of the relocated code (which may be different
-   * due to alignment padding, or shrinking branches etc
+   * Relocate code in the range start, end into dest, and record
+   * information about what was done to rel.
+   * On exit, internal references (references into the source range)
+   * will have been adjusted (ie they are still references into the
+   * relocated code). External code references continue to point to
+   * the same address as before relocation.
    */
   virtual size_t relocate(RelocationInfo& rel, CodeBlock& dest,
-                          CodeGenFixups& fixups) {
+                        TCA start, TCA end,
+                        CodeGenFixups& fixups) {
     always_assert(false);
+    return 0;
   }
+
   /*
-   * Adjust the offsets/immediates for any instructions in the range start, end
-   * based on the relocation already performed on rel.
-   * Explicit pc-relative offsets, and immediates identified by
-   * fixups.m_addressImmediates will be adjusted.
+   * This should be called after calling relocate on all relevant ranges. It
+   * will adjust all references into the original src ranges to point into the
+   * corresponding relocated ranges.
    */
-  virtual void adjustForRelocation(TCA start, TCA end,
-                                   RelocationInfo& rel, CodeGenFixups& fixups) {
+  virtual void adjustForRelocation(RelocationInfo& rel) {
     always_assert(false);
   }
+
   /*
-   * Adjust the contents of fixups, sr, and asmInfo based on the relocation
+   * Adjust the contents of fixups and asmInfo based on the relocation
    * already performed on rel.
    */
-  virtual void adjustForRelocation(AsmInfo* asmInfo,
-                                   RelocationInfo& rel, CodeGenFixups& fixups) {
+  virtual void adjustForRelocation(RelocationInfo& rel,
+                                   AsmInfo* asmInfo, CodeGenFixups& fixups) {
     always_assert(false);
   }
+
+  virtual void genCodeImpl(IRUnit& unit, AsmInfo*);
 };
 
 }}

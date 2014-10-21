@@ -28,6 +28,7 @@
 #include "hphp/runtime/base/rds-header.h"
 #include "hphp/runtime/base/thread-info.h"
 #include "hphp/runtime/ext/ext_string.h"
+#include "hphp/runtime/vm/debugger-hook.h"
 
 namespace HPHP {
 
@@ -86,6 +87,9 @@ void RequestInjectionData::threadInit() {
   IniSetting::Bind(IniSetting::CORE, IniSetting::PHP_INI_ALL,
                    "arg_separator.output", "&",
                    &m_argSeparatorOutput);
+  IniSetting::Bind(IniSetting::CORE, IniSetting::PHP_INI_ALL,
+                   "arg_separator.input", "&",
+                   &m_argSeparatorInput);
   IniSetting::Bind(IniSetting::CORE, IniSetting::PHP_INI_ALL,
                    "default_charset", RuntimeOption::DefaultCharsetName.c_str(),
                    &m_defaultCharset);
@@ -219,6 +223,8 @@ void RequestInjectionData::threadInit() {
 
   // Filesystem and Streams Configuration Options
   IniSetting::Bind(IniSetting::CORE, IniSetting::PHP_INI_ALL,
+                   "user_agent", "", &m_userAgent);
+  IniSetting::Bind(IniSetting::CORE, IniSetting::PHP_INI_ALL,
                    "default_socket_timeout",
                    std::to_string(RuntimeOption::SocketDefaultTimeout).c_str(),
                    &m_socketDefaultTimeout);
@@ -336,22 +342,32 @@ void RequestInjectionData::resetTimer(int seconds /* = 0 */) {
 void RequestInjectionData::reset() {
   getConditionFlags()->store(0);
   m_coverage = RuntimeOption::RecordCodeCoverage;
-  m_debugger = false;
+  m_debuggerAttached = false;
   m_debuggerIntr = false;
+  m_debuggerStepIn = false;
+  m_debuggerStepOut = StepOutState::NONE;
+  m_debuggerNext = false;
+  while (!m_activeLineBreaks.empty()) {
+    m_activeLineBreaks.pop();
+  }
   updateJit();
   while (!interrupts.empty()) interrupts.pop();
 }
 
 void RequestInjectionData::updateJit() {
   m_jit = RuntimeOption::EvalJit &&
-    !(RuntimeOption::EvalJitDisabledByHphpd && m_debugger) &&
-    !m_debuggerIntr &&
+    !(RuntimeOption::EvalJitDisabledByHphpd && m_debuggerAttached) &&
     !m_coverage &&
-    !shouldProfile();
+    isStandardRequest() &&
+    !getDebuggerForceIntr();
 }
 
 void RequestInjectionData::setMemExceededFlag() {
   getConditionFlags()->fetch_or(RequestInjectionData::MemExceededFlag);
+}
+
+void RequestInjectionData::clearMemExceededFlag() {
+  getConditionFlags()->fetch_and(~RequestInjectionData::MemExceededFlag);
 }
 
 void RequestInjectionData::setTimedOutFlag() {
@@ -372,6 +388,14 @@ void RequestInjectionData::setAsyncEventHookFlag() {
 
 void RequestInjectionData::clearAsyncEventHookFlag() {
   getConditionFlags()->fetch_and(~RequestInjectionData::AsyncEventHookFlag);
+}
+
+void RequestInjectionData::setDebuggerHookFlag() {
+  getConditionFlags()->fetch_or(RequestInjectionData::DebuggerHookFlag);
+}
+
+void RequestInjectionData::clearDebuggerHookFlag() {
+  getConditionFlags()->fetch_and(~RequestInjectionData::DebuggerHookFlag);
 }
 
 void RequestInjectionData::setEventHookFlag() {

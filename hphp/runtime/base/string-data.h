@@ -161,8 +161,8 @@ struct StringData {
 
   /*
    * Same as MakeStatic but the string alloated will *not* be in the static
-   * string table and will be deleted once the root goes out of scope.
-   * Currently only used by APC.
+   * string table, will not be in low-memory, and will be deleted once the
+   * root goes out of scope. Currently only used by APC.
    */
   static StringData* MakeUncounted(StringSlice);
 
@@ -204,6 +204,12 @@ struct StringData {
   void destructStatic();
 
   /*
+   * StringData objects allocated with MakeUncounted should be freed
+   * using this function.
+   */
+  void destructUncounted();
+
+  /*
    * Reference-counting related.
    */
   IMPLEMENT_COUNTABLE_METHODS_NO_STATIC
@@ -242,9 +248,11 @@ struct StringData {
    * MakeStatic.
    *
    * Returns: possibly a new StringData, if we decided to reallocate. The
-   * returned pointer is not yet incref'd.
+   * returned pointer is not yet incref'd.  shrinkImpl always returns a new
+   * StringData.
    */
   StringData* shrink(size_t len);
+  StringData* shrinkImpl(size_t len);
 
   /*
    * Returns a slice with extents sized to the *string* that this

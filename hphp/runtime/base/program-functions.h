@@ -39,9 +39,18 @@ void execute_command_line_end(int xhprof, bool coverage, const char *program);
 void process_env_variables(Array& variables);
 
 /**
- * Reset all the ini settings from the config file
+ * Read and process all the ini settings from the ini configuration file
  */
-void process_ini_settings(const std::string& name);
+void process_ini_file(const std::string& filename);
+
+/**
+ * Process one or more ini settings in the form of key=value
+ * Provide an optional filename from where the settings were retrieved.
+ * Function normally called directly when -d is used and called from
+ * process_ini_file() when the settings were from a file.
+ */
+void process_ini_settings(const std::string& name,
+                          const std::string& filename = "");
 
 /**
  * Inserting a variable into specified symbol table.
@@ -74,6 +83,7 @@ class ExecutionContext;
 
 void pcre_init();
 void pcre_reinit();
+void pcre_session_exit();
 void hphp_process_init();
 void hphp_session_init();
 
@@ -91,7 +101,8 @@ bool hphp_invoke(ExecutionContext *context,
                  bool once,
                  bool warmupOnly,
                  bool richErrorMsg);
-void hphp_context_exit();
+void hphp_context_shutdown();
+void hphp_context_exit(bool shutdown = true);
 
 void hphp_thread_exit();
 void hphp_session_exit();
@@ -104,7 +115,7 @@ std::string get_systemlib(std::string* hhas = nullptr,
 extern const char* const kCompilerId;
 
 // Helper function for stats tracking with exceptions.
-void bump_counter_and_rethrow();
+void bump_counter_and_rethrow(bool isPsp);
 
 ///////////////////////////////////////////////////////////////////////////////
 }

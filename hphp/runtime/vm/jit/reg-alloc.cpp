@@ -18,9 +18,9 @@
 #include "hphp/runtime/vm/jit/native-calls.h"
 #include "hphp/runtime/vm/jit/mc-generator.h"
 
-namespace HPHP { namespace JIT {
+namespace HPHP { namespace jit {
 
-using namespace JIT::reg;
+using namespace jit::reg;
 using NativeCalls::CallMap;
 
 TRACE_SET_MOD(hhir);
@@ -42,6 +42,7 @@ PhysReg forceAlloc(const SSATmp& tmp) {
            opc == RetAdjustStack ||
            opc == InterpOne ||
            opc == InterpOneCF ||
+           opc == Mov ||
            opc == CheckStk ||
            opc == GuardStk ||
            opc == AssertStk ||

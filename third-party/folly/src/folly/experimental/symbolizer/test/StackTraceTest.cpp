@@ -14,8 +14,8 @@
  * limitations under the License.
  */
 
-#include "folly/experimental/symbolizer/StackTrace.h"
-#include "folly/experimental/symbolizer/Symbolizer.h"
+#include <folly/experimental/symbolizer/StackTrace.h>
+#include <folly/experimental/symbolizer/Symbolizer.h>
 
 #include <glog/logging.h>
 #include <gtest/gtest.h>
@@ -90,7 +90,7 @@ TEST(StackTraceTest, Signal) {
 
 int main(int argc, char *argv[]) {
   testing::InitGoogleTest(&argc, argv);
-  google::ParseCommandLineFlags(&argc, &argv, true);
+  gflags::ParseCommandLineFlags(&argc, &argv, true);
   return RUN_ALL_TESTS();
 }
 

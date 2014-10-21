@@ -14,8 +14,8 @@
  * limitations under the License.
  */
 
-#include "folly/ScopeGuard.h"
-#include "folly/Portability.h"
+#include <folly/ScopeGuard.h>
+#include <folly/Portability.h>
 
 #include <gflags/gflags.h>
 #include <gtest/gtest.h>
@@ -293,6 +293,6 @@ TEST(ScopeGuard, TEST_SCOPE_SUCCESS_THROW) {
 
 int main(int argc, char** argv) {
   testing::InitGoogleTest(&argc, argv);
-  google::ParseCommandLineFlags(&argc, &argv, true);
+  gflags::ParseCommandLineFlags(&argc, &argv, true);
   return RUN_ALL_TESTS();
 }

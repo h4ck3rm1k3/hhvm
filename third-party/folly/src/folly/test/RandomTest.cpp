@@ -14,10 +14,10 @@
  * limitations under the License.
  */
 
-#include "folly/Random.h"
-#include "folly/Range.h"
-#include "folly/Benchmark.h"
-#include "folly/Foreach.h"
+#include <folly/Random.h>
+#include <folly/Range.h>
+#include <folly/Benchmark.h>
+#include <folly/Foreach.h>
 
 #include <glog/logging.h>
 #include <gtest/gtest.h>
@@ -113,7 +113,7 @@ BENCHMARK(Random64OneIn) { doNotOptimizeAway(Random::oneIn(100)); }
 
 int main(int argc, char** argv) {
   testing::InitGoogleTest(&argc, argv);
-  google::ParseCommandLineFlags(&argc, &argv, true);
+  gflags::ParseCommandLineFlags(&argc, &argv, true);
 
   if (FLAGS_benchmark) {
     folly::runBenchmarks();

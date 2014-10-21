@@ -14,8 +14,8 @@
  * limitations under the License.
  */
 
-#include "folly/io/IOBufQueue.h"
-#include "folly/Range.h"
+#include <folly/io/IOBufQueue.h>
+#include <folly/Range.h>
 
 #include <gflags/gflags.h>
 #include <gtest/gtest.h>
@@ -380,7 +380,7 @@ TEST(IOBufQueue, PopFirst) {
 
 int main(int argc, char** argv) {
   testing::InitGoogleTest(&argc, argv);
-  google::ParseCommandLineFlags(&argc, &argv, true);
+  gflags::ParseCommandLineFlags(&argc, &argv, true);
 
   return RUN_ALL_TESTS();
 }

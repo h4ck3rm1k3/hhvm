@@ -14,10 +14,11 @@
  * limitations under the License.
  */
 
-#include "folly/detail/Futex.h"
-#include "folly/test/DeterministicSchedule.h"
+#include <folly/detail/Futex.h>
+#include <folly/test/DeterministicSchedule.h>
 
 #include <chrono>
+#include <functional>
 #include <thread>
 
 #include <gflags/gflags.h>
@@ -32,15 +33,19 @@ using namespace std::chrono;
 typedef DeterministicSchedule DSched;
 
 template <template<typename> class Atom>
+void run_basic_thread(
+    Futex<Atom>& f) {
+  EXPECT_TRUE(f.futexWait(0));
+}
+
+template <template<typename> class Atom>
 void run_basic_tests() {
   Futex<Atom> f(0);
 
   EXPECT_FALSE(f.futexWait(1));
   EXPECT_EQ(f.futexWake(), 0);
 
-  auto thr = DSched::thread([&]{
-    EXPECT_TRUE(f.futexWait(0));
-  });
+  auto thr = DSched::thread(std::bind(run_basic_thread<Atom>, std::ref(f)));
 
   while (f.futexWake() != 1) {
     std::this_thread::yield();
@@ -180,7 +185,7 @@ TEST(Futex, basic_deterministic) {
 
 int main(int argc, char ** argv) {
   testing::InitGoogleTest(&argc, argv);
-  google::ParseCommandLineFlags(&argc, &argv, true);
+  gflags::ParseCommandLineFlags(&argc, &argv, true);
   return RUN_ALL_TESTS();
 }
 

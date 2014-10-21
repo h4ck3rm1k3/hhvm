@@ -20,7 +20,7 @@
 #include "thrift/lib/cpp/async/TAsyncTransport.h"
 #include "thrift/lib/cpp/transport/TSocketAddress.h"
 #include "thrift/lib/cpp/transport/TTransportException.h"
-#include "ti/proxygen/lib/services/ManagedConnection.h"
+#include "proxygen/lib/services/ManagedConnection.h"
 
 namespace HPHP {
 
@@ -43,14 +43,14 @@ SocketConnection::SocketConnection(
 
 SocketConnection::~SocketConnection() {
   assert(!m_sock->getReadCallback());
-  shutdownTransport();
+  close();
 }
 
 void SocketConnection::timeoutExpired() noexcept {
-  shutdownTransport();
+  close();
 }
 
-void SocketConnection::shutdownTransport() {
+void SocketConnection::close() {
   m_sock->close();
 }
 

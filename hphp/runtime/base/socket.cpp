@@ -140,7 +140,7 @@ bool Socket::checkLiveness() {
   if (poll(&p, 1, 0) > 0 && p.revents > 0) {
     char buf;
     int64_t ret = recv(m_fd, &buf, sizeof(buf), MSG_PEEK);
-    if (ret == 0 || (ret == -1 && errno != EAGAIN && errno != EWOULDBLOCK)) {
+    if (ret == 0 || (ret == -1 && errno != EWOULDBLOCK && errno != EAGAIN && errno != EINTR)) {
       return false;
     }
   }
@@ -197,7 +197,7 @@ int64_t Socket::readImpl(char *buffer, int64_t length) {
   }
 
   int64_t ret = recv(m_fd, buffer, length, recvFlags);
-  if (ret == 0 || (ret == -1 && errno != EWOULDBLOCK)) {
+  if (ret == 0 || (ret == -1 && errno != EWOULDBLOCK && errno != EAGAIN && errno != EINTR)) {
     m_eof = true;
   }
   return (ret < 0) ? 0 : ret;
@@ -223,7 +223,7 @@ bool Socket::eof() {
     // ii) recv() failed due to no waiting data on non-blocking socket.
     char ch;
     int64_t ret = recv(m_fd, &ch, 1, MSG_PEEK | MSG_DONTWAIT);
-    if (ret == 0 || (ret == -1 && errno != EWOULDBLOCK)) {
+    if (ret == 0 || (ret == -1 && errno != EWOULDBLOCK && errno != EAGAIN && errno != EINTR)) {
       m_eof = true;
     }
   }

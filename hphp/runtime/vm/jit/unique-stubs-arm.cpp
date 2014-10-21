@@ -23,7 +23,7 @@
 #include "hphp/runtime/vm/jit/service-requests-inline.h"
 #include "hphp/vixl/a64/macro-assembler-a64.h"
 
-namespace HPHP { namespace JIT { namespace ARM {
+namespace HPHP { namespace jit { namespace arm {
 
 namespace {
 
@@ -90,16 +90,6 @@ void emitStackOverflowHelper(UniqueStubs& us) {
   emitServiceReq(mcg->code.cold(), REQ_STACK_OVERFLOW);
 
   us.add("stackOverflowHelper", us.stackOverflowHelper);
-}
-
-
-void emitDefClsHelper(UniqueStubs& us) {
-  MacroAssembler a { mcg->code.main() };
-
-  us.defClsHelper = a.frontier();
-  a.   Brk   (0);
-
-  us.add("defClsHelper", us.defClsHelper);
 }
 
 void emitFreeLocalsHelpers(UniqueStubs& us) {
@@ -267,7 +257,6 @@ UniqueStubs emitUniqueStubs() {
     emitReturnHelpers,
     emitResumeHelpers,
     emitStackOverflowHelper,
-    emitDefClsHelper,
     emitFreeLocalsHelpers,
     emitFuncPrologueRedispatch,
     emitFCallArrayHelper,

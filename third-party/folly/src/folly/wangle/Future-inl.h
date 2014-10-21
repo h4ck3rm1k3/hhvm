@@ -16,7 +16,7 @@
 
 #pragma once
 
-#include "detail.h"
+#include "detail/State.h"
 #include <folly/LifoSem.h>
 
 namespace folly { namespace wangle {
@@ -32,26 +32,32 @@ struct isFuture<Future<T> > {
 };
 
 template <class T>
-Future<T>::Future(Future<T>&& other) noexcept : obj_(other.obj_) {
-  other.obj_ = nullptr;
+Future<T>::Future(Future<T>&& other) noexcept : state_(nullptr) {
+  *this = std::move(other);
 }
 
 template <class T>
 Future<T>& Future<T>::operator=(Future<T>&& other) {
-  std::swap(obj_, other.obj_);
+  std::swap(state_, other.state_);
   return *this;
 }
 
 template <class T>
 Future<T>::~Future() {
-  if (obj_) {
-    setCallback_([](Try<T>&&) {}); // detach
+  detach();
+}
+
+template <class T>
+void Future<T>::detach() {
+  if (state_) {
+    state_->detachFuture();
+    state_ = nullptr;
   }
 }
 
 template <class T>
 void Future<T>::throwIfInvalid() const {
-  if (!obj_)
+  if (!state_)
     throw NoState();
 }
 
@@ -59,8 +65,7 @@ template <class T>
 template <class F>
 void Future<T>::setCallback_(F&& func) {
   throwIfInvalid();
-  obj_->setCallback_(std::move(func));
-  obj_ = nullptr;
+  state_->setCallback(std::move(func));
 }
 
 template <class T>
@@ -87,10 +92,10 @@ Future<T>::then(F&& func) {
      sophisticated that avoids making a new Future object when it can, as an
      optimization. But this is correct.
 
-     obj_ can't be moved, it is explicitly disallowed (as is copying). But
+     state_ can't be moved, it is explicitly disallowed (as is copying). But
      if there's ever a reason to allow it, this is one place that makes that
      assumption and would need to be fixed. We use a standard shared pointer
-     for obj_ (by copying it in), which means in essence obj holds a shared
+     for state_ (by copying it in), which means in essence obj holds a shared
      pointer to itself.  But this shouldn't leak because Promise will not
      outlive the continuation, because Promise will setException() with a
      broken Promise if it is destructed before completed. We could use a
@@ -102,11 +107,11 @@ Future<T>::then(F&& func) {
      We have to move in the Promise and func using the MoveWrapper
      hack. (func could be copied but it's a big drag on perf).
 
-     Two subtle but important points about this design. FutureObject has no
+     Two subtle but important points about this design. detail::State has no
      back pointers to Future or Promise, so if Future or Promise get moved
      (and they will be moved in performant code) we don't have to do
      anything fancy. And because we store the continuation in the
-     FutureObject, not in the Future, we can execute the continuation even
+     detail::State, not in the Future, we can execute the continuation even
      after the Future has gone out of scope. This is an intentional design
      decision. It is likely we will want to be able to cancel a continuation
      in some circumstances, but I think it should be explicit not implicit
@@ -164,34 +169,42 @@ template <class T>
 typename std::add_lvalue_reference<T>::type Future<T>::value() {
   throwIfInvalid();
 
-  return obj_->value();
+  return state_->value();
 }
 
 template <class T>
 typename std::add_lvalue_reference<const T>::type Future<T>::value() const {
   throwIfInvalid();
 
-  return obj_->value();
+  return state_->value();
 }
 
 template <class T>
 Try<T>& Future<T>::getTry() {
   throwIfInvalid();
 
-  return obj_->getTry();
+  return state_->getTry();
 }
 
 template <class T>
 template <typename Executor>
-inline Later<T> Future<T>::via(Executor* executor) {
+inline Future<T> Future<T>::via(Executor* executor) {
   throwIfInvalid();
-  return Later<T>(std::move(*this)).via(executor);
+  auto f = then([=](Try<T>&& t) {
+    MoveWrapper<Promise<T>> promise;
+    MoveWrapper<Try<T>> tw(std::move(t));
+    auto f2 = promise->getFuture();
+    executor->add([=]() mutable { promise->fulfilTry(std::move(*tw)); });
+    return f2;
+  });
+  f.deactivate();
+  return f;
 }
 
 template <class T>
 bool Future<T>::isReady() const {
   throwIfInvalid();
-  return obj_->ready();
+  return state_->ready();
 }
 
 // makeFuture

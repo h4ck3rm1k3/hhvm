@@ -30,9 +30,9 @@
 #include "hphp/util/asm-x64.h"
 #include "hphp/util/ringbuffer.h"
 
-namespace HPHP { namespace JIT { namespace X64 {
+namespace HPHP { namespace jit { namespace x64 {
 
-using JIT::reg::rip;
+using jit::reg::rip;
 
 TRACE_SET_MOD(servicereq);
 
@@ -57,7 +57,7 @@ namespace {
  */
 ALWAYS_INLINE
 TCA emitBindJPre(CodeBlock& cb, CodeBlock& frozen, ConditionCode cc) {
-  mcg->backEnd().prepareForSmash(cb, cc == JIT::CC_None ? kJmpLen : kJmpccLen);
+  mcg->backEnd().prepareForSmash(cb, cc == jit::CC_None ? kJmpLen : kJmpccLen);
 
   TCA toSmash = cb.frontier();
   if (cb.base() == frozen.base()) {
@@ -101,7 +101,7 @@ void emitBindJ(CodeBlock& cb, CodeBlock& frozen, ConditionCode cc,
  * NativeImpl is a special operation in the sense that it must be the
  * only opcode in a function body, and also functions as the return.
  */
-int32_t emitNativeImpl(CodeBlock& mainCode, const Func* func) {
+void emitNativeImpl(CodeBlock& mainCode, const Func* func) {
   BuiltinFunction builtinFuncPtr = func->builtinFuncPtr();
   if (false) { // typecheck
     ActRec* ar = nullptr;
@@ -120,7 +120,7 @@ int32_t emitNativeImpl(CodeBlock& mainCode, const Func* func) {
   if (mcg->fixupMap().eagerRecord(func)) {
     emitEagerSyncPoint(a, reinterpret_cast<const Op*>(func->getEntry()));
   }
-  emitCall(a, (TCA)builtinFuncPtr);
+  emitCall(a, (TCA)builtinFuncPtr, argSet(1));
 
   /*
    * We're sometimes calling this while curFunc() isn't really the
@@ -155,7 +155,10 @@ int32_t emitNativeImpl(CodeBlock& mainCode, const Func* func) {
   a.   loadq  (rVmFp[AROFF(m_sfp)], rVmFp);
 
   emitRB(a, Trace::RBTypeFuncExit, func->fullName()->data());
-  return sizeof(ActRec) + cellsToBytes(nLocalCells-1);
+  auto adjust = safe_cast<int>(sizeof(ActRec) + cellsToBytes(nLocalCells-1));
+  if (adjust) {
+    a.  addq(adjust, rVmSp);
+  }
 }
 
 static int maxStubSpace() {
@@ -202,7 +205,7 @@ void emitBindCallHelper(CodeBlock& mainCode, CodeBlock& frozenCode,
   packServiceReqArgs(argv, req);
 
   emitServiceReqImpl(start, cb.frontier(), end, spaceLeft,
-                     SRFlags::None, JIT::REQ_BIND_CALL, argv);
+                     SRFlags::None, jit::REQ_BIND_CALL, argv);
 
   if (start == frozenCode.frontier()) {
     frozenCode.skip(end - start);
@@ -269,12 +272,12 @@ emitServiceReqImpl(TCA stubStart, TCA start, TCA& end, int maxStubSpace,
   }
   emitEagerVMRegSave(as, RegSaveFlags::SaveFP);
   if (persist) {
-    as.  emitImmReg(0, JIT::X64::rAsm);
+    as.  emitImmReg(0, jit::x64::rAsm);
   } else {
-    as.  lea(rip[(int64_t)stubStart], JIT::X64::rAsm);
+    as.  lea(rip[(int64_t)stubStart], jit::x64::rAsm);
   }
   TRACE(3, ")\n");
-  as.    emitImmReg(req, JIT::reg::rdi);
+  as.    emitImmReg(req, jit::reg::rdi);
 
   /*
    * Weird hand-shaking with enterTC: reverse-call a service routine.
@@ -285,8 +288,8 @@ emitServiceReqImpl(TCA stubStart, TCA start, TCA& end, int maxStubSpace,
    * SRJmpInsteadOfRet indicates to fake the return.
    */
   if (flags & SRFlags::JmpInsteadOfRet) {
-    as.  pop(JIT::reg::rax);
-    as.  jmp(JIT::reg::rax);
+    as.  pop(jit::reg::rax);
+    as.  jmp(jit::reg::rax);
   } else {
     as.  ret();
   }
@@ -329,12 +332,12 @@ emitServiceReqWork(CodeBlock& cb, TCA start, SRFlags flags,
   return ret;
 }
 
-void emitBindSideExit(CodeBlock& cb, CodeBlock& frozen, JIT::ConditionCode cc,
+void emitBindSideExit(CodeBlock& cb, CodeBlock& frozen, jit::ConditionCode cc,
                       SrcKey dest, TransFlags trflags) {
   emitBindJ(cb, frozen, cc, dest, REQ_BIND_SIDE_EXIT, trflags);
 }
 
-void emitBindJcc(CodeBlock& cb, CodeBlock& frozen, JIT::ConditionCode cc,
+void emitBindJcc(CodeBlock& cb, CodeBlock& frozen, jit::ConditionCode cc,
                  SrcKey dest) {
   emitBindJ(cb, frozen, cc, dest, REQ_BIND_JCC, TransFlags{});
 }
@@ -344,7 +347,7 @@ void emitBindJmp(CodeBlock& cb, CodeBlock& frozen,
   emitBindJ(cb, frozen, CC_None, dest, REQ_BIND_JMP, trflags);
 }
 
-TCA emitRetranslate(CodeBlock& cb, CodeBlock& frozen, JIT::ConditionCode cc,
+TCA emitRetranslate(CodeBlock& cb, CodeBlock& frozen, jit::ConditionCode cc,
                     SrcKey dest, TransFlags trflags) {
   auto toSmash = emitBindJPre(cb, frozen, cc);
   TCA sr = emitServiceReq(frozen, REQ_RETRANSLATE,
@@ -354,9 +357,9 @@ TCA emitRetranslate(CodeBlock& cb, CodeBlock& frozen, JIT::ConditionCode cc,
   return toSmash;
 }
 
-int32_t emitBindCall(CodeBlock& mainCode, CodeBlock& coldCode,
-                     CodeBlock& frozenCode, SrcKey srcKey,
-                     const Func* funcd, int numArgs) {
+void emitBindCall(CodeBlock& mainCode, CodeBlock& coldCode,
+                  CodeBlock& frozenCode, SrcKey srcKey,
+                  const Func* funcd, int numArgs) {
   // If this is a call to a builtin and we don't need any argument
   // munging, we can skip the prologue system and do it inline.
   if (isNativeImplCall(funcd, numArgs)) {
@@ -386,7 +389,6 @@ int32_t emitBindCall(CodeBlock& mainCode, CodeBlock& coldCode,
   // Stash callee's rVmFp into rStashedAR for the callee's prologue
   emitLea(a, rVmSp[cellsToBytes(numArgs)], rStashedAR);
   emitBindCallHelper(mainCode, frozenCode, srcKey, funcd, numArgs);
-  return 0;
 }
 
 

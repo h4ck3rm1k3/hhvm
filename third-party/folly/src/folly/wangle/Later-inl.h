@@ -16,9 +16,9 @@
 
 #pragma once
 
-#include "folly/wangle/Executor.h"
-#include "folly/wangle/Future.h"
-#include "folly/Optional.h"
+#include <folly/wangle/Executor.h>
+#include <folly/wangle/Future.h>
+#include <folly/Optional.h>
 
 namespace folly { namespace wangle {
 
@@ -75,6 +75,21 @@ Later<T>::Later(U&& input) {
   starter_.getFuture().then([=](Try<void>&& t) mutable {
     promise->setValue(std::move(*inputm));
   });
+}
+
+template <typename T>
+Later<T>::Later(std::exception_ptr const& eptr) {
+  folly::MoveWrapper<Promise<T>> promise;
+  future_ = promise->getFuture();
+  starter_.getFuture().then([=](Try<void>&& t) mutable {
+    promise->setException(eptr);
+  });
+}
+
+template <typename T>
+template <typename E, class Unused>
+Later<T>::Later(E const& e) :
+    Later<T>::Later(std::make_exception_ptr<E>(e)) {
 }
 
 template <class T>

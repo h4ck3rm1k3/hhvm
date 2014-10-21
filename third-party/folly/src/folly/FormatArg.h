@@ -18,10 +18,10 @@
 #define FOLLY_FORMATARG_H_
 
 #include <stdexcept>
-#include "folly/Conv.h"
-#include "folly/Likely.h"
-#include "folly/Portability.h"
-#include "folly/Range.h"
+#include <folly/Conv.h>
+#include <folly/Likely.h>
+#include <folly/Portability.h>
+#include <folly/Range.h>
 
 namespace folly {
 
@@ -46,6 +46,7 @@ struct FormatArg {
       sign(Sign::DEFAULT),
       basePrefix(false),
       thousandsSeparator(false),
+      trailingDot(false),
       width(kDefaultWidth),
       precision(kDefaultPrecision),
       presentation(kDefaultPresentation),
@@ -127,6 +128,11 @@ struct FormatArg {
    * Output thousands separator (comma)
    */
   bool thousandsSeparator;
+
+  /**
+   * Force a trailing decimal on doubles which could be rendered as ints
+   */
+  bool trailingDot;
 
   /**
    * Field width

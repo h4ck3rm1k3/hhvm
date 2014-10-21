@@ -27,8 +27,6 @@
   CASE(AssertRATL) \
   CASE(AssertRATStk) \
   CASE(BindM) \
-  CASE(BoxR) \
-  CASE(BoxRNop) \
   CASE(BreakTraceHint) \
   CASE(CGetM) \
   CASE(ClsCnsD) \
@@ -49,7 +47,6 @@
   CASE(FPassR) \
   CASE(FPassS) \
   CASE(FPassV) \
-  CASE(FPassVNop) \
   CASE(IncDecL) \
   CASE(IncDecM) \
   CASE(IncStat) \
@@ -67,7 +64,6 @@
   CASE(MIterNext) \
   CASE(MIterNextK) \
   CASE(NewStructArray) \
-  CASE(NopDefCls) \
   CASE(RetC) \
   CASE(RetV) \
   CASE(SSwitch) \
@@ -77,8 +73,6 @@
   CASE(SetWithRefLM) \
   CASE(SetWithRefRM) \
   CASE(Switch) \
-  CASE(UnboxR) \
-  CASE(UnboxRNop) \
   CASE(UnsetM) \
   CASE(VGetM) \
   CASE(WIterInit) \
@@ -167,8 +161,10 @@
   CASE(NewCol) \
   CASE(NewLikeArrayL) \
   CASE(NewMixedArray) \
+  CASE(NewVArray) \
+  CASE(NewMIArray) \
+  CASE(NewMSArray) \
   CASE(NewPackedArray) \
-  CASE(Nop) \
   CASE(Not) \
   CASE(Null) \
   CASE(NullUninit) \
@@ -194,6 +190,7 @@
   CASE(This) \
   CASE(True) \
   CASE(Unbox) \
+  CASE(UnboxR) \
   CASE(UnsetL) \
   CASE(VGetG) \
   CASE(VGetL) \
@@ -255,7 +252,6 @@
   case Op::SetL:                                  \
   case Op::BindL:                                 \
     func(AssignToLocalOp, i)                      \
-  case Op::FPassC:                                \
   case Op::FPassCW:                               \
   case Op::FPassCE:                               \
     func(FPassCOp, i)                             \

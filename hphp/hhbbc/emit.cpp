@@ -30,10 +30,10 @@
 #include "hphp/runtime/base/repo-auth-type.h"
 #include "hphp/runtime/base/repo-auth-type-array.h"
 #include "hphp/runtime/base/repo-auth-type-codec.h"
-#include "hphp/runtime/vm/unit.h"
+#include "hphp/runtime/vm/bytecode.h"
 #include "hphp/runtime/vm/func-emitter.h"
 #include "hphp/runtime/vm/preclass-emitter.h"
-#include "hphp/runtime/vm/bytecode.h"
+#include "hphp/runtime/vm/unit-emitter.h"
 #include "hphp/hhbbc/representation.h"
 #include "hphp/hhbbc/cfg.h"
 #include "hphp/hhbbc/unit-util.h"
@@ -320,7 +320,7 @@ EmitBcInfo emit_bytecode(EmitUnitState& euState,
       euState.defClsMap[id] = startOffset;
     };
 
-    auto nopdefcls = [&] {
+    auto defclsnop = [&] {
       auto const id = inst.DefCls.arg1;
       always_assert(euState.defClsMap[id] == kInvalidOffset);
       euState.defClsMap[id] = startOffset;
@@ -374,7 +374,7 @@ EmitBcInfo emit_bytecode(EmitUnitState& euState,
 #define O(opcode, imms, inputs, outputs, flags)                   \
     auto emit_##opcode = [&] (const bc::opcode& data) {           \
       if (Op::opcode == Op::DefCls)    defcls();                  \
-      if (Op::opcode == Op::NopDefCls) nopdefcls();               \
+      if (Op::opcode == Op::DefClsNop) defclsnop();               \
       if (isRet(Op::opcode))           ret_assert();              \
       ue.emitOp(Op::opcode);                                      \
       POP_##inputs                                                \
@@ -910,6 +910,8 @@ void emit_class(EmitUnitState& state,
       cconst.phpCode
     );
   }
+
+  pce->setEnumBaseTy(cls.enumBaseTy);
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -923,7 +925,8 @@ std::unique_ptr<UnitEmitter> emit_unit(const Index& index,
 
   auto ue = folly::make_unique<UnitEmitter>(unit.md5);
   FTRACE(1, "  unit {}\n", unit.filename->data());
-  ue->setFilepath(unit.filename);
+  ue->m_filepath = unit.filename;
+  ue->m_preloadPriority = unit.preloadPriority;
 
   EmitUnitState state { index };
   state.defClsMap.resize(unit.classes.size(), kInvalidOffset);
@@ -940,9 +943,9 @@ std::unique_ptr<UnitEmitter> emit_unit(const Index& index,
    * this.)
    */
   if (is_systemlib) {
-    ue->setMergeOnly(true);
+    ue->m_mergeOnly = true;
     auto const tv = make_tv<KindOfInt64>(1);
-    ue->setMainReturn(&tv);
+    ue->m_mainReturn = tv;
   } else {
     /*
      * TODO(#3017265): UnitEmitter is very coupled to emitter.cpp, and
@@ -950,7 +953,7 @@ std::unique_ptr<UnitEmitter> emit_unit(const Index& index,
      * quite clear.  If you don't set returnSeen things relating to
      * hoistability break.
      */
-    ue->returnSeen();
+    ue->m_returnSeen = true;
   }
 
   emit_pseudomain(state, *ue, unit);

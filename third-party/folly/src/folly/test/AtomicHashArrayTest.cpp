@@ -20,10 +20,10 @@
 #include <map>
 #include <stdexcept>
 
-#include "folly/AtomicHashArray.h"
-#include "folly/Hash.h"
-#include "folly/Conv.h"
-#include "folly/Memory.h"
+#include <folly/AtomicHashArray.h>
+#include <folly/Hash.h>
+#include <folly/Conv.h>
+#include <folly/Memory.h>
 #include <gtest/gtest.h>
 
 #if !defined(MAP_ANONYMOUS) && defined(MAP_ANON)
@@ -81,7 +81,7 @@ class MmapAllocator {
   T *allocate(size_t n) {
     void *p = mmap(nullptr, n * sizeof(T), PROT_READ | PROT_WRITE,
         MAP_SHARED | MAP_ANONYMOUS, -1, 0);
-    if (!p) throw std::bad_alloc();
+    if (p == MAP_FAILED) throw std::bad_alloc();
     return (T *)p;
   }
 

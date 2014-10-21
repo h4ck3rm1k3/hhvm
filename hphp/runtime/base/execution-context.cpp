@@ -59,7 +59,6 @@ IMPLEMENT_THREAD_LOCAL_NO_CHECK(ExecutionContext, g_context);
 
 ExecutionContext::ExecutionContext()
   : m_transport(nullptr)
-  , m_cwd(Process::CurrentWorkingDirectory)
   , m_out(nullptr)
   , m_implicitFlush(false)
   , m_protectedLevel(0)
@@ -74,19 +73,25 @@ ExecutionContext::ExecutionContext()
   , m_lambdaCounter(0)
   , m_nesting(0)
   , m_breakPointFilter(nullptr)
-  , m_lastLocFilter(nullptr)
+  , m_flowFilter(nullptr)
   , m_dbgNoBreak(false)
   , m_coverPrevLine(-1)
   , m_coverPrevUnit(nullptr)
-  , m_lastErrorPath("")
+  , m_lastErrorPath(staticEmptyString())
   , m_lastErrorLine(0)
   , m_executingSetprofileCallback(false)
 {
+  // We don't want a new execution context to cause any smart allocations
+  // (because it will cause us to hold a slab, even while idle)
+  static auto s_cwd = makeStaticString(Process::CurrentWorkingDirectory);
+  m_cwd = s_cwd;
+
   // We want this to run on every request, instead of just once per thread
-  auto hasSystemDefault = IniSetting::ResetSystemDefault("memory_limit");
+  std::string memory_limit = "memory_limit";
+  auto hasSystemDefault = IniSetting::ResetSystemDefault(memory_limit);
   if (!hasSystemDefault) {
     auto max_mem = std::to_string(RuntimeOption::RequestMemoryMaxBytes);
-    IniSetting::SetUser("memory_limit", max_mem);
+    IniSetting::SetUser(memory_limit, max_mem, IniSetting::FollyDynamic());
   }
 
   // This one is hot so we don't want to go through the ini_set() machinery to
@@ -110,7 +115,7 @@ ExecutionContext::~ExecutionContext() {
   for (auto& v : m_createdFuncs) delete v;
 
   delete m_breakPointFilter;
-  delete m_lastLocFilter;
+  delete m_flowFilter;
   obFlushAll();
   for (auto& b : m_buffers) delete b;
 }
@@ -221,6 +226,10 @@ void ExecutionContext::obProtect(bool on) {
 }
 
 void ExecutionContext::obStart(const Variant& handler /* = null */) {
+  if (m_insideOBHandler) {
+    raise_error("ob_start(): Cannot use output buffering "
+                "in output buffering display handlers");
+  }
   OutputBuffer *ob = new OutputBuffer();
   ob->handler = handler;
   m_buffers.push_back(ob);
@@ -258,6 +267,8 @@ void ExecutionContext::obClean(int handler_flag) {
   if (!m_buffers.empty()) {
     OutputBuffer *last = m_buffers.back();
     if (!last->handler.isNull()) {
+      m_insideOBHandler = true;
+      SCOPE_EXIT { m_insideOBHandler = false; };
       vm_call_user_func(last->handler,
                         make_packed_array(last->oss.detach(), handler_flag));
     }
@@ -267,45 +278,61 @@ void ExecutionContext::obClean(int handler_flag) {
 
 bool ExecutionContext::obFlush() {
   assert(m_protectedLevel >= 0);
-  if ((int)m_buffers.size() > m_protectedLevel) {
-    std::list<OutputBuffer*>::const_iterator iter = m_buffers.end();
-    OutputBuffer *last = *(--iter);
-    const int flag = k_PHP_OUTPUT_HANDLER_START | k_PHP_OUTPUT_HANDLER_END;
-    if (iter != m_buffers.begin()) {
-      OutputBuffer *prev = *(--iter);
-      if (last->handler.isNull()) {
-        prev->oss.absorb(last->oss);
-      } else {
-        try {
-          Variant tout = vm_call_user_func(
-            last->handler, make_packed_array(last->oss.detach(), flag)
-          );
-          prev->oss.append(tout.toString());
-          last->oss.clear();
-        } catch (...) {
-          prev->oss.absorb(last->oss);
-        }
-      }
-      return true;
-    }
 
-    if (!last->handler.isNull()) {
+  if ((int)m_buffers.size() <= m_protectedLevel) {
+    return false;
+  }
+
+  auto iter = m_buffers.end();
+  OutputBuffer* last = *(--iter);
+
+  const int flag = k_PHP_OUTPUT_HANDLER_START | k_PHP_OUTPUT_HANDLER_END;
+
+  if (iter != m_buffers.begin()) {
+    OutputBuffer *prev = *(--iter);
+    if (last->handler.isNull()) {
+      prev->oss.absorb(last->oss);
+    } else {
+      auto str = last->oss.detach();
       try {
-        Variant tout = vm_call_user_func(
-          last->handler, make_packed_array(last->oss.detach(), flag)
-        );
-        String sout = tout.toString();
-        writeStdout(sout.data(), sout.size());
-        last->oss.clear();
-        return true;
-      } catch (...) {}
+        Variant tout;
+        {
+          m_insideOBHandler = true;
+          SCOPE_EXIT { m_insideOBHandler = false; };
+          tout = vm_call_user_func(
+            last->handler, make_packed_array(str, flag)
+          );
+        }
+        prev->oss.append(tout.toString());
+      } catch (...) {
+        prev->oss.append(str);
+        throw;
+      }
     }
-
-    writeStdout(last->oss.data(), last->oss.size());
-    last->oss.clear();
     return true;
   }
-  return false;
+
+  auto str = last->oss.detach();
+
+  if (!last->handler.isNull()) {
+    try {
+      Variant tout;
+      {
+        m_insideOBHandler = true;
+        SCOPE_EXIT { m_insideOBHandler = false; };
+        tout = vm_call_user_func(
+          last->handler, make_packed_array(str, flag)
+        );
+      }
+      str = tout.toString();
+    } catch (...) {
+      writeStdout(str.data(), str.size());
+      throw;
+    }
+  }
+
+  writeStdout(str.data(), str.size());
+  return true;
 }
 
 void ExecutionContext::obFlushAll() {
@@ -434,6 +461,11 @@ bool ExecutionContext::removeShutdownFunction(const Variant& function,
   return ret;
 }
 
+bool ExecutionContext::hasShutdownFunctions(ShutdownType type) {
+  return !m_shutdowns.isNull() && m_shutdowns.exists(type) &&
+    m_shutdowns[type].toArray().size() >= 1;
+}
+
 Variant ExecutionContext::pushUserErrorHandler(const Variant& function,
                                                    int error_types) {
   Variant ret;
@@ -541,7 +573,7 @@ void ExecutionContext::onShutdownPostSend() {
       }
     } catch (...) {
       try {
-        bump_counter_and_rethrow();
+        bump_counter_and_rethrow(true /* isPsp */);
       } catch (const ExitException &e) {
         // do nothing
       } catch (const Exception &e) {
@@ -644,8 +676,8 @@ void ExecutionContext::handleError(const std::string& msg,
   }
   if (mode == ErrorThrowMode::Always ||
       (mode == ErrorThrowMode::IfUnhandled && !handled)) {
-    DEBUGGER_ATTACHED_ONLY(phpDebuggerErrorHook(msg));
-    auto exn = FatalErrorException(msg, ee.getBackTrace());
+    DEBUGGER_ATTACHED_ONLY(phpDebuggerErrorHook(ee, errnum, msg));
+    auto exn = FatalErrorException(msg, ee.getBacktrace());
     exn.setSilent(!errorNeedsLogging(errnum));
     throw exn;
   }
@@ -673,7 +705,7 @@ void ExecutionContext::handleError(const std::string& msg,
     }
 
     if (errorNeedsLogging(errnum)) {
-      DEBUGGER_ATTACHED_ONLY(phpDebuggerErrorHook(ee.getMessage()));
+      DEBUGGER_ATTACHED_ONLY(phpDebuggerErrorHook(ee, errnum, ee.getMessage()));
       auto fileAndLine = ee.getFileAndLine();
       Logger::Log(Logger::LogError, prefix.c_str(), ee,
                   fileAndLine.first.c_str(), fileAndLine.second);
@@ -692,27 +724,21 @@ bool ExecutionContext::callUserErrorHandler(const Exception &e, int errnum,
   }
   if (!m_userErrorHandlers.empty() &&
       (m_userErrorHandlers.back().second & errnum) != 0) {
-    int errline = 0;
-    String errfile;
-    Array backtrace;
+    auto fileAndLine = std::make_pair(empty_string(), 0);
+    Variant backtrace;
     if (auto const ee = dynamic_cast<const ExtendedException*>(&e)) {
-      Array arr = ee->getBackTrace();
-      if (!arr.isNull()) {
-        backtrace = arr;
-        Array top = backtrace.rvalAt(0).toArray();
-        if (!top.isNull()) {
-          errfile = top.rvalAt(s_file);
-          errline = top.rvalAt(s_line).toInt64();
-        }
-      }
+      fileAndLine = ee->getFileAndLine();
+      backtrace = ee->getBacktrace();
     }
     try {
       ErrorStateHelper esh(this, ErrorState::ExecutingUserHandler);
-      Array dummyContext = Array::Create();
+      VarEnv* v = g_context->getVarEnv();
+      Array context = v ? v->getDefinedVariables() : empty_array();
       if (!same(vm_call_user_func
                 (m_userErrorHandlers.back().first,
-                 make_packed_array(errnum, String(e.getMessage()), errfile,
-                     errline, dummyContext, backtrace)),
+                 make_packed_array(errnum, String(e.getMessage()),
+                     fileAndLine.first, fileAndLine.second, context,
+                     backtrace)),
                 false)) {
         return true;
       }
@@ -724,6 +750,8 @@ bool ExecutionContext::callUserErrorHandler(const Exception &e, int errnum,
 }
 
 bool ExecutionContext::onFatalError(const Exception &e) {
+  MM().resetCouldOOM();
+
   int errnum = static_cast<int>(ErrorConstants::ErrorModes::FATAL_ERROR);
   recordLastError(e, errnum);
 

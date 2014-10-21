@@ -129,7 +129,8 @@ class ObjectData {
       return ctor(cls);
     }
     Attr attrs = cls->attrs();
-    if (UNLIKELY(attrs & (AttrAbstract | AttrInterface | AttrTrait))) {
+    if (UNLIKELY(attrs &
+                 (AttrAbstract | AttrInterface | AttrTrait | AttrEnum))) {
       raiseAbstractClassError(cls);
     }
     size_t nProps = cls->numDeclProperties();
@@ -246,6 +247,10 @@ class ObjectData {
       return o_toBooleanImpl();
     }
     return true;
+  }
+
+  bool castableToNumber() const {
+    return getAttribute(CallToImpl) && !isCollection();
   }
 
   int64_t o_toInt64() const {
@@ -453,7 +458,7 @@ private:
   mutable RefCount m_count;
   int o_id; // Numeric identifier of this object (used for var_dump())
 #endif
-} __attribute__((aligned(16)));
+} __attribute__((__aligned__(16)));
 
 typedef GlobalNameValueTableWrapper GlobalVariables;
 

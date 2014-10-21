@@ -18,7 +18,7 @@
  */
 #pragma once
 
-#include "folly/io/async/TimeoutManager.h"
+#include <folly/io/async/TimeoutManager.h>
 
 #include <boost/noncopyable.hpp>
 #include <event.h>
@@ -137,6 +137,10 @@ class AsyncTimeout : private boost::noncopyable {
    */
   void detachTimeoutManager();
   void detachEventBase();
+
+  const TimeoutManager* getTimeoutManager() {
+    return timeoutManager_;
+  }
 
   /**
    * Returns the internal handle to the event

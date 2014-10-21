@@ -33,11 +33,12 @@
 
 #include "hphp/util/asm-x64.h"
 #include "hphp/util/trace.h"
-#include "hphp/runtime/base/smart-containers.h"
+#include "hphp/runtime/vm/jit/containers.h"
 #include "hphp/runtime/vm/jit/phys-reg.h"
 #include "hphp/runtime/vm/jit/abi-x64.h"
 #include "hphp/runtime/vm/jit/types.h"
 #include "hphp/runtime/vm/jit/translator-runtime.h"
+#include "hphp/runtime/vm/jit/type-source.h"
 #include "hphp/runtime/vm/jit/type.h"
 #include "hphp/runtime/base/types.h"
 #include "hphp/runtime/vm/func.h"
@@ -46,12 +47,13 @@
 namespace HPHP {
 // forward declaration
 class StringData;
-namespace JIT {
 
-using HPHP::JIT::TCA;
-using HPHP::JIT::RegSet;
-using HPHP::JIT::PhysReg;
-using HPHP::JIT::ConditionCode;
+namespace jit {
+
+using HPHP::jit::TCA;
+using HPHP::jit::RegSet;
+using HPHP::jit::PhysReg;
+using HPHP::jit::ConditionCode;
 
 class IRUnit;
 struct IRInstruction;
@@ -207,9 +209,9 @@ class FailedCodeGen : public std::runtime_error {
 O(CheckType,               DRefineS(0), S(Gen),                        B|E|P) \
 O(AssertType,              DRefineS(0), S(Gen,Cls),                    C|E|P) \
 O(CheckTypeMem,                     ND, S(PtrToGen),                     B|E) \
-O(GuardLoc,                D(FramePtr), S(FramePtr),                       E) \
+O(GuardLoc,                         ND, S(FramePtr),                       E) \
 O(GuardStk,                  D(StkPtr), S(StkPtr),                         E) \
-O(CheckLoc,                D(FramePtr), S(FramePtr),                     B|E) \
+O(CheckLoc,                         ND, S(FramePtr),                     B|E) \
 O(CheckStk,                  D(StkPtr), S(StkPtr),                       B|E) \
 O(EndGuards,                        ND, NA,                                E) \
 O(CastStk,                   D(StkPtr), S(StkPtr),                      N|Er) \
@@ -223,7 +225,7 @@ O(GuardRefs,                        ND, S(Func)                               \
                                           C(Int)                              \
                                           S(Int)                              \
                                           S(Int),                          E) \
-O(AssertLoc,               D(FramePtr), S(FramePtr),                       E) \
+O(AssertLoc,                        ND, S(FramePtr),                       E) \
 O(TrackLoc,                         ND, S(Gen),                            E) \
 O(BeginCatch,                       ND, NA,                                E) \
 O(EndCatch,                         ND, S(FramePtr) S(StkPtr),           E|T) \
@@ -392,7 +394,7 @@ O(SideExitJmpNInstanceOfBitmask,                                              \
                                     ND, S(Cls) CStr,                       E) \
 O(SideExitJmpZero,                  ND, S(Int,Bool),                       E) \
 O(SideExitJmpNZero,                 ND, S(Int,Bool),                       E) \
-O(SideExitGuardLoc,        D(FramePtr), S(FramePtr),                       E) \
+O(SideExitGuardLoc,                 ND, S(FramePtr),                       E) \
 O(SideExitGuardStk,          D(StkPtr), S(StkPtr),                         E) \
 /*    name                      dstinfo srcinfo                      flags */ \
 O(JmpIndirect,                      ND, S(TCA),                          T|E) \
@@ -508,8 +510,9 @@ O(CheckInitSProps,                  ND, NA,                              B|E) \
 O(InitSProps,                       ND, NA,                           E|Er|N) \
 O(NewInstanceRaw,            DAllocObj, NA,                              NNT) \
 O(InitObjProps,                     ND, S(Obj),                        E|NNT) \
-O(CustomInstanceInit,        DAllocObj, S(Obj),                         Er|N) \
+O(CustomInstanceInit,          DofS(0), S(Obj),                         Er|N) \
                                                                               \
+O(RegisterLiveObj,                  ND, S(Obj),                        E|NNT) \
 O(LdClsCtor,                   D(Func), S(Cls),                       C|Er|N) \
 O(LdClsName,              D(StaticStr), S(Cls),                            C) \
 O(StClosureFunc,                    ND, S(Obj),                            E) \
@@ -518,6 +521,9 @@ O(StClosureCtx,                     ND, S(Obj) S(Ctx,Nullptr),         CRc|E) \
 O(NewArray,                     D(Arr), C(Int),                      NNT|PRc) \
 O(NewLikeArray,                 D(Arr), S(Arr) C(Int),               NNT|PRc) \
 O(NewMixedArray,                D(Arr), C(Int),                      NNT|PRc) \
+O(NewVArray,                    D(Arr), C(Int),                      NNT|PRc) \
+O(NewMIArray,                   D(Arr), C(Int),                      NNT|PRc) \
+O(NewMSArray,                   D(Arr), C(Int),                      NNT|PRc) \
 O(NewPackedArray,           DArrPacked, C(Int) S(StkPtr),      E|NNT|PRc|CRc) \
 O(NewStructArray,               D(Arr), S(StkPtr),             E|NNT|PRc|CRc) \
 O(NewCol,                       D(Obj), C(Int) C(Int),               NNT|PRc) \
@@ -579,6 +585,7 @@ O(DecRef,                           ND, S(Gen),                  NNT|E|K|CRc) \
 O(DecRefNZ,                         ND, S(Gen),                        E|CRc) \
 O(DecRefMem,                        ND, S(PtrToGen)                           \
                                           C(Int),                  NNT|E|CRc) \
+O(TakeRef,                          ND, S(Gen),                           NF) \
 O(DefLabel,                     DMulti, NA,                                E) \
 O(DefInlineFP,             D(FramePtr), S(StkPtr) S(StkPtr) S(FramePtr),  NF) \
 O(InlineReturn,                     ND, S(FramePtr),                       E) \
@@ -595,9 +602,9 @@ O(RaiseUninitLoc,                   ND, S(Str),                       E|N|Er) \
 O(WarnNonObjProp,                   ND, NA,                           E|N|Er) \
 O(ThrowNonObjProp,                  ND, NA,                         T|E|N|Er) \
 O(RaiseUndefProp,                   ND, S(Obj) CStr,                  E|N|Er) \
-O(PrintStr,                         ND, S(Str),                    E|NNT|CRc) \
-O(PrintInt,                         ND, S(Int),                    E|NNT|CRc) \
-O(PrintBool,                        ND, S(Bool),                   E|NNT|CRc) \
+O(PrintStr,                         ND, S(Str),                   E|N|Er|CRc) \
+O(PrintInt,                         ND, S(Int),                   E|N|Er|CRc) \
+O(PrintBool,                        ND, S(Bool),                  E|N|Er|CRc) \
 O(VerifyRetCls,                     ND, S(Cls)                                \
                                           S(Cls)                              \
                                           C(Int)                              \
@@ -656,12 +663,12 @@ O(StContArKey,                      ND, S(FramePtr) S(Gen),            E|CRc) \
 O(StAsyncArRaw,                     ND, S(FramePtr)                           \
                                           S(Int,TCA,Nullptr),              E) \
 O(StAsyncArResult,                  ND, S(FramePtr) S(Cell),           E|CRc) \
-O(LdAsyncArFParent,     D(Obj|Nullptr), S(FramePtr),                      NF) \
+O(LdAsyncArParentChain,         D(ABC), S(FramePtr),                      NF) \
 O(AFWHBlockOn,                      ND, S(FramePtr) S(Obj),            E|CRc) \
 O(LdWHState,                    D(Int), S(Obj),                           NF) \
 O(LdWHResult,                  D(Cell), S(Obj),                           NF) \
 O(LdAFWHActRec,                 DParam, S(Obj),                            C) \
-O(LdResumableArObj,             D(Obj), S(FramePtr),                   C|PRc) \
+O(LdResumableArObj,             D(Obj), S(FramePtr),                       C) \
 O(CreateAFWH,                   D(Obj), S(FramePtr)                           \
                                           C(Int)                              \
                                           S(TCA,Nullptr)                      \
@@ -669,7 +676,7 @@ O(CreateAFWH,                   D(Obj), S(FramePtr)                           \
                                           S(Obj),             E|Er|N|CRc|PRc) \
 O(CreateSSWH,                   D(Obj), S(Cell),                 NNT|CRc|PRc) \
 O(AFWHPrepareChild,                 ND, S(FramePtr) S(Obj),           E|Er|N) \
-O(BWHUnblockChain,                  ND, S(Obj,Nullptr),                E|NNT) \
+O(ABCUnblock,                       ND, S(ABC),                        E|NNT) \
 O(IterInit,                    D(Bool), S(Arr,Obj)                            \
                                           S(FramePtr),            Er|E|N|CRc) \
 O(IterInitK,                   D(Bool), S(Arr,Obj)                            \
@@ -695,8 +702,7 @@ O(DecodeCufIter,               D(Bool), S(Arr,Obj,Str)                        \
 O(CIterFree,                        ND, S(FramePtr),                   E|NNT) \
 O(DefMIStateBase,         D(PtrToCell), NA,                               NF) \
 O(BaseG,                   D(PtrToGen), C(TCA)                                \
-                                          S(Str)                              \
-                                          S(PtrToCell),               E|N|Er) \
+                                          S(Str),                     E|N|Er) \
 O(PropX,                   D(PtrToGen), C(TCA)                                \
                                           C(Cls)                              \
                                           S(Obj,PtrToGen)                     \
@@ -862,7 +868,7 @@ O(IncStat,                          ND, C(Int) C(Int) C(Bool),             E) \
 O(TypeProfileFunc,                  ND, S(Gen) S(Func),                E|NNT) \
 O(ProfileArray,                     ND, S(Arr),                            E) \
 O(IncStatGrouped,                   ND, CStr CStr C(Int),                E|N) \
-O(RBTrace,                          ND, NA,                              E|N) \
+O(RBTrace,                          ND, NA,                            E|NNT) \
 O(IncTransCounter,                  ND, NA,                                E) \
 O(IncProfCounter,                   ND, NA,                                E) \
 O(Count,                        D(Int), S(Cell),                        N|Er) \
@@ -1036,7 +1042,7 @@ Type outputType(const IRInstruction*, int dstId = 0);
 /*
  * Assert that an instruction has operands of allowed types.
  */
-void assertOperandTypes(const IRInstruction*);
+void assertOperandTypes(const IRInstruction*, const IRUnit* unit = nullptr);
 
 
 int minstrBaseIdx(Opcode opc);
@@ -1068,23 +1074,31 @@ private:
 
 typedef folly::Range<TCA> TcaRange;
 
-/* GuardConstraints holds state that is collected during initial IR generation
- * and needed by the guard relaxation pass. */
+/*
+ * GuardConstraints holds state that is collected during initial IR generation
+ * and needed by the guard relaxation pass.
+ */
 struct GuardConstraints {
-  /* guards maps from guard instructions (GuardLoc, CheckLoc, GuardStk, etc...)
-   * to TypeConstraints. The TypeConstraints for a guard start out fully
-   * generic and are tightened appropriately when a value's type is used. */
-  smart::hash_map<const IRInstruction*, TypeConstraint> guards;
+  /*
+   * Maps guard instructions (GuardLoc, CheckLoc, GuardStk, etc...)  to
+   * TypeConstraints. The TypeConstraints for a guard start out fully generic
+   * and are tightened appropriately when a value's type is used.
+   */
+  jit::hash_map<const IRInstruction*, TypeConstraint> guards;
 
-  /* typeSrcs maps from certain instructions dealing with locals to the source
-   * of the local's type coming into the instruction: usually either a guard or
-   * the current value of the local. */
-  smart::hash_map<const IRInstruction*, SSATmp*> typeSrcs;
+  /*
+   * Maps certain instructions dealing with locals to the source of the
+   * local's type coming into the instruction: usually either a guard or the
+   * last known value of the local.
+   */
+  jit::hash_map<const IRInstruction*, TypeSource> typeSrcs;
 
-  /* prevtypes maps from AssertLoc/CheckLoc instructions to the type of the
-   * local coming into the instruction. It is needed to compute the type of the
-   * local after the guard. */
-  smart::hash_map<const IRInstruction*, Type> prevTypes;
+  /*
+   * Maps AssertLoc/CheckLoc instructions to the type of the local coming into
+   * the instruction. It is needed to compute the type of the local after the
+   * guard.
+   */
+  jit::hash_map<const IRInstruction*, Type> prevTypes;
 };
 
 /*
@@ -1094,28 +1108,28 @@ struct GuardConstraints {
  */
 int32_t spillValueCells(const IRInstruction* spillStack);
 
-} // namespace JIT
+} // namespace jit
 } // namespace HPHP
 
 namespace std {
-  template<> struct hash<HPHP::JIT::Opcode> {
-    size_t operator()(HPHP::JIT::Opcode op) const { return uint16_t(op); }
+  template<> struct hash<HPHP::jit::Opcode> {
+    size_t operator()(HPHP::jit::Opcode op) const { return uint16_t(op); }
   };
-  template<> struct hash<HPHP::JIT::Type> {
-    size_t operator()(HPHP::JIT::Type t) const { return t.hash(); }
+  template<> struct hash<HPHP::jit::Type> {
+    size_t operator()(HPHP::jit::Type t) const { return t.hash(); }
   };
 }
 
 namespace folly {
-template<> struct FormatValue<HPHP::JIT::Opcode> {
-  explicit FormatValue(HPHP::JIT::Opcode op) : m_op(op) {}
+template<> struct FormatValue<HPHP::jit::Opcode> {
+  explicit FormatValue(HPHP::jit::Opcode op) : m_op(op) {}
 
   template<typename Callback> void format(FormatArg& arg, Callback& cb) const {
     format_value::formatString(opcodeName(m_op), arg, cb);
   }
 
  private:
-  HPHP::JIT::Opcode m_op;
+  HPHP::jit::Opcode m_op;
 };
 }
 

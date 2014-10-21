@@ -32,6 +32,8 @@
 #include "hphp/system/systemlib.h"
 #include "hphp/util/logger.h"
 
+#include <folly/experimental/Singleton.h>
+
 #include <libgen.h> // For dirname(3).
 #include <string>
 
@@ -53,9 +55,8 @@ SYSTEMLIB_CLASSES(SYSTEM_CLASS_STRING)
 
 void ProcessInit() {
   // Create the global mcg object
-  JIT::mcg = new JIT::MCGenerator();
-  JIT::mcg->initUniqueStubs();
-  JIT::mcg->code.unprotect();
+  jit::mcg = new jit::MCGenerator();
+  jit::mcg->initUniqueStubs();
 
   // Save the current options, and set things up so that
   // systemlib.php can be read from and stored in the
@@ -142,7 +143,7 @@ void ProcessInit() {
 
 #define INIT_SYSTEMLIB_CLASS_FIELD(cls)                                 \
   {                                                                     \
-    Class *cls = Unit::GetNamedEntity(s_##cls.get())->clsList();       \
+    Class *cls = NamedEntity::get(s_##cls.get())->clsList();       \
     assert(!hhbc_ext_class_count || cls);                               \
     SystemLib::s_##cls##Class = cls;                                    \
   }
@@ -157,7 +158,7 @@ void ProcessInit() {
   for (long long i = 0; i < hhbc_ext_class_count; ++i) {
     const HhbcExtClassInfo* info = hhbc_ext_classes + i;
     const StringData* name = makeStaticString(info->m_name);
-    const NamedEntity* ne = Unit::GetNamedEntity(name);
+    const NamedEntity* ne = NamedEntity::get(name);
     Class* cls = Unit::lookupClass(ne);
     assert(cls);
     *(info->m_clsPtr) = cls;
@@ -172,6 +173,8 @@ void ProcessInit() {
   RuntimeOption::EvalDumpBytecode = db;
   RuntimeOption::EvalAllowHhas = ah;
   Option::WholeProgram = wp;
+
+  folly::SingletonVault::singleton()->registrationComplete();
 }
 
 ///////////////////////////////////////////////////////////////////////////////

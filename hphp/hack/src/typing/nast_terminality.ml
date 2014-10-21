@@ -23,8 +23,8 @@ end = struct
     List.iter (terminal_ inside_case) stl
 
   and terminal_ inside_case = function
-    | Break -> if inside_case then () else raise Exit
-    | Continue
+    | Break _ -> if inside_case then () else raise Exit
+    | Continue _
     | Throw _
     | Return _
     | Expr (_, Yield_break)
@@ -32,8 +32,7 @@ end = struct
             AE_assert (_, False) |
             AE_invariant ((_, False), _, _) |
             AE_invariant_violation _))
-    | Expr (_, Call (Cnormal, (_, Id (_, "exit")), _)) -> raise Exit
-    | Expr (_, Yield (_, Special_func sf)) -> special_func sf
+    | Expr (_, Call (Cnormal, (_, Id (_, "\\exit")), _)) -> raise Exit
     | If (_, b1, b2) ->
       (try terminal inside_case b1; () with Exit ->
         terminal inside_case b2)
@@ -58,12 +57,6 @@ end = struct
     | Expr _
     | Static_var _ -> ()
 
-  and special_func = function
-    | Gena _
-    | Genva _
-    | Gen_array_rec _
-    | Gen_array_va_rec _ -> ()
-
   and terminal_catchl inside_case = function
     | [] -> raise Exit
     | (_, _, x) :: rl ->
@@ -82,7 +75,7 @@ end = struct
       (try
          terminal true b;
           (* TODO check this *)
-         if List.exists (function Break -> true | _ -> false) b
+         if List.exists (function Break _ -> true | _ -> false) b
          then ()
          else raise Exit
        with Exit -> terminal_cl rl)
@@ -111,8 +104,8 @@ end = struct
 
   and terminal_ = function
     | Fallthrough
-    | Break
-    | Continue
+    | Break _
+    | Continue _
     | Throw _
     | Return _
     | Expr (_, Yield_break)
@@ -121,7 +114,6 @@ end = struct
             AE_invariant ((_, False), _, _) |
             AE_invariant_violation _))
     | Expr (_, Call (Cnormal, (_, Id (_, "exit")), _)) -> raise Exit
-    | Expr (_, Yield (_, Special_func sf)) -> special_func sf
     | If (_, b1, b2) ->
       (try terminal b1; () with Exit ->
         terminal b2)
@@ -138,12 +130,6 @@ end = struct
     | Noop
     | Expr _
     | Static_var _ -> ()
-
-  and special_func = function
-    | Gena _
-    | Genva _
-    | Gen_array_rec _
-    | Gen_array_va_rec _ -> ()
 
   and terminal_catchl = function
     | [] -> raise Exit
@@ -163,7 +149,7 @@ end = struct
       (try
          terminal b;
           (* TODO check this *)
-         if List.exists (function Break -> true | _ -> false) b
+         if List.exists (function Break _ -> true | _ -> false) b
          then ()
          else raise Exit
        with Exit -> terminal_cl rl)

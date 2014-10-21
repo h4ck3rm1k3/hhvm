@@ -17,13 +17,14 @@ SRC= serverArgs.ml serverEnv.ml \
  serverInit.ml serverConvert.ml findRefsService.ml serverFindRefs.ml \
  serverRefactor.ml serverInferType.ml \
  fileOutline.ml serverFileOutline.ml methodJumps.ml serverMethodJumps.ml \
- serverSearch.ml serverFunctors.ml
+ argumentInfoService.ml \
+ serverArgumentInfo.ml serverSearch.ml serverFunctors.ml hackProgram.ml
 
 
 INCLUDEDIRS=$(TOP)/utils \
  $(TOP)/hhi \
  $(TOP)/deps $(TOP)/globals \
- $(TOP)/parsing $(TOP)/naming $(TOP)/typing \
+ $(TOP)/parsing  $(TOP)/search $(TOP)/naming $(TOP)/typing \
  $(TOP)/procs $(TOP)/heap \
  $(TOP)/dfind $(TOP)/stubs \
  $(TOP)/socket

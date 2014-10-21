@@ -29,16 +29,16 @@ type env = Env.env
 (*****************************************************************************)
 
 type inherited = {
-    ih_cstr     : class_elt option ;
-    ih_consts   : class_elt SMap.t ;
-    ih_cvars    : class_elt SMap.t ;
-    ih_scvars   : class_elt SMap.t ;
-    ih_methods  : class_elt SMap.t ;
-    ih_smethods : class_elt SMap.t ;
-  }
+  ih_cstr     : class_elt option * bool (* consistency required *);
+  ih_consts   : class_elt SMap.t ;
+  ih_cvars    : class_elt SMap.t ;
+  ih_scvars   : class_elt SMap.t ;
+  ih_methods  : class_elt SMap.t ;
+  ih_smethods : class_elt SMap.t ;
+}
 
 let empty = {
-  ih_cstr     = None;
+  ih_cstr     = None, false;
   ih_consts   = SMap.empty;
   ih_cvars    = SMap.empty;
   ih_scvars   = SMap.empty;
@@ -101,12 +101,13 @@ let add_methods methods' acc =
 let add_members members acc =
   SMap.fold SMap.add members acc
 
-let add_constructor cstr acc =
-  match (cstr, acc) with
-  | None, _ -> acc
-  | Some ce, Some acce when ce.ce_synthesized && not acce.ce_synthesized
-      -> acc
-  | _ -> cstr
+let add_constructor (cstr, cstr_consist) (acc, acc_consist) =
+  let ce = match cstr, acc with
+    | None, _ -> acc
+    | Some ce, Some acce when ce.ce_synthesized && not acce.ce_synthesized ->
+      acc
+    | _ -> cstr
+  in ce, cstr_consist || acc_consist
 
 let add_inherited inherited acc = {
   ih_cstr     = add_constructor inherited.ih_cstr acc.ih_cstr;
@@ -140,17 +141,15 @@ let make_substitution ?this:(this=None) pos class_name class_type class_paramete
       let this_ty = (fst this, Tgeneric ("this", Some this)) in
       Inst.make_subst_with_this this_ty class_type.tc_tparams class_parameters
 
-let constructor env subst = function
-  | None -> env, None
+let constructor env subst (cstr, consistent) = match cstr with
+  | None -> env, (None, consistent)
   | Some ce ->
     let env, ty = Inst.instantiate subst env ce.ce_type in
-    env, Some {ce with ce_type = ty}
+    env, (Some {ce with ce_type = ty}, consistent)
 
 let map_inherited f inh =
   {
-    ih_cstr = (match inh.ih_cstr with
-    | None -> None
-    | Some x -> Some (f x));
+    ih_cstr     = (opt_map f (fst inh.ih_cstr)), (snd inh.ih_cstr);
     ih_consts   = SMap.map f inh.ih_consts;
     ih_cvars    = SMap.map f inh.ih_cvars;
     ih_scvars   = SMap.map f inh.ih_scvars;
@@ -194,7 +193,7 @@ let chown_privates owner = apply_fn_to_class_elts (chown_private owner)
 let inherit_hack_class c env p class_name class_type argl =
   let self = Typing.get_self_from_c env c in
   let subst = make_substitution ~this:(Some self) p class_name class_type argl in
-  let instantiate = smap_env (Inst.instantiate_ce subst) in
+  let instantiate = SMap.map_env (Inst.instantiate_ce subst) in
   let class_type =
     match class_type.tc_kind with
     | Ast.Ctrait ->
@@ -202,6 +201,7 @@ let inherit_hack_class c env p class_name class_type argl =
         chown_privates (snd c.c_name) class_type
     | Ast.Cnormal | Ast.Cabstract | Ast.Cinterface ->
         filter_privates class_type
+    | Ast.Cenum -> class_type
   in
   let env, consts   = instantiate env class_type.tc_consts in
   let env, cvars    = instantiate env class_type.tc_cvars in
@@ -224,7 +224,7 @@ let inherit_hack_class c env p class_name class_type argl =
 let inherit_hack_class_constants_only env p class_name class_type argl =
   let subst = make_substitution p class_name class_type argl in
   let env, consts =
-    smap_env (Inst.instantiate_ce subst) env class_type.tc_consts in
+    SMap.map_env (Inst.instantiate_ce subst) env class_type.tc_consts in
   let result = { empty with
     ih_consts   = consts;
   } in
@@ -266,6 +266,14 @@ let from_parent env c =
     match c.c_kind with
       | Ast.Cabstract -> c.c_implements @ c.c_extends
       | Ast.Ctrait -> c.c_implements @ c.c_extends @ c.c_req_implements
+      (* Make enums implicitly extend the BuiltinEnum class in order to
+       * provide utility methods. *)
+      | Ast.Cenum ->
+        let pos = fst c.c_name in
+        let enum_type = pos, Happly (c.c_name, []) in
+        let parent = pos, Happly ((pos, "\\HH\\BuiltinEnum"),
+                                  [enum_type]) in
+        [parent]
       | _ -> c.c_extends
   in
   let env, inherited_l = lfold (from_class c) env extends in

@@ -23,8 +23,9 @@
 #include <thread>
 #include <type_traits>
 #include <unistd.h>
-#include "folly/wangle/Executor.h"
-#include "folly/wangle/Future.h"
+#include <folly/wangle/Executor.h>
+#include <folly/wangle/Future.h>
+#include <folly/wangle/ManualExecutor.h>
 
 using namespace folly::wangle;
 using std::pair;
@@ -276,20 +277,21 @@ TEST(Promise, fulfil) {
 
 TEST(Future, finish) {
   auto x = std::make_shared<int>(0);
-  Promise<int> p;
-  auto f = p.getFuture().then([x](Try<int>&& t) { *x = t.value(); });
+  {
+    Promise<int> p;
+    auto f = p.getFuture().then([x](Try<int>&& t) { *x = t.value(); });
 
-  // The callback hasn't executed
-  EXPECT_EQ(0, *x);
+    // The callback hasn't executed
+    EXPECT_EQ(0, *x);
 
-  // The callback has a reference to x
-  EXPECT_EQ(2, x.use_count());
+    // The callback has a reference to x
+    EXPECT_EQ(2, x.use_count());
 
-  p.setValue(42);
+    p.setValue(42);
 
-  // the callback has executed
-  EXPECT_EQ(42, *x);
-
+    // the callback has executed
+    EXPECT_EQ(42, *x);
+  }
   // the callback has been destructed
   // and has released its reference to x
   EXPECT_EQ(1, x.use_count());
@@ -740,4 +742,61 @@ TEST(Future, waitWithSemaphoreForTime) {
     std::chrono::milliseconds(1));
   EXPECT_TRUE(t.isReady());
  }
+}
+
+TEST(Future, callbackAfterActivate) {
+  Promise<void> p;
+  auto f = p.getFuture();
+  f.deactivate();
+
+  size_t count = 0;
+  f.then([&](Try<void>&&) { count++; });
+
+  p.setValue();
+  EXPECT_EQ(0, count);
+
+  f.activate();
+  EXPECT_EQ(1, count);
+}
+
+TEST(Future, activateOnDestruct) {
+  Promise<void> p;
+  auto f = p.getFuture();
+  f.deactivate();
+
+  size_t count = 0;
+  f.then([&](Try<void>&&) { count++; });
+
+  p.setValue();
+  EXPECT_EQ(0, count);
+
+  f = makeFuture(); // force destruction of old f
+  EXPECT_EQ(1, count);
+}
+
+TEST(Future, viaIsCold) {
+  ManualExecutor x;
+  size_t count = 0;
+
+  auto fv = makeFuture().via(&x);
+  fv.then([&](Try<void>&&) { count++; });
+
+  EXPECT_EQ(0, count);
+
+  fv.activate();
+
+  EXPECT_EQ(1, x.run());
+  EXPECT_EQ(1, count);
+}
+
+TEST(Future, getFuture_after_setValue) {
+  Promise<int> p;
+  p.setValue(42);
+  EXPECT_EQ(42, p.getFuture().value());
+}
+
+TEST(Future, getFuture_after_setException) {
+  Promise<void> p;
+  p.fulfil([]() -> void { throw std::logic_error("foo"); });
+  EXPECT_THROW(p.getFuture().value(), std::logic_error);
 }

@@ -23,10 +23,11 @@
 #include "hphp/runtime/vm/jit/code-gen-helpers-x64.h"
 #include "hphp/runtime/vm/jit/mc-generator.h"
 #include "hphp/runtime/vm/jit/mc-generator-internal.h"
-#include "hphp/runtime/vm/jit/write-lease.h"
+#include "hphp/runtime/vm/jit/prof-data.h"
 #include "hphp/runtime/vm/jit/translator-runtime.h"
+#include "hphp/runtime/vm/jit/write-lease.h"
 
-namespace HPHP { namespace JIT { namespace X64 {
+namespace HPHP { namespace jit { namespace x64 {
 
 //////////////////////////////////////////////////////////////////////
 
@@ -146,22 +147,23 @@ SrcKey emitPrologueWork(Func* func, int nPassed) {
     // Too many args; a weird case, so call out to an appropriate helper.
     // Stash ar somewhere callee-saved.
     if (false) { // typecheck
-      JIT::shuffleExtraArgsMayUseVV((ActRec*)nullptr);
-      JIT::shuffleExtraArgsVariadicAndVV((ActRec*)nullptr);
-      JIT::shuffleExtraArgsVariadic((ActRec*)nullptr);
-      JIT::trimExtraArgs((ActRec*)nullptr);
+      jit::shuffleExtraArgsMayUseVV((ActRec*)nullptr);
+      jit::shuffleExtraArgsVariadicAndVV((ActRec*)nullptr);
+      jit::shuffleExtraArgsVariadic((ActRec*)nullptr);
+      jit::trimExtraArgs((ActRec*)nullptr);
     }
     a.    movq   (rStashedAR, argNumToRegName[0]);
 
     if (LIKELY(func->discardExtraArgs())) {
-      emitCall(a, TCA(JIT::trimExtraArgs));
+      emitCall(a, TCA(jit::trimExtraArgs), argSet(1));
     } else if (func->attrs() & AttrMayUseVV) {
       emitCall(a, func->hasVariadicCaptureParam()
-               ? TCA(JIT::shuffleExtraArgsVariadicAndVV)
-               : TCA(JIT::shuffleExtraArgsMayUseVV));
+               ? TCA(jit::shuffleExtraArgsVariadicAndVV)
+               : TCA(jit::shuffleExtraArgsMayUseVV),
+               argSet(1));
     } else {
       assert(func->hasVariadicCaptureParam());
-      emitCall(a, TCA(JIT::shuffleExtraArgsVariadic));
+      emitCall(a, TCA(jit::shuffleExtraArgsVariadic), argSet(1));
     }
     // We'll fix rVmSp below.
   } else if (nPassed < numNonVariadicParams) {
@@ -226,7 +228,7 @@ SrcKey emitPrologueWork(Func* func, int nPassed) {
 
     if (!(func->attrs() & AttrStatic)) {
       a.shrq(1, rAsm);
-      ifThen(a, CC_NBE, [&] {
+      ifThen(a, CC_NBE, [&](Asm& a) {
         a.shlq(1, rAsm);
         emitIncRefCheckNonStatic(a, rAsm, KindOfObject);
       });
@@ -315,12 +317,12 @@ SrcKey emitPrologueWork(Func* func, int nPassed) {
     for (int i = nPassed; i < numNonVariadicParams; ++i) {
       if (paramInfo[i].funcletOff == InvalidAbsoluteOffset) {
         if (false) { // typecheck
-          JIT::raiseMissingArgument((const Func*) nullptr, 0);
+          jit::raiseMissingArgument((const Func*) nullptr, 0);
         }
         a.  emitImmReg((intptr_t)func, argNumToRegName[0]);
-        a.  emitImmReg(i, argNumToRegName[1]);
-        emitCall(a, TCA(JIT::raiseMissingArgument));
-        mcg->recordSyncPoint(a.frontier(), fixup.m_pcOffset, fixup.m_spOffset);
+        a.  emitImmReg(nPassed, argNumToRegName[1]);
+        emitCall(a, TCA(jit::raiseMissingArgument), argSet(2));
+        mcg->recordSyncPoint(a.frontier(), fixup.pcOffset, fixup.spOffset);
         break;
       }
     }
@@ -446,7 +448,7 @@ SrcKey emitMagicFuncPrologue(Func* func, uint32_t nPassed, TCA& start) {
     a.  shrq   (0x4, argNumToRegName[0]);
     a.  movq   (rVmSp, argNumToRegName[1]);
     emitCall(a, reinterpret_cast<CodeAddress>(
-      MkPacked{MixedArray::MakePacked}));
+      MkPacked{MixedArray::MakePacked}), argSet(2));
     callFixup = a.frontier();
   }
   if (nPassed != 2) {

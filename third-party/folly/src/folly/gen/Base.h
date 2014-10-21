@@ -26,10 +26,10 @@
 #include <vector>
 #include <unordered_set>
 
-#include "folly/Range.h"
-#include "folly/Optional.h"
-#include "folly/Conv.h"
-#include "folly/gen/Core.h"
+#include <folly/Range.h>
+#include <folly/Optional.h>
+#include <folly/Conv.h>
+#include <folly/gen/Core.h>
 
 /**
  * Generator-based Sequence Comprehensions in C++, akin to C#'s LINQ
@@ -313,6 +313,8 @@ class Until;
 
 class Take;
 
+class Stride;
+
 template<class Rand>
 class Sample;
 
@@ -535,12 +537,29 @@ enum MemberType {
   Mutable
 };
 
+/**
+ * These exist because MSVC has problems with expression SFINAE in templates
+ * assignment and comparisons don't work properly without being pulled out
+ * of the template declaration
+ */
+template <MemberType Constness> struct ExprIsConst {
+  enum {
+    value = Constness == Const
+  };
+};
+
+template <MemberType Constness> struct ExprIsMutable {
+  enum {
+    value = Constness == Mutable
+  };
+};
+
 template<MemberType Constness = Const,
          class Class,
          class Return,
          class Mem = ConstMemberFunction<Class, Return>,
          class Map = detail::Map<Mem>>
-typename std::enable_if<Constness == Const, Map>::type
+typename std::enable_if<ExprIsConst<Constness>::value, Map>::type
 member(Return (Class::*member)() const) {
   return Map(Mem(member));
 }
@@ -550,7 +569,7 @@ template<MemberType Constness = Mutable,
          class Return,
          class Mem = MemberFunction<Class, Return>,
          class Map = detail::Map<Mem>>
-typename std::enable_if<Constness == Mutable, Map>::type
+typename std::enable_if<ExprIsMutable<Constness>::value, Map>::type
 member(Return (Class::*member)()) {
   return Map(Mem(member));
 }
@@ -709,6 +728,6 @@ GuardImpl guard(ErrorHandler&& handler) {
 
 }} // folly::gen
 
-#include "folly/gen/Base-inl.h"
+#include <folly/gen/Base-inl.h>
 
 #endif // FOLLY_GEN_BASE_H

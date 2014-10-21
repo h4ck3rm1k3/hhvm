@@ -200,7 +200,7 @@ abstract class SplHeap implements \HH\Iterator, Countable {
     $this->checkNotCorrupted();
     if ($this->isEmpty()) {
       throw new RuntimeException(
-        'Can\'t peak at an empty heap'
+        'Can\'t peek at an empty heap'
       );
     }
 
@@ -320,7 +320,13 @@ class SplMaxHeap extends SplHeap implements \HH\Iterator, Countable {
    *                     arbitrary relative position.
    */
   protected function compare($value1, $value2) {
-    return $value1 - $value2;
+    if ($value1 > $value2) {
+      return 1;
+    } else if ($value1 < $value2) {
+      return -1;
+    } else {
+      return 0;
+    }
   }
 }
 
@@ -351,6 +357,12 @@ class SplMinHeap extends SplHeap implements \HH\Iterator, Countable {
    *                     arbitrary relative position.
    */
   protected function compare($value1, $value2) {
-    return $value2 - $value1;
+    if ($value2 > $value1) {
+      return 1;
+    } else if ($value2 < $value1) {
+      return -1;
+    } else {
+      return 0;
+    }
   }
 }

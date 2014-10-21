@@ -24,7 +24,7 @@
 #include "hphp/runtime/vm/jit/service-requests-arm.h"
 #include "hphp/runtime/vm/jit/mc-generator.h"
 
-namespace HPHP { namespace JIT { namespace ARM {
+namespace HPHP { namespace jit { namespace arm {
 
 
 //////////////////////////////////////////////////////////////////////
@@ -94,12 +94,12 @@ SrcKey emitPrologueWork(Func* func, int nPassed) {
     void (*helper)(ActRec*);
     if (func->attrs() & AttrMayUseVV) {
       helper = func->hasVariadicCaptureParam()
-        ? JIT::shuffleExtraArgsVariadicAndVV
-        : JIT::shuffleExtraArgsMayUseVV;
+        ? jit::shuffleExtraArgsVariadicAndVV
+        : jit::shuffleExtraArgsMayUseVV;
     } else if (func->hasVariadicCaptureParam()) {
-      helper = JIT::shuffleExtraArgsVariadic;
+      helper = jit::shuffleExtraArgsVariadic;
     } else {
-      helper = JIT::trimExtraArgs;
+      helper = jit::trimExtraArgs;
     }
     a.  Mov    (argReg(0), rStashedAR);
     emitCall(a, CppCall::direct(helper));
@@ -250,10 +250,10 @@ SrcKey emitPrologueWork(Func* func, int nPassed) {
     for (auto i = nPassed; i < numNonVariadicParams; ++i) {
       if (paramInfo[i].funcletOff == InvalidAbsoluteOffset) {
         a.  Mov  (argReg(0), func);
-        a.  Mov  (argReg(1), i);
+        a.  Mov  (argReg(1), nPassed);
         auto fixupAddr = emitCall(a,
-          CppCall::direct(JIT::raiseMissingArgument));
-        mcg->recordSyncPoint(fixupAddr, fixup.m_pcOffset, fixup.m_spOffset);
+          CppCall::direct(jit::raiseMissingArgument));
+        mcg->recordSyncPoint(fixupAddr, fixup.pcOffset, fixup.spOffset);
         break;
       }
     }

@@ -14,9 +14,9 @@
  * limitations under the License.
  */
 
-#include "folly/Range.h"
-#include "folly/Benchmark.h"
-#include "folly/Foreach.h"
+#include <folly/Range.h>
+#include <folly/Benchmark.h>
+#include <folly/Foreach.h>
 #include <algorithm>
 #include <iostream>
 #include <random>
@@ -337,7 +337,7 @@ BENCHMARK(FindFirstOfOffsetRange, n) {
 BENCHMARK_DRAW_LINE();
 
 int main(int argc, char** argv) {
-  google::ParseCommandLineFlags(&argc, &argv, true);
+  gflags::ParseCommandLineFlags(&argc, &argv, true);
 
   for (int len : {1, 8, 10, 16, 32, 64, 128, 256, 10*1024, 1024*1024}) {
     initStr(len);

@@ -207,7 +207,7 @@ ImageFilterContrastTest::testExecuteInvalidArgument
 ImageFilterEdgedetectTest::testExecute
 .
 ImageFilterTest::testConstructorInvalidArgument
-F
+FATAL
 ImageTest::testConstructor
 .
 ImageTest::testCrop with data set #0
@@ -5662,12 +5662,6 @@ Joomla\Linkedin\Tests\StreamTest::testUnlike
 .
 Joomla\Linkedin\Tests\StreamTest::test_likeUnlike
 S
-Joomla\Log\Tests\LogEntryTest::testBadPriorityValues
-.
-Joomla\Log\Tests\LogEntryTest::testCategorySanitization
-.
-Joomla\Log\Tests\LogEntryTest::testDefaultValues
-.
 Joomla\Log\Tests\LogTest::testAddLogEntry
 .
 Joomla\Log\Tests\LogTest::testAddLoggerAutoInstantiation

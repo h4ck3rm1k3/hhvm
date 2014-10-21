@@ -17,9 +17,9 @@
 #include <gtest/gtest.h>
 #include <thread>
 
-#include "folly/wangle/ManualExecutor.h"
-#include "folly/wangle/InlineExecutor.h"
-#include "folly/wangle/Later.h"
+#include <folly/wangle/ManualExecutor.h>
+#include <folly/wangle/InlineExecutor.h>
+#include <folly/wangle/Later.h>
 
 using namespace folly::wangle;
 
@@ -81,6 +81,11 @@ TEST(Later, construct_and_launch) {
 
   EXPECT_EQ(later.launch().value(), 1);
   EXPECT_TRUE(fulfilled);
+}
+
+TEST(Later, exception_on_launch) {
+  auto later = Later<void>(std::runtime_error("E"));
+  EXPECT_THROW(later.launch().value(), std::runtime_error);
 }
 
 TEST(Later, then_value) {
@@ -158,24 +163,4 @@ TEST_F(LaterFixture, chain_laters) {
     waiter->makeProgress();
   }
   EXPECT_EQ(future.value(), 1);
-}
-
-TEST_F(LaterFixture, fire_and_forget) {
-  auto west = westExecutor.get();
-  later.via(eastExecutor.get()).then([=](Try<void>&& t) {
-    west->add([]() {});
-  }).fireAndForget();
-  waiter->makeProgress();
-}
-
-TEST(Later, FutureViaReturnsLater) {
-  ManualExecutor x;
-  {
-    Future<void> f = makeFuture();
-    Later<void> l = f.via(&x);
-  }
-  {
-    Future<int> f = makeFuture(42);
-    Later<int> l = f.via(&x);
-  }
 }

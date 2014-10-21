@@ -54,6 +54,11 @@ let get_root ?(config=".hhconfig") path_opt =
   in Wwwroot.assert_www_directory ~config root;
   root
 
+(* *** *** NB *** *** ***
+ * Commonly-used options are documented in hphp/hack/src/man/hh_client.1 --
+ * if you are making significant changes you need to update the manpage as
+ * well. Experimental or otherwise volatile options need not be documented
+ * there, but keep what's there up to date please. *)
 let parse_check_args cmd =
   (* arg parse output refs *)
   let mode = ref MODE_UNSPECIFIED in
@@ -110,13 +115,15 @@ let parse_check_args cmd =
     "--types", Arg.String (fun x -> set_mode (MODE_SHOW_TYPES x) ()),
       " (mode) show the types for file specified";
     "--type-at-pos", Arg.String (fun x -> set_mode (MODE_TYPE_AT_POS x) ()),
-      " (mode) show type at a given position in file [filename:line:character]";
+      " (mode) show type at a given position in file [line:character]";
+    "--args-at-pos", Arg.String (fun x -> set_mode (MODE_ARGUMENT_INFO x) ()),
+      "";
     "--list-files", Arg.Unit (set_mode MODE_LIST_FILES),
       " (mode) list files with errors";
     "--auto-complete", Arg.Unit (set_mode MODE_AUTO_COMPLETE),
       " (mode) auto-completes the text on stdin";
     "--color", Arg.String (fun x -> set_mode (MODE_COLORING x) ()),
-      " (mode) pretty prints the file content showing what is checked";
+      " (mode) pretty prints the file content showing what is checked (give '-' for stdin)";
     "--find-refs", Arg.String (fun x -> set_mode (MODE_FIND_REFS x) ()),
       " (mode) finds references of the provided method name";
     "--find-class-refs", Arg.String (fun x -> set_mode (MODE_FIND_CLASS_REFS x) ()),
@@ -125,7 +132,23 @@ let parse_check_args cmd =
       " (mode) print the full function name at the position [line:character] of the text on stdin";
     "--refactor", Arg.Unit (set_mode MODE_REFACTOR),
       "";
-    "--search", Arg.String (fun x -> set_mode (MODE_SEARCH x) ()),
+    "--search", Arg.String (fun x -> set_mode (MODE_SEARCH (x, "")) ()),
+      "";
+    "--search-class",
+      Arg.String (fun x -> set_mode
+          (MODE_SEARCH (x, "class")) ()),
+      "";
+    "--search-function",
+      Arg.String (fun x -> set_mode
+          (MODE_SEARCH (x, "function")) ()),
+      "";
+    "--search-typedef",
+      Arg.String (fun x -> set_mode
+          (MODE_SEARCH (x, "typedef")) ()),
+      "";
+    "--search-constant",
+      Arg.String (fun x -> set_mode
+          (MODE_SEARCH (x, "constant")) ()),
       "";
     "--outline", Arg.Unit (set_mode MODE_OUTLINE),
       " (mode) prints an outline of the text on stdin";

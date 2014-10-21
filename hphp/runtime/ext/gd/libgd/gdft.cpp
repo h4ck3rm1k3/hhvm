@@ -62,7 +62,17 @@ gdImageStringFT (gdImage * im, int *brect, int fg, char *fontlist,
 
 #include "gdcache.h"
 
-#include <freetype/config/ftheader.h>
+#ifdef HHVM
+# ifdef HAVE_FT2BUILD
+#  include <ft2build.h>
+# else
+#  ifdef FREETYPE_PATH_FREETYPE2
+#   include <freetype2/config/ftheader.h>
+#  else
+#   include <freetype/config/ftheader.h>
+#  endif
+# endif
+#endif // HHVM
 
 #include FT_FREETYPE_H
 #include FT_GLYPH_H
@@ -392,9 +402,10 @@ static void *fontFetch (char **error, void *key)
 	fontlist = gdEstrdup(a->fontlist);
 
 	/*
-	 * Must use gd_strtok_r else pointer corrupted by strtok in nested loop.
+	 * Must use gd_strtok_r becasuse strtok() isn't thread safe
 	 */
 	for (name = gd_strtok_r (fontlist, LISTSEPARATOR, &strtok_ptr); name; name = gd_strtok_r (0, LISTSEPARATOR, &strtok_ptr)) {
+		char *strtok_ptr_path;
 		/* make a fresh copy each time - strtok corrupts it. */
 		path = gdEstrdup (fontsearchpath);
 
@@ -410,7 +421,8 @@ static void *fontFetch (char **error, void *key)
 				break;
 			}
 		}
-		for (dir = strtok (path, PATHSEPARATOR); dir; dir = strtok (0, PATHSEPARATOR)) {
+		for (dir = gd_strtok_r (path, PATHSEPARATOR, &strtok_ptr_path); dir;
+		     dir = gd_strtok_r (0, PATHSEPARATOR, &strtok_ptr_path)) {
 			if (!strcmp(dir, ".")) {
 				TSRMLS_FETCH();
 #if HAVE_GETCWD

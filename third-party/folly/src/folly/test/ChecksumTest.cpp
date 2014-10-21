@@ -14,12 +14,12 @@
  * limitations under the License.
  */
 
-#include "folly/Checksum.h"
+#include <folly/Checksum.h>
 #include <gflags/gflags.h>
 #include <gtest/gtest.h>
-#include "folly/Benchmark.h"
-#include "folly/Hash.h"
-#include "folly/detail/ChecksumDetail.h"
+#include <folly/Benchmark.h>
+#include <folly/Hash.h>
+#include <folly/detail/ChecksumDetail.h>
 
 namespace {
 const unsigned int BUFFER_SIZE = 512 * 1024 * sizeof(uint64_t);
@@ -180,7 +180,7 @@ BENCHMARK(crc32c_software_512KB_block, iters) {
 
 int main(int argc, char** argv) {
   testing::InitGoogleTest(&argc, argv);
-  google::ParseCommandLineFlags(&argc, &argv, true);
+  gflags::ParseCommandLineFlags(&argc, &argv, true);
 
   // Populate a buffer with a deterministic pattern
   // on which to compute checksums

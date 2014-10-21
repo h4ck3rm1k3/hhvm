@@ -13,12 +13,12 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#include "folly/stats/Histogram.h"
+#include <folly/stats/Histogram.h>
 
 #include <gflags/gflags.h>
 
-#include "folly/Benchmark.h"
-#include "folly/Foreach.h"
+#include <folly/Benchmark.h>
+#include <folly/Foreach.h>
 
 using folly::Histogram;
 
@@ -37,7 +37,7 @@ BENCHMARK_NAMED_PARAM(addValue, 0_to_1000, 10, 0, 1000);
 BENCHMARK_NAMED_PARAM(addValue, 5k_to_20k, 250, 5000, 20000);
 
 int main(int argc, char *argv[]) {
-  google::ParseCommandLineFlags(&argc, &argv, true);
+  gflags::ParseCommandLineFlags(&argc, &argv, true);
   folly::runBenchmarks();
   return 0;
 }

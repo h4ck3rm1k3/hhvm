@@ -20,7 +20,7 @@
 #include "hphp/util/bitops.h"
 #include "hphp/vixl/a64/assembler-a64.h"
 
-namespace HPHP { namespace JIT {
+namespace HPHP { namespace jit {
 
 //////////////////////////////////////////////////////////////////////
 
@@ -30,10 +30,6 @@ namespace HPHP { namespace JIT {
  * To make it possible to use it with the assembler conveniently, it
  * can be implicitly converted to and from Reg64.  If you want to use
  * it as a 32 bit register call r32(physReg).
- *
- * The implicit conversion to RegNumber is historical: it exists
- * for backward-compatibility with the old-style asm-x64.h api
- * (e.g. store_reg##_disp_reg##).
  */
 struct PhysReg {
  private:
@@ -54,20 +50,15 @@ struct PhysReg {
   explicit constexpr PhysReg() : n(-1) {}
   constexpr /* implicit */ PhysReg(Reg64 r) : n(int(r)) {}
   constexpr /* implicit */ PhysReg(RegXMM r) : n(int(r) + kSIMDOffset) {}
-  explicit constexpr PhysReg(Reg32 r) : n(int(RegNumber(r))) {}
+  explicit constexpr PhysReg(Reg32 r) : n(int(r)) {}
 
   constexpr /* implicit */ PhysReg(vixl::Register r) : n(r.code()) {}
   constexpr /* implicit */ PhysReg(vixl::FPRegister r)
     : n(r.code() + kSIMDOffset) {}
 
-  explicit constexpr PhysReg(RegNumber r) : n(int(r)) {}
-
   /* implicit */ operator Reg64() const {
     assert(isGP() || n == -1);
     return Reg64(n);
-  }
-  constexpr /* implicit */ operator RegNumber() const {
-    return n < kSIMDOffset ? RegNumber(n) : RegNumber(n - kSIMDOffset);
   }
   /* implicit */ operator RegXMM() const {
     assert(isSIMD() || n == -1);
@@ -197,6 +188,11 @@ private:
 
   int8_t n;
 };
+
+inline Reg8 rbyte(PhysReg r) { return Reg8(int(Reg64(r))); }
+inline Reg16 r16(PhysReg r) { return Reg16(int(Reg64(r))); }
+inline Reg32 r32(PhysReg r) { return Reg32(int(Reg64(r))); }
+inline Reg64 r64(PhysReg r) { return Reg64(r); }
 
 constexpr PhysReg InvalidReg;
 
@@ -365,11 +361,17 @@ static_assert(std::is_trivially_destructible<RegSet>::value,
 
 //////////////////////////////////////////////////////////////////////
 
+namespace x64 {
+struct Vout;
+}
+
 struct PhysRegSaverParity {
   PhysRegSaverParity(int parity, X64Assembler& as, RegSet regs);
+  PhysRegSaverParity(int parity, x64::Vout& as, RegSet regs);
   ~PhysRegSaverParity();
 
   static void emitPops(X64Assembler& as, RegSet regs);
+  static void emitPops(x64::Vout&, RegSet regs);
 
   PhysRegSaverParity(const PhysRegSaverParity&) = delete;
   PhysRegSaverParity(PhysRegSaverParity&&) noexcept = default;
@@ -381,7 +383,8 @@ struct PhysRegSaverParity {
   void bytesPushed(int bytes);
 
 private:
-  X64Assembler& m_as;
+  X64Assembler* m_as;
+  x64::Vout* m_v;
   RegSet m_regs;
   int m_adjust;
 };
@@ -390,11 +393,17 @@ struct PhysRegSaverStub : public PhysRegSaverParity {
   PhysRegSaverStub(X64Assembler& as, RegSet regs)
       : PhysRegSaverParity(0, as, regs)
   {}
+  PhysRegSaverStub(x64::Vout& v, RegSet regs)
+      : PhysRegSaverParity(0, v, regs)
+  {}
 };
 
 struct PhysRegSaver : public PhysRegSaverParity {
   PhysRegSaver(X64Assembler& as, RegSet regs)
       : PhysRegSaverParity(1, as, regs)
+  {}
+  PhysRegSaver(x64::Vout& v, RegSet regs)
+      : PhysRegSaverParity(1, v, regs)
   {}
 };
 

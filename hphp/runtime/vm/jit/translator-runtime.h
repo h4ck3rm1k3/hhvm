@@ -23,7 +23,7 @@
 #include "hphp/runtime/vm/type-constraint.h"
 #include "hphp/runtime/vm/bytecode.h"
 
-namespace HPHP { namespace JIT {
+namespace HPHP { namespace jit {
 
 
 /* MInstrState is stored right above the reserved spill space on the C++
@@ -55,7 +55,7 @@ struct MInstrState {
   TypedValue tvRef2;
   TypedValue tvResult;
   TypedValue tvVal;
-} __attribute__((aligned(16)));
+} __attribute__((__aligned__(16)));
 static_assert(offsetof(MInstrState, tvScratch) % 16 == 0,
               "MInstrState members require 16-byte alignment for SSE");
 static_assert(sizeof(MInstrState) - sizeof(uintptr_t) // return address
@@ -154,6 +154,7 @@ bool ak_exist_string_obj(ObjectData* obj, StringData* key);
 bool ak_exist_int_obj(ObjectData* obj, int64_t key);
 
 TypedValue arrayIdxI(ArrayData*, int64_t, TypedValue);
+TypedValue arrayIdxIc(ArrayData*, int64_t, TypedValue);
 TypedValue arrayIdxS(ArrayData*, StringData*, TypedValue);
 TypedValue arrayIdxSi(ArrayData*, StringData*, TypedValue);
 
@@ -189,8 +190,8 @@ void lookupClsMethodHelper(Class* cls,
                            ActRec* ar,
                            ActRec* fp);
 
-void checkFrame(ActRec* fp, Cell* sp, bool checkLocals);
-void traceCallback(ActRec* fp, Cell* sp, int64_t pcOff, void* rip);
+void checkFrame(ActRec* fp, Cell* sp, bool fullCheck, Offset bcOff);
+void traceCallback(ActRec* fp, Cell* sp, Offset pcOff, void* rip);
 
 void loadArrayFunctionContext(ArrayData*, ActRec* preLiveAR, ActRec* fp);
 void fpushCufHelperArray(ArrayData*, ActRec* preLiveAR, ActRec* fp);
@@ -222,6 +223,12 @@ void shuffleExtraArgsVariadicAndVV(ActRec* ar);
 void raiseMissingArgument(const Func* func, int got);
 
 RDS::Handle lookupClsRDSHandle(const StringData* name);
+
+/*
+ * Insert obj into the set of live objects to be destructed at the end of the
+ * request.
+ */
+void registerLiveObj(ObjectData* obj);
 
 /*
  * Just calls tlsBase, but not inlined, so it can be called from the TC.

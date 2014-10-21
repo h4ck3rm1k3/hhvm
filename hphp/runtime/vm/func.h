@@ -46,6 +46,7 @@ struct Class;
 struct NamedEntity;
 struct PreClass;
 struct StringData;
+template <typename T> struct AtomicVector;
 
 /*
  * C++ builtin function type.
@@ -56,6 +57,44 @@ using BuiltinFunction = TypedValue* (*)(ActRec* ar);
  * Vector of pairs (param index, offset of corresponding DV funclet).
  */
 using DVFuncletsVec = std::vector<std::pair<int, Offset>>;
+
+///////////////////////////////////////////////////////////////////////////////
+// EH and FPI tables.
+
+/*
+ * Exception handler table entry.
+ */
+struct EHEnt {
+  enum class Type {
+    Catch,
+    Fault
+  };
+  typedef std::vector<std::pair<Id, Offset>> CatchVec;
+
+  Type m_type;
+  Offset m_base;
+  Offset m_past;
+  int m_iterId;
+  bool m_itRef;
+  int m_parentIndex;
+  Offset m_fault;
+  CatchVec m_catches;
+
+  template<class SerDe> void serde(SerDe& sd);
+};
+
+/*
+ * Function parameter info region table entry.
+ */
+struct FPIEnt {
+  Offset m_fpushOff;
+  Offset m_fcallOff;
+  Offset m_fpOff; // evaluation stack depth to current frame pointer
+  int m_parentIndex;
+  int m_fpiDepth;
+
+  template<class SerDe> void serde(SerDe& sd);
+};
 
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -936,11 +975,15 @@ public:
    */
   void getFuncInfo(ClassInfo::MethodInfo* mi) const;
 
+  static const AtomicVector<const Func*>& getFuncVec();
+
   /*
    * Profile-guided optimization linkage.
    */
   bool shouldPGO() const;
   void incProfCounter();
+  uint32_t profCounter() const { return m_profCounter; }
+  void setHot() { m_attrs = (Attr)(m_attrs | AttrHot); }
 
   /*
    * Does any HHBC block end at `off'?
@@ -1074,12 +1117,14 @@ private:
   static const StringData* s___callStatic;
   static constexpr int kMagic = 0xba5eba11;
 
+public:
+  static std::atomic<bool> s_treadmill;
 
   /////////////////////////////////////////////////////////////////////////////
-  // Properties.
+  // Data members.
   //
-  // The fields of Fucn are organized in reverse order of frequency of use.
-  // Do not re-order with checking perf!
+  // The fields of Func are organized in reverse order of frequency of use.
+  // Do not re-order without checking perf!
 
 private:
 #ifdef DEBUG

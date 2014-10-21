@@ -56,12 +56,15 @@
 #include "hphp/runtime/ext/ext_xenon.h"
 #include "hphp/runtime/debugger/debugger.h"
 #include "hphp/runtime/debugger/debugger_client.h"
+#include "hphp/runtime/debugger/debugger_hook_handler.h"
 #include "hphp/runtime/base/simple-counter.h"
 #include "hphp/runtime/base/extended-logger.h"
 #include "hphp/runtime/base/stream-wrapper-registry.h"
 #include "hphp/runtime/vm/debug/debug.h"
+#include "hphp/runtime/vm/jit/mc-generator.h"
 #include "hphp/system/constants.h"
 #include "hphp/runtime/base/config.h"
+#include "hphp/runtime/base/backtrace.h"
 
 #include <boost/program_options/options_description.hpp>
 #include <boost/program_options/positional_options.hpp>
@@ -85,6 +88,12 @@
 #include "hphp/runtime/vm/repo.h"
 #include "hphp/runtime/vm/jit/translator.h"
 #include "hphp/compiler/builtin_symbols.h"
+
+#if (defined(__CYGWIN__) || defined(__MINGW__) || defined(_MSC_VER))
+#undef NOUSER
+#include <windows.h>
+#include <winuser.h>
+#endif
 
 using namespace boost::program_options;
 using std::cout;
@@ -114,6 +123,8 @@ struct ProgramOptions {
              config;
   std::vector<std::string>
              confStrings;
+  std::vector<std::string>
+             iniStrings;
   int        port;
   int        portfd;
   int        sslportfd;
@@ -194,21 +205,25 @@ void process_env_variables(Array& variables) {
   }
 }
 
-void process_ini_settings(const std::string& name) {
-  if (name.empty()) {
+void process_ini_file(const std::string& filename) {
+  if (filename.empty()) {
     return;
   }
-  std::ifstream ifs(name);
+  std::ifstream ifs(filename);
   const std::string str((std::istreambuf_iterator<char>(ifs)),
                         std::istreambuf_iterator<char>());
-  auto settings = IniSetting::FromStringAsMap(str, name);
+  process_ini_settings(str, filename);
+}
+
+void process_ini_settings(const std::string& ini_str,
+                          const std::string& filename /* = "" */) {
+  auto settings = IniSetting::FromStringAsMap(ini_str, filename);
 
   for (auto& item : settings.items()) {
     IniSetting::Set(item.first.data(), item.second,
                     IniSetting::FollyDynamic());
   }
 }
-
 // Handle adding a variable to an array, supporting keys that look
 // like array expressions (like 'FOO[][key1][k2]').
 void register_variable(Array& variables, char *name, const Variant& value,
@@ -335,24 +350,41 @@ enum class ContextOfException {
 
 static void handle_exception_append_bt(std::string& errorMsg,
                                        const ExtendedException& e) {
-  Array bt = e.getBackTrace();
+  Array bt = e.getBacktrace();
   if (!bt.empty()) {
     errorMsg += ExtendedLogger::StringOfStackTrace(bt);
   }
 }
 
-void bump_counter_and_rethrow() {
+void bump_counter_and_rethrow(bool isPsp) {
   try {
     throw;
   } catch (const RequestTimeoutException& e) {
-    static auto requestTimeoutCounter = ServiceData::createTimeseries(
-      "requests_timed_out", {ServiceData::StatsType::COUNT});
-    requestTimeoutCounter->addValue(1);
+    if (isPsp) {
+      static auto requestTimeoutPSPCounter = ServiceData::createTimeseries(
+        "requests_timed_out_psp", {ServiceData::StatsType::COUNT});
+      requestTimeoutPSPCounter->addValue(1);
+      ServerStats::Log("request.timed_out.psp", 1);
+    } else {
+      static auto requestTimeoutCounter = ServiceData::createTimeseries(
+        "requests_timed_out_non_psp", {ServiceData::StatsType::COUNT});
+      requestTimeoutCounter->addValue(1);
+      ServerStats::Log("request.timed_out.non_psp", 1);
+    }
     throw;
   } catch (const RequestMemoryExceededException& e) {
-    static auto requestMemoryExceededCounter = ServiceData::createTimeseries(
-      "requests_memory_exceeded", {ServiceData::StatsType::COUNT});
-    requestMemoryExceededCounter->addValue(1);
+    if (isPsp) {
+      static auto requestMemoryExceededPSPCounter =
+        ServiceData::createTimeseries(
+          "requests_memory_exceeded_psp", {ServiceData::StatsType::COUNT});
+      requestMemoryExceededPSPCounter->addValue(1);
+      ServerStats::Log("request.memory_exceeded.psp", 1);
+    } else {
+      static auto requestMemoryExceededCounter = ServiceData::createTimeseries(
+        "requests_memory_exceeded_non_psp", {ServiceData::StatsType::COUNT});
+      requestMemoryExceededCounter->addValue(1);
+      ServerStats::Log("request.memory_exceeded.non_psp", 1);
+    }
 
 #ifdef USE_JEMALLOC
     // Capture a pprof (C++) dump when we OOM a request
@@ -371,7 +403,7 @@ static void handle_exception_helper(bool& ret,
                                     bool& error,
                                     bool richErrorMsg) {
   try {
-    bump_counter_and_rethrow();
+    bump_counter_and_rethrow(false /* isPsp */);
   } catch (const Eval::DebuggerException &e) {
     throw;
   } catch (const ExitException &e) {
@@ -380,7 +412,7 @@ static void handle_exception_helper(bool& ret,
     } else if (where != ContextOfException::Handler &&
         !context->getExitCallback().isNull() &&
         f_is_callable(context->getExitCallback())) {
-      Array stack = e.getBackTrace();
+      Array stack = e.getBacktrace();
       Array argv = make_packed_array(ExitException::ExitCode.load(), stack);
       vm_call_user_func(context->getExitCallback(), argv);
     }
@@ -479,6 +511,16 @@ static bool hphp_chdir_file(const string filename) {
   return ret;
 }
 
+static void handle_resource_exceeded_exception() {
+  try {
+    throw;
+  } catch (RequestTimeoutException&) {
+    ThreadInfo::s_threadInfo->m_reqInjectionData.setTimedOutFlag();
+  } catch (RequestMemoryExceededException&) {
+    ThreadInfo::s_threadInfo->m_reqInjectionData.setMemExceededFlag();
+  } catch (...) {}
+}
+
 void handle_destructor_exception(const char* situation) {
   string errorMsg;
 
@@ -495,6 +537,7 @@ void handle_destructor_exception(const char* situation) {
     try {
       errorMsg += e.toString().data();
     } catch (...) {
+      handle_resource_exceeded_exception();
       errorMsg += "(unable to call toString())";
     }
   } catch (Exception &e) {
@@ -512,8 +555,7 @@ void handle_destructor_exception(const char* situation) {
   try {
     raise_debugging("%s", errorMsg.c_str());
   } catch (...) {
-    // TODO(#4557954): if the error handler raised a request time out here we
-    // should re-set the pending exception in s_threadInfo.
+    handle_resource_exceeded_exception();
 
     // The user error handler fataled or threw an exception,
     // print out the error message directly to the log
@@ -613,19 +655,22 @@ void execute_command_line_begin(int argc, char **argv, int xhprof,
   // out as 0 in the previous pass. Lets re-import the ini files. We could be
   // more clever, but that would be harder and this works.
   for (auto& c : config) {
-    process_ini_settings(c);
+    process_ini_file(c);
   }
+
+  // Initialize the debugger
+  DEBUGGER_ATTACHED_ONLY(phpDebuggerRequestInitHook());
 }
 
 void execute_command_line_end(int xhprof, bool coverage, const char *program) {
   ThreadInfo *ti = ThreadInfo::s_threadInfo.getNoCheck();
 
   if (RuntimeOption::EvalDumpTC) {
-    HPHP::JIT::tc_dump();
+    HPHP::jit::tc_dump();
   }
 
   if (xhprof) {
-    f_var_dump(HHVM_FN(json_encode)(f_xhprof_disable()));
+    HHVM_FN(var_dump)(HHVM_FN(json_encode)(f_xhprof_disable()));
   }
   g_context->onShutdownPostSend();
   Eval::Debugger::InterruptPSPEnded(program);
@@ -637,13 +682,13 @@ void execute_command_line_end(int xhprof, bool coverage, const char *program) {
   }
 }
 
-#ifdef __APPLE__
+#if defined(__APPLE__) || defined(__CYGWIN__)
 const void* __hot_start = nullptr;
 const void* __hot_end = nullptr;
 #else
 extern "C" {
-void __attribute__((weak)) __hot_start();
-void __attribute__((weak)) __hot_end();
+void __attribute__((__weak__)) __hot_start();
+void __attribute__((__weak__)) __hot_end();
 }
 #endif
 
@@ -653,7 +698,7 @@ void __attribute__((weak)) __hot_end();
 # define AT_END_OF_TEXT
 #endif
 
-static void NEVER_INLINE AT_END_OF_TEXT __attribute__((optimize("2")))
+static void NEVER_INLINE AT_END_OF_TEXT __attribute__((__optimize__("2")))
 hugifyText(char* from, char* to) {
 #if FACEBOOK && !defined FOLLY_SANITIZE_ADDRESS && defined MADV_HUGEPAGE
   if (from > to || (to - from) < sizeof(uint64_t)) {
@@ -802,31 +847,42 @@ static int start_server(const std::string &username) {
   // initialize the process
   HttpServer::Server = std::make_shared<HttpServer>();
 
+  if (RuntimeOption::RepoPreload) {
+    Timer timer(Timer::WallTime, "Preloading Repo");
+    profileWarmupStart();
+    preloadRepo();
+    profileWarmupEnd();
+  }
+
   // If we have any warmup requests, replay them before listening for
   // real connections
-  for (auto& file : RuntimeOption::ServerWarmupRequests) {
-    HttpRequestHandler handler(0);
-    ReplayTransport rt;
-    timespec start;
-    Timer::GetMonotonicTime(start);
-    std::string error;
-    Logger::Info("Replaying warmup request %s", file.c_str());
+  {
+    profileWarmupStart();
+    SCOPE_EXIT { profileWarmupEnd(); };
+    for (auto& file : RuntimeOption::ServerWarmupRequests) {
+      HttpRequestHandler handler(0);
+      ReplayTransport rt;
+      timespec start;
+      Timer::GetMonotonicTime(start);
+      std::string error;
+      Logger::Info("Replaying warmup request %s", file.c_str());
 
-    try {
-      rt.onRequestStart(start);
-      rt.replayInput(Hdf(file));
-      handler.handleRequest(&rt);
+      try {
+        rt.onRequestStart(start);
+        rt.replayInput(Hdf(file));
+        handler.handleRequest(&rt);
 
-      timespec stop;
-      Timer::GetMonotonicTime(stop);
-      Logger::Info("Finished successfully in %ld seconds",
-                   stop.tv_sec - start.tv_sec);
-    } catch (std::exception& e) {
-      error = e.what();
-    }
+        timespec stop;
+        Timer::GetMonotonicTime(stop);
+        Logger::Info("Finished successfully in %ld seconds",
+                     stop.tv_sec - start.tv_sec);
+      } catch (std::exception& e) {
+        error = e.what();
+      }
 
-    if (error.size()) {
-      Logger::Info("Got exception during warmup: %s", error.c_str());
+      if (error.size()) {
+        Logger::Info("Got exception during warmup: %s", error.c_str());
+      }
     }
   }
 
@@ -835,7 +891,6 @@ static int start_server(const std::string &username) {
     mallctl("arenas.purge", nullptr, nullptr, nullptr, 0);
 #endif
     enable_numa(RuntimeOption::EvalEnableNumaLocal);
-
   }
 
   HttpServer::Server->runOrExitProcess();
@@ -886,7 +941,6 @@ int execute_program(int argc, char **argv) {
   int ret_code = -1;
   try {
     initialize_repo();
-    init_thread_locals();
     ret_code = execute_program_impl(argc, argv);
   } catch (const Exception &e) {
     Logger::Error("Uncaught exception: %s", e.what());
@@ -1034,9 +1088,13 @@ static int execute_program_impl(int argc, char** argv) {
     ("interactive,a", "Shortcut for --mode debug") // -a is from PHP5
     ("config,c", value<vector<string> >(&po.config)->composing(),
      "load specified config file")
-    ("config-value,v", value<std::vector<std::string>>(&po.confStrings)->composing(),
+    ("config-value,v",
+     value<std::vector<std::string>>(&po.confStrings)->composing(),
      "individual configuration string in a format of name=value, where "
      "name can be any valid configuration for a config file")
+    ("define,d", value<std::vector<std::string>>(&po.iniStrings)->composing(),
+     "define an ini setting in the same format ( foo[=bar] ) as provided in a "
+     ".ini file")
     ("no-config", "don't use the default php.ini")
     ("port,p", value<int>(&po.port)->default_value(-1),
      "start an HTTP server at specified port")
@@ -1054,9 +1112,9 @@ static int execute_program_impl(int argc, char** argv) {
     ("debug-port", value<int>(&po.debugger_options.port)->default_value(-1),
      "connect to debugger server at specified port")
     ("debug-extension", value<string>(&po.debugger_options.extension),
-     "PHP file that extends y command")
+     "PHP file that extends command 'arg'")
     ("debug-cmd", value<std::vector<std::string>>(
-      &po.debugger_options.cmds)->composing(),
+     &po.debugger_options.cmds)->composing(),
      "executes this debugger command and returns its output in stdout")
     ("debug-sandbox",
      value<string>(&po.debugger_options.sandbox)->default_value("default"),
@@ -1064,7 +1122,7 @@ static int execute_program_impl(int argc, char** argv) {
     ("user,u", value<string>(&po.user),
      "run server under this user account")
     ("file,f", value<string>(&po.file),
-     "executing specified file")
+     "execute specified file")
     ("lint,l", value<string>(&po.lint),
      "lint specified file")
     ("show,w", value<string>(&po.show),
@@ -1150,12 +1208,12 @@ static int execute_program_impl(int argc, char** argv) {
       return -1;
     }
     if (po.config.empty() && !vm.count("no-config")) {
-      auto default_config_file = "/etc/hhvm/php.ini";
+      auto default_config_file = INSTALL_PREFIX "/etc/hhvm/php.ini";
       if (access(default_config_file, R_OK) != -1) {
         Logger::Verbose("Using default config file: %s", default_config_file);
         po.config.push_back(default_config_file);
       }
-      default_config_file = "/etc/hhvm/config.hdf";
+      default_config_file = INSTALL_PREFIX "/etc/hhvm/config.hdf";
       if (access(default_config_file, R_OK) != -1) {
         Logger::Verbose("Using default config file: %s", default_config_file);
         po.config.push_back(default_config_file);
@@ -1180,6 +1238,7 @@ static int execute_program_impl(int argc, char** argv) {
     cout << " (" << (debug ? "dbg" : "rel") << ")\n";
     cout << "Compiler: " << kCompilerId << "\n";
     cout << "Repo schema: " << kRepoSchemaId << "\n";
+    cout << "Extension API: " << std::to_string(HHVM_API_VERSION) << "\n";
     return 0;
   }
   if (vm.count("compiler-id")) {
@@ -1212,6 +1271,8 @@ static int execute_program_impl(int argc, char** argv) {
   // we need to initialize pcre cache table very early
   pcre_init();
 
+  MemoryManager::TlsWrapper::getCheck();
+
   IniSetting::Map ini = IniSetting::Map::object;
   Hdf config;
   for (auto& c : po.config) {
@@ -1219,7 +1280,10 @@ static int execute_program_impl(int argc, char** argv) {
   }
   RuntimeOption::Load(ini, config, &po.confStrings);
   for (auto& c : po.config) {
-    process_ini_settings(c);
+    process_ini_file(c);
+  }
+  for (auto& istr : po.iniStrings) {
+    process_ini_settings(istr, "");
   }
 
   vector<string> badnodes;
@@ -1227,9 +1291,6 @@ static int execute_program_impl(int argc, char** argv) {
   for (unsigned int i = 0; i < badnodes.size(); i++) {
     Logger::Error("Possible bad config node: %s", badnodes[i].c_str());
   }
-  // Reload the thread local ini settings now that RuntimeOption is right
-  ThreadInfo::s_threadInfo.getNoCheck()->
-    m_reqInjectionData.threadInit();
   if (RuntimeOption::EvalRuntimeTypeProfile) {
     HPHP::initTypeProfileStructure();
   }
@@ -1289,9 +1350,14 @@ static int execute_program_impl(int argc, char** argv) {
       if (stackSizeMinimum > rlim.rlim_max) {
         rlim.rlim_max = stackSizeMinimum;
       }
+#ifdef __CYGWIN__
+      Logger::Error("stack limit too small, use peflags -x to increase  %zd\n",
+                    stackSizeMinimum);
+#else
       if (setrlimit(RLIMIT_STACK, &rlim)) {
         Logger::Error("failed to set stack limit to %zd\n", stackSizeMinimum);
       }
+#endif
     }
   }
 
@@ -1323,8 +1389,9 @@ static int execute_program_impl(int argc, char** argv) {
         VMParserFrame parserFrame;
         parserFrame.filename = po.lint.c_str();
         parserFrame.lineNumber = line;
-        Array bt = g_context->debugBacktrace(false, true,
-                                               false, &parserFrame);
+        Array bt = createBacktrace(BacktraceArgs()
+                                   .withSelf()
+                                   .setParserFrame(&parserFrame));
         throw FatalErrorException(msg->data(), bt);
       }
     } catch (FileOpenException &e) {
@@ -1407,7 +1474,7 @@ static int execute_program_impl(int argc, char** argv) {
           }
           // Systemlib.php is not loaded again, so we need this if we
           // are to hit any breakpoints in systemlib.
-          phpSetBreakPoints(localProxy.get());
+          proxySetBreakPoints(localProxy.get());
           restart = true;
         } catch (const Eval::DebuggerClientExitException &e) {
           execute_command_line_end(0, false, nullptr);
@@ -1510,12 +1577,18 @@ string get_systemlib(string* hhas, const string &section /*= "systemlib" */,
   embedded_data desc;
   if (!get_embedded_data(section.c_str(), &desc, filename)) return "";
 
+#if (defined(__CYGWIN__) || defined(__MINGW__) || defined(_MSC_VER))
+  string ret = systemlib_split(std::string(
+                                (const char*)LockResource(desc.m_handle),
+                                desc.m_len), hhas);
+#else
   std::ifstream ifs(desc.m_filename);
   if (!ifs.good()) return "";
   ifs.seekg(desc.m_start, std::ios::beg);
   std::unique_ptr<char[]> data(new char[desc.m_len]);
   ifs.read(data.get(), desc.m_len);
   string ret = systemlib_split(string(data.get(), desc.m_len), hhas);
+#endif
   return ret;
 }
 
@@ -1535,7 +1608,8 @@ static void on_timeout(int sig, siginfo_t* info, void* context) {
 
 void hphp_process_init() {
   pthread_attr_t attr;
-#if defined(_GNU_SOURCE) && defined(__linux__) // Linux+GNU extension
+// Linux+GNU extension
+#if defined(_GNU_SOURCE) && (defined(__linux__) || defined(__CYGWIN__))
   pthread_getattr_np(pthread_self(), &attr);
 #else
   pthread_attr_init(&attr);
@@ -1550,6 +1624,7 @@ void hphp_process_init() {
   // start takes milliseconds, Period is a double in seconds
   Xenon::getInstance().start(1000 * RuntimeOption::XenonPeriodSeconds);
 
+  Process::InitProcessStatics();
   init_thread_locals();
 
   // Initialize per-process dynamic PHP-visible consts before ClassInfo::Load()
@@ -1559,7 +1634,6 @@ void hphp_process_init() {
   k_PHP_SAPI = makeStaticString(RuntimeOption::ExecutionMode);
 
   ClassInfo::Load();
-  Process::InitProcessStatics();
 
   // reinitialize pcre table
   pcre_reinit();
@@ -1698,6 +1772,8 @@ bool hphp_invoke(ExecutionContext *context, const std::string &cmd,
     return false;
   }
 
+  MM().resetCouldOOM();
+
   LitstrTable::get().setReading();
 
   bool ret = true;
@@ -1735,17 +1811,26 @@ bool hphp_invoke(ExecutionContext *context, const std::string &cmd,
   return ret;
 }
 
-void hphp_context_exit() {
-  auto const context = g_context.getNoCheck();
-
+void hphp_context_shutdown() {
   // Run shutdown handlers. This may cause user code to run.
+  auto const context = g_context.getNoCheck();
   context->destructObjects();
   context->onRequestShutdown();
 
+  // Shutdown the debugger
+  DEBUGGER_ATTACHED_ONLY(phpDebuggerRequestShutdownHook());
+
   // Extensions could have shutdown handlers
   Extension::RequestShutdownModules();
+}
+
+void hphp_context_exit(bool shutdown /* = true */) {
+  if (shutdown) {
+    hphp_context_shutdown();
+  }
 
   // Clean up a bunch of request state. No user code after this point.
+  auto const context = g_context.getNoCheck();
   context->requestExit();
   context->obProtect(false);
   context->obEndAll();
@@ -1771,6 +1856,9 @@ void hphp_session_exit() {
     // reinitialize g_context here.
     g_context.getCheck();
 
+    // Clean up pcre state at the end of the request.
+    pcre_session_exit();
+
     mm.sweep();
 
     // Destroy g_context again because ExecutionContext has
@@ -1787,6 +1875,7 @@ void hphp_session_exit() {
   }
 
   ThreadInfo::s_threadInfo->onSessionExit();
+  assert(mm.empty());
 }
 
 void hphp_process_exit() {
@@ -1799,6 +1888,8 @@ void hphp_process_exit() {
   for (InitFiniNode *in = extra_process_exit; in; in = in->next) {
     in->func();
   }
+  delete jit::mcg;
+  jit::mcg = nullptr;
 }
 
 ///////////////////////////////////////////////////////////////////////////////

@@ -19,12 +19,12 @@
 
 #include <boost/dynamic_bitset.hpp>
 
-#include "hphp/runtime/base/smart-containers.h"
+#include "hphp/runtime/vm/jit/containers.h"
 #include "hphp/runtime/vm/jit/block.h"
 #include "hphp/runtime/vm/jit/ir-unit.h"
 #include "hphp/runtime/vm/jit/state-vector.h"
 
-namespace HPHP { namespace JIT {
+namespace HPHP { namespace jit {
 
 /**
  * perform a depth-first postorder walk
@@ -91,6 +91,11 @@ DomChildren findDomChildren(const IRUnit&, const BlocksWithIds& blocks);
  * return true if b1 == b2 or if b1 dominates b2.
  */
 bool dominates(const Block* b1, const Block* b2, const IdomVector& idoms);
+
+/*
+ * Return true iff the CFG has a backedge.
+ */
+bool cfgHasLoop(const IRUnit&);
 
 /*
  * Visit basic blocks in a preorder traversal over the dominator tree.

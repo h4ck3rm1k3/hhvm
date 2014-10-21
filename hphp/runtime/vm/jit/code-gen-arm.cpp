@@ -32,7 +32,7 @@
 #include "hphp/runtime/vm/jit/service-requests-inline.h"
 #include "hphp/runtime/vm/jit/translator-inline.h"
 
-namespace HPHP { namespace JIT { namespace ARM {
+namespace HPHP { namespace jit { namespace arm {
 
 TRACE_SET_MOD(hhir);
 
@@ -119,6 +119,7 @@ NOOP_OPCODE(Nop)
 NOOP_OPCODE(DefLabel)
 NOOP_OPCODE(ExceptionBarrier)
 NOOP_OPCODE(TakeStack)
+NOOP_OPCODE(TakeRef)
 NOOP_OPCODE(EndGuards)
 
 // XXX
@@ -187,6 +188,9 @@ CALL_OPCODE(LdArrFPushCuf)
 CALL_OPCODE(LdStrFPushCuf)
 CALL_OPCODE(NewArray)
 CALL_OPCODE(NewMixedArray)
+CALL_OPCODE(NewVArray)
+CALL_OPCODE(NewMIArray)
+CALL_OPCODE(NewMSArray)
 CALL_OPCODE(NewLikeArray)
 CALL_OPCODE(NewPackedArray)
 CALL_OPCODE(NewCol)
@@ -205,7 +209,7 @@ CALL_OPCODE(CreateCont)
 CALL_OPCODE(CreateAFWH)
 CALL_OPCODE(CreateSSWH)
 CALL_OPCODE(AFWHPrepareChild)
-CALL_OPCODE(BWHUnblockChain)
+CALL_OPCODE(ABCUnblock)
 CALL_OPCODE(TypeProfileFunc)
 CALL_OPCODE(IncStatGrouped)
 CALL_OPCODE(ZeroErrorLevel)
@@ -447,6 +451,7 @@ PUNT_OPCODE(CheckInitProps)
 PUNT_OPCODE(InitProps)
 PUNT_OPCODE(CheckInitSProps)
 PUNT_OPCODE(InitSProps)
+PUNT_OPCODE(RegisterLiveObj)
 PUNT_OPCODE(NewInstanceRaw)
 PUNT_OPCODE(InitObjProps)
 PUNT_OPCODE(StClosureFunc)
@@ -499,7 +504,7 @@ PUNT_OPCODE(LdContArKey)
 PUNT_OPCODE(StContArKey)
 PUNT_OPCODE(StAsyncArRaw)
 PUNT_OPCODE(StAsyncArResult)
-PUNT_OPCODE(LdAsyncArFParent)
+PUNT_OPCODE(LdAsyncArParentChain)
 PUNT_OPCODE(AFWHBlockOn)
 PUNT_OPCODE(LdWHState)
 PUNT_OPCODE(LdWHResult)
@@ -1030,21 +1035,22 @@ static void shuffleArgs(vixl::MacroAssembler& a,
   PhysReg::Map<PhysReg> moves;
   PhysReg::Map<ArgDesc*> argDescs;
 
-  for (size_t i = 0; i < args.numRegArgs(); i++) {
-    auto kind = args[i].kind();
+  for (size_t i = 0; i < args.numGpArgs(); i++) {
+    auto& arg = args.gpArg(i);
+    auto kind = arg.kind();
     if (!(kind == ArgDesc::Kind::Reg  ||
           kind == ArgDesc::Kind::Addr ||
           kind == ArgDesc::Kind::TypeReg)) {
       continue;
     }
-    auto dstReg = args[i].dstReg();
-    auto srcReg = args[i].srcReg();
+    auto dstReg = arg.dstReg();
+    auto srcReg = arg.srcReg();
     if (dstReg != srcReg) {
       moves[dstReg] = srcReg;
-      argDescs[dstReg] = &args[i];
+      argDescs[dstReg] = &arg;
     }
     switch (call.kind()) {
-    case CppCall::Kind::Indirect:
+    case CppCall::Kind::IndirectReg:
       if (dstReg == call.reg()) {
         // an indirect call uses an argument register for the func ptr.
         // Use rAsm2 instead and update the CppCall
@@ -1055,6 +1061,10 @@ static void shuffleArgs(vixl::MacroAssembler& a,
     case CppCall::Kind::Direct:
     case CppCall::Kind::Virtual:
     case CppCall::Kind::ArrayVirt:
+    case CppCall::Kind::Destructor:
+      break;
+    case CppCall::Kind::IndirectVreg:
+      always_assert(false);
       break;
     }
   }
@@ -1091,17 +1101,17 @@ static void shuffleArgs(vixl::MacroAssembler& a,
     }
   }
 
-  for (size_t i = 0; i < args.numRegArgs(); ++i) {
-    if (!args[i].done()) {
-      auto kind = args[i].kind();
-      auto dstReg = x2a(args[i].dstReg());
-      if (kind == ArgDesc::Kind::Imm) {
-        a.  Mov  (dstReg, args[i].imm().q());
-      } else if (kind == ArgDesc::Kind::Reg || kind == ArgDesc::Kind::TypeReg) {
-        // Should have already been done
-      } else {
-        not_implemented();
-      }
+  for (size_t i = 0; i < args.numGpArgs(); ++i) {
+    auto& arg = args.gpArg(i);
+    if (arg.done()) continue;
+    auto kind = arg.kind();
+    auto dstReg = x2a(arg.dstReg());
+    if (kind == ArgDesc::Kind::Imm) {
+      a.  Mov  (dstReg, arg.imm().q());
+    } else if (kind == ArgDesc::Kind::Reg || kind == ArgDesc::Kind::TypeReg) {
+      // Should have already been done
+    } else {
+      not_implemented();
     }
   }
 }
@@ -1114,7 +1124,7 @@ void CodeGenerator::cgCallNative(vixl::MacroAssembler& as,
   always_assert(CallMap::hasInfo(opc));
 
   auto const& info = CallMap::info(opc);
-  ArgGroup argGroup = info.toArgGroup(m_state.regs, inst);
+  ArgGroup argGroup = toArgGroup(info, m_state.regs, inst);
 
   auto call = [&]() -> CppCall {
     switch (info.func.type) {
@@ -1130,7 +1140,8 @@ void CodeGenerator::cgCallNative(vixl::MacroAssembler& as,
   auto const dest = [&]() -> CallDest {
     switch (info.dest) {
       case DestType::None:  return kVoidDest;
-      case DestType::TV:    return callDestTV(inst);
+      case DestType::TV:
+      case DestType::SIMD:  return callDestTV(inst);
       case DestType::SSA:   return callDest(inst);
       case DestType::Dbl:   return callDestDbl(inst);
     }
@@ -1158,8 +1169,8 @@ void CodeGenerator::cgCallHelper(vixl::MacroAssembler& a,
   saver.emitPushes(a);
   SCOPE_EXIT { saver.emitPops(a); };
 
-  for (size_t i = 0; i < args.numRegArgs(); i++) {
-    args[i].setDstReg(PhysReg{argReg(i)});
+  for (size_t i = 0; i < args.numGpArgs(); i++) {
+    args.gpArg(i).setDstReg(PhysReg{argReg(i)});
   }
   shuffleArgs(a, args, call);
 
@@ -1185,6 +1196,7 @@ void CodeGenerator::cgCallHelper(vixl::MacroAssembler& a,
 
   switch (dstInfo.type) {
     case DestType::TV: not_implemented();
+    case DestType::SIMD: not_implemented();
     case DestType::SSA:
       assert(dstReg1 == InvalidReg);
       if (armDst0.IsValid() && !armDst0.Is(vixl::x0)) {
@@ -1230,6 +1242,9 @@ CallDest CodeGenerator::callDest(const IRInstruction* inst) const {
 CallDest CodeGenerator::callDestTV(const IRInstruction* inst) const {
   if (!inst->numDsts()) return kVoidDest;
   auto loc = dstLoc(0);
+  if (loc.isFullSIMD()) {
+    return { DestType::SIMD, loc.reg(0), InvalidReg };
+  }
   return { DestType::TV, loc.reg(0), loc.reg(1) };
 }
 
@@ -1293,7 +1308,7 @@ void CodeGenerator::emitTypeTest(Type type, vixl::Register typeReg, Loc dataSrc,
   }
   doJcc(cc);
   if (type < Type::Obj) {
-    assert(type.getClass()->attrs() & AttrFinal);
+    assert(type.getClass()->attrs() & AttrNoOverride);
     auto dataReg = enregister(m_as, dataSrc, rAsm);
     emitLdLowPtr(m_as, rAsm, dataReg[ObjectData::getVMClassOffset()],
                  sizeof(LowClassPtr));
@@ -1799,13 +1814,10 @@ void CodeGenerator::emitLoad(Type type, PhysLoc dstLoc,
   if (label) {
     not_implemented();
   }
-  if (type <= Type::Null) return;
-
-  if (dstLoc.reg().isGP()) {
-    auto dstReg = x2a(dstLoc.reg());
-    if (!dstReg.IsValid()) return;
-
-    m_as.  Ldr  (dstReg, base[offset + TVOFF(m_data)]);
+  auto dst = dstLoc.reg();
+  if (dst == InvalidReg) return; // nothing to load.
+  if (dst.isGP()) {
+    m_as.  Ldr  (x2a(dst), base[offset + TVOFF(m_data)]);
   } else {
     assert(type <= Type::Dbl);
     m_as.  Ldr  (x2simd(dstLoc.reg()), base[offset + TVOFF(m_data)]);
@@ -1900,7 +1912,7 @@ void CodeGenerator::cgLdARFuncPtr(IRInstruction* inst) {
 void CodeGenerator::cgLdFuncCached(IRInstruction* inst) {
   auto dstReg = x2a(dstLoc(0).reg());
   auto const name = inst->extra<LdFuncCachedData>()->name;
-  auto const ch = Unit::GetNamedEntity(name)->getFuncHandle();
+  auto const ch = NamedEntity::get(name)->getFuncHandle();
   vixl::Label noLookup;
 
   if (!dstReg.IsValid()) {

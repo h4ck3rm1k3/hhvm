@@ -1,5 +1,7 @@
 <?hh
 
+include "xenonUtil.inc";
+
 // Test showing async stacks in Xenon.
 
 async function gen1($a) {
@@ -43,7 +45,8 @@ main(42);
 // get the Xenon data then verify that there are no unknown functions
 // and that all of the functions in this file are in the stack
 $stacks = xenon_get_data();
-$functionList = array( "main", "", "WaitHandle->join", "strcasecmp");
+$functionList = array( "main", "", "WaitHandle::join", "strcasecmp", "genFoo",
+  "genBar", "gen1", "gen2", "array_shift", "include");
 $requiredFunctions = array("main" => 1);
 
 $asyncList = array("gen1", "gen2", "genBar", "genFoo", "",
@@ -55,60 +58,5 @@ $requiredAsync = array(
   "genFoo" => 1
 );
 
-echo "Verifying PHP Stack\n";
-foreach ($stacks as $k => $v) {
-  if (is_numeric($k)) {
-    $frame = $v["phpStack"];
-    if ($frame) {
-      foreach ($frame as $f) {
-        $function = idx($f, "function", "");
-        $file = idx($f, "file", "");
-        $line = idx($f, "line", 0);
-        if (!in_array($function, $functionList)
-            && strpos($function, "Exception") != 0) {
-          echo "Unknown function:  " . $function . " " . $file . " "
-            . $line . "\n";
-        } else {
-          $foundFunction = idx($requiredFunctions, $function, "");
-          if ($foundFunction) {
-            unset($requiredFunctions[$function]);
-          }
-        } //if in_array
-      } // foreach
-    } // if ($frame)
-  } // if is_numeric
-}
-if ($requiredFunctions) {
-  echo "Functions missing from stacks:  ";
-  var_dump($requiredFunctions);
-}
-
-echo "Verifying Async Stack\n";
-foreach ($stacks as $k => $v) {
-  if (is_numeric($k)) {
-    $frame = $v["asyncStack"];
-    if ($frame) {
-      foreach ($frame as $f) {
-        $function = idx($f, "function", "");
-        $file = idx($f, "file", "");
-        $line = idx($f, "line", 0);
-        if (!in_array($function, $asyncList)
-            && strpos($function, "Exception") != 0) {
-          echo "Unknown async function:  " . $function . " " . $file . " "
-            . $line . "\n";
-        } else {
-          $foundFunction = idx($requiredAsync, $function, "");
-          if ($foundFunction) {
-            unset($requiredAsync[$function]);
-          }
-        } //if in_array
-      } // foreach
-    } // if ($frame)
-  } // if is_numeric
-}
-if ($requiredAsync) {
-  echo "Functions missing from stacks:  ";
-  var_dump($requiredAsync);
-}
-
-echo "Finished verfying stacks\n";
+verifyTestRun($stacks, $functionList, $requiredFunctions,
+  $asyncList, $requiredAsync);

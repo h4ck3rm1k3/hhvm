@@ -21,7 +21,6 @@
 
 #include "hphp/runtime/vm/vm-regs.h"
 #include "hphp/runtime/vm/jit/translator.h"
-#include "hphp/runtime/vm/jit/translator-helpers.h"
 #include "hphp/runtime/base/execution-context.h"
 
 /*
@@ -44,7 +43,7 @@ inline Offset liveSpOff() {
   return fp - vmsp();
 }
 
-namespace JIT {
+namespace jit {
 
 inline int cellsToBytes(int nCells) {
   return safe_cast<int32_t>(nCells * ssize_t(sizeof(Cell)));
@@ -54,6 +53,6 @@ inline int localOffset(int locId) {
   return -cellsToBytes(locId + 1);
 }
 
-} } // HPHP::JIT
+} } // HPHP::jit
 
 #endif

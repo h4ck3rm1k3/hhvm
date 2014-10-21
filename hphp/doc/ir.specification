@@ -961,6 +961,10 @@ D:Cls = LdObjClass S0:Obj
 
   Load the class out of the object in S0 and put it in D.
 
+D:StaticStr = LdClsName S0:Cls
+
+  Load the name of the Class* in S0.
+
 D:Func = LdFunc S0:Str
 
   Loads the Func whose name is S0. Fatal if the named function is not defined,
@@ -1414,6 +1418,11 @@ DecRefNZ S0:Gen
   Decrease the reference count of S0 by one, do not check if it goes to zero.
   This instruction can be used for more efficient code when it is provable that
   the reference count cannot go to zero.
+
+TakeRef S0:Gen
+
+  Produce reference, but do not modify the reference count. Used to inform
+  refcount optimizer about implicitly owned references.
 
 
 13. Misc

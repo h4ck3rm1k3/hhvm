@@ -31,8 +31,12 @@
 #include "hphp/runtime/vm/jit/unwind-x64.h"
 #include "hphp/runtime/vm/jit/service-requests-inline.h"
 #include "hphp/runtime/vm/jit/service-requests-x64.h"
+#include "hphp/runtime/vm/jit/layout.h"
+#include "hphp/runtime/vm/jit/check.h"
+#include "hphp/runtime/vm/jit/timer.h"
+#include "hphp/runtime/vm/jit/print.h"
 
-namespace HPHP { namespace JIT {
+namespace HPHP { namespace jit {
 
 using namespace reg;
 
@@ -43,16 +47,16 @@ extern "C" void enterTCHelper(Cell* vm_sp,
                               ActRec* firstAR,
                               void* targetCacheBase);
 
-namespace X64 {
+namespace x64 {
 
 TRACE_SET_MOD(hhir);
 
-struct BackEnd : public JIT::BackEnd {
+struct BackEnd : public jit::BackEnd {
   BackEnd() {}
   ~BackEnd() {}
 
   Abi abi() override {
-    return X64::abi;
+    return x64::abi;
   }
 
   size_t cacheLineSize() override {
@@ -64,19 +68,19 @@ struct BackEnd : public JIT::BackEnd {
   }
 
   PhysReg rVmSp() override {
-    return X64::rVmSp;
+    return x64::rVmSp;
   }
 
   PhysReg rVmFp() override {
-    return X64::rVmFp;
+    return x64::rVmFp;
   }
 
   Constraint srcConstraint(const IRInstruction& inst, unsigned i) override {
-    return X64::srcConstraint(inst, i);
+    return x64::srcConstraint(inst, i);
   }
 
   Constraint dstConstraint(const IRInstruction& inst, unsigned i) override {
-    return X64::dstConstraint(inst, i);
+    return x64::dstConstraint(inst, i);
   }
 
   RegPair precolorSrc(const IRInstruction& inst, unsigned i) override;
@@ -94,10 +98,10 @@ struct BackEnd : public JIT::BackEnd {
    * enterTCHelper is a handwritten assembly function that transfers control in
    * and out of the TC.
    */
-  static_assert(X64::rVmSp == rbx &&
-                X64::rVmFp == rbp &&
-                X64::rVmTl == r12 &&
-                X64::rStashedAR == r15,
+  static_assert(x64::rVmSp == rbx &&
+                x64::rVmFp == rbp &&
+                x64::rVmTl == r12 &&
+                x64::rStashedAR == r15,
                 "__enterTCHelper needs to be modified to use the correct ABI");
   static_assert(REQ_BIND_CALL == 0x1,
                 "Update assembly test for REQ_BIND_CALL in __enterTCHelper");
@@ -107,18 +111,17 @@ struct BackEnd : public JIT::BackEnd {
     // register (aside from rbp). enterTCHelper does not save them.
     CALLEE_SAVED_BARRIER();
     auto& regs = vmRegsUnsafe();
-    JIT::enterTCHelper(regs.stack.top(), regs.fp, start,
+    jit::enterTCHelper(regs.stack.top(), regs.fp, start,
                        &info, vmFirstAR(), RDS::tl_base);
     CALLEE_SAVED_BARRIER();
   }
 
-  JIT::CodeGenerator* newCodeGenerator(const IRUnit& unit,
+  jit::CodeGenerator* newCodeGenerator(const IRUnit& unit,
                                        CodeBlock& mainCode,
                                        CodeBlock& coldCode,
                                        CodeBlock& frozenCode,
                                        CodegenState& state) override {
-    return new X64::CodeGenerator(unit, mainCode, coldCode,
-                                  frozenCode, state);
+    always_assert(false);
   }
 
   void moveToAlign(CodeBlock& cb,
@@ -131,23 +134,23 @@ struct BackEnd : public JIT::BackEnd {
       x64Alignment = kJmpTargetAlign;
       break;
     case MoveToAlignFlags::kNonFallthroughAlign:
-      x64Alignment = JIT::kNonFallthroughAlign;
+      x64Alignment = jit::kNonFallthroughAlign;
       break;
     case MoveToAlignFlags::kCacheLineAlign:
       x64Alignment = kCacheLineSize;
       break;
     }
-    X64::moveToAlign(cb, x64Alignment);
+    x64::moveToAlign(cb, x64Alignment);
   }
 
   UniqueStubs emitUniqueStubs() override {
-    return X64::emitUniqueStubs();
+    return x64::emitUniqueStubs();
   }
 
   TCA emitServiceReqWork(CodeBlock& cb, TCA start, SRFlags flags,
                          ServiceRequest req,
                          const ServiceReqArgVec& argv) override {
-    return X64::emitServiceReqWork(cb, start, flags, req, argv);
+    return x64::emitServiceReqWork(cb, start, flags, req, argv);
   }
 
   void emitInterpReq(CodeBlock& mainCode, CodeBlock& coldCode,
@@ -155,33 +158,33 @@ struct BackEnd : public JIT::BackEnd {
     Asm a { mainCode };
     // Add a counter for the translation if requested
     if (RuntimeOption::EvalJitTransCounters) {
-      X64::emitTransCounterInc(a);
+      x64::emitTransCounterInc(a);
     }
     a.    jmp(emitServiceReq(coldCode, REQ_INTERPRET, sk.offset()));
   }
 
   bool funcPrologueHasGuard(TCA prologue, const Func* func) override {
-    return X64::funcPrologueHasGuard(prologue, func);
+    return x64::funcPrologueHasGuard(prologue, func);
   }
 
   TCA funcPrologueToGuard(TCA prologue, const Func* func) override {
-    return X64::funcPrologueToGuard(prologue, func);
+    return x64::funcPrologueToGuard(prologue, func);
   }
 
   SrcKey emitFuncPrologue(CodeBlock& mainCode, CodeBlock& coldCode, Func* func,
                           bool funcIsMagic, int nPassed, TCA& start,
                           TCA& aStart) override {
     return funcIsMagic
-          ? X64::emitMagicFuncPrologue(func, nPassed, start)
-          : X64::emitFuncPrologue(func, nPassed, start);
+          ? x64::emitMagicFuncPrologue(func, nPassed, start)
+          : x64::emitFuncPrologue(func, nPassed, start);
   }
 
   TCA emitCallArrayPrologue(Func* func, DVFuncletsVec& dvs) override {
-    return X64::emitCallArrayPrologue(func, dvs);
+    return x64::emitCallArrayPrologue(func, dvs);
   }
 
   void funcPrologueSmashGuard(TCA prologue, const Func* func) override {
-    X64::funcPrologueSmashGuard(prologue, func);
+    x64::funcPrologueSmashGuard(prologue, func);
   }
 
   void emitIncStat(CodeBlock& cb, intptr_t disp, int n) override {
@@ -193,12 +196,12 @@ struct BackEnd : public JIT::BackEnd {
     a.    popf  ();
   }
 
-  void emitTraceCall(CodeBlock& cb, int64_t pcOff) override {
-    X64::emitTraceCall(cb, pcOff);
+  void emitTraceCall(CodeBlock& cb, Offset pcOff) override {
+    x64::emitTraceCall(cb, pcOff);
   }
 
   void emitFwdJmp(CodeBlock& cb, Block* target, CodegenState& state) override {
-    X64::emitFwdJmp(cb, target, state);
+    always_assert(false);
   }
 
   void patchJumps(CodeBlock& cb, CodegenState& state, Block* block) override {
@@ -241,7 +244,7 @@ struct BackEnd : public JIT::BackEnd {
 
   void prepareForTestAndSmash(CodeBlock& cb, int testBytes,
                               TestAndSmashFlags flags) override {
-    using namespace X64;
+    using namespace x64;
     switch (flags) {
       case TestAndSmashFlags::kAlignJcc:
         prepareForSmash(cb, testBytes + kJmpccLen, testBytes);
@@ -270,170 +273,160 @@ struct BackEnd : public JIT::BackEnd {
     return true;
   }
 
-  size_t relocate(RelocationInfo& rel, CodeBlock& destBlock,
+  size_t relocate(RelocationInfo& rel,
+                  CodeBlock& destBlock,
+                  TCA start, TCA end,
                   CodeGenFixups& fixups) override {
-    TCA src = rel.start();
-    size_t range = rel.end() - src;
+    TCA src = start;
+    size_t range = end - src;
     bool hasInternalRefs = false;
     bool internalRefsNeedUpdating = false;
+    TCA destStart = destBlock.frontier();
+    size_t asm_count{0};
+    try {
+      while (src != end) {
+        assert(src < end);
+        DecodedInstruction di(src);
+        asm_count++;
 
-    while (src != rel.end()) {
-      assert(src < rel.end());
-      DecodedInstruction di(src);
-
-      int destRange = 0;
-      auto af = fixups.m_alignFixups.equal_range(src);
-      while (af.first != af.second) {
-        TCA tmp = destBlock.frontier();
-        prepareForSmashImpl(destBlock,
-                            af.first->second.first, af.first->second.second);
-        if (destBlock.frontier() != tmp) {
-          destRange += destBlock.frontier() - tmp;
-          internalRefsNeedUpdating = true;
-        }
-        ++af.first;
-      }
-
-      TCA dest = destBlock.frontier();
-      destBlock.bytes(di.size(), src);
-      DecodedInstruction d2(dest);
-      if (di.hasPicOffset()) {
-        /*
-         * Rip-relative offsets that point outside the range
-         * being moved need to be adjusted so they continue
-         * to point at the right thing
-         */
-        if (size_t(di.picAddress() - rel.start()) > range) {
-          bool DEBUG_ONLY success = d2.setPicAddress(di.picAddress());
-          assert(success);
-        } else {
-          if (d2.isBranch() && d2.shrinkBranch()) {
+        int destRange = 0;
+        auto af = fixups.m_alignFixups.equal_range(src);
+        while (af.first != af.second) {
+          TCA tmp = destBlock.frontier();
+          prepareForSmashImpl(destBlock,
+                              af.first->second.first, af.first->second.second);
+          if (destBlock.frontier() != tmp) {
+            destRange += destBlock.frontier() - tmp;
             internalRefsNeedUpdating = true;
           }
-          hasInternalRefs = true;
+          ++af.first;
         }
-      }
-      if (di.hasImmediate()) {
-        if (fixups.m_addressImmediates.count(src)) {
-          if (size_t(di.immediate() - (uint64_t)rel.start()) <= range) {
-            hasInternalRefs = internalRefsNeedUpdating = true;
-          }
-        } else {
-          if (fixups.m_addressImmediates.count((TCA)~uintptr_t(src))) {
-            // Handle weird, encoded offset, used by cgLdObjMethod
-            always_assert(di.immediate() == ((uintptr_t(src) << 1) | 1));
-            bool DEBUG_ONLY success =
-              d2.setImmediate(((uintptr_t)dest << 1) | 1);
-            assert(success);
-          }
+
+        TCA dest = destBlock.frontier();
+        destBlock.bytes(di.size(), src);
+        DecodedInstruction d2(dest);
+        if (di.hasPicOffset()) {
           /*
-           * An immediate that points into the range being moved, but which
-           * isn't tagged as an addressImmediate, is most likely a bug
-           * and its instruction's address needs to be put into
-           * fixups.m_addressImmediates. But it could just happen by bad
-           * luck, so just log it.
+           * Rip-relative offsets that point outside the range
+           * being moved need to be adjusted so they continue
+           * to point at the right thing
            */
-          if (size_t(di.immediate() - (uint64_t)rel.start()) <= range) {
-            FTRACE(3,
-                   "relocate: instruction at {} has immediate 0x{:x}"
-                   "which looks like an address that needs relocating\n",
-                   src, di.immediate());
+          if (size_t(di.picAddress() - start) > range) {
+            bool DEBUG_ONLY success = d2.setPicAddress(di.picAddress());
+            assert(success);
+          } else {
+            if (d2.isBranch() && d2.shrinkBranch()) {
+              internalRefsNeedUpdating = true;
+            }
+            hasInternalRefs = true;
           }
         }
-      }
-
-      rel.recordAddress(src, dest - destRange, destRange);
-      if (di.isNop()) {
-        internalRefsNeedUpdating = true;
-      } else {
-        dest += d2.size();
-      }
-      assert(dest <= destBlock.frontier());
-      destBlock.setFrontier(dest);
-      src += di.size();
-    }
-
-    rel.recordAddress(src, destBlock.frontier(), 0);
-
-    if (hasInternalRefs && internalRefsNeedUpdating) {
-      src = rel.start();
-      while (src != rel.end()) {
-        DecodedInstruction di(src);
-        TCA newPicAddress = nullptr;
-        int64_t newImmediate = 0;
-        if (di.hasPicOffset() &&
-            size_t(di.picAddress() - rel.start()) <= range) {
-          newPicAddress = rel.adjustedAddressAfter(di.picAddress());
-          always_assert(newPicAddress);
-        }
-        if (di.hasImmediate() &&
-            size_t((TCA)di.immediate() - rel.start()) <= range &&
-            fixups.m_addressImmediates.count(src)) {
-          newImmediate = (int64_t)rel.adjustedAddressAfter((TCA)di.immediate());
-          always_assert(newImmediate);
-        }
-        if (newImmediate || newPicAddress) {
-          TCA dest = rel.adjustedAddressAfter(src);
-          DecodedInstruction d2(dest);
-          if (newPicAddress) {
-            d2.setPicAddress(newPicAddress);
-          }
-          if (newImmediate) {
-            d2.setImmediate(newImmediate);
+        if (di.hasImmediate()) {
+          if (fixups.m_addressImmediates.count(src)) {
+            if (size_t(di.immediate() - (uint64_t)start) <= range) {
+              hasInternalRefs = internalRefsNeedUpdating = true;
+            }
+          } else {
+            if (fixups.m_addressImmediates.count((TCA)~uintptr_t(src))) {
+              // Handle weird, encoded offset, used by cgLdObjMethod
+              always_assert(di.immediate() == ((uintptr_t(src) << 1) | 1));
+              bool DEBUG_ONLY success =
+                d2.setImmediate(((uintptr_t)dest << 1) | 1);
+              assert(success);
+            }
+            /*
+             * An immediate that points into the range being moved, but which
+             * isn't tagged as an addressImmediate, is most likely a bug
+             * and its instruction's address needs to be put into
+             * fixups.m_addressImmediates. But it could just happen by bad
+             * luck, so just log it.
+             */
+            if (size_t(di.immediate() - (uint64_t)start) <= range) {
+              FTRACE(3,
+                     "relocate: instruction at {} has immediate 0x{:x}"
+                     "which looks like an address that needs relocating\n",
+                     src, di.immediate());
+            }
           }
         }
+
+        if (src == start) {
+          // for the start of the range, we only want to overwrite the "after"
+          // address (since the "before" address could belong to the previous
+          // tracelet, which could be being relocated to a completely different
+          // address. recordRange will do that for us, so just make sure we
+          // have the right address setup.
+          destStart = dest;
+        } else {
+          rel.recordAddress(src, dest - destRange, destRange);
+        }
+        if (di.isNop()) {
+          internalRefsNeedUpdating = true;
+        } else {
+          dest += d2.size();
+        }
+        assert(dest <= destBlock.frontier());
+        destBlock.setFrontier(dest);
         src += di.size();
       }
-    }
 
-    return rel.destSize();
-  }
+      rel.recordRange(start, end, destStart, destBlock.frontier());
 
-  void adjustForRelocation(TCA start, TCA end,
-                           RelocationInfo& rel,
-                           CodeGenFixups& fixups) override {
-    assert(rel.relocated());
-    while (start != end) {
-      assert(start < end);
-      DecodedInstruction di(start);
-
-      if (di.hasPicOffset()) {
-        /*
-         * A pointer into something that has been relocated needs to be
-         * updated.
-         */
-        if (TCA adjusted = rel.adjustedAddressAfter(di.picAddress())) {
-          di.setPicAddress(adjusted);
-        }
-      }
-
-      if (di.hasImmediate()) {
-        /*
-         * Similarly for addressImmediates - and see comment above
-         * for non-address immediates.
-         */
-        if (TCA adjusted = rel.adjustedAddressAfter((TCA)di.immediate())) {
-          if (fixups.m_addressImmediates.count(start)) {
-            di.setImmediate((int64_t)adjusted);
-          } else {
-            FTRACE(3,
-                   "relocate: instruction at {} has immediate 0x{:x}"
-                   "which looks like an address that needs relocating\n",
-                   start, di.immediate());
+      if (hasInternalRefs && internalRefsNeedUpdating) {
+        src = start;
+        while (src != end) {
+          DecodedInstruction di(src);
+          TCA newPicAddress = nullptr;
+          int64_t newImmediate = 0;
+          if (di.hasPicOffset() &&
+              size_t(di.picAddress() - start) <= range) {
+            newPicAddress = rel.adjustedAddressAfter(di.picAddress());
+            always_assert(newPicAddress);
           }
+          if (di.hasImmediate() &&
+              size_t((TCA)di.immediate() - start) <= range &&
+              fixups.m_addressImmediates.count(src)) {
+            newImmediate =
+              (int64_t)rel.adjustedAddressAfter((TCA)di.immediate());
+            always_assert(newImmediate);
+          }
+          if (newImmediate || newPicAddress) {
+            TCA dest = rel.adjustedAddressAfter(src);
+            DecodedInstruction d2(dest);
+            if (newPicAddress) {
+              d2.setPicAddress(newPicAddress);
+            }
+            if (newImmediate) {
+              d2.setImmediate(newImmediate);
+            }
+          }
+          src += di.size();
         }
       }
-
-      start += di.size();
+      rel.markAddressImmediates(fixups.m_addressImmediates);
+    } catch (...) {
+      rel.rewind(start, end);
+      throw;
     }
+    return asm_count;
   }
 
   template <typename T>
   void fixupStateVector(StateVector<T, TcaRange>& sv, RelocationInfo& rel) {
     for (auto& ii : sv) {
       if (!ii.empty()) {
-        auto s = rel.adjustedAddressBefore(ii.begin());
-        auto e = rel.adjustedAddressAfter(ii.end());
+        /*
+         * We have to be careful with before/after here.
+         * If we relocate two consecutive regions of memory,
+         * but relocate them to two different destinations, then
+         * the end address of the first region is also the start
+         * address of the second region; so adjustedAddressBefore(end)
+         * gives us the relocated address of the end of the first
+         * region, while adjustedAddressAfter(end) gives us the
+         * relocated address of the start of the second region.
+         */
+        auto s = rel.adjustedAddressAfter(ii.begin());
+        auto e = rel.adjustedAddressBefore(ii.end());
         if (e || s) {
           if (!s) s = ii.begin();
           if (!e) e = ii.end();
@@ -443,17 +436,55 @@ struct BackEnd : public JIT::BackEnd {
     }
   }
 
-  void adjustForRelocation(AsmInfo* asmInfo,
-                           RelocationInfo& rel,
-                           CodeGenFixups& fixups) override {
-    assert(rel.relocated());
+  void adjustForRelocation(RelocationInfo& rel) override {
+    for (const auto& range : rel) {
+      auto start = range.first;
+      auto end = range.second;
+      while (start != end) {
+        assert(start < end);
+        DecodedInstruction di(start);
 
+        if (di.hasPicOffset()) {
+          /*
+           * A pointer into something that has been relocated needs to be
+           * updated.
+           */
+          if (TCA adjusted = rel.adjustedAddressAfter(di.picAddress())) {
+            di.setPicAddress(adjusted);
+          }
+        }
+
+        if (di.hasImmediate()) {
+          /*
+           * Similarly for addressImmediates - and see comment above
+           * for non-address immediates.
+           */
+          if (TCA adjusted = rel.adjustedAddressAfter((TCA)di.immediate())) {
+            if (rel.isAddressImmediate(start)) {
+              di.setImmediate((int64_t)adjusted);
+            } else {
+              FTRACE(3,
+                     "relocate: instruction at {} has immediate 0x{:x}"
+                     "which looks like an address that needs relocating\n",
+                     start, di.immediate());
+            }
+          }
+        }
+
+        start += di.size();
+      }
+    }
+  }
+
+  void adjustForRelocation(RelocationInfo& rel,
+                           AsmInfo* asmInfo,
+                           CodeGenFixups& fixups) override {
     auto& ip = fixups.m_inProgressTailJumps;
     for (size_t i = 0; i < ip.size(); ++i) {
       IncomingBranch& ib = const_cast<IncomingBranch&>(ip[i]);
-      if (TCA adjusted = rel.adjustedAddressAfter(ib.toSmash())) {
-        ib.adjust(adjusted);
-      }
+      TCA adjusted = rel.adjustedAddressAfter(ib.toSmash());
+      always_assert(adjusted);
+      ib.adjust(adjusted);
     }
 
     for (auto& fixup : fixups.m_pendingFixups) {
@@ -469,11 +500,16 @@ struct BackEnd : public JIT::BackEnd {
 
     for (auto& ct : fixups.m_pendingCatchTraces) {
       /*
-       * Similar to fixups - this is a return address
+       * Similar to fixups - this is a return address so get
+       * the address returned to.
        */
       if (CTCA adjusted = rel.adjustedAddressBefore(ct.first)) {
         ct.first = adjusted;
       }
+      /*
+       * But the target is an instruction, so skip over any nops
+       * that might have been inserted (eg for alignment).
+       */
       if (TCA adjusted = rel.adjustedAddressAfter(ct.second)) {
         ct.second = adjusted;
       }
@@ -545,12 +581,12 @@ struct BackEnd : public JIT::BackEnd {
     // first byte, but that means the delta is 1 byte, and we shouldn't be
     // encoding smashable jumps that way.
     assert(kJmpLen == kCallLen);
-    always_assert(isSmashable(addr, X64::kJmpLen));
+    always_assert(isSmashable(addr, x64::kJmpLen));
 
     auto& cb = mcg->code.blockFor(addr);
     CodeCursor cursor { cb, addr };
     X64Assembler a { cb };
-    if (dest > addr && dest - addr <= X64::kJmpLen) {
+    if (dest > addr && dest - addr <= x64::kJmpLen) {
       assert(!isCall);
       a.  emitNop(dest - addr);
     } else if (isCall) {
@@ -579,31 +615,31 @@ struct BackEnd : public JIT::BackEnd {
     // Make sure the encoding is what we expect. It has to be a rip-relative jcc
     // with a 4-byte delta.
     assert(*jccAddr == 0x0F && (*(jccAddr + 1) & 0xF0) == 0x80);
-    assert(isSmashable(jccAddr, X64::kJmpccLen));
+    assert(isSmashable(jccAddr, x64::kJmpccLen));
 
     // Can't use the assembler to write out a new instruction, because we have
     // to preserve the condition code.
-    auto newDelta = safe_cast<int32_t>(newDest - jccAddr - X64::kJmpccLen);
+    auto newDelta = safe_cast<int32_t>(newDest - jccAddr - x64::kJmpccLen);
     auto deltaAddr = reinterpret_cast<int32_t*>(jccAddr
-                                                + X64::kJmpccLen
-                                                - X64::kJmpImmBytes);
+                                                + x64::kJmpccLen
+                                                - x64::kJmpImmBytes);
     *deltaAddr = newDelta;
   }
 
   void emitSmashableJump(CodeBlock& cb, TCA dest, ConditionCode cc) override {
     X64Assembler a { cb };
     if (cc == CC_None) {
-      assert(isSmashable(cb.frontier(), X64::kJmpLen));
+      assert(isSmashable(cb.frontier(), x64::kJmpLen));
       a.  jmp(dest);
     } else {
-      assert(isSmashable(cb.frontier(), X64::kJmpccLen));
+      assert(isSmashable(cb.frontier(), x64::kJmpccLen));
       a.  jcc(cc, dest);
     }
   }
 
   void emitSmashableCall(CodeBlock& cb, TCA dest) override {
     X64Assembler a { cb };
-    assert(isSmashable(cb.frontier(), X64::kCallLen));
+    assert(isSmashable(cb.frontier(), x64::kCallLen));
     a.  call(dest);
   }
 
@@ -651,10 +687,12 @@ struct BackEnd : public JIT::BackEnd {
                   .color(color(ANSI_COLOR_BROWN)));
     disasm.disasm(os, begin, end);
   }
+
+  virtual void genCodeImpl(IRUnit& unit, AsmInfo*);
 };
 
-std::unique_ptr<JIT::BackEnd> newBackEnd() {
-  return std::unique_ptr<JIT::BackEnd>{ folly::make_unique<BackEnd>() };
+std::unique_ptr<jit::BackEnd> newBackEnd() {
+  return std::unique_ptr<jit::BackEnd>{ folly::make_unique<BackEnd>() };
 }
 
 using NativeCalls::CallMap;
@@ -707,6 +745,7 @@ RegPair hintNativeCallDst(const IRInstruction& inst, unsigned i) {
     case DestType::SSA:
       return {rax, InvalidReg};
     case DestType::Dbl:
+    case DestType::SIMD:
       return {xmm0, InvalidReg};
     case DestType::TV:
       return {rax, rdx};
@@ -806,6 +845,229 @@ RegPair BackEnd::precolorDst(const IRInstruction& inst, unsigned i) {
       break;
   }
   return InvalidRegPair;
+}
+
+static size_t genBlock(IRUnit& unit, Vout& v, Vasm& vasm,
+                     CodegenState& state, Block* block) {
+  FTRACE(6, "genBlock: {}\n", block->id());
+  CodeGenerator cg(unit, v, vasm.cold(), vasm.frozen(), state);
+  size_t hhir_count{0};
+  for (IRInstruction& instr : *block) {
+    if (instr.op() != Shuffle) hhir_count++;
+    IRInstruction* inst = &instr;
+
+    if (instr.is(EndGuards)) state.pastGuards = true;
+    if (state.pastGuards &&
+        (mcg->tx().isTransDBEnabled() || RuntimeOption::EvalJitUseVtuneAPI)) {
+      SrcKey sk = inst->marker().sk();
+      vasm.main().setSrcKey(sk);
+      vasm.cold().setSrcKey(sk);
+      vasm.frozen().setSrcKey(sk);
+    }
+    cg.cgInst(inst);
+  }
+  return hhir_count;
+}
+
+static size_t ctr;
+const char* area_names[] = { "main", "cold", "frozen" };
+
+auto const vasm_gp = x64::abi.gpUnreserved | RegSet(rAsm).add(r11);
+auto const vasm_simd = x64::kXMMRegs;
+UNUSED const Abi vasm_abi {
+  .gpUnreserved = vasm_gp,
+  .gpReserved = x64::abi.gp() - vasm_gp,
+  .simdUnreserved = vasm_simd,
+  .simdReserved = x64::abi.simd() - vasm_simd,
+  .calleeSaved = x64::kCalleeSaved
+};
+
+void BackEnd::genCodeImpl(IRUnit& unit, AsmInfo* asmInfo) {
+  ctr++;
+  auto regs = allocateRegs(unit);
+  assert(checkRegisters(unit, regs)); // calls checkCfg internally.
+  Timer _t(Timer::codeGen);
+  LiveRegs live_regs = computeLiveRegs(unit, regs);
+  CodegenState state(unit, regs, live_regs, asmInfo);
+
+  CodeBlock& mainCodeIn   = mcg->code.main();
+  CodeBlock& coldCodeIn   = mcg->code.cold();
+  CodeBlock* frozenCode   = &mcg->code.frozen();
+
+  CodeBlock mainCode;
+  CodeBlock coldCode;
+  bool relocate = false;
+  if (RuntimeOption::EvalJitRelocationSize &&
+      supportsRelocation() &&
+      coldCodeIn.canEmit(RuntimeOption::EvalJitRelocationSize * 3)) {
+    /*
+     * This is mainly to exercise the relocator, and ensure that its
+     * not broken by new non-relocatable code. Later, it will be
+     * used to do some peephole optimizations, such as reducing branch
+     * sizes.
+     * Allocate enough space that the relocated cold code doesn't
+     * overlap the emitted cold code.
+     */
+
+    static unsigned seed = 42;
+    auto off = rand_r(&seed) & (cacheLineSize() - 1);
+    coldCode.init(coldCodeIn.frontier() +
+                   RuntimeOption::EvalJitRelocationSize + off,
+                   RuntimeOption::EvalJitRelocationSize - off, "cgRelocCold");
+
+    mainCode.init(coldCode.frontier() +
+                  RuntimeOption::EvalJitRelocationSize + off,
+                  RuntimeOption::EvalJitRelocationSize - off, "cgRelocMain");
+
+    relocate = true;
+  } else {
+    /*
+     * Use separate code blocks, so that attempts to use the mcg's
+     * code blocks directly will fail (eg by overwriting the same
+     * memory being written through these locals).
+     */
+    coldCode.init(coldCodeIn.frontier(), coldCodeIn.available(),
+                  coldCodeIn.name().c_str());
+    mainCode.init(mainCodeIn.frontier(), mainCodeIn.available(),
+                  mainCodeIn.name().c_str());
+  }
+
+  if (frozenCode == &coldCodeIn) {
+    frozenCode = &coldCode;
+  }
+  auto frozenStart = frozenCode->frontier();
+  auto coldStart DEBUG_ONLY = coldCodeIn.frontier();
+  auto mainStart DEBUG_ONLY = mainCodeIn.frontier();
+  size_t hhir_count{0};
+  {
+    mcg->code.lock();
+    mcg->cgFixups().setBlocks(&mainCode, &coldCode, frozenCode);
+
+    SCOPE_EXIT {
+      mcg->cgFixups().setBlocks(nullptr, nullptr, nullptr);
+      mcg->code.unlock();
+    };
+
+    if (RuntimeOption::EvalHHIRGenerateAsserts) {
+      emitTraceCall(mainCode, unit.bcOff());
+    }
+
+    auto const linfo = layoutBlocks(unit);
+    auto main_start = mainCode.frontier();
+    auto cold_start = coldCode.frontier();
+    auto frozen_start = frozenCode->frontier();
+    Vasm vasm(&state.meta);
+    auto& vunit = vasm.unit();
+    // create the initial set of vasm numbered the same as hhir blocks.
+    for (uint32_t i = 0, n = unit.numBlocks(); i < n; ++i) {
+      state.labels[i] = vunit.makeBlock(AreaIndex::Main);
+    }
+    vunit.roots.push_back(state.labels[unit.entry()]);
+    vasm.main(mainCode);
+    vasm.cold(coldCode);
+    vasm.frozen(*frozenCode);
+    for (auto it = linfo.blocks.begin(); it != linfo.blocks.end(); ++it) {
+      auto block = *it;
+      auto v = block->hint() == Block::Hint::Unlikely ? vasm.cold() :
+               block->hint() == Block::Hint::Unused ? vasm.frozen() :
+               vasm.main();
+      FTRACE(6, "genBlock {} on {}\n", block->id(),
+             area_names[(unsigned)v.area()]);
+      auto b = state.labels[block];
+      vunit.blocks[b].area = v.area();
+      v.use(b);
+      hhir_count += genBlock(unit, v, vasm, state, block);
+      assert(v.closed());
+      assert(vasm.main().empty() || vasm.main().closed());
+      assert(vasm.cold().empty() || vasm.cold().closed());
+      assert(vasm.frozen().empty() || vasm.frozen().closed());
+    }
+    printUnit("after code-gen", vasm.unit());
+    vasm.finish(vasm_abi);
+    if (state.asmInfo) {
+      auto block = unit.entry();
+      state.asmInfo->asmRanges[block] = {main_start, mainCode.frontier()};
+      if (mainCode.base() != coldCode.base() && frozenCode != &coldCode) {
+        state.asmInfo->acoldRanges[block] = {cold_start, coldCode.frontier()};
+      }
+      if (mainCode.base() != frozenCode->base()) {
+        state.asmInfo->afrozenRanges[block] = {frozen_start,
+                                               frozenCode->frontier()};
+      }
+    }
+  }
+  auto bcMap = &mcg->cgFixups().m_bcMap;
+  if (!bcMap->empty()) {
+    TRACE(1, "BCMAPS before relocation\n");
+    for (UNUSED auto& map : *bcMap) {
+      TRACE(1, "%s %-6d %p %p %p\n", map.md5.toString().c_str(),
+             map.bcStart, map.aStart, map.acoldStart, map.afrozenStart);
+    }
+  }
+
+  assert(coldCodeIn.frontier() == coldStart);
+  assert(mainCodeIn.frontier() == mainStart);
+
+  if (relocate) {
+    if (asmInfo) {
+      printUnit(kRelocationLevel, unit, " before relocation ", &regs, asmInfo);
+    }
+
+    auto& be = mcg->backEnd();
+    RelocationInfo rel;
+    size_t asm_count{0};
+    asm_count += be.relocate(rel, mainCodeIn,
+                             mainCode.base(), mainCode.frontier(),
+                             mcg->cgFixups());
+
+    asm_count += be.relocate(rel, coldCodeIn,
+                             coldCode.base(), coldCode.frontier(),
+                             mcg->cgFixups());
+    TRACE(1, "hhir-inst-count %ld asm %ld\n", hhir_count, asm_count);
+
+    if (frozenCode != &coldCode) {
+      rel.recordRange(frozenStart, frozenCode->frontier(),
+                      frozenStart, frozenCode->frontier());
+    }
+    be.adjustForRelocation(rel);
+    be.adjustForRelocation(rel, asmInfo, mcg->cgFixups());
+
+    if (asmInfo) {
+      static int64_t mainDeltaTot = 0, coldDeltaTot = 0;
+      int64_t mainDelta =
+        (mainCodeIn.frontier() - mainStart) -
+        (mainCode.frontier() - mainCode.base());
+      int64_t coldDelta =
+        (coldCodeIn.frontier() - coldStart) -
+        (coldCode.frontier() - coldCode.base());
+
+      mainDeltaTot += mainDelta;
+      HPHP::Trace::traceRelease("main delta after relocation: "
+                                "%" PRId64 " (%" PRId64 ")\n",
+                                mainDelta, mainDeltaTot);
+      coldDeltaTot += coldDelta;
+      HPHP::Trace::traceRelease("cold delta after relocation: "
+                                "%" PRId64 " (%" PRId64 ")\n",
+                                coldDelta, coldDeltaTot);
+    }
+#ifndef NDEBUG
+    auto& ip = mcg->cgFixups().m_inProgressTailJumps;
+    for (size_t i = 0; i < ip.size(); ++i) {
+      const auto& ib = ip[i];
+      assert(!mainCode.contains(ib.toSmash()));
+      assert(!coldCode.contains(ib.toSmash()));
+    }
+    memset(mainCode.base(), 0xcc, mainCode.frontier() - mainCode.base());
+    memset(coldCode.base(), 0xcc, coldCode.frontier() - coldCode.base());
+#endif
+  } else {
+    coldCodeIn.skip(coldCode.frontier() - coldCodeIn.frontier());
+    mainCodeIn.skip(mainCode.frontier() - mainCodeIn.frontier());
+  }
+
+  if (asmInfo) {
+    printUnit(kCodeGenLevel, unit, " after code gen ", &regs, asmInfo);
+  }
 }
 
 }}}

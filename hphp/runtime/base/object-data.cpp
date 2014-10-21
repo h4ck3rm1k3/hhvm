@@ -71,7 +71,10 @@ static Array convert_to_array(const ObjectData* obj, HPHP::Class* cls) {
     cls, s_storage.get(),
     visible, accessible, unset
   );
-  assert(visible && accessible && !unset);
+  // We currently do not special case ArrayObjects / ArrayIterators in
+  // reflectionClass. Until, either ArrayObject moves to HNI or a special
+  // case is added to reflection unset should be turned off.
+  assert(visible && accessible /* && !unset */);
   return tvAsCVarRef(prop).toArray();
 }
 
@@ -81,7 +84,7 @@ static_assert(sizeof(ObjectData) == use_lowptr ? 16 : 32,
 //////////////////////////////////////////////////////////////////////
 
 bool ObjectData::destruct() {
-  if (UNLIKELY(RuntimeOption::EnableObjDestructCall)) {
+  if (UNLIKELY(RuntimeOption::EnableObjDestructCall && m_cls->getDtor())) {
     g_context->m_liveBCObjs.erase(this);
   }
   if (!noDestruct()) {
@@ -430,6 +433,8 @@ Array ObjectData::o_toArray(bool pubOnly /* = false */) const {
     return convert_to_array(this, SystemLib::s_ArrayIteratorClass);
   } else if (UNLIKELY(instanceof(SystemLib::s_ClosureClass))) {
     return Array::Create(Object(const_cast<ObjectData*>(this)));
+  } else if (UNLIKELY(instanceof(c_DateTime::classof()))) {
+    return ((c_DateTime*) this)->t___debuginfo();
   } else {
     Array ret(ArrayData::Create());
     o_getArray(ret, pubOnly);
@@ -509,8 +514,10 @@ Array ObjectData::o_toIterArray(const String& context,
 
   // Now get dynamic properties.
   if (dynProps) {
-    ssize_t iter = dynProps->get()->iter_begin();
-    while (iter != ArrayData::invalid_index) {
+    auto ad = dynProps->get();
+    ssize_t iter = ad->iter_begin();
+    auto pos_limit = ad->iter_end();
+    while (iter != pos_limit) {
       TypedValue key;
       dynProps->get()->nvGetKey(&key, iter);
       iter = dynProps->get()->iter_advance(iter);
@@ -741,43 +748,11 @@ void ObjectData::serializeImpl(VariableSerializer* serializer) const {
     }
   } else if (UNLIKELY(serializer->getType() ==
                       VariableSerializer::Type::DebuggerSerialize)) {
-    if (instanceof(SystemLib::s_SerializableClass)) {
-      assert(!isCollection());
-      try {
-        Variant ret =
-          const_cast<ObjectData*>(this)->o_invoke_few_args(s_serialize, 0);
-        if (ret.isString()) {
-          serializer->writeSerializableObject(o_getClassName(), ret.toString());
-        } else if (ret.isNull()) {
-          serializer->writeNull();
-        } else {
-          raise_warning("%s::serialize() must return a string or NULL",
-                        o_getClassName().data());
-          serializer->writeNull();
-        }
-      } catch (...) {
-        // serialize() throws exception
-        raise_warning("%s::serialize() throws exception",
-                      o_getClassName().data());
-        serializer->writeNull();
-      }
-      return;
-    }
     // Don't try to serialize a CPP extension class which doesn't
     // support serialization. Just send the class name instead.
     if (getAttribute(IsCppBuiltin) && !getVMClass()->isCppSerializable()) {
       serializer->write(o_getClassName());
       return;
-    }
-    if (getAttribute(HasSleep)) {
-      try {
-        handleSleep = true;
-        ret = const_cast<ObjectData*>(this)->invokeSleep();
-      } catch (...) {
-        raise_warning("%s::sleep() throws exception", o_getClassName().data());
-        serializer->writeNull();
-        return;
-      }
     }
   }
 
@@ -918,6 +893,14 @@ ObjectData* ObjectData::clone() {
       return c_Closure::Clone(this);
     } else if (instanceof(c_Generator::classof())) {
       return c_Generator::Clone(this);
+    } else if (instanceof(c_VectorIterator::classof())) {
+      return c_VectorIterator::Clone(this);
+    } else if (instanceof(c_MapIterator::classof())) {
+      return c_MapIterator::Clone(this);
+    } else if (instanceof(c_SetIterator::classof())) {
+      return c_SetIterator::Clone(this);
+    } else if (instanceof(c_PairIterator::classof())) {
+      return c_PairIterator::Clone(this);
     } else if (instanceof(c_DateTime::classof())) {
       return c_DateTime::Clone(this);
     } else if (instanceof(c_DateTimeZone::classof())) {
@@ -1068,7 +1051,9 @@ void ObjectData::DeleteObject(ObjectData* objectData) {
 Object ObjectData::FromArray(ArrayData* properties) {
   ObjectData* retval = ObjectData::newInstance(SystemLib::s_stdclassClass);
   auto& dynArr = retval->reserveProperties(properties->size());
-  for (ssize_t pos = properties->iter_begin(); pos != ArrayData::invalid_index;
+  auto pos_limit = properties->iter_end();
+  for (ssize_t pos = properties->iter_begin();
+       pos != pos_limit;
        pos = properties->iter_advance(pos)) {
     auto const value = properties->getValueRef(pos);
     TypedValue key;
@@ -1711,7 +1696,8 @@ void ObjectData::raiseAbstractClassError(Class* cls) {
   Attr attrs = cls->attrs();
   raise_error("Cannot instantiate %s %s",
               (attrs & AttrInterface) ? "interface" :
-              (attrs & AttrTrait)     ? "trait" : "abstract class",
+              (attrs & AttrTrait)     ? "trait" :
+              (attrs & AttrEnum)      ? "enum" : "abstract class",
               cls->preClass()->name()->data());
 }
 
@@ -1806,7 +1792,7 @@ String ObjectData::invokeToString() {
     // recoverable error
     raise_recoverable_error(
       "Object of class %s could not be converted to string",
-      m_cls->preClass()->name()->data()
+      classname_cstr()
     );
     // If the user error handler decides to allow execution to continue,
     // we return the empty string.
@@ -1845,9 +1831,10 @@ void ObjectData::cloneSet(ObjectData* clone) {
     auto& dynProps = dynPropArray();
     auto& cloneProps = clone->reserveProperties(dynProps.size());
 
-    ssize_t iter = dynProps.get()->iter_begin();
-    while (iter != ArrayData::invalid_index) {
-      auto const props = dynProps.get();
+    auto const props = dynProps.get();
+    ssize_t iter = props->iter_begin();
+    auto pos_limit = props->iter_end();
+    while (iter != pos_limit) {
       assert(MixedArray::asMixed(props));
 
       TypedValue key;
@@ -1874,7 +1861,7 @@ void ObjectData::cloneSet(ObjectData* clone) {
       }
 
       tvDupFlattenVars(val, ret, cloneProps.get());
-      iter = MixedArray::IterAdvance(dynProps.get(), iter);
+      iter = MixedArray::IterAdvance(props, iter);
     }
   }
 }
@@ -1911,6 +1898,12 @@ RefData* ObjectData::zGetProp(Class* ctx, const StringData* key,
                               bool& visible, bool& accessible,
                               bool& unset) {
   auto tv = getProp(ctx, key, visible, accessible, unset);
+  if (tv == 0) {
+    /*
+     * Protect against unknown object properties.
+     */
+    return nullptr;
+  }
   if (tv->m_type != KindOfRef) {
     tvBox(tv);
   }

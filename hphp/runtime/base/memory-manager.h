@@ -199,7 +199,7 @@ struct DebugHeader {
 #  error Need SMART_SIZES definition for specified LG_SMART_SIZES_PER_DOUBLING
 #endif
 
-__attribute__((aligned(64)))
+__attribute__((__aligned__(64)))
 constexpr uint8_t kSmartSize2Index[] = {
 #define S2I_16(i)  i,
 #define S2I_32(i)  S2I_16(i) S2I_16(i)
@@ -335,6 +335,14 @@ public:
   static uint32_t smartSizeClass(uint32_t requested);
 
   /*
+   * Return a lower bound estimate of the capacity that will be returned
+   * for the requested size.
+   */
+  static uint32_t estimateSmartCap(uint32_t requested) {
+    return requested <= kMaxSmartSize ? smartSizeClass(requested) : requested;
+  }
+
+  /*
    * Allocate/deallocate a smart-allocated memory block in a given
    * small size class.  You must be able to tell the deallocation
    * function how big the allocation was.
@@ -410,6 +418,11 @@ public:
   void sweep();
 
   /*
+   * Returns true if there are no allocated slabs
+   */
+  bool empty() const { return m_slabs.empty(); }
+
+  /*
    * Release all the request-local allocations.  Zeros all the free
    * lists and may return some underlying storage to the system
    * allocator. This also resets all internally-stored memory usage stats.
@@ -460,10 +473,22 @@ public:
   bool stopStatsInterval();
 
   /*
+   * Whether an allocation of `size' would run the request out of memory.
+   *
+   * This behaves just like the OOM check in refreshStatsImpl().  If the
+   * m_couldOOM flag is already unset, we return false, but if otherwise we
+   * would exceed the limit, we unset the flag and register an OOM fatal
+   * (though we do not modify the MM's stats).
+   */
+  bool preAllocOOM(int64_t size);
+
+  /*
    * Reset whether or not we should raise an OOM fatal if we exceed the memory
-   * limit for the request.  After an OOM fatal, the memory manager refuses to
-   * raise another OOM error until this flag has been reset, to try to avoid
-   * getting OOMs during the initial OOM processing.
+   * limit for the request.
+   *
+   * After an OOM fatal, the memory manager refuses to raise another OOM error
+   * until this flag has been reset, to try to avoid getting OOMs during the
+   * initial OOM processing.
    */
   void resetCouldOOM();
 

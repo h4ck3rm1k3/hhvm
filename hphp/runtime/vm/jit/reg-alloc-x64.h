@@ -20,19 +20,21 @@
 #include "hphp/runtime/vm/jit/reg-alloc.h"
 #include "hphp/runtime/vm/jit/native-calls.h"
 
-namespace HPHP {  namespace JIT {
+#ifdef VOID
+#undef VOID
+#endif
+
+namespace HPHP { namespace jit {
 
 using NativeCalls::CallMap;
 
-namespace X64 {
+namespace x64 {
 
 // okStore is true if cgStore can take c as an immediate without
 // using any scratch registers.
 bool okStore(int64_t c) { return true; }
 
 // return true if cgCallHelper and ArgGroup accept c as immediate.
-// passing large immediates as args on the stack will implicitly
-// clobber rCgGP (R11).
 bool okArg(int64_t c) { return true/*isI32(c)*/; }
 
 // return true if CodeGenerator supports this operand as an

@@ -17,8 +17,8 @@
 // @author Tudor Bosman (tudorb@fb.com)
 
 #include <gflags/gflags.h>
-#include "folly/Bits.h"
-#include "folly/Benchmark.h"
+#include <folly/Bits.h>
+#include <folly/Benchmark.h>
 #include <gtest/gtest.h>
 
 using namespace folly;
@@ -164,7 +164,7 @@ TEST(Bits, popcount) {
 
 int main(int argc, char** argv) {
   testing::InitGoogleTest(&argc, argv);
-  google::ParseCommandLineFlags(&argc, &argv, true);
+  gflags::ParseCommandLineFlags(&argc, &argv, true);
   auto ret = RUN_ALL_TESTS();
   if (!ret && FLAGS_benchmark) {
     folly::runBenchmarks();

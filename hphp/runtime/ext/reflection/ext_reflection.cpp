@@ -18,7 +18,7 @@
 #include "hphp/runtime/ext/reflection/ext_reflection.h"
 #include "hphp/runtime/ext/ext_closure.h"
 #include "hphp/runtime/ext/debugger/ext_debugger.h"
-#include "hphp/runtime/ext/ext_misc.h"
+#include "hphp/runtime/ext/std/ext_std_misc.h"
 #include "hphp/runtime/ext/ext_string.h"
 #include "hphp/runtime/ext/ext_collections.h"
 #include "hphp/runtime/base/externals.h"
@@ -160,12 +160,6 @@ Array HHVM_FUNCTION(hphp_get_extension_info, const String& name) {
   return ret;
 }
 
-// TODO(ptc) This is horse--...play and should go somewhere else
-Array HHVM_FUNCTION(hphp_miarray) {
-  auto ad = MixedArray::MakeReserveIntMap(10);
-  return Array::attach(ad);
-}
-
 int get_modifiers(Attr attrs, bool cls) {
   int php_modifier = 0;
   if (attrs & AttrAbstract)  php_modifier |= cls ? 0x20 : 0x02;
@@ -227,7 +221,7 @@ static void set_doc_comment(Array& ret,
                             bool isBuiltin) {
   if (comment == nullptr || comment->empty()) {
     set_empty_doc_comment(ret);
-  } else if (isBuiltin && !f_hphp_debugger_attached()) {
+  } else if (isBuiltin && !HHVM_FUNCTION(hphp_debugger_attached)) {
     set_empty_doc_comment(ret);
   } else {
     ret.set(s_doc, VarNR(comment));
@@ -442,10 +436,6 @@ String HHVM_FUNCTION(hphp_get_original_class_name, const String& name) {
   return cls->nameStr();
 }
 
-bool HHVM_FUNCTION(hphp_scalar_typehints_enabled) {
-  return RuntimeOption::EnableHipHopSyntax;
-}
-
 ObjectData* Reflection::AllocReflectionExceptionObject(const Variant& message) {
   ObjectData* inst = ObjectData::newInstance(s_ReflectionExceptionClass);
   TypedValue ret;
@@ -496,7 +486,7 @@ static Variant HHVM_METHOD(ReflectionFunctionAbstract, getDocComment) {
   auto const comment = func->docComment();
   if (comment == nullptr || comment->empty()) {
     return false_varNR;
-  } else if (func->isBuiltin() && !f_hphp_debugger_attached()) {
+  } else if (func->isBuiltin() && !HHVM_FUNCTION(hphp_debugger_attached)) {
     return false_varNR;
   } else {
     auto ret = const_cast<StringData*>(comment);
@@ -883,7 +873,7 @@ static bool HHVM_METHOD(ReflectionClass, isInternal) {
 
 static bool HHVM_METHOD(ReflectionClass, isInstantiable) {
   auto const cls = ReflectionClassHandle::GetClassFor(this_);
-  return !(cls->attrs() & (AttrAbstract | AttrInterface | AttrTrait))
+  return !(cls->attrs() & (AttrAbstract | AttrInterface | AttrTrait | AttrEnum))
     && (cls->getCtor()->attrs() & AttrPublic);
 }
 
@@ -939,12 +929,34 @@ static Variant HHVM_METHOD(ReflectionClass, getDocComment) {
   auto const comment = pcls->docComment();
   if (comment == nullptr || comment->empty()) {
     return false_varNR;
-  } else if (pcls->isBuiltin() && !f_hphp_debugger_attached()) {
+  } else if (pcls->isBuiltin() && !HHVM_FUNCTION(hphp_debugger_attached)) {
     return false_varNR;
   } else {
     auto ret = const_cast<StringData*>(comment);
     return VarNR(ret);
   }
+}
+
+static Array HHVM_METHOD(ReflectionClass, getRequirementNames) {
+  auto const cls = ReflectionClassHandle::GetClassFor(this_);
+  if (!(cls->attrs() & (AttrTrait | AttrInterface))) {
+    // requirements are applied to abstract/concrete classes when they use
+    // a trait / implement an interface
+    return empty_array();
+  }
+
+  auto const& requirements = cls->allRequirements();
+  auto numReqs = requirements.size();
+  if (numReqs == 0) {
+    return empty_array();
+  }
+
+  PackedArrayInit pai(numReqs);
+  for (int i = 0; i < numReqs; ++i) {
+    auto const& req = requirements[i];
+    pai.append(const_cast<StringData*>(req->name()));
+  }
+  return pai.toArray();
 }
 
 static Array HHVM_METHOD(ReflectionClass, getInterfaceNames) {
@@ -1264,13 +1276,11 @@ class ReflectionExtension : public Extension {
     HHVM_FE(hphp_create_object);
     HHVM_FE(hphp_create_object_without_constructor);
     HHVM_FE(hphp_get_extension_info);
-    HHVM_FE(hphp_miarray);
     HHVM_FE(hphp_get_original_class_name);
     HHVM_FE(hphp_get_property);
     HHVM_FE(hphp_get_static_property);
     HHVM_FE(hphp_invoke);
     HHVM_FE(hphp_invoke_method);
-    HHVM_FE(hphp_scalar_typehints_enabled);
     HHVM_FE(hphp_set_property);
     HHVM_FE(hphp_set_static_property);
 
@@ -1322,6 +1332,7 @@ class ReflectionExtension : public Extension {
     HHVM_ME(ReflectionClass, getEndLine);
     HHVM_ME(ReflectionClass, getDocComment);
     HHVM_ME(ReflectionClass, getInterfaceNames);
+    HHVM_ME(ReflectionClass, getRequirementNames);
     HHVM_ME(ReflectionClass, getTraitNames);
     HHVM_ME(ReflectionClass, getTraitAliases);
 

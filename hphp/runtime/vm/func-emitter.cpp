@@ -59,6 +59,8 @@ FuncEmitter::FuncEmitter(UnitEmitter& ue, int sn, Id id, const StringData* n)
   , isAsync(false)
   , isGenerator(false)
   , isPairGenerator(false)
+  , isMemoizeImpl(false)
+  , isMemoizeWrapper(false)
   , containsCalls(false)
   , docComment(nullptr)
   , originalFilename(nullptr)
@@ -87,6 +89,8 @@ FuncEmitter::FuncEmitter(UnitEmitter& ue, int sn, const StringData* n,
   , isAsync(false)
   , isGenerator(false)
   , isPairGenerator(false)
+  , isMemoizeImpl(false)
+  , isMemoizeWrapper(false)
   , containsCalls(false)
   , docComment(nullptr)
   , originalFilename(nullptr)
@@ -106,7 +110,7 @@ FuncEmitter::~FuncEmitter() {
 
 
 ///////////////////////////////////////////////////////////////////////////////
-// Initialization and completion.
+// Initialization and execution.
 
 void FuncEmitter::init(int l1, int l2, Offset base_, Attr attrs_, bool top_,
                        const StringData* docComment_) {
@@ -136,8 +140,8 @@ void FuncEmitter::finish(Offset past_, bool load) {
 void FuncEmitter::commit(RepoTxn& txn) const {
   Repo& repo = Repo::get();
   FuncRepoProxy& frp = repo.frp();
-  int repoId = m_ue.repoId();
-  int64_t usn = m_ue.sn();
+  int repoId = m_ue.m_repoId;
+  int64_t usn = m_ue.m_sn;
 
   frp.insertFunc(repoId)
      .insert(*this, txn, usn, m_sn, m_pce ? m_pce->id() : -1, name, top);
@@ -180,8 +184,11 @@ Func* FuncEmitter::create(Unit& unit, PreClass* preClass /* = NULL */) const {
   f->shared()->m_info = m_info;
   f->shared()->m_returnType = returnType;
   std::vector<Func::ParamInfo> fParams;
+  bool usesDoubles = false, variadic = false;
   for (unsigned i = 0; i < params.size(); ++i) {
     Func::ParamInfo pi = params[i];
+    if (pi.builtinType == KindOfDouble) usesDoubles = true;
+    if (pi.isVariadic()) variadic = true;
     f->appendParam(params[i].byRef, pi, fParams);
   }
 
@@ -222,8 +229,8 @@ Func* FuncEmitter::create(Unit& unit, PreClass* preClass /* = NULL */) const {
           f->shared()->m_nativeFuncPtr = nullptr;
         } else {
           f->shared()->m_nativeFuncPtr = nif;
-          f->shared()->m_builtinFuncPtr = m_pce ? Native::methodWrapper
-                                                : Native::functionWrapper;
+          f->shared()->m_builtinFuncPtr =
+            Native::getWrapper(m_pce, usesDoubles, variadic);
         }
       }
     } else {
@@ -607,7 +614,7 @@ void FuncRepoProxy::GetFuncsStmt
     txn.prepare(*this, ssSelect.str());
   }
   RepoTxnQuery query(txn, *this);
-  query.bindInt64("@unitSn", ue.sn());
+  query.bindInt64("@unitSn", ue.m_sn);
   do {
     query.step();
     if (query.row()) {

@@ -20,8 +20,8 @@
 #include <type_traits>
 #include <limits>
 
-#include "hphp/runtime/base/smart-containers.h"
 #include "hphp/runtime/base/type-conversions.h"
+#include "hphp/runtime/vm/jit/containers.h"
 #include "hphp/runtime/vm/jit/guard-relaxation.h"
 #include "hphp/runtime/vm/jit/ir-builder.h"
 #include "hphp/runtime/vm/hhbc.h"
@@ -29,8 +29,7 @@
 #include "hphp/runtime/ext/ext_collections.h"
 #include "hphp/util/overflow.h"
 
-namespace HPHP {
-namespace JIT {
+namespace HPHP { namespace jit {
 
 TRACE_SET_MOD(hhir);
 
@@ -89,7 +88,8 @@ StackValueInfo getStackValue(SSATmp* sp, uint32_t index) {
     // of its typeParam with whatever type preceded it.
     if (inst->extra<StackOffset>()->offset == index) {
       Type prevType = getStackValue(inst->src(0), index).knownType;
-      return StackValueInfo { inst, refineType(prevType, inst->typeParam())};
+      return StackValueInfo { inst,
+                              refineTypeNoCheck(prevType, inst->typeParam())};
     }
     return getStackValue(inst->src(0), index);
 
@@ -221,8 +221,8 @@ StackValueInfo getStackValue(SSATmp* sp, uint32_t index) {
   not_reached();
 }
 
-smart::vector<SSATmp*> collectStackValues(SSATmp* sp, uint32_t stackDepth) {
-  smart::vector<SSATmp*> ret;
+jit::vector<SSATmp*> collectStackValues(SSATmp* sp, uint32_t stackDepth) {
+  jit::vector<SSATmp*> ret;
   ret.reserve(stackDepth);
   for (uint32_t i = 0; i < stackDepth; ++i) {
     auto const value = getStackValue(sp, i).value;
@@ -289,18 +289,6 @@ IRInstruction* findSpillFrame(SSATmp* sp) {
   }
 
   return inst;
-}
-
-const IRInstruction* frameRoot(const IRInstruction* fpInst) {
-  return frameRoot(const_cast<IRInstruction*>(fpInst));
-}
-
-IRInstruction* frameRoot(IRInstruction* fpInst) {
-  while (!fpInst->is(DefFP, DefInlineFP)) {
-    assert(fpInst->dst()->isA(Type::FramePtr));
-    fpInst = fpInst->src(0)->inst();
-  }
-  return fpInst;
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -466,6 +454,8 @@ SSATmp* Simplifier::simplifyWork(const IRInstruction* inst) {
     case LdCls:        return simplifyLdCls(inst);
     case LdCtx:        return simplifyLdCtx(inst);
     case LdClsCtx:     return simplifyLdClsCtx(inst);
+    case LdObjClass:   return simplifyLdObjClass(inst);
+    case LdObjInvoke:  return simplifyLdObjInvoke(inst);
     case GetCtxFwdCall:return simplifyGetCtxFwdCall(inst);
     case ConvClsToCctx: return simplifyConvClsToCctx(inst);
 
@@ -519,7 +509,7 @@ SSATmp* Simplifier::simplifyLdCtx(const IRInstruction* inst) {
 }
 
 SSATmp* Simplifier::simplifyLdClsCtx(const IRInstruction* inst) {
-  SSATmp*  ctx = inst->src(0);
+  SSATmp* ctx = inst->src(0);
   Type ctxType = ctx->type();
   if (ctxType <= Type::Obj) {
     // this pointer... load its class ptr
@@ -531,8 +521,30 @@ SSATmp* Simplifier::simplifyLdClsCtx(const IRInstruction* inst) {
   return nullptr;
 }
 
+SSATmp* Simplifier::simplifyLdObjClass(const IRInstruction* inst) {
+  auto const ty = inst->src(0)->type();
+
+  if (typeMightRelax(inst->src(0)) || !(ty < Type::Obj)) return nullptr;
+
+  if (auto const exact = ty.getExactClass()) return cns(exact);
+  return nullptr;
+}
+
+const StaticString s_invoke("__invoke");
+
+SSATmp* Simplifier::simplifyLdObjInvoke(const IRInstruction* inst) {
+  auto const src = inst->src(0);
+  if (!src->isConst()) return nullptr;
+
+  auto const cls = src->clsVal();
+  if (!RDS::isPersistentHandle(cls->classHandle())) return nullptr;
+
+  auto const meth = cls->lookupMethod(s_invoke.get());
+  return meth != nullptr ? cns(meth) : nullptr;
+}
+
 SSATmp* Simplifier::simplifyGetCtxFwdCall(const IRInstruction* inst) {
-  SSATmp*  srcCtx = inst->src(0);
+  SSATmp* srcCtx = inst->src(0);
   if (srcCtx->isA(Type::Cctx)) {
     return srcCtx;
   }
@@ -2116,7 +2128,7 @@ SSATmp* Simplifier::simplifyIsWaitHandle(const IRInstruction* inst) {
 
 bool Simplifier::typeMightRelax(SSATmp* tmp) const {
   if (!m_typesMightRelax) return false;
-  return JIT::typeMightRelax(tmp);
+  return jit::typeMightRelax(tmp);
 }
 
 //////////////////////////////////////////////////////////////////////

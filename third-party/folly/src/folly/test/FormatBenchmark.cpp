@@ -14,14 +14,14 @@
  * limitations under the License.
  */
 
-#include "folly/Format.h"
+#include <folly/Format.h>
 
 #include <glog/logging.h>
 
-#include "folly/FBVector.h"
-#include "folly/Benchmark.h"
-#include "folly/dynamic.h"
-#include "folly/json.h"
+#include <folly/FBVector.h>
+#include <folly/Benchmark.h>
+#include <folly/dynamic.h>
+#include <folly/json.h>
 
 using namespace folly;
 
@@ -181,7 +181,7 @@ BENCHMARK_RELATIVE(format_nested_direct, iters) {
 // ============================================================================
 
 int main(int argc, char *argv[]) {
-  google::ParseCommandLineFlags(&argc, &argv, true);
+  gflags::ParseCommandLineFlags(&argc, &argv, true);
   runBenchmarks();
   return 0;
 }

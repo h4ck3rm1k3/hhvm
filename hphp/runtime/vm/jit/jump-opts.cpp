@@ -24,7 +24,7 @@
 #include "hphp/runtime/vm/jit/cfg.h"
 #include "hphp/runtime/vm/jit/timer.h"
 
-namespace HPHP { namespace JIT {
+namespace HPHP { namespace jit {
 
 TRACE_SET_MOD(hhir);
 
@@ -240,7 +240,7 @@ void eliminateJmp(Block* lastBlock, IRInstruction* jmp, Block* target,
     auto& defLabel = target->front();
     assert(defLabel.numDsts() == jmp->numSrcs());
     for (auto i = 0; i < jmp->numSrcs(); i++) {
-      lastBlock->insert(lastInst++,
+      lastBlock->insert(lastInst,
                         unit.genWithDst(defLabel.dst(i), Mov,
                                         jmp->marker(), jmp->src(i)));
     }

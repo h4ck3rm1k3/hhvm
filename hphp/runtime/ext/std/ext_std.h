@@ -16,7 +16,13 @@ class StandardExtension : public Extension {
     initNetwork();
     initOptions();
     initOutput();
+    initString();
     initVariable();
+    initMisc();
+  }
+
+  void threadInit() {
+    threadInitMisc();
   }
 
  private:
@@ -25,7 +31,10 @@ class StandardExtension : public Extension {
   void initNetwork();
   void initOptions();
   void initOutput();
+  void initString();
   void initVariable();
+  void initMisc();
+  void threadInitMisc();
 };
 
 /////////////////////////////////////////////////////////////////////////////

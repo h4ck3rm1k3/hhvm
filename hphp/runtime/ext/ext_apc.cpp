@@ -43,6 +43,9 @@ using HPHP::ScopedMem;
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
 
+const StaticString
+  s_delete("delete");
+
 extern void const_load();
 
 typedef ConcurrentTableSharedStore::KeyValuePair KeyValuePair;
@@ -167,7 +170,7 @@ Variant f_apc_store(const Variant& key_or_array,
     Array valuesArr = key_or_array.toArray();
 
     // errors stores all keys corresponding to entries that could not be cached
-    PackedArrayInit errors(valuesArr.size());
+    ArrayInit errors(valuesArr.size(), ArrayInit::Map{});
 
     for (ArrayIter iter(valuesArr); iter; ++iter) {
       Variant key = iter.first();
@@ -177,7 +180,7 @@ Variant f_apc_store(const Variant& key_or_array,
       }
       Variant v = iter.second();
       if (!(s_apc_store[cache_id].store(key.toString(), v, ttl))) {
-        errors.append(key);
+        errors.add(key, -1);
       }
     }
     return errors.toVariant();
@@ -221,7 +224,7 @@ Variant f_apc_add(const Variant& key_or_array,
     Array valuesArr = key_or_array.toArray();
 
     // errors stores all keys corresponding to entries that could not be cached
-    PackedArrayInit errors(valuesArr.size());
+    ArrayInit errors(valuesArr.size(), ArrayInit::Map{});
 
     for (ArrayIter iter(valuesArr); iter; ++iter) {
       Variant key = iter.first();
@@ -231,7 +234,7 @@ Variant f_apc_add(const Variant& key_or_array,
       }
       Variant v = iter.second();
       if (!(s_apc_store[cache_id].store(key.toString(), v, ttl, false))) {
-        errors.append(key);
+        errors.add(key, -1);
       }
     }
     return errors.create();
@@ -306,6 +309,21 @@ Variant f_apc_delete(const Variant& key, int64_t cache_id /* = 0 */) {
       }
     }
     return init.create();
+  } else if(key.is(KindOfObject)) {
+    if (!key.getObjectData()->getVMClass()->
+         classof(SystemLib::s_APCIteratorClass)) {
+      raise_error(
+        "apc_delete(): apc_delete object argument must be instance"
+        " of APCIterator"
+      );
+      return false;
+    }
+    TypedValue tvResult;
+    tvWriteUninit(&tvResult);
+    const Func* method =
+      SystemLib::s_APCIteratorClass->lookupMethod(s_delete.get());
+    g_context->invokeFuncFew(&tvResult, method, key.getObjectData());
+    return tvAsVariant(&tvResult);
   }
 
   return s_apc_store[cache_id].erase(key.toString());

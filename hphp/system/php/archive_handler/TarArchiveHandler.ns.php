@@ -3,7 +3,7 @@
 namespace __SystemLib {
   final class TarArchiveHandler extends ArchiveHandler {
     private Map<string, ArchiveEntryData> $entries;
-    private string $path = '';
+    private $path = '';
     private $fp = null;
 
     public function __construct(string $path) {
@@ -62,7 +62,7 @@ namespace __SystemLib {
 
         switch ($type) {
           case 'L':
-            $next_file_name = $data;
+            $next_file_name = trim($data);
             break;
 
           case '0':

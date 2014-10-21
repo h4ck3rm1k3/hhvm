@@ -20,11 +20,11 @@
 #include "hphp/runtime/vm/jit/reg-alloc.h"
 #include "hphp/runtime/vm/jit/native-calls.h"
 
-namespace HPHP {  namespace JIT {
+namespace HPHP { namespace jit {
 
 using NativeCalls::CallMap;
 
-namespace ARM {
+namespace arm {
 
 // Return true if the CodeGenerator method for this instruction can
 // handle an immediate for the ith source operand, usually by selecting

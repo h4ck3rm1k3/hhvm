@@ -158,6 +158,7 @@ function get_options($argv) {
     'color' => 'c',
     'no-fun' => '',
     'cores' => '',
+    'no-clean' => '',
   );
   $options = array();
   $files = array();
@@ -306,7 +307,7 @@ function find_debug_config($test, $name) {
 function mode_cmd($options) {
   $repo_args = '';
   if (!isset($options['repo'])) {
-    // Set the non-repo-mode shared repo. 
+    // Set the non-repo-mode shared repo.
     // When in repo mode, we set our own central path.
     $repo_args = "-vRepo.Local.Mode=-- -vRepo.Central.Path=".verify_hhbc();
   }
@@ -431,6 +432,7 @@ class Status {
   private static $use_color = false;
 
   private static $queue = null;
+  private static $killed = false;
   public static $key;
 
   const MODE_NORMAL = 0;
@@ -467,6 +469,14 @@ class Status {
     self::send(self::MSG_FINISHED, null);
   }
 
+  public static function killQueue() {
+    if (!self::$killed) {
+      msg_remove_queue(self::$queue);
+      self::$queue = null;
+      self::$killed = true;
+    }
+  }
+
   public static function pass($test, $detail) {
     array_push(self::$results, array('name' => $test, 'status' => 'passed'));
     $how = $detail === 'pass-server' ? self::PASS_SERVER :
@@ -475,6 +485,9 @@ class Status {
   }
 
   public static function skip($test, $reason = null) {
+    if (self::getMode() !== self::MODE_FBMAKE) {
+      array_push(self::$results, array('name' => $test, 'status' => 'skipped'));
+    }
     self::send(self::MSG_TEST_SKIP, [$test,$reason]);
   }
 
@@ -482,7 +495,7 @@ class Status {
     array_push(self::$results, array(
       'name' => $test,
       'status' => 'failed',
-      'details' => (string)@file_get_contents("$test.diff")
+      'details' => self::utf8Sanitize(@file_get_contents("$test.diff")),
     ));
     self::send(self::MSG_TEST_FAIL, $test);
   }
@@ -492,6 +505,9 @@ class Status {
   }
 
   private static function send($type, $msg) {
+    if (self::$killed) {
+      return;
+    }
     msg_send(self::getQueue(), $type, $msg);
   }
 
@@ -525,7 +541,7 @@ class Status {
     $start = array('op' => 'start', 'test' => $test);
     $end = array('op' => 'test_done', 'test' => $test, 'status' => $status);
     if ($status == 'failed') {
-      $end['details'] = (string)@file_get_contents("$test.diff");
+      $end['details'] = self::utf8Sanitize(@file_get_contents("$test.diff"));
     }
     self::say($start, $end);
   }
@@ -547,6 +563,53 @@ class Status {
       && !exec('stty -a | grep -e "\\berase = <undef>"');
   }
 
+  public static function utf8Sanitize($str) {
+    if (class_exists('UConverter')) {
+      return UConverter::transcode($str, 'UTF-8', 'UTF-8');
+    }
+
+    // UConverter is PHP5.5 or later
+    // Do the equivalent using a slower user-space implementation
+    $ret = '';
+    $len = strlen($str);
+    $pos = 0;
+    while ($pos < $len) {
+      $c = $str[$pos];
+      $co = ord($c);
+      if ($co < 0x80) {
+        // U+0000 - U+007F ASCII
+        $ret .= $c;
+        ++$pos;
+      } elseif ((($co & 0xE0) == 0xC0) &&
+                (($len - $pos) > 1) &&
+                ((ord($str[$pos+1]) & 0xC0) == 0x80)) {
+        // U+0080 - U+07FF Lower Basic Multilingual Plane
+        $ret .= substr($str, $pos, 2);
+        $pos += 2;
+      } elseif ((($co & 0xF0) == 0xE0) &&
+                (($len - $pos) > 2) &&
+                ((ord($str[$pos+1]) & 0xC0) == 0x80) &&
+                ((ord($str[$pos+2]) & 0xC0) == 0x80)) {
+        // U+0800 - U+FFFF Upper Basic Multilingual Plane
+        $ret .= substr($std, $pos, 3);
+        $pos += 3;
+      } elseif ((($co & 0xF8) == 0xF0) &&
+                (($len - $pos) > 3) &&
+                ((ord($str[$pos+1]) & 0xC0) == 0x80) &&
+                ((ord($str[$pos+2]) & 0xC0) == 0x80) &&
+                ((ord($str[$pos+3]) & 0xC0) == 0x80)) {
+        // U+010000 - U+10FFFF Supplementary Multilingual Planes
+        $ret .= substr($str, $pos, 4);
+        $pos += 4;
+      } else {
+        // Invalid UTF8
+        $ret .= "\xEF\xBF\xBD"; // U+FFFD REPLACEMENT CHARACTER
+        ++$pos;
+      }
+    }
+    return $ret;
+  }
+
   public static function jsonEncode($data) {
     // JSON_UNESCAPED_SLASHES is Zend 5.4+
     if (defined("JSON_UNESCAPED_SLASHES")) {
@@ -565,17 +628,43 @@ class Status {
   }
 }
 
+function clean_intermediate_files($test, $options) {
+  if (isset($options['no-clean'])) {
+    return;
+  }
+  $exts = array('out', 'diff', 'repo');
+  foreach ($exts as $ext) {
+    $file = "$test.$ext";
+    if (file_exists($file)) {
+      if (is_dir($file)) {
+        foreach(new RecursiveIteratorIterator(new
+            RecursiveDirectoryIterator($file, FilesystemIterator::SKIP_DOTS),
+            RecursiveIteratorIterator::CHILD_FIRST) as $path) {
+          $path->isDir() ? rmdir($path->getPathname()) : unlink($path->getPathname());
+        }
+        rmdir($file);
+      } else {
+        unlink($file);
+      }
+    }
+  }
+}
+
 function run($options, $tests, $bad_test_file) {
   foreach ($tests as $test) {
-    $status = run_test($options, $test);
+    $status = run_and_lock_test($options, $test);
     if ($status === 'skip') {
       Status::skip($test);
+      clean_intermediate_files($test, $options);
     } else if ($status === 'skip-norepo') {
       Status::skip($test, 'norepo');
+      clean_intermediate_files($test, $options);
     } else if ($status === 'skip-onlyrepo') {
       Status::skip($test, 'onlyrepo');
+      clean_intermediate_files($test, $options);
     } else if ($status) {
       Status::pass($test, $status);
+      clean_intermediate_files($test, $options);
     } else {
       Status::fail($test);
     }
@@ -594,7 +683,7 @@ function skip_test($options, $test) {
   if (!$skipif_test) {
     return false;
   }
- 
+
   // For now, run the .skipif in non-repo since building a repo for it is hard
   $options_without_repo = $options;
   unset($options_without_repo['repo']);
@@ -854,7 +943,7 @@ function run_config_post($outputs, $test, $options) {
     $file = get_expect_file($test, 'expect', $options);
     $wanted = trim(file_get_contents($file));
     $passed = !strcmp($output, $wanted);
-    
+
     if (!$passed) {
       file_put_contents("$test.diff", generate_diff($wanted, null, $output));
     }
@@ -934,7 +1023,7 @@ function run_config_post($outputs, $test, $options) {
     $output    = preg_replace("/(\r\n?|\n)/", "\n", $output);
 
     $passed = preg_match("/^$wanted_re\$/s", $output);
-    
+
     if (!$passed) {
       file_put_contents("$test.diff", generate_diff($wanted, $wanted_re, $output));
     }
@@ -946,12 +1035,16 @@ function run_config_post($outputs, $test, $options) {
     $wanted_re = trim(file_get_contents($file));
 
     $passed = preg_match("/^$wanted_re\$/s", $output);
-    
+
     if (!$passed) {
       file_put_contents("$test.diff", generate_diff($wanted_re, $wanted_re, $output));
     }
 
     return $passed;
+  } else {
+    file_put_contents("$test.diff", "No $test.expect, $test.expectf, ".
+      "nor $test.expectregex. Is $test even a test?");
+    return false;
   }
 }
 
@@ -961,13 +1054,26 @@ function run_one_config($options, $test, $hhvm, $hhvm_env) {
   return run_config_post($outputs, $test, $options);
 }
 
+function run_and_lock_test($options, $test) {
+  $lock = fopen($test, 'r');
+  if (!flock($lock, LOCK_EX)) return false;
+  $result = run_test($options, $test);
+  if (!flock($lock, LOCK_UN)) return false;
+  fclose($lock);
+  return $result;
+}
+
 function run_test($options, $test) {
   if (skip_test($options, $test)) return 'skip';
 
   $test_ext = pathinfo($test, PATHINFO_EXTENSION);
   list($hhvm, $hhvm_env) = hhvm_cmd($options, $test);
 
-  $hhvm = __DIR__.'/../tools/timeout.sh -t 300 '.$hhvm;
+  if (is_executable('/usr/bin/timeout')) {
+    $hhvm = '/usr/bin/timeout 300 '.$hhvm;
+  } else {
+    $hhvm = __DIR__.'/../tools/timeout.sh -t 300 '.$hhvm;
+  }
 
   if (isset($options['repo'])) {
     if ($test_ext === 'hhas' ||
@@ -1491,7 +1597,7 @@ function main($argv) {
   }
   Status::setUseColor(isset($options['color']) ? true : posix_isatty(STDOUT));
 
-  Status::$key = ftok(__FILE__, 't');
+  Status::$key = rand();
   $queue = Status::getQueue();
   drain_queue($queue);
 
@@ -1519,9 +1625,15 @@ function main($argv) {
     error("failed to fork");
   } else if ($printer_pid == 0) {
     msg_loop(count($tests), $queue);
-    msg_remove_queue($queue);
     return 0;
   }
+
+  // In case we exit in a crazy way, have the parent blow up the queue.
+  // Do this here so no children inherit this.
+  $kill_queue = function() { Status::killQueue(); };
+  register_shutdown_function($kill_queue);
+  pcntl_signal(SIGTERM, $kill_queue);
+  pcntl_signal(SIGINT, $kill_queue);
 
   $return_value = 0;
   while (count($children) && $printer_pid != 0) {
@@ -1570,8 +1682,8 @@ function main($argv) {
     $json = json_decode(file_get_contents($bad_test_file), true);
     if (!is_array($json)) {
       error(
-        "No JSON output was received from a test thread. ".
-        "This might be a bug in the test script."
+        "\nNo JSON output was received from a test thread. ".
+        "Either you killed it, or it might be a bug in the test script."
       );
     }
     $results = array_merge($results, $json);

@@ -18,8 +18,8 @@
 #error This file may only be included from Format.h.
 #endif
 
-#include "folly/Exception.h"
-#include "folly/Traits.h"
+#include <folly/Exception.h>
+#include <folly/Traits.h>
 
 // Ignore -Wformat-nonliteral warnings within this file
 #pragma GCC diagnostic push
@@ -141,18 +141,19 @@ size_t uintToBinary(char* buffer, size_t bufLen, Uint v) {
 
 }  // namespace detail
 
-
-template <bool containerMode, class... Args>
-Formatter<containerMode, Args...>::Formatter(StringPiece str, Args&&... args)
-  : str_(str),
-    values_(FormatValue<typename std::decay<Args>::type>(
-        std::forward<Args>(args))...) {
+template <class Derived, bool containerMode, class... Args>
+BaseFormatter<Derived, containerMode, Args...>::BaseFormatter(StringPiece str,
+                                                              Args&&... args)
+    : str_(str),
+      values_(FormatValue<typename std::decay<Args>::type>(
+          std::forward<Args>(args))...) {
   static_assert(!containerMode || sizeof...(Args) == 1,
                 "Exactly one argument required in container mode");
 }
 
-template <bool containerMode, class... Args>
-void Formatter<containerMode, Args...>::handleFormatStrError() const {
+template <class Derived, bool containerMode, class... Args>
+void BaseFormatter<Derived, containerMode, Args...>::handleFormatStrError()
+    const {
   if (crashOnError_) {
     LOG(FATAL) << "folly::format: bad format string \"" << str_ << "\": " <<
       folly::exceptionStr(std::current_exception());
@@ -160,9 +161,10 @@ void Formatter<containerMode, Args...>::handleFormatStrError() const {
   throw;
 }
 
-template <bool containerMode, class... Args>
+template <class Derived, bool containerMode, class... Args>
 template <class Output>
-void Formatter<containerMode, Args...>::operator()(Output& out) const {
+void BaseFormatter<Derived, containerMode, Args...>::operator()(Output& out)
+    const {
   // Catch BadFormatArg and range_error exceptions, and call
   // handleFormatStrError().
   //
@@ -193,9 +195,10 @@ void Formatter<containerMode, Args...>::operator()(Output& out) const {
   }
 }
 
-template <bool containerMode, class... Args>
+template <class Derived, bool containerMode, class... Args>
 template <class Output>
-void Formatter<containerMode, Args...>::appendOutput(Output& out) const {
+void BaseFormatter<Derived, containerMode, Args...>::appendOutput(Output& out)
+    const {
   auto p = str_.begin();
   auto end = str_.end();
 
@@ -287,8 +290,9 @@ void Formatter<containerMode, Args...>::appendOutput(Output& out) const {
   }
 }
 
-template <bool containerMode, class... Args>
-void writeTo(FILE* fp, const Formatter<containerMode, Args...>& formatter) {
+template <class Derived, bool containerMode, class... Args>
+void writeTo(FILE* fp,
+             const BaseFormatter<Derived, containerMode, Args...>& formatter) {
   auto writer = [fp] (StringPiece sp) {
     ssize_t n = fwrite(sp.data(), 1, sp.size(), fp);
     if (n < sp.size()) {
@@ -367,10 +371,14 @@ void formatNumber(StringPiece val, int prefixLen, FormatArg& arg,
   format_value::formatString(val, arg, cb);
 }
 
-template <class FormatCallback, bool containerMode, class... Args>
-void formatFormatter(const Formatter<containerMode, Args...>& formatter,
-                     FormatArg& arg,
-                     FormatCallback& cb) {
+template <class FormatCallback,
+          class Derived,
+          bool containerMode,
+          class... Args>
+void formatFormatter(
+    const BaseFormatter<Derived, containerMode, Args...>& formatter,
+    FormatArg& arg,
+    FormatCallback& cb) {
   if (arg.width == FormatArg::kDefaultWidth &&
       arg.precision == FormatArg::kDefaultPrecision) {
     // nothing to do
@@ -641,6 +649,11 @@ class FormatValue<double> {
       break;
     };
 
+    auto flags =
+        DoubleToStringConverter::EMIT_POSITIVE_EXPONENT_SIGN |
+        (arg.trailingDot ? DoubleToStringConverter::EMIT_TRAILING_DECIMAL_POINT
+                         : 0);
+
     double val = val_;
     switch (arg.presentation) {
     case '%':
@@ -652,13 +665,14 @@ class FormatValue<double> {
             DoubleToStringConverter::kMaxFixedDigitsAfterPoint) {
           arg.precision = DoubleToStringConverter::kMaxFixedDigitsAfterPoint;
         }
-        DoubleToStringConverter conv(
-            DoubleToStringConverter::EMIT_POSITIVE_EXPONENT_SIGN,
-            infinitySymbol,
-            nanSymbol,
-            exponentSymbol,
-            -4, arg.precision,
-            0, 0);
+        DoubleToStringConverter conv(flags,
+                                     infinitySymbol,
+                                     nanSymbol,
+                                     exponentSymbol,
+                                     -4,
+                                     arg.precision,
+                                     0,
+                                     0);
         arg.enforce(conv.ToFixed(val, arg.precision, &builder),
                     "fixed double conversion failed");
       }
@@ -670,13 +684,14 @@ class FormatValue<double> {
           arg.precision = DoubleToStringConverter::kMaxExponentialDigits;
         }
 
-        DoubleToStringConverter conv(
-            DoubleToStringConverter::EMIT_POSITIVE_EXPONENT_SIGN,
-            infinitySymbol,
-            nanSymbol,
-            exponentSymbol,
-            -4, arg.precision,
-            0, 0);
+        DoubleToStringConverter conv(flags,
+                                     infinitySymbol,
+                                     nanSymbol,
+                                     exponentSymbol,
+                                     -4,
+                                     arg.precision,
+                                     0,
+                                     0);
         arg.enforce(conv.ToExponential(val, arg.precision, &builder));
       }
       break;
@@ -690,13 +705,14 @@ class FormatValue<double> {
                    DoubleToStringConverter::kMaxPrecisionDigits) {
           arg.precision = DoubleToStringConverter::kMaxPrecisionDigits;
         }
-        DoubleToStringConverter conv(
-            DoubleToStringConverter::EMIT_POSITIVE_EXPONENT_SIGN,
-            infinitySymbol,
-            nanSymbol,
-            exponentSymbol,
-            -4, arg.precision,
-            0, 0);
+        DoubleToStringConverter conv(flags,
+                                     infinitySymbol,
+                                     nanSymbol,
+                                     exponentSymbol,
+                                     -4,
+                                     arg.precision,
+                                     0,
+                                     0);
         arg.enforce(conv.ToShortest(val, &builder));
       }
       break;
@@ -1204,9 +1220,13 @@ class FormatValue<std::tuple<Args...>> {
 };
 
 // Partial specialization of FormatValue for nested Formatters
-template <bool containerMode, class... Args>
-class FormatValue<Formatter<containerMode, Args...>, void> {
-  typedef Formatter<containerMode, Args...> FormatterValue;
+template <bool containerMode, class... Args,
+          template <bool, class...> class F>
+class FormatValue<F<containerMode, Args...>,
+                  typename std::enable_if<detail::IsFormatter<
+                      F<containerMode, Args...>>::value>::type> {
+  typedef typename F<containerMode, Args...>::BaseType FormatterValue;
+
  public:
   explicit FormatValue(const FormatterValue& f) : f_(f) { }
 
@@ -1222,10 +1242,9 @@ class FormatValue<Formatter<containerMode, Args...>, void> {
  * Formatter objects can be appended to strings, and therefore they're
  * compatible with folly::toAppend and folly::to.
  */
-template <class Tgt, bool containerMode, class... Args>
-typename std::enable_if<
-   IsSomeString<Tgt>::value>::type
-toAppend(const Formatter<containerMode, Args...>& value, Tgt * result) {
+template <class Tgt, class Derived, bool containerMode, class... Args>
+typename std::enable_if<IsSomeString<Tgt>::value>::type toAppend(
+    const BaseFormatter<Derived, containerMode, Args...>& value, Tgt* result) {
   value.appendTo(*result);
 }
 

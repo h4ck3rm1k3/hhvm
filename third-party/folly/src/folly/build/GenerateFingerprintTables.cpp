@@ -26,9 +26,9 @@
 #include <glog/logging.h>
 #include <gflags/gflags.h>
 
-#include "folly/Format.h"
+#include <folly/Format.h>
 
-#include "folly/detail/FingerprintPolynomial.h"
+#include <folly/detail/FingerprintPolynomial.h>
 
 using namespace folly;
 using namespace folly::detail;
@@ -119,7 +119,7 @@ void computeTables(FILE* file, const FingerprintPolynomial<DEG>& poly) {
 }  // namespace
 
 int main(int argc, char *argv[]) {
-  google::ParseCommandLineFlags(&argc, &argv, true);
+  gflags::ParseCommandLineFlags(&argc, &argv, true);
   google::InitGoogleLogging(argv[0]);
 
   std::string name = folly::format("{}/{}", FLAGS_install_dir,
@@ -134,7 +134,7 @@ int main(int argc, char *argv[]) {
       " * AUTOMATICALLY GENERATED.  DO NOT EDIT.\n"
       " */\n"
       "\n"
-      "#include \"folly/Fingerprint.h\"\n"
+      "#include <folly/Fingerprint.h>\n"
       "\n"
       "namespace folly {\n"
       "namespace detail {\n"

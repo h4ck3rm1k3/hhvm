@@ -98,6 +98,15 @@ bool PreClassEmitter::addMethod(FuncEmitter* method) {
   return true;
 }
 
+void PreClassEmitter::renameMethod(const StringData* oldName,
+                                   const StringData* newName) {
+  MethodMap::const_iterator it = m_methodMap.find(oldName);
+  assert(it != m_methodMap.end());
+  it->second->name = newName;
+  m_methodMap[newName] = it->second;
+  m_methodMap.erase(oldName);
+}
+
 bool PreClassEmitter::addProperty(const StringData* n, Attr attrs,
                                   const StringData* typeConstraint,
                                   const StringData* docComment,
@@ -155,8 +164,8 @@ void PreClassEmitter::addUserAttribute(const StringData* name, TypedValue tv) {
 void PreClassEmitter::commit(RepoTxn& txn) const {
   Repo& repo = Repo::get();
   PreClassRepoProxy& pcrp = repo.pcrp();
-  int repoId = m_ue.repoId();
-  int64_t usn = m_ue.sn();
+  int repoId = m_ue.m_repoId;
+  int64_t usn = m_ue.m_sn;
   pcrp.insertPreClass(repoId)
       .insert(*this, txn, usn, m_id, m_name, m_hoistable);
 
@@ -211,6 +220,7 @@ PreClass* PreClassEmitter::create(Unit& unit) const {
   pc->m_requirements = m_requirements;
   pc->m_traitPrecRules = m_traitPrecRules;
   pc->m_traitAliasRules = m_traitAliasRules;
+  pc->m_enumBaseTy = m_enumBaseTy;
 
   // Set user attributes.
   [&] {
@@ -300,6 +310,7 @@ template<class SerDe> void PreClassEmitter::serdeMetaData(SerDe& sd) {
     (m_userAttributes)
     (m_propMap)
     (m_constMap)
+    (m_enumBaseTy)
     ;
 }
 
@@ -369,7 +380,7 @@ void PreClassRepoProxy::GetPreClassesStmt
     txn.prepare(*this, ssSelect.str());
   }
   RepoTxnQuery query(txn, *this);
-  query.bindInt64("@unitSn", ue.sn());
+  query.bindInt64("@unitSn", ue.m_sn);
   do {
     query.step();
     if (query.row()) {

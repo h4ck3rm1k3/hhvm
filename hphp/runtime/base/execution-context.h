@@ -33,6 +33,7 @@
 #include "hphp/runtime/base/apc-handle.h"
 #include "hphp/runtime/vm/func.h"
 #include "hphp/runtime/vm/bytecode.h"
+#include "hphp/runtime/vm/pc-filter.h"
 #include "hphp/util/lock.h"
 #include "hphp/util/thread-local.h"
 
@@ -41,10 +42,9 @@ namespace vixl { class Simulator; }
 namespace HPHP {
 struct RequestEventHandler;
 struct EventHook;
-struct PCFilter;
 struct Resumable;
 struct PhpFile;
-namespace JIT { struct Translator; }
+namespace jit { struct Translator; }
 }
 
 namespace HPHP {
@@ -239,6 +239,7 @@ public:
   void registerShutdownFunction(const Variant& function, Array arguments,
                                 ShutdownType type);
   bool removeShutdownFunction(const Variant& function, ShutdownType type);
+  bool hasShutdownFunctions(ShutdownType type);
   void onRequestShutdown();
   void onShutdownPreSend();
   void onShutdownPostSend();
@@ -311,7 +312,6 @@ private:
   };
 
 private:
-  static const StaticString s_amp;
   // system settings
   Transport *m_transport;
   String m_cwd;
@@ -319,6 +319,7 @@ private:
   // output buffering
   StringBuffer *m_out;                // current output buffer
   std::list<OutputBuffer*> m_buffers; // a stack of output buffers
+  bool m_insideOBHandler{false};
   bool m_implicitFlush;
   int m_protectedLevel;
   PFUNC_STDOUT m_stdout;
@@ -529,10 +530,19 @@ public:
   Unit* compileEvalString(StringData* code,
                                 const char* evalFilename = nullptr);
   StrNR createFunction(const String& args, const String& code);
+
+  // Compiles the passed string and evaluates it in the given frame. Returns
+  // false on failure.
   bool evalPHPDebugger(TypedValue* retval, StringData *code, int frame);
+
+  // Evaluates the a unit compiled via compile_string in the given frame.
+  // Returns false on failure.
+  bool evalPHPDebugger(TypedValue* retval, Unit* unit, int frame);
+
   void enterDebuggerDummyEnv();
   void exitDebuggerDummyEnv();
   void preventReturnsToTC();
+  void preventReturnToTC(ActRec* ar);
   void destructObjects();
   int m_lambdaCounter;
   typedef TinyVector<VMState, 32> NestedVMVec;
@@ -547,18 +557,15 @@ public:
                          Offset* prevPc = nullptr,
                          TypedValue** prevSp = nullptr,
                          bool* fromVMEntry = nullptr);
-  Array debugBacktrace(bool skip = false,
-                       bool withSelf = false,
-                       bool withThis = false,
-                       VMParserFrame* parserFrame = nullptr,
-                       bool ignoreArgs = false,
-                       int limit = 0);
   VarEnv* getVarEnv(int frame = 0);
   void setVar(StringData* name, const TypedValue* v);
   void bindVar(StringData* name, TypedValue* v);
   Array getLocalDefinedVariables(int frame);
-  PCFilter* m_breakPointFilter;
-  PCFilter* m_lastLocFilter;
+  PCFilter* m_breakPointFilter; // Lazily initialized as they are performance
+  PCFilter* m_flowFilter;       // sensitive (nullptr => no breakpoints)
+  PCFilter m_lineBreakPointFilter;
+  PCFilter m_callBreakPointFilter;
+  PCFilter m_retBreakPointFilter;
   bool m_dbgNoBreak;
   bool doFCall(ActRec* ar, PC& pc);
   bool doFCallArrayTC(PC pc);

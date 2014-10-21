@@ -14,13 +14,13 @@
  * limitations under the License.
  */
 
-#include "folly/String.h"
+#include <folly/String.h>
 
 #include <random>
 #include <boost/algorithm/string.hpp>
 #include <gtest/gtest.h>
 
-#include "folly/Benchmark.h"
+#include <folly/Benchmark.h>
 
 using namespace folly;
 using namespace std;
@@ -624,6 +624,13 @@ void splitTest() {
   EXPECT_EQ(parts[2], "kdbk");
   parts.clear();
 
+  // test last part is shorter than the delimiter
+  folly::split("bc", "abcd", parts, true);
+  EXPECT_EQ(parts.size(), 2);
+  EXPECT_EQ(parts[0], "a");
+  EXPECT_EQ(parts[1], "d");
+  parts.clear();
+
   string orig = "ab2342asdfv~~!";
   folly::split("", orig, parts, true);
   EXPECT_EQ(parts.size(), 1);
@@ -895,6 +902,49 @@ TEST(Split, fixed) {
   EXPECT_FALSE(folly::split('.', "a.b", a));
 }
 
+TEST(Split, std_string_fixed) {
+  std::string a, b, c, d;
+
+  EXPECT_TRUE(folly::split<false>('.', "a.b.c.d", a, b, c, d));
+  EXPECT_TRUE(folly::split<false>('.', "a.b.c", a, b, c));
+  EXPECT_TRUE(folly::split<false>('.', "a.b", a, b));
+  EXPECT_TRUE(folly::split<false>('.', "a", a));
+
+  EXPECT_TRUE(folly::split('.', "a.b.c.d", a, b, c, d));
+  EXPECT_TRUE(folly::split('.', "a.b.c", a, b, c));
+  EXPECT_TRUE(folly::split('.', "a.b", a, b));
+  EXPECT_TRUE(folly::split('.', "a", a));
+
+  EXPECT_TRUE(folly::split<false>('.', "a.b.c", a, b, c));
+  EXPECT_EQ("a", a);
+  EXPECT_EQ("b", b);
+  EXPECT_EQ("c", c);
+  EXPECT_FALSE(folly::split<false>('.', "a.b", a, b, c));
+  EXPECT_TRUE(folly::split<false>('.', "a.b.c", a, b));
+  EXPECT_EQ("a", a);
+  EXPECT_EQ("b.c", b);
+
+  EXPECT_TRUE(folly::split('.', "a.b.c", a, b, c));
+  EXPECT_EQ("a", a);
+  EXPECT_EQ("b", b);
+  EXPECT_EQ("c", c);
+  EXPECT_FALSE(folly::split('.', "a.b.c", a, b));
+  EXPECT_FALSE(folly::split('.', "a.b", a, b, c));
+
+  EXPECT_TRUE(folly::split<false>('.', "a.b", a, b));
+  EXPECT_EQ("a", a);
+  EXPECT_EQ("b", b);
+  EXPECT_FALSE(folly::split<false>('.', "a", a, b));
+  EXPECT_TRUE(folly::split<false>('.', "a.b", a));
+  EXPECT_EQ("a.b", a);
+
+  EXPECT_TRUE(folly::split('.', "a.b", a, b));
+  EXPECT_EQ("a", a);
+  EXPECT_EQ("b", b);
+  EXPECT_FALSE(folly::split('.', "a", a, b));
+  EXPECT_FALSE(folly::split('.', "a.b", a));
+}
+
 TEST(Split, fixed_convert) {
   StringPiece a, d;
   int b;
@@ -1027,6 +1077,77 @@ TEST(String, humanify) {
   EXPECT_EQ("0x61ffffffffff", humanify(string("a\xff\xff\xff\xff\xff")));
 }
 
+namespace {
+
+/**
+ * Copy bytes from src to somewhere in the buffer referenced by dst. The
+ * actual starting position of the copy will be the first address in the
+ * destination buffer whose address mod 8 is equal to the src address mod 8.
+ * The caller is responsible for ensuring that the destination buffer has
+ * enough extra space to accommodate the shifted copy.
+ */
+char* copyWithSameAlignment(char* dst, const char* src, size_t length) {
+  const char* originalDst = dst;
+  size_t dstOffset = size_t(dst) & 0x7;
+  size_t srcOffset = size_t(src) & 0x7;
+  while (dstOffset != srcOffset) {
+    dst++;
+    dstOffset++;
+    dstOffset &= 0x7;
+  }
+  CHECK(dst <= originalDst + 7);
+  CHECK((size_t(dst) & 0x7) == (size_t(src) & 0x7));
+  memcpy(dst, src, length);
+  return dst;
+}
+
+void testToLowerAscii(Range<const char*> src) {
+  // Allocate extra space so we can make copies that start at the
+  // same alignment (byte, word, quadword, etc) as the source buffer.
+  char controlBuf[src.size() + 7];
+  char* control = copyWithSameAlignment(controlBuf, src.begin(), src.size());
+
+  char testBuf[src.size() + 7];
+  char* test = copyWithSameAlignment(testBuf, src.begin(), src.size());
+
+  for (size_t i = 0; i < src.size(); i++) {
+    control[i] = tolower(control[i]);
+  }
+  toLowerAscii(test, src.size());
+  for (size_t i = 0; i < src.size(); i++) {
+    EXPECT_EQ(control[i], test[i]);
+  }
+}
+
+} // anon namespace
+
+TEST(String, toLowerAsciiAligned) {
+  static const size_t kSize = 256;
+  char input[kSize];
+  for (size_t i = 0; i < kSize; i++) {
+    input[i] = (char)(i & 0xff);
+  }
+  testToLowerAscii(Range<const char*>(input, kSize));
+}
+
+TEST(String, toLowerAsciiUnaligned) {
+  static const size_t kSize = 256;
+  char input[kSize];
+  for (size_t i = 0; i < kSize; i++) {
+    input[i] = (char)(i & 0xff);
+  }
+  // Test input buffers of several lengths to exercise all the
+  // cases: buffer at the start/middle/end of an aligned block, plus
+  // buffers that span multiple aligned blocks.  The longest test input
+  // is 3 unaligned bytes + 4 32-bit aligned bytes + 8 64-bit aligned
+  // + 4 32-bit aligned + 3 unaligned = 22 bytes.
+  for (size_t length = 1; length < 23; length++) {
+    for (size_t offset = 0; offset + length <= kSize; offset++) {
+      testToLowerAscii(Range<const char*>(input + offset, length));
+    }
+  }
+}
+
 //////////////////////////////////////////////////////////////////////
 
 BENCHMARK(splitOnSingleChar, iters) {
@@ -1107,7 +1228,7 @@ BENCHMARK(joinInt, iters) {
 
 int main(int argc, char *argv[]) {
   testing::InitGoogleTest(&argc, argv);
-  google::ParseCommandLineFlags(&argc, &argv, true);
+  gflags::ParseCommandLineFlags(&argc, &argv, true);
   auto ret = RUN_ALL_TESTS();
   if (!ret) {
     initBenchmark();

@@ -9,13 +9,13 @@ SRC= clientEnv.ml clientExceptions.ml  clientUtils.ml colorFile.ml \
   clientColorFile.ml clientStart.ml clientCommand.ml \
   clientArgs.ml \
   clientBuild.ml clientProlog.ml clientStatus.ml clientCheckStatus.ml \
-  clientMethodJumps.ml \
+  clientMethodJumps.ml clientTypeAtPos.ml clientArgumentInfo.ml \
   clientRestart.ml clientFindRefs.ml clientOutline.ml clientRefactor.ml \
-  clientAutocomplete.ml clientMethodJumps.ml clientSearch.ml clientCheck.ml
+  clientAutocomplete.ml clientMethodJumps.ml clientSearch.ml clientCheck.ml \
+  clientLogCommand.ml clientLogCommandUtils.ml
 
-
-INCLUDEDIRS=$(TOP)/utils \
- $(TOP)/socket $(TOP)/typing $(TOP)/parsing $(TOP)/server
+INCLUDEDIRS=$(TOP)/utils $(TOP)/stubs \
+ $(TOP)/socket $(TOP)/typing $(TOP)/parsing $(TOP)/search $(TOP)/server
 
 
 ##############################################################################

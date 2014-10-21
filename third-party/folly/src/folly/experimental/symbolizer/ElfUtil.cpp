@@ -15,7 +15,7 @@
  */
 
 
-#include "folly/experimental/symbolizer/Elf.h"
+#include <folly/experimental/symbolizer/Elf.h>
 
 #include <stdio.h>
 
@@ -26,7 +26,7 @@ using namespace folly;
 using namespace folly::symbolizer;
 
 int main(int argc, char *argv[]) {
-  google::ParseCommandLineFlags(&argc, &argv, true);
+  gflags::ParseCommandLineFlags(&argc, &argv, true);
   CHECK_GE(argc, 2);
 
   ElfFile elf(argv[1]);

@@ -165,7 +165,7 @@ THOUGHTS:
 #include <vector>
 #define VECTOR_ std::vector
 #else
-#include "folly/FBVector.h"
+#include <folly/FBVector.h>
 #define VECTOR_ folly::fbvector
 #endif
 
@@ -184,8 +184,8 @@ THOUGHTS:
 #include <cstddef>
 #include <iomanip>
 
-#include "folly/ScopeGuard.h"
-#include "folly/Conv.h"
+#include <folly/ScopeGuard.h>
+#include <folly/Conv.h>
 #include <boost/preprocessor.hpp>
 #include <boost/iterator/iterator_adaptor.hpp>
 #include <gflags/gflags.h>
@@ -2722,7 +2722,7 @@ STL_TEST("attach", attach, is_destructible, a) {
 
 int main(int argc, char** argv) {
   testing::InitGoogleTest(&argc, argv);
-  google::ParseCommandLineFlags(&argc, &argv, true);
+  gflags::ParseCommandLineFlags(&argc, &argv, true);
 
   return RUN_ALL_TESTS();
 }
@@ -2737,7 +2737,7 @@ TEST(placeholder, gccversion) {}
 
 int main(int argc, char** argv) {
   testing::InitGoogleTest(&argc, argv);
-  google::ParseCommandLineFlags(&argc, &argv, true);
+  gflags::ParseCommandLineFlags(&argc, &argv, true);
 
   return RUN_ALL_TESTS();
 }

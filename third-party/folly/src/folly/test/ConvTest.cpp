@@ -14,9 +14,9 @@
  * limitations under the License.
  */
 
-#include "folly/Benchmark.h"
-#include "folly/Conv.h"
-#include "folly/Foreach.h"
+#include <folly/Benchmark.h>
+#include <folly/Conv.h>
+#include <folly/Foreach.h>
 #include <boost/lexical_cast.hpp>
 #include <gtest/gtest.h>
 #include <limits>
@@ -936,6 +936,7 @@ void u2aAppendFollyBM(unsigned int n, uint64_t value) {
 
 template <class String>
 struct StringIdenticalToBM {
+  StringIdenticalToBM() {}
   void operator()(unsigned int n, size_t len) const {
     String s;
     BENCHMARK_SUSPEND { s.append(len, '0'); }
@@ -948,6 +949,7 @@ struct StringIdenticalToBM {
 
 template <class String>
 struct StringVariadicToBM {
+  StringVariadicToBM() {}
   void operator()(unsigned int n, size_t len) const {
     String s;
     BENCHMARK_SUSPEND { s.append(len, '0'); }
@@ -957,6 +959,33 @@ struct StringVariadicToBM {
     }
   }
 };
+
+static size_t bigInt = 11424545345345;
+static size_t smallInt = 104;
+static char someString[] = "this is some nice string";
+static char otherString[] = "this is a long string, so it's not so nice";
+static char reallyShort[] = "meh";
+static std::string stdString = "std::strings are very nice";
+static float fValue = 1.2355;
+static double dValue = 345345345.435;
+
+BENCHMARK(preallocateTestNoFloat, n) {
+  for (int i=0; i < n; ++i) {
+    auto val1 = to<std::string>(bigInt, someString, stdString, otherString);
+    auto val3 = to<std::string>(reallyShort, smallInt);
+    auto val2 = to<std::string>(bigInt, stdString);
+    auto val4 = to<std::string>(bigInt, stdString, dValue, otherString);
+    auto val5 = to<std::string>(bigInt, someString, reallyShort);
+  }
+}
+
+BENCHMARK(preallocateTestFloat, n) {
+  for (int i=0; i < n; ++i) {
+    auto val1 = to<std::string>(stdString, ',', fValue, dValue);
+    auto val2 = to<std::string>(stdString, ',', dValue);
+  }
+}
+BENCHMARK_DRAW_LINE();
 
 static const StringIdenticalToBM<std::string> stringIdenticalToBM;
 static const StringVariadicToBM<std::string> stringVariadicToBM;
@@ -1037,7 +1066,7 @@ DEFINE_BENCHMARK_GROUP(fbstring, 32768);
 
 int main(int argc, char** argv) {
   testing::InitGoogleTest(&argc, argv);
-  google::ParseCommandLineFlags(&argc, &argv, true);
+  gflags::ParseCommandLineFlags(&argc, &argv, true);
   auto ret = RUN_ALL_TESTS();
   if (!ret && FLAGS_benchmark) {
     folly::runBenchmarks();

@@ -16,10 +16,10 @@
 #include <atomic>
 #include <glog/logging.h>
 
-#include "folly/Benchmark.h"
-#include "folly/String.h"
-#include "folly/gen/Base.h"
-#include "folly/gen/String.h"
+#include <folly/Benchmark.h>
+#include <folly/String.h>
+#include <folly/gen/Base.h>
+#include <folly/gen/String.h>
 
 using namespace folly;
 using namespace folly::gen;
@@ -322,7 +322,7 @@ BENCHMARK_RELATIVE(Records_VectorString, iters) {
 // ============================================================================
 
 int main(int argc, char *argv[]) {
-  google::ParseCommandLineFlags(&argc, &argv, true);
+  gflags::ParseCommandLineFlags(&argc, &argv, true);
   initStringResplitterBenchmark();
   runBenchmarks();
   return 0;

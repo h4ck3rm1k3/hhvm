@@ -19,8 +19,8 @@
 #include <iostream>
 #include <array>
 #include <vector>
-#include "folly/gen/Base.h"
-#include "folly/gen/Parallel.h"
+#include <folly/gen/Base.h>
+#include <folly/gen/Parallel.h>
 
 using namespace folly;
 using namespace folly::gen;
@@ -104,6 +104,6 @@ TEST(ParallelTest, PSum) {
 
 int main(int argc, char *argv[]) {
   testing::InitGoogleTest(&argc, argv);
-  google::ParseCommandLineFlags(&argc, &argv, true);
+  gflags::ParseCommandLineFlags(&argc, &argv, true);
   return RUN_ALL_TESTS();
 }

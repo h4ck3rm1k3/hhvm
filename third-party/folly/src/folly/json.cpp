@@ -14,14 +14,15 @@
  * limitations under the License.
  */
 
-#include "folly/json.h"
+#include <folly/json.h>
 #include <cassert>
 #include <boost/next_prior.hpp>
 #include <boost/algorithm/string.hpp>
 
-#include "folly/Range.h"
-#include "folly/Unicode.h"
-#include "folly/Conv.h"
+#include <folly/Conv.h>
+#include <folly/Range.h>
+#include <folly/String.h>
+#include <folly/Unicode.h>
 
 namespace folly {
 
@@ -255,26 +256,6 @@ private:
   serialization_opts const& opts_;
 };
 
-//////////////////////////////////////////////////////////////////////
-
-struct ParseError : std::runtime_error {
-  explicit ParseError(int line)
-    : std::runtime_error(to<std::string>("json parse error on line ", line))
-  {}
-
-  explicit ParseError(int line, std::string const& context,
-      std::string const& expected)
-    : std::runtime_error(to<std::string>("json parse error on line ", line,
-        !context.empty() ? to<std::string>(" near `", context, '\'')
-                        : "",
-        ": ", expected))
-  {}
-
-  explicit ParseError(std::string const& what)
-    : std::runtime_error("json parse error: " + what)
-  {}
-};
-
 // Wraps our input buffer with some helper functions.
 struct Input {
   explicit Input(StringPiece range, json::serialization_opts const* opts)
@@ -323,20 +304,7 @@ struct Input {
   }
 
   void skipWhitespace() {
-    // Spaces other than ' ' characters are less common but should be
-    // checked.  This configuration where we loop on the ' '
-    // separately from oddspaces was empirically fastest.
-    auto oddspace = [] (char c) {
-      return c == '\n' || c == '\t' || c == '\r';
-    };
-
-  loop:
-    for (; !range_.empty() && range_.front() == ' '; range_.pop_front()) {
-    }
-    if (!range_.empty() && oddspace(range_.front())) {
-      range_.pop_front();
-      goto loop;
-    }
+    range_ = folly::skipWhitespace(range_);
     storeCurrent();
   }
 

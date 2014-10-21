@@ -27,13 +27,13 @@
 
 #include <gflags/gflags.h>
 
-#include "folly/File.h"
-#include "folly/Format.h"
-#include "folly/MemoryMapping.h"
-#include "folly/Portability.h"
-#include "folly/Range.h"
-#include "folly/ScopeGuard.h"
-#include "folly/experimental/io/HugePages.h"
+#include <folly/File.h>
+#include <folly/Format.h>
+#include <folly/MemoryMapping.h>
+#include <folly/Portability.h>
+#include <folly/Range.h>
+#include <folly/ScopeGuard.h>
+#include <folly/experimental/io/HugePages.h>
 
 DEFINE_bool(cp, false, "Copy file");
 
@@ -74,7 +74,7 @@ void list() {
 
 
 int main(int argc, char *argv[]) {
-  google::ParseCommandLineFlags(&argc, &argv, true);
+  gflags::ParseCommandLineFlags(&argc, &argv, true);
   if (FLAGS_cp) {
     if (argc != 3) usage(argv[0]);
     copy(argv[1], argv[2]);

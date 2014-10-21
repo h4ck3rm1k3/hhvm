@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-#include "folly/Range.h"
+#include <folly/Range.h>
 
 #include <gtest/gtest.h>
 #include <algorithm>
@@ -32,6 +32,6 @@ TEST(CaseInsensitiveMatch, CompareWithLegacy) {
 
 int main(int argc, char** argv) {
   testing::InitGoogleTest(&argc, argv);
-  google::ParseCommandLineFlags(&argc, &argv, true);
+  gflags::ParseCommandLineFlags(&argc, &argv, true);
   return RUN_ALL_TESTS();
 }

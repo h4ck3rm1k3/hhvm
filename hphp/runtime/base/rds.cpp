@@ -22,13 +22,16 @@
 #include <vector>
 
 #include <sys/mman.h>
+#ifndef __CYGWIN__
 #include <execinfo.h>
+#endif
 
 #include "folly/String.h"
 #include "folly/Hash.h"
 #include "folly/Bits.h"
 
 #include "hphp/util/maphuge.h"
+#include "hphp/util/logger.h"
 
 #include "hphp/runtime/base/complex-types.h"
 #include "hphp/runtime/base/rds-header.h"
@@ -342,8 +345,14 @@ void requestExit() {
 
 void flush() {
   if (madvise(tl_base, s_normal_frontier, MADV_DONTNEED) == -1) {
-    fprintf(stderr, "RDS madvise failure: %s\n",
-      folly::errnoStr(errno).c_str());
+    Logger::Warning("RDS madvise failure: %s\n",
+                    folly::errnoStr(errno).c_str());
+  }
+  size_t offset = s_local_frontier & ~0xfff;
+  if (madvise(static_cast<char*>(tl_base) + offset,
+              s_persistent_base - offset, MADV_DONTNEED)) {
+    Logger::Warning("RDS local madvise failure: %s\n",
+                    folly::errnoStr(errno).c_str());
   }
 }
 

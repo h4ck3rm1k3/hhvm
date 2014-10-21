@@ -21,13 +21,11 @@ let rec terminal in_try stl = List.iter (terminal_ in_try) stl
 and terminal_ in_try = function
   | Throw _ when not in_try -> raise Exit
   | Throw _ -> ()
-  | Continue
+  | Continue _
   | Expr (_, (Call ((_, Id (_, "assert")), [_, False])
   | Call ((_, Id (_, "invariant")), (_, False) :: _ :: _)
   | Call ((_, Id (_, "invariant_violation")), _ :: _)))
-  | Expr (_, Yield (_, Call ((_, Id (_, "result")), _)))
   | Return _
-  | Expr (_, Call ((_, Id (_, "result")), [(_, False)]))
   | Expr (_, Call ((_, Id (_, "exit")), _)) -> raise Exit
   | If (_, b1, b2) ->
       (try terminal in_try b1; () with Exit ->
@@ -47,7 +45,7 @@ and terminal_ in_try = function
   | Expr _
   | Unsafe
   | Fallthrough
-  | Break (* TODO this is terminal sometimes too, except switch, see above. *)
+  | Break _ (* TODO this is terminal sometimes too, except switch, see above. *)
   | Static_var _ -> ()
 
 and terminal_catch in_try (_, _, b) =
@@ -58,7 +56,7 @@ and terminal_cl in_try = function
   | Case (_, b) :: rl ->
       (try
         terminal in_try b;
-        if List.exists (function Break -> true | _ -> false) b
+        if List.exists (function Break _ -> true | _ -> false) b
         then ()
         else raise Exit
       with Exit -> terminal_cl in_try rl)
@@ -92,7 +90,7 @@ module GetLocals = struct
         lvalue acc lv
     | Unsafe
     | Fallthrough
-    | Expr _ | Break | Continue | Throw _
+    | Expr _ | Break _ | Continue _ | Throw _
     | Do _ | While _ | For _ | Foreach _
     | Return _ | Static_var _ | Noop -> acc
     | Block b -> block acc b

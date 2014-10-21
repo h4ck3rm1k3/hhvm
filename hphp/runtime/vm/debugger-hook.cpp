@@ -18,10 +18,10 @@
 #include "hphp/runtime/vm/jit/mc-generator.h"
 #include "hphp/runtime/debugger/break_point.h"
 #include "hphp/runtime/debugger/debugger.h"
-#include "hphp/runtime/debugger/debugger_proxy.h"
 #include "hphp/runtime/base/unit-cache.h"
 #include "hphp/runtime/ext/ext_generator.h"
 #include "hphp/runtime/vm/unit.h"
+#include "hphp/runtime/vm/pc-filter.h"
 #include "hphp/util/logger.h"
 
 namespace HPHP {
@@ -29,77 +29,51 @@ namespace HPHP {
 //////////////////////////////////////////////////////////////////////////
 
 TRACE_SET_MOD(debuggerflow);
-using JIT::mcg;
+using jit::mcg;
 
-// Hook called from the bytecode interpreter before every opcode executed while
-// a debugger is attached. The debugger may choose to hold the thread below
-// here and execute any number of commands from the client. Return from here
-// lets the opcode execute.
-void phpDebuggerOpcodeHook(const unsigned char* pc) {
-  TRACE(5, "in phpDebuggerOpcodeHook() with pc %p\n", pc);
-  // Short-circuit when we're doing things like evaling PHP for print command,
-  // or conditional breakpoints.
-  if (UNLIKELY(g_context->m_dbgNoBreak)) {
-    TRACE(5, "NoBreak flag is on\n");
+typedef RequestInjectionData::StepOutState StepOutState;
+
+//////////////////////////////////////////////////////////////////////////
+// DebugHookHandler implementation
+
+void DebugHookHandler::detach(ThreadInfo* ti /* = nullptr */) {
+  // legacy hphpd code expects no failure if no hook handler is attached
+  ti = (ti != nullptr) ? ti : ThreadInfo::s_threadInfo.getNoCheck();
+  if (ti->m_debugHookHandler == nullptr) {
     return;
   }
-  // Short-circuit for cases where we're executing a line of code that we know
-  // we don't need an interrupt for, e.g., stepping over a line of code.
-  if (UNLIKELY(g_context->m_lastLocFilter != nullptr) &&
-      g_context->m_lastLocFilter->checkPC(pc)) {
-    TRACE_RB(5, "Location filter hit at pc %p\n", pc);
-    return;
+
+  // Delete the handler
+  delete ti->m_debugHookHandler;
+  ti->m_debugHookHandler = nullptr;
+  ti->m_reqInjectionData.setDebuggerAttached(false);
+
+  // Clear the pc filters
+  if (g_context->m_breakPointFilter != nullptr) {
+    g_context->m_breakPointFilter->clear();
   }
-  // Are we hitting a breakpoint?
-  if (LIKELY(g_context->m_breakPointFilter == nullptr ||
-      !g_context->m_breakPointFilter->checkPC(pc))) {
-    TRACE(5, "not in the PC range for any breakpoints\n");
-    if (LIKELY(!DEBUGGER_FORCE_INTR)) {
-      return;
-    }
-    TRACE_RB(5, "DEBUGGER_FORCE_INTR\n");
+  if (g_context->m_flowFilter != nullptr) {
+    g_context->m_flowFilter->clear();
   }
-  Eval::Debugger::InterruptVMHook();
-  TRACE(5, "out phpDebuggerOpcodeHook()\n");
+  g_context->m_lineBreakPointFilter.clear();
+  g_context->m_callBreakPointFilter.clear();
+  g_context->m_retBreakPointFilter.clear();
+
+  // Disble function entry/exit events
+  EventHook::DisableDebug();
+
+  // If there are no more handlers attached, clear the blacklist
+  Lock lock(s_lock);
+  if (--s_numAttached == 0) {
+    mcg->tx().clearDbgBL();
+  }
 }
 
-// Hook called from iopThrow to signal that we are about to throw an exception.
-void phpDebuggerExceptionThrownHook(ObjectData* exception) {
-  TRACE(5, "in phpDebuggerExceptionThrownHook()\n");
-  if (UNLIKELY(g_context->m_dbgNoBreak)) {
-    TRACE(5, "NoBreak flag is on\n");
-    return;
-  }
-  Eval::Debugger::InterruptVMHook(Eval::ExceptionThrown, exception);
-  TRACE(5, "out phpDebuggerExceptionThrownHook()\n");
-}
+Mutex DebugHookHandler::s_lock;
+int DebugHookHandler::s_numAttached = 0;
 
-// Hook called from exception unwind to signal that we are about to handle an
-// exception.
-void phpDebuggerExceptionHandlerHook() {
-  TRACE(5, "in phpDebuggerExceptionHandlerHook()\n");
-  if (UNLIKELY(g_context->m_dbgNoBreak)) {
-    TRACE(5, "NoBreak flag is on\n");
-    return;
-  }
-  Eval::Debugger::InterruptVMHook(Eval::ExceptionHandler);
-  TRACE(5, "out phpDebuggerExceptionHandlerHook()\n");
-}
-
-// Hook called when the VM raises an error.
-void phpDebuggerErrorHook(const std::string& message) {
-  TRACE(5, "in phpDebuggerErrorHook()\n");
-  if (UNLIKELY(g_context->m_dbgNoBreak)) {
-    TRACE(5, "NoBreak flag is on\n");
-    return;
-  }
-  Eval::Debugger::InterruptVMHook(Eval::ExceptionThrown, String(message));
-  TRACE(5, "out phpDebuggerErrorHook()\n");
-}
-
-bool isDebuggerAttachedProcess() {
-  return Eval::Debugger::CountConnectedProxy() > 0;
-}
+//////////////////////////////////////////////////////////////////////////
+// Helpers
 
 // Ensure we interpret all code at the given offsets. This sets up a guard for
 // each piece of translated code to ensure we punt to the interpreter when the
@@ -130,111 +104,337 @@ static void blacklistFuncInJit(const Func* f) {
   blacklistRangesInJit(unit, ranges);
 }
 
-static PCFilter *getBreakPointFilter() {
+static PCFilter* getBreakPointFilter() {
   if (!g_context->m_breakPointFilter) {
     g_context->m_breakPointFilter = new PCFilter();
   }
   return g_context->m_breakPointFilter;
 }
 
-// Looks up the offset range in the given unit, of the given breakpoint.
-// If the offset cannot be found, the breakpoint is marked as invalid.
-// Otherwise it is marked as valid and the offset is added to the
-// breakpoint filter and the offset range is black listed for the JIT.
-static void addBreakPointInUnit(Eval::BreakPointInfoPtr bp, Unit* unit) {
-  OffsetRangeVec offsets;
-  if (!unit->getOffsetRanges(bp->m_line1, offsets) || offsets.size() == 0) {
-    bp->m_bindState = Eval::BreakPointInfo::KnownToBeInvalid;
+static PCFilter* getFlowFilter() {
+  if (g_context->m_flowFilter == nullptr) {
+    g_context->m_flowFilter = new PCFilter();
+  }
+  return g_context->m_flowFilter;
+}
+
+//////////////////////////////////////////////////////////////////////////
+// Hooks
+
+// Hook called from the bytecode interpreter before every opcode executed while
+// a debugger is attached. The debugger may choose to hold the thread below
+// here and execute any number of commands from the client. Return from here
+// lets the opcode execute.
+void phpDebuggerOpcodeHook(const unsigned char* pc) {
+  TRACE(5, "in phpDebuggerOpcodeHook() with pc %p\n", pc);
+  // Short-circuit when we're doing things like evaling PHP for print command,
+  // or conditional breakpoints.
+  if (UNLIKELY(g_context->m_dbgNoBreak)) {
+    TRACE(5, "NoBreak flag is on\n");
     return;
   }
-  bp->m_bindState = Eval::BreakPointInfo::KnownToBeValid;
-  TRACE(3, "Add to breakpoint filter for %s:%d, unit %p:\n",
-      unit->filepath()->data(), bp->m_line1, unit);
-  getBreakPointFilter()->addRanges(unit, offsets);
-  if (RuntimeOption::EvalJit) {
-    blacklistRangesInJit(unit, offsets);
-  }
-}
-
-static void addBreakPointsInFile(Eval::DebuggerProxy* proxy,
-                                 Unit* unit) {
-  std::vector<Eval::BreakPointInfoPtr> bps;
-  proxy->getBreakPoints(bps);
-  for (unsigned int i = 0; i < bps.size(); i++) {
-    Eval::BreakPointInfoPtr bp = bps[i];
-    if (Eval::BreakPointInfo::MatchFile(bp->m_file,
-                                        unit->filepath()->data())) {
-      addBreakPointInUnit(bp, unit);
-    }
-  }
-}
-
-static void addBreakPointFuncEntry(const Func* f) {
-  // we are in a generator, skip CreateCont / RetC / PopC opcodes
-  auto base = f->isGenerator()
-    ? BaseGenerator::userBase(f)
-    : f->base();
-  auto pc = f->unit()->at(base);
-
-  TRACE(5, "func() break %s : unit %p offset %d ==> pc %p)\n",
-        f->fullName()->data(), f->unit(), base, pc);
-  getBreakPointFilter()->addPC(pc);
-  if (RuntimeOption::EvalJit) {
-    if (mcg->tx().addDbgBLPC(pc)) {
-      // if a new entry is added in blacklist
-      if (!mcg->addDbgGuard(f, base, false)) {
-        Logger::Warning("Failed to set breakpoints in Jitted code");
-      }
-    }
-  }
-}
-
-// See if the given name matches the function's name.
-static bool matchFunctionName(std::string name, const Func* f) {
-  return name == f->name()->data();
-}
-
-// If the proxy has an enabled breakpoint that matches entry into the given
-// function, arrange for the VM to stop execution and notify the debugger
-// whenever execution enters the given function.
-static void addBreakPointFuncEntry(Eval::DebuggerProxy* proxy, const Func* f) {
-  std::vector<Eval::BreakPointInfoPtr> bps;
-  proxy->getBreakPoints(bps);
-  for (unsigned int i = 0; i < bps.size(); i++) {
-    Eval::BreakPointInfoPtr bp = bps[i];
-    if (bp->m_state == Eval::BreakPointInfo::Disabled) continue;
-    if (!matchFunctionName(bp->getFuncName(), f)) continue;
-    bp->m_bindState = Eval::BreakPointInfo::KnownToBeValid;
-    addBreakPointFuncEntry(f);
+  // Short-circuit for cases where we're executing a line of code that we know
+  // we don't need an interrupt for, e.g., stepping over a line of code.
+  if (UNLIKELY(g_context->m_flowFilter != nullptr) &&
+      g_context->m_flowFilter->checkPC(pc)) {
+    TRACE_RB(5, "Location filter hit at pc %p\n", pc);
     return;
   }
-}
+  // Are we hitting a breakpoint?
+  if (LIKELY(g_context->m_breakPointFilter == nullptr ||
+      !g_context->m_breakPointFilter->checkPC(pc))) {
+    TRACE(5, "not in the PC range for any breakpoints\n");
+    if (LIKELY(!DEBUGGER_FORCE_INTR)) {
+      return;
+    }
+    TRACE_RB(5, "DEBUGGER_FORCE_INTR or DEBUGGER_ACTIVE_LINE_BREAKS\n");
+  }
 
-// If the proxy has enabled breakpoints that match entry into methods of
-// the given class, arrange for the VM to stop execution and notify the debugger
-// whenever execution enters one of these matched method.
-// This function is called once, when a class is first loaded, so it is not
-// performance critical.
-static void addBreakPointsClass(Eval::DebuggerProxy* proxy, const Class* cls) {
-  size_t numFuncs = cls->numMethods();
-  if (numFuncs == 0) return;
-  auto clsName = cls->name();
-  std::vector<Eval::BreakPointInfoPtr> bps;
-  proxy->getBreakPoints(bps);
-  for (unsigned int i = 0; i < bps.size(); i++) {
-    Eval::BreakPointInfoPtr bp = bps[i];
-    if (bp->m_state == Eval::BreakPointInfo::Disabled) continue;
-    // TODO: check name space separately
-    if (bp->getClass() != clsName->data()) continue;
-    bp->m_bindState = Eval::BreakPointInfo::KnownToBeInvalid;
-    for (size_t i = 0; i < numFuncs; ++i) {
-      auto f = cls->getMethod(i);
-      if (!matchFunctionName(bp->getFunction(), f)) continue;
-      bp->m_bindState = Eval::BreakPointInfo::KnownToBeValid;
-      addBreakPointFuncEntry(f);
+  // Notify the hook handler. This is necessary for compatibility with hphpd
+  DebugHookHandler* handler = getHookHandler();
+  handler->onOpcode(pc);
+
+  // Try to grab needed context information
+  const ActRec* fp = g_context->getStackFrame();
+  const Func* func = fp != nullptr ? fp->func() : nullptr;
+  const Unit* unit = func != nullptr ? func->unit() : nullptr;
+  if (UNLIKELY(unit == nullptr)) {
+    TRACE(5, "Could not grab stack information\n");
+    return;
+  }
+
+  // We can't set breakpoints in generated functions
+  if (UNLIKELY(func->line1() == 0)) {
+    TRACE(5, "In a generated function\n");
+    return;
+  }
+
+  // If we are no longer on the active line breakpoint, clear it
+  RequestInjectionData& req_data = ThreadInfo::s_threadInfo->m_reqInjectionData;
+  int active_line = req_data.getActiveLineBreak();
+  int line = unit->getLineNumber(unit->offsetOf(pc));
+  if (UNLIKELY(active_line != -1 && active_line != line)) {
+    req_data.setActiveLineBreak(-1);
+  }
+
+  // Check if the step in command is active. Special case builtins because they
+  // are meaningless to the user
+  if (UNLIKELY(req_data.getDebuggerStepIn() && !func->isBuiltin())) {
+    req_data.setDebuggerStepIn(false);
+    if (!req_data.getDebuggerNext()) {
+      // Next command is not active, just break.
+      handler->onStepInBreak(unit, line);
+    } else if (req_data.getDebuggerStackDepth() <=
+                req_data.getDebuggerFlowDepth()) {
+      // Next command is active but we didn't step in. We are done.
+      req_data.setDebuggerNext(false);
+      handler->onNextBreak(unit, line);
+    } else {
+      // Next command is active and we stepped in. Step out, but save the filter
+      // first, as it is cleared when we step out.
+      PCFilter* filter = g_context->m_flowFilter;
+      g_context->m_flowFilter = nullptr;
+      phpDebuggerStepOut();
+
+      // Restore the saved filter and the next flag
+      delete g_context->m_flowFilter;
+      g_context->m_flowFilter = filter;
+      req_data.setDebuggerNext(true);
     }
   }
+
+  // If the current state is OUT and we are still at a stack level less than the
+  // original, then we skip over the PopR opcode if it exists and then break
+  // (matching hphpd).
+  if (UNLIKELY(req_data.getDebuggerStepOut() == StepOutState::OUT &&
+      req_data.getDebuggerStackDepth() < req_data.getDebuggerFlowDepth() &&
+      *reinterpret_cast<const Op*>(pc) != OpPopR)) {
+    req_data.setDebuggerStepOut(StepOutState::NONE);
+    if (!req_data.getDebuggerNext()) {
+      // Next command not active, break
+      handler->onStepOutBreak(unit, line);
+    } else {
+      // Next command is active, but it is done. Break.
+      req_data.setDebuggerNext(false);
+      handler->onNextBreak(unit, line);
+    }
+  }
+
+  // Check if we are hitting a call breakpoint
+  if (UNLIKELY(g_context->m_callBreakPointFilter.checkPC(pc))) {
+    handler->onFuncEntryBreak(func);
+  }
+
+  // Check if we are hitting a return breakpoint
+  if (UNLIKELY(g_context->m_retBreakPointFilter.checkPC(pc))) {
+    handler->onFuncExitBreak(func);
+  }
+
+  // Check if we are hitting a line breakpoint. Also ensure the current line
+  // hasn't already been set as the active line breakpoint.
+  if (UNLIKELY(g_context->m_lineBreakPointFilter.checkPC(pc) &&
+               active_line != line)) {
+    req_data.setActiveLineBreak(line);
+    handler->onLineBreak(unit, line);
+  }
+
+  TRACE(5, "out phpDebuggerOpcodeHook()\n");
 }
+
+// Hook called on request start before main() is invoked
+void phpDebuggerRequestInitHook() {
+  getHookHandler()->onRequestInit();
+}
+
+// Hook called on request shutdown after main() exits
+void phpDebuggerRequestShutdownHook() {
+  getHookHandler()->onRequestShutdown();
+}
+
+// Hook called on function entry. Since function entry breakpoints are handled
+// by onOpcode, this just handles pushing the active line breakpoint
+void phpDebuggerFuncEntryHook(const ActRec* ar) {
+  ThreadInfo::s_threadInfo->m_reqInjectionData.pushActiveLineBreak(-1);
+}
+
+// Hook called on function exit. onOpcode handles function exit breakpoints,
+// this just handles stack-related manipulations. This handles returns,
+// suspends, and exceptions.
+void phpDebuggerFuncExitHook(const ActRec* ar) {
+  RequestInjectionData& req_data = ThreadInfo::s_threadInfo->m_reqInjectionData;
+  req_data.popActiveLineBreak();
+
+  // If the step out command is active and if our stack depth has decreased,
+  // we are out of the function being stepped out of
+  if (UNLIKELY(req_data.getDebuggerStepOut() == StepOutState::STEPPING &&
+      req_data.getDebuggerStackDepth() < req_data.getDebuggerFlowDepth())) {
+      req_data.setDebuggerStepOut(StepOutState::OUT);
+  }
+}
+
+// Hook called from iopThrow to signal that we are about to throw an exception.
+void phpDebuggerExceptionThrownHook(ObjectData* exception) {
+TRACE(5, "in phpDebuggerExceptionThrownHook()\n");
+if (UNLIKELY(g_context->m_dbgNoBreak)) {
+    TRACE(5, "NoBreak flag is on\n");
+    return;
+  }
+  getHookHandler()->onExceptionThrown(exception);
+  TRACE(5, "out phpDebuggerExceptionThrownHook()\n");
+}
+
+// Hook called from exception unwind to signal that we are about to handle an
+// exception.
+void phpDebuggerExceptionHandlerHook() {
+  TRACE(5, "in phpDebuggerExceptionHandlerHook()\n");
+  if (UNLIKELY(g_context->m_dbgNoBreak)) {
+    TRACE(5, "NoBreak flag is on\n");
+    return;
+  }
+  getHookHandler()->onExceptionHandle();
+  TRACE(5, "out phpDebuggerExceptionHandlerHook()\n");
+}
+
+// Hook called when the VM raises an error.
+void phpDebuggerErrorHook(const ExtendedException &ee,
+                          int errnum,
+                          const std::string& message) {
+  TRACE(5, "in phpDebuggerErrorHook()\n");
+  if (UNLIKELY(g_context->m_dbgNoBreak)) {
+    TRACE(5, "NoBreak flag is on\n");
+    return;
+  }
+  getHookHandler()->onError(ee, errnum, message);
+  TRACE(5, "out phpDebuggerErrorHook()\n");
+}
+
+void phpDebuggerEvalHook(const Func* f) {
+  if (RuntimeOption::EvalJit) {
+    blacklistFuncInJit(f);
+  }
+  getHookHandler()->onEval(f);
+}
+
+// Called by the VM when a file is loaded.
+void phpDebuggerFileLoadHook(Unit* unit) {
+  getHookHandler()->onFileLoad(unit);
+}
+
+// Called by the VM when a class definition is loaded.
+void phpDebuggerDefClassHook(const Class* cls) {
+  getHookHandler()->onDefClass(cls);
+}
+
+// Called by the VM when a function definition is loaded.
+void phpDebuggerDefFuncHook(const Func* func) {
+  getHookHandler()->onDefFunc(func);
+}
+
+
+//////////////////////////////////////////////////////////////////////////
+// Flow Control
+
+void phpDebuggerContinue() {
+  // Short-circuit other commands
+  RequestInjectionData& req_data = ThreadInfo::s_threadInfo->m_reqInjectionData;
+  req_data.setDebuggerStepIn(false);
+  req_data.setDebuggerStepOut(StepOutState::NONE);
+  req_data.setDebuggerNext(false);
+
+  // Clear the flow filter
+  PCFilter* flow_filter = getFlowFilter();
+  flow_filter->clear();
+}
+
+void phpDebuggerStepIn() {
+  // If this is called in the middle of a flow command we short-circuit the
+  // other commands
+  RequestInjectionData& req_data = ThreadInfo::s_threadInfo->m_reqInjectionData;
+  req_data.setDebuggerStepIn(true);
+  req_data.setDebuggerStepOut(StepOutState::NONE);
+  req_data.setDebuggerNext(false);
+
+  // Ensure the flow filter is fresh
+  PCFilter* flow_filter = getFlowFilter();
+  flow_filter->clear();
+
+  // Check if the site is valid.
+  VMRegAnchor _;
+  ActRec* fp = vmfp();
+  PC pc = vmpc();
+  if (fp == nullptr || pc == nullptr) {
+    TRACE(5, "Could not grab stack or program counter\n");
+    return;
+  }
+
+  // Try to get needed context info. Bail if we can't
+  const Func* func = fp->func();
+  const Unit* unit = func != nullptr ? func->unit() : nullptr;
+  if (func == nullptr || func == nullptr) {
+    TRACE(5, "Could not grab the current unit or function\n");
+    return;
+  }
+
+  // We use line1 here because it works better than line0 in our
+  // bytecode-source mapping.
+  int line;
+  SourceLoc source_loc;
+  if (unit->getSourceLoc(unit->offsetOf(pc), source_loc)) {
+    line = source_loc.line1;
+  } else {
+    TRACE(5, "Could not grab the current line number\n");
+    return;
+  }
+
+  TRACE(3, "Prepare location filter for %s:%d, unit %p:\n",
+        unit->filepath()->data(), line, unit);
+
+  // Get offset ranges for the whole line.
+  OffsetRangeVec ranges;
+  if (!unit->getOffsetRanges(line, ranges)) {
+    ranges.clear();
+  }
+
+  flow_filter->addRanges(unit, ranges);
+}
+
+void phpDebuggerStepOut() {
+  // If this is called in the middle of a flow command we short-circuit the
+  // other commands
+  RequestInjectionData& req_data = ThreadInfo::s_threadInfo->m_reqInjectionData;
+  req_data.setDebuggerStepIn(false);
+  req_data.setDebuggerStepOut(StepOutState::STEPPING);
+  req_data.setDebuggerNext(false);
+
+  // Clear the flow filter
+  PCFilter* flow_filter = getFlowFilter();
+  flow_filter->clear();
+
+  // Store the current stack depth
+  req_data.setDebuggerFlowDepth(req_data.getDebuggerStackDepth());
+}
+
+void phpDebuggerNext() {
+  // Grab the request data and set up a step in
+  RequestInjectionData& req_data = ThreadInfo::s_threadInfo->m_reqInjectionData;
+  phpDebuggerStepIn();
+
+  // Special case the top-level pseudo-main. What the user expects is a
+  // "step-in" into pseudo-main, but the implementation otherwise would just
+  // step over it.
+  int stack_depth = req_data.getDebuggerStackDepth();
+  if (stack_depth == 0) {
+    return;
+  }
+
+  // Turn the next flag on. This indicates that we should do a step out after
+  // our step completes if the stack depth has increased.
+  req_data.setDebuggerNext(true);
+  req_data.setDebuggerFlowDepth(stack_depth);
+}
+
+//////////////////////////////////////////////////////////////////////////
+// Breakpoint manipulation
 
 void phpAddBreakPoint(const Unit* unit, Offset offset) {
   PC pc = unit->at(offset);
@@ -253,10 +453,105 @@ void phpAddBreakPoint(const Unit* unit, Offset offset) {
   }
 }
 
+void phpAddBreakPointRange(const Unit* unit, OffsetRangeVec& offsets) {
+  getBreakPointFilter()->addRanges(unit, offsets);
+  if (RuntimeOption::EvalJit) {
+    blacklistRangesInJit(unit, offsets);
+  }
+}
+
+void phpAddBreakPointFuncEntry(const Func* f) {
+  // we are in a generator, skip CreateCont / RetC / PopC opcodes
+  auto base = f->isGenerator()
+    ? BaseGenerator::userBase(f)
+    : f->base();
+  auto pc = f->unit()->at(base);
+
+  TRACE(5, "func() break %s : unit %p offset %d ==> pc %p)\n",
+        f->fullName()->data(), f->unit(), base, pc);
+
+  // Add to the breakpoint filter and the func entry filter
+  getBreakPointFilter()->addPC(pc);
+  g_context->m_callBreakPointFilter.addPC(pc);
+
+  // Blacklist the location
+  if (RuntimeOption::EvalJit) {
+    if (mcg->tx().addDbgBLPC(pc)) {
+      // if a new entry is added in blacklist
+      if (!mcg->addDbgGuard(f, base, false)) {
+        Logger::Warning("Failed to set breakpoints in Jitted code");
+      }
+    }
+  }
+}
+
+void phpAddBreakPointFuncExit(const Func* f) {
+  // Iterate through the function's opcodes and place breakpoints on each RetC
+  const Unit* unit = f->unit();
+  for (PC pc = unit->at(f->base()); pc < unit->at(f->past());
+       pc += instrLen((Op*) pc)) {
+    if (*reinterpret_cast<const Op*>(pc) != OpRetC) {
+      continue;
+    }
+
+    // Add pc to the breakpoint filter and the func exit filter
+    getBreakPointFilter()->addPC(pc);
+    g_context->m_retBreakPointFilter.addPC(pc);
+
+    // Blacklist the location
+    if (RuntimeOption::EvalJit && mcg->tx().addDbgBLPC(pc)) {
+      if (!mcg->addDbgGuard(f, unit->offsetOf(pc), false)) {
+        Logger::Warning("Failed to set breakpoints in Jitted code");
+      }
+    }
+  }
+}
+
+bool phpAddBreakPointLine(const Unit* unit, int line) {
+  // Grab the unit offsets
+  OffsetRangeVec offsets;
+  if (!unit->getOffsetRanges(line, offsets)) {
+    return false;
+  }
+
+  // Add to the breakpoint filter and the line filter
+  phpAddBreakPointRange(unit, offsets);
+  g_context->m_lineBreakPointFilter.addRanges(unit, offsets);
+  return true;
+}
+
 void phpRemoveBreakPoint(const Unit* unit, Offset offset) {
   if (g_context->m_breakPointFilter) {
     PC pc = unit->at(offset);
     g_context->m_breakPointFilter->removePC(pc);
+  }
+}
+
+void phpRemoveBreakPointFuncEntry(const Func* f) {
+  // See note in debugger-hook.h. This can only remove from the function entry
+  // filter
+  auto base = f->isGenerator() ? BaseGenerator::userBase(f) : f->base();
+  auto pc = f->unit()->at(base);
+  g_context->m_callBreakPointFilter.removePC(pc);
+}
+
+void phpRemoveBreakPointFuncExit(const Func* f) {
+  // See note in debugger-hook.h. This can only remove from the function exit
+  // filter
+  const Unit* unit = f->unit();
+  for (PC pc = unit->at(f->base()); pc < unit->at(f->past());
+       pc += instrLen((Op*) pc)) {
+    if (*reinterpret_cast<const Op*>(pc) == OpRetC) {
+      g_context->m_retBreakPointFilter.removePC(pc);
+    }
+  }
+}
+
+void phpRemoveBreakPointLine(const Unit* unit, int line) {
+  // See note in debugger-hook.h. This can only remove from the line filter
+  OffsetRangeVec offsets;
+  if (unit->getOffsetRanges(line, offsets)) {
+    g_context->m_lineBreakPointFilter.removeRanges(unit, offsets);
   }
 }
 
@@ -268,211 +563,5 @@ bool phpHasBreakpoint(const Unit* unit, Offset offset) {
   return false;
 }
 
-void phpDebuggerEvalHook(const Func* f) {
-  if (RuntimeOption::EvalJit) {
-    blacklistFuncInJit(f);
-  }
-}
-
-// Called by the VM when a file is loaded.
-void phpDebuggerFileLoadHook(Unit* unit) {
-  Eval::DebuggerProxyPtr proxy = Eval::Debugger::GetProxy();
-  if (proxy == nullptr) return;
-  addBreakPointsInFile(proxy.get(), unit);
-}
-
-// Called by the VM when a class definition is loaded.
-void phpDebuggerDefClassHook(const Class* cls) {
-  Eval::DebuggerProxyPtr proxy = Eval::Debugger::GetProxy();
-  if (proxy == nullptr) return;
-  addBreakPointsClass(proxy.get(), cls);
-}
-
-// Called by the VM when a function definition is loaded.
-void phpDebuggerDefFuncHook(const Func* func) {
-  Eval::DebuggerProxyPtr proxy = Eval::Debugger::GetProxy();
-  if (proxy == nullptr) return;
-  addBreakPointFuncEntry(proxy.get(), func);
-}
-
-// Called by the proxy whenever its breakpoint list is updated.
-// Since this intended to be called when user input is received, it is not
-// performance critical. Also, in typical scenarios, the list is short.
-void phpSetBreakPoints(Eval::DebuggerProxy* proxy) {
-  std::vector<Eval::BreakPointInfoPtr> bps;
-  proxy->getBreakPoints(bps);
-  for (unsigned int i = 0; i < bps.size(); i++) {
-    Eval::BreakPointInfoPtr bp = bps[i];
-    bp->m_bindState = Eval::BreakPointInfo::Unknown;
-    auto className = bp->getClass();
-    if (!className.empty()) {
-      auto clsName = makeStaticString(className);
-      auto cls = Unit::lookupClass(clsName);
-      if (cls == nullptr) continue;
-      bp->m_bindState = Eval::BreakPointInfo::KnownToBeInvalid;
-      size_t numFuncs = cls->numMethods();
-      if (numFuncs == 0) continue;
-      auto methodName = bp->getFunction();
-      for (size_t i = 0; i < numFuncs; ++i) {
-        auto f = cls->getMethod(i);
-        if (!matchFunctionName(methodName, f)) continue;
-        bp->m_bindState = Eval::BreakPointInfo::KnownToBeValid;
-        addBreakPointFuncEntry(f);
-        break;
-      }
-      //TODO: what about superclass methods accessed via the derived class?
-      //Task 2527229.
-      continue;
-    }
-    auto funcName = bp->getFuncName();
-    if (!funcName.empty()) {
-      auto fName = makeStaticString(funcName);
-      Func* f = Unit::lookupFunc(fName);
-      if (f == nullptr) continue;
-      bp->m_bindState = Eval::BreakPointInfo::KnownToBeValid;
-      addBreakPointFuncEntry(f);
-      continue;
-    }
-    auto fileName = bp->m_file;
-    if (!fileName.empty()) {
-      for (auto& kv : g_context->m_evaledFiles) {
-        auto const unit = kv.second;
-        if (!Eval::BreakPointInfo::MatchFile(fileName,
-                                             unit->filepath()->data())) {
-          continue;
-        }
-        addBreakPointInUnit(bp, unit);
-        break;
-      }
-      continue;
-    }
-    auto exceptionClassName = bp->getExceptionClass();
-    if (exceptionClassName == "@") {
-      bp->m_bindState = Eval::BreakPointInfo::KnownToBeValid;
-      continue;
-    } else if (!exceptionClassName.empty()) {
-      auto expClsName = makeStaticString(exceptionClassName);
-      auto cls = Unit::lookupClass(expClsName);
-      if (cls != nullptr) {
-        auto baseClsName = makeStaticString("Exception");
-        auto baseCls = Unit::lookupClass(baseClsName);
-        if (baseCls != nullptr) {
-          if (cls->classof(baseCls)) {
-            bp->m_bindState = Eval::BreakPointInfo::KnownToBeValid;
-          } else {
-            bp->m_bindState = Eval::BreakPointInfo::KnownToBeInvalid;
-          }
-        }
-      }
-      continue;
-    } else {
-      continue;
-    }
-    // If we get here, the break point is of a type that does
-    // not need to be explicitly enabled in the VM. For example
-    // a break point that get's triggered when the server starts
-    // to process a page request.
-    bp->m_bindState = Eval::BreakPointInfo::KnownToBeValid;
-  }
-}
-
-//////////////////////////////////////////////////////////////////////////
-
-struct PCFilter::PtrMapNode {
-  void **m_entries;
-  void clearImpl(unsigned short bits);
-};
-
-void PCFilter::PtrMapNode::clearImpl(unsigned short bits) {
-  // clear all the sub levels and mark all slots NULL
-  if (bits <= PTRMAP_LEVEL_BITS) {
-    assert(bits == PTRMAP_LEVEL_BITS);
-    // On bottom level, pointers are not PtrMapNode*
-    memset(m_entries, 0, sizeof(void*) * PTRMAP_LEVEL_ENTRIES);
-    return;
-  }
-  for (int i = 0; i < PTRMAP_LEVEL_ENTRIES; i++) {
-    if (m_entries[i]) {
-      ((PCFilter::PtrMapNode*)m_entries[i])->clearImpl(bits -
-                                                       PTRMAP_LEVEL_BITS);
-      free(((PCFilter::PtrMapNode*)m_entries[i])->m_entries);
-      free(m_entries[i]);
-      m_entries[i] = nullptr;
-    }
-  }
-}
-
-PCFilter::PtrMapNode* PCFilter::PtrMap::MakeNode() {
-  PtrMapNode* node = (PtrMapNode*)malloc(sizeof(PtrMapNode));
-  node->m_entries =
-    (void**)calloc(1, PTRMAP_LEVEL_ENTRIES * sizeof(void*));
-  return node;
-}
-
-PCFilter::PtrMap::~PtrMap() {
-  clear();
-  free(m_root->m_entries);
-  free(m_root);
-}
-
-void* PCFilter::PtrMap::getPointer(void* ptr) {
-  PtrMapNode* current = m_root;
-  unsigned short cursor = PTRMAP_PTR_SIZE;
-  while (current && cursor) {
-    cursor -= PTRMAP_LEVEL_BITS;
-    unsigned long index = ((PTRMAP_LEVEL_MASK << cursor) & (unsigned long)ptr)
-                          >> cursor;
-    assert(index < PTRMAP_LEVEL_ENTRIES);
-    current = (PtrMapNode*)(current->m_entries[index]);
-  }
-  return (void*)current;
-}
-
-void PCFilter::PtrMap::setPointer(void* ptr, void* val) {
-  PtrMapNode* current = m_root;
-  unsigned short cursor = PTRMAP_PTR_SIZE;
-  while (true) {
-    cursor -= PTRMAP_LEVEL_BITS;
-    unsigned long index = ((PTRMAP_LEVEL_MASK << cursor) & (unsigned long)ptr)
-                          >> cursor;
-    assert(index < PTRMAP_LEVEL_ENTRIES);
-    if (!cursor) {
-      current->m_entries[index] = val;
-      break;
-    }
-    if (!current->m_entries[index])  {
-      current->m_entries[index] = (void*) MakeNode();
-    }
-    current = (PtrMapNode*)(current->m_entries[index]);
-  }
-}
-
-void PCFilter::PtrMap::clear() {
-  m_root->clearImpl(PTRMAP_PTR_SIZE);
-}
-
-// Adds a range of PCs to the filter given a collection of offset ranges.
-// Omit PCs which have opcodes that don't pass the given opcode filter.
-void PCFilter::addRanges(const Unit* unit, const OffsetRangeVec& offsets,
-                         OpcodeFilter isOpcodeAllowed) {
-  for (auto range = offsets.cbegin(); range != offsets.cend(); ++range) {
-    TRACE(3, "\toffsets [%d, %d)\n", range->m_base, range->m_past);
-    for (PC pc = unit->at(range->m_base); pc < unit->at(range->m_past);
-         pc += instrLen((Op*)pc)) {
-      if (isOpcodeAllowed(*reinterpret_cast<const Op*>(pc))) {
-        TRACE(3, "\t\tpc %p\n", pc);
-        addPC(pc);
-      } else {
-        TRACE(3, "\t\tpc %p -- skipping (offset %d)\n", pc,
-          unit->offsetOf(pc));
-      }
-    }
-  }
-}
-
-void PCFilter::removeOffset(const Unit* unit, Offset offset) {
-  removePC(unit->at(offset));
-}
-
-//////////////////////////////////////////////////////////////////////////
+/////////////////////////////////////////////////////////////////////////
 }

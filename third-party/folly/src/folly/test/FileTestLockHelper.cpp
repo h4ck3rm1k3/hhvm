@@ -17,13 +17,13 @@
 #include <gflags/gflags.h>
 #include <glog/logging.h>
 
-#include "folly/File.h"
+#include <folly/File.h>
 
 DEFINE_bool(s, false, "get shared lock");
 DEFINE_bool(x, false, "get exclusive lock");
 
 int main(int argc, char *argv[]) {
-  google::ParseCommandLineFlags(&argc, &argv, true);
+  gflags::ParseCommandLineFlags(&argc, &argv, true);
   google::InitGoogleLogging(argv[0]);
   CHECK_EQ(FLAGS_s + FLAGS_x, 1)
     << "exactly one of -s and -x must be specified";

@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-#include "folly/Optional.h"
+#include <folly/Optional.h>
 
 #include <memory>
 #include <vector>
@@ -377,6 +377,16 @@ TEST(Optional, MakeOptional) {
   EXPECT_TRUE(pInt.get() == nullptr);
   ASSERT_TRUE(optIntPtr.hasValue());
   EXPECT_EQ(**optIntPtr, 3);
+}
+
+TEST(Optional, SelfAssignment) {
+  Optional<int> a = 42;
+  a = a;
+  ASSERT_TRUE(a.hasValue() && a.value() == 42);
+
+  Optional<int> b = 23333333;
+  b = std::move(b);
+  ASSERT_TRUE(b.hasValue() && b.value() == 23333333);
 }
 
 class ContainsOptional {

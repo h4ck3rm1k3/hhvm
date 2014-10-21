@@ -47,9 +47,8 @@ bool HHVM_FUNCTION(settype, VRefParam var, const String& type);
 
 Variant HHVM_FUNCTION(print_r, const Variant& expression, bool ret = false);
 Variant HHVM_FUNCTION(var_export, const Variant& expression, bool ret = false);
-void f_var_dump(const Variant& v);
-void f_var_dump(int _argc, const Variant& expression,
-                const Array& _argv /* = null_array */);
+void HHVM_FUNCTION(var_dump,
+                   const Variant& v, const Array& _argv = null_array);
 void HHVM_FUNCTION(debug_zval_dump, const Variant& variable);
 String HHVM_FUNCTION(serialize, const Variant& value);
 Variant HHVM_FUNCTION(unserialize, const String& str,
@@ -57,10 +56,6 @@ Variant HHVM_FUNCTION(unserialize, const String& str,
 
 ///////////////////////////////////////////////////////////////////////////////
 // variable table
-
-Array HHVM_FUNCTION(get_defined_vars);
-// accessible as __SystemLib\\get_defined_vars
-Array HHVM_FUNCTION(__SystemLib_get_defined_vars);
 
 int64_t constexpr EXTR_OVERWRITE        = 0;
 int64_t constexpr EXTR_SKIP             = 1;
@@ -70,15 +65,6 @@ int64_t constexpr EXTR_PREFIX_INVALID   = 4;
 int64_t constexpr EXTR_PREFIX_IF_EXISTS = 5;
 int64_t constexpr EXTR_IF_EXISTS        = 6;
 int64_t constexpr EXTR_REFS             = 0x100;
-
-int64_t HHVM_FUNCTION(extract, VRefParam vref_array,
-                      int64_t extract_type = EXTR_OVERWRITE,
-                      const String& prefix = empty_string_ref);
-
-// accessible as __SystemLib\\extract
-int64_t HHVM_FUNCTION(__SystemLib_extract, VRefParam vref_array,
-                      int64_t extract_type = EXTR_OVERWRITE,
-                      const String& prefix = empty_string_ref);
 
 ///////////////////////////////////////////////////////////////////////////////
 }

@@ -28,7 +28,7 @@
 #include "hphp/runtime/vm/jit/cse.h"
 #include "hphp/runtime/base/memory-manager.h"
 
-namespace HPHP { namespace JIT {
+namespace HPHP { namespace jit {
 
 //////////////////////////////////////////////////////////////////////
 
@@ -141,7 +141,7 @@ private:
 
   // Finally we end up here.
   Ret stop(IRInstruction* inst) {
-    if (debug) assertOperandTypes(inst);
+    assertOperandTypes(inst);
     return func(inst);
   }
 
@@ -162,8 +162,7 @@ makeInstruction(Func func, Args&&... args) {
 
 /* Map from DefLabel instructions to produced references. See comment in
  * IRBuilder::cond for more details. */
-using LabelRefs = smart::hash_map<const IRInstruction*,
-                                  smart::vector<unsigned>>;
+using LabelRefs = jit::hash_map<const IRInstruction*, jit::vector<unsigned>>;
 
 /*
  * IRUnit is the compilation unit for the JIT.  It owns an Arena used for
@@ -276,7 +275,7 @@ public:
    * Some helpers for creating specific instruction patterns.
    */
   IRInstruction* defLabel(unsigned numDst, BCMarker marker,
-                          const smart::vector<unsigned>& producedRefs);
+                          const jit::vector<unsigned>& producedRefs);
   Block* defBlock();
 
   template<typename T> SSATmp* cns(T val) {

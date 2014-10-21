@@ -22,7 +22,11 @@
 #include "hphp/runtime/vm/jit/ir.h"
 #include "hphp/runtime/vm/jit/phys-reg.h"
 
-namespace HPHP {  namespace JIT {
+#ifdef VOID
+#undef VOID
+#endif
+
+namespace HPHP { namespace jit {
 
 class IRUnit;
 
@@ -75,7 +79,7 @@ struct RegAllocInfo {
   };
   explicit RegAllocInfo(const IRUnit& unit) : m_regs(unit, RegMap()) {}
   RegAllocInfo(const RegAllocInfo& other) : m_regs(other.m_regs) {}
-  RegAllocInfo(RegAllocInfo&& other) : m_regs(other.m_regs) {}
+  RegAllocInfo(RegAllocInfo&& other) noexcept : m_regs(other.m_regs) {}
   RegMap& operator[](const IRInstruction* i) { return m_regs[i].init(i); }
   RegMap& operator[](const IRInstruction& i) { return m_regs[i].init(&i); }
   const RegMap& operator[](const IRInstruction* i) const {
@@ -198,6 +202,8 @@ Constraint srcConstraint(const IRInstruction& inst, unsigned src);
  * Return a constraint for the given destination.
  */
 Constraint dstConstraint(const IRInstruction& inst, unsigned dst);
+
+PhysReg forceAlloc(const SSATmp& tmp);
 
 }}
 

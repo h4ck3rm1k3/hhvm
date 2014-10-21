@@ -15,13 +15,15 @@
 */
 
 #include "hphp/runtime/vm/jit/ir-instruction.h"
+
 #include <algorithm>
-#include "hphp/runtime/vm/jit/ssa-tmp.h"
+
+#include "hphp/runtime/vm/jit/block.h"
 #include "hphp/runtime/vm/jit/cse.h"
 #include "hphp/runtime/vm/jit/print.h"
-#include "hphp/runtime/vm/jit/block.h"
+#include "hphp/runtime/vm/jit/ssa-tmp.h"
 
-namespace HPHP {  namespace JIT {
+namespace HPHP { namespace jit {
 
 IRInstruction::IRInstruction(Arena& arena, const IRInstruction* inst, Id id)
   : m_typeParam(inst->m_typeParam)
@@ -163,37 +165,6 @@ bool IRInstruction::isTerminal() const {
 
 bool IRInstruction::isPassthrough() const {
   return opcodeHasFlags(op(), Passthrough);
-}
-
-bool IRInstruction::isFramePassthrough() const {
-  return is(GuardLoc, CheckLoc, AssertLoc, SideExitGuardLoc);
-}
-
-SSATmp* IRInstruction::framePassthroughRoot(SSATmp* ssa) {
-  while (ssa->inst()->isFramePassthrough()) {
-    ssa = ssa->inst()->src(0);
-  }
-  return ssa;
-}
-
-SSATmp* IRInstruction::frameCommonRoot(SSATmp* fp1, SSATmp* fp2) {
-  std::set<SSATmp*> visited;
-
-  while (true) {
-    visited.insert(fp1);
-    if (!fp1->inst()->isFramePassthrough()) break;
-    fp1 = fp1->inst()->src(0);
-  }
-  // find the last frame point in the chain leading to fp2 that is
-  // also in visited.
-  while (visited.count(fp2) == 0) {
-    if (!fp2->inst()->isFramePassthrough()) {
-      // no common ancestor
-      return nullptr;
-    }
-    fp2 = fp2->inst()->src(0);
-  }
-  return fp2;
 }
 
 /*
@@ -362,8 +333,8 @@ void IRInstruction::become(IRUnit& unit, IRInstruction* other) {
 }
 
 void IRInstruction::setOpcode(Opcode newOpc) {
-  assert(hasEdges() || !JIT::hasEdges(newOpc)); // cannot allocate new edges
-  if (hasEdges() && !JIT::hasEdges(newOpc)) {
+  assert(hasEdges() || !jit::hasEdges(newOpc)); // cannot allocate new edges
+  if (hasEdges() && !jit::hasEdges(newOpc)) {
     clearEdges();
   }
   m_op = newOpc;
@@ -449,32 +420,6 @@ std::string IRInstruction::toString() const {
   std::ostringstream str;
   print(str, this);
   return str.str();
-}
-
-std::string BCMarker::show() const {
-  assert(valid());
-  return folly::format(
-    "--- bc {}{}, spOff {} ({}){}",
-    m_sk.offset(),
-    m_sk.resumed() ? "r" : "",
-    m_spOff,
-    m_sk.func()->fullName()->data(),
-    m_profTransID != kInvalidTransID
-      ? folly::format(" [profTrans={}]", m_profTransID).str()
-      : std::string{}
-  ).str();
-}
-
-bool BCMarker::valid() const {
-  if (isDummy()) return true;
-  return
-    m_sk.valid() &&
-    m_sk.offset() >= m_sk.func()->base() &&
-    m_sk.offset() < m_sk.func()->past() &&
-    // When inlining is on, we may modify markers to weird values in
-    // case reentry happens.
-    (RuntimeOption::EvalHHIREnableGenTimeInlining ||
-     m_spOff <= m_sk.func()->numSlotsInFrame() + m_sk.func()->maxStackCells());
 }
 
 }}

@@ -63,7 +63,7 @@ struct ExtendedException : Exception {
 
   EXCEPTION_COMMON_IMPL(ExtendedException);
 
-  Array getBackTrace() const;
+  Array getBacktrace() const;
   std::pair<String,int> getFileAndLine() const;
 
   // a silent exception does not have its exception message logged
@@ -97,17 +97,24 @@ struct FatalErrorException : ExtendedException {
 
 //////////////////////////////////////////////////////////////////////
 
-struct RequestTimeoutException : FatalErrorException {
-  RequestTimeoutException(const std::string& msg, const Array& backtrace)
+struct ResourceExceededException : FatalErrorException {
+  ResourceExceededException(const std::string& msg, const Array& backtrace)
     : FatalErrorException(msg, backtrace)
+  {}
+  EXCEPTION_COMMON_IMPL(ResourceExceededException);
+};
+
+struct RequestTimeoutException : ResourceExceededException {
+  RequestTimeoutException(const std::string& msg, const Array& backtrace)
+    : ResourceExceededException(msg, backtrace)
   {}
   EXCEPTION_COMMON_IMPL(RequestTimeoutException);
 };
 
-struct RequestMemoryExceededException : FatalErrorException {
+struct RequestMemoryExceededException : ResourceExceededException {
   RequestMemoryExceededException(const std::string& msg,
                                  const Array& backtrace)
-    : FatalErrorException(msg, backtrace)
+    : ResourceExceededException(msg, backtrace)
   {}
   EXCEPTION_COMMON_IMPL(RequestMemoryExceededException);
 };

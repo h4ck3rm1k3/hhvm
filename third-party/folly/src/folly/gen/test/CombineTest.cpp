@@ -18,11 +18,11 @@
 #include <vector>
 #include <tuple>
 
-#include "folly/Range.h"
-#include "folly/FBVector.h"
-#include "folly/experimental/TestUtil.h"
-#include "folly/gen/Base.h"
-#include "folly/gen/Combine.h"
+#include <folly/Range.h>
+#include <folly/FBVector.h>
+#include <folly/experimental/TestUtil.h>
+#include <folly/gen/Base.h>
+#include <folly/gen/Combine.h>
 
 using namespace folly::gen;
 using namespace folly;
@@ -162,6 +162,6 @@ TEST(CombineGen, TupleFlatten) {
 
 int main(int argc, char *argv[]) {
   testing::InitGoogleTest(&argc, argv);
-  google::ParseCommandLineFlags(&argc, &argv, true);
+  gflags::ParseCommandLineFlags(&argc, &argv, true);
   return RUN_ALL_TESTS();
 }

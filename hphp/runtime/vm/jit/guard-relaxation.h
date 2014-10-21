@@ -24,7 +24,7 @@
 
 #include "hphp/runtime/vm/jit/block.h"
 
-namespace HPHP { namespace JIT {
+namespace HPHP { namespace jit {
 
 struct SSATmp;
 struct IRUnit;
@@ -35,7 +35,6 @@ enum RelaxGuardsFlags {
   RelaxReflow = 1 << 1,
 };
 
-IRInstruction* guardForLocal(uint32_t locId, SSATmp* fp);
 bool shouldHHIRRelaxGuards();
 
 /*

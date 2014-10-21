@@ -40,6 +40,17 @@ TEST(LogEveryMs, basic) {
   EXPECT_TRUE(atLeastOneIsGood);
 }
 
+TEST(LogEveryMs, zero) {
+  int count = 0;
+
+  for (int i = 0; i < 10; ++i) {
+    FB_LOG_EVERY_MS(INFO, 0)
+      << "test msg " << ++count;
+  }
+
+  EXPECT_EQ(10, count);
+}
+
 BENCHMARK(skip_overhead, iter) {
   auto prev = FLAGS_minloglevel;
   FLAGS_minloglevel = 2;
@@ -71,7 +82,7 @@ BENCHMARK(dev_null_log_overhead, iter) {
 
 int main(int argc, char** argv) {
   testing::InitGoogleTest(&argc, argv);
-  google::ParseCommandLineFlags(&argc, &argv, true);
+  gflags::ParseCommandLineFlags(&argc, &argv, true);
 
   auto rv = RUN_ALL_TESTS();
   if (!rv && FLAGS_benchmark) {

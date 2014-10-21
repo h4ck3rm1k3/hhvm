@@ -27,7 +27,7 @@
 namespace HPHP {
 namespace Debug {
 
-using JIT::TCA;
+using jit::TCA;
 
 typedef enum {
   RAX,
@@ -52,7 +52,7 @@ typedef enum {
 const int DWARF_CODE_ALIGN = 1;
 const int DWARF_DATA_ALIGN = 8;
 
-#ifdef HAVE_LIBDWARF_20130729
+#ifdef LIBDWARF_CONST_NAME
 #define LIBDWARF_CALLBACK_NAME_TYPE const char*
 #else
 #define LIBDWARF_CALLBACK_NAME_TYPE char*
@@ -167,7 +167,7 @@ typedef std::map<TCA, FunctionInfo* > FuncDB;
 typedef std::vector<FunctionInfo* > FuncPtrDB;
 
 struct DwarfInfo {
-  typedef std::map<TCA, JIT::TransRec> TransDB;
+  typedef std::map<TCA, jit::TransRec> TransDB;
 
   std::vector<DwarfChunk*> m_dwarfChunks;
   /* Array of chunks indexed by lg(#functions in chunk) + 1.

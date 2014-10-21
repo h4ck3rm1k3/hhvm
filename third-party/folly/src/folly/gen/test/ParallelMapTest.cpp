@@ -19,9 +19,9 @@
 #include <glog/logging.h>
 #include <gtest/gtest.h>
 
-#include "folly/Memory.h"
-#include "folly/gen/Base.h"
-#include "folly/gen/ParallelMap.h"
+#include <folly/Memory.h>
+#include <folly/gen/Base.h>
+#include <folly/gen/ParallelMap.h>
 
 using namespace folly;
 using namespace folly::gen;
@@ -140,6 +140,6 @@ TEST(Pmap, Rvalues) {
 
 int main(int argc, char *argv[]) {
   testing::InitGoogleTest(&argc, argv);
-  google::ParseCommandLineFlags(&argc, &argv, true);
+  gflags::ParseCommandLineFlags(&argc, &argv, true);
   return RUN_ALL_TESTS();
 }

@@ -20,9 +20,9 @@
 #include <vector>
 #include <future>
 
-#include "folly/gen/Base.h"
-#include "folly/gen/Parallel.h"
-#include "folly/gen/test/Bench.h"
+#include <folly/gen/Base.h>
+#include <folly/gen/Parallel.h>
+#include <folly/gen/test/Bench.h>
 
 
 DEFINE_int32(threads,
@@ -173,7 +173,7 @@ seq(1, fibs) | parallel(map([](int) { return fi 1698.07%    87.96ms    11.37
 ============================================================================
 #endif
 int main(int argc, char *argv[]) {
-  google::ParseCommandLineFlags(&argc, &argv, true);
+  gflags::ParseCommandLineFlags(&argc, &argv, true);
   folly::runBenchmarks();
   return 0;
 }

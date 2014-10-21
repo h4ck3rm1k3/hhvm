@@ -18,10 +18,10 @@
 #include <gflags/gflags.h>
 #include <gtest/gtest.h>
 
-#include "folly/Benchmark.h"
-#include "folly/dynamic.h"
-#include "folly/gen/Base.h"
-#include "folly/json.h"
+#include <folly/Benchmark.h>
+#include <folly/dynamic.h>
+#include <folly/gen/Base.h>
+#include <folly/json.h>
 
 using folly::dynamic;
 
@@ -315,7 +315,7 @@ TEST(Dynamic, ArrayGenerator) {
 
 int main(int argc, char** argv) {
   testing::InitGoogleTest(&argc, argv);
-  google::ParseCommandLineFlags(&argc, &argv, true);
+  gflags::ParseCommandLineFlags(&argc, &argv, true);
   if (FLAGS_benchmark) {
     folly::runBenchmarks();
   }

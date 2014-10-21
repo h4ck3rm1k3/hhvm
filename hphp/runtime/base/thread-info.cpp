@@ -58,6 +58,7 @@ ThreadInfo::ThreadInfo()
   m_profiler = nullptr;
   m_pendingException = nullptr;
   m_coverage = new CodeCoverage();
+  m_debugHookHandler = nullptr;
 
   RDS::threadInit();
   onSessionInit();
@@ -153,7 +154,7 @@ ssize_t check_request_surprise(ThreadInfo* info) {
 
   ssize_t flags = p.fetchAndClearFlags();
   do_timedout = (flags & RequestInjectionData::TimedOutFlag) &&
-    !p.getDebugger();
+    !p.getDebuggerAttached();
   do_memExceeded = (flags & RequestInjectionData::MemExceededFlag);
   do_signaled = (flags & RequestInjectionData::SignaledFlag);
 
@@ -161,11 +162,19 @@ ssize_t check_request_surprise(ThreadInfo* info) {
   Exception* pendingException = info->m_pendingException;
   info->m_pendingException = nullptr;
 
-  if (do_timedout && !pendingException) {
-    pendingException = generate_request_timeout_exception();
+  if (do_timedout) {
+    if (pendingException) {
+      p.setTimedOutFlag();
+    } else {
+      pendingException = generate_request_timeout_exception();
+    }
   }
-  if (do_memExceeded && !pendingException) {
-    pendingException = generate_memory_exceeded_exception();
+  if (do_memExceeded) {
+    if (pendingException) {
+      p.setMemExceededFlag();
+    } else {
+      pendingException = generate_memory_exceeded_exception();
+    }
   }
   if (do_signaled) {
     extern bool f_pcntl_signal_dispatch();
@@ -174,6 +183,16 @@ ssize_t check_request_surprise(ThreadInfo* info) {
 
   if (pendingException) {
     pendingException->throwException();
+  }
+  return flags;
+}
+
+ssize_t check_request_surprise_unlikely() {
+  auto info = ThreadInfo::s_threadInfo.getNoCheck();
+  auto flags = info->m_reqInjectionData.getConditionFlags()->load();
+
+  if (UNLIKELY(flags)) {
+    check_request_surprise(info);
   }
   return flags;
 }

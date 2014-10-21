@@ -35,6 +35,7 @@
 #include "hphp/runtime/base/directory.h"
 #include "hphp/runtime/base/thread-info.h"
 #include "hphp/runtime/base/stat-cache.h"
+#include "hphp/runtime/base/string-util.h"
 #include "hphp/system/constants.h"
 #include "hphp/system/systemlib.h"
 #include "hphp/util/logger.h"
@@ -133,8 +134,11 @@ static int accessSyscall(
 
   if (useFileCache && dynamic_cast<FileStreamWrapper*>(w)) {
     String path(uri_or_path);
-    if (UNLIKELY(boost::istarts_with(uri_or_path.data(), "file://"))) {
-      path = uri_or_path.substr(sizeof("file://") - 1);
+    if (UNLIKELY(StringUtil::IsFileUrl(uri_or_path.data()))) {
+      path = StringUtil::DecodeFileUrl(uri_or_path);
+      if (path.empty()) {
+        return -1;
+      }
     }
     return ::access(File::TranslatePathWithFileCache(path).data(), mode);
   }
@@ -317,6 +321,12 @@ Variant f_fstat(const Resource& handle) {
 
 Variant f_fread(const Resource& handle, int64_t length) {
   CHECK_HANDLE(handle, f);
+  if (length < 1) {
+    raise_warning(
+      "fread(): Length parameter must be greater than 0"
+    );
+    return false;
+  }
   return f->read(length);
 }
 
@@ -335,7 +345,7 @@ Variant f_fgets(const Resource& handle, int64_t length /* = 0 */) {
     return false;
   }
   CHECK_HANDLE(handle, f);
-  String line = f->readLine(length);
+  String line = f->readLine(length - 1);
   if (!line.isNull()) {
     return line;
   }
@@ -354,7 +364,11 @@ Variant f_fgetss(const Resource& handle, int64_t length /* = 0 */,
 Variant f_fscanf(int _argc, const Resource& handle, const String& format,
                  const Array& _argv /* = null_array */) {
   CHECK_HANDLE(handle, f);
-  return f_sscanf(_argc, f->readLine(), format, _argv);
+  String line = f->readLine();
+  if (line.length() == 0) {
+    return false;
+  }
+  return f_sscanf(_argc, line, format, _argv);
 }
 
 Variant f_fpassthru(const Resource& handle) {
@@ -1393,14 +1407,17 @@ Variant f_glob(const String& pattern, int flags /* = 0 */) {
 
 Variant f_tempnam(const String& dir, const String& prefix) {
   CHECK_PATH(dir, 1);
-  String tmpdir = dir;
+  String tmpdir = dir, trailing_slash = "/";
   if (tmpdir.empty() || !f_is_dir(tmpdir) || !f_is_writable(tmpdir)) {
     tmpdir = HHVM_FN(sys_get_temp_dir)();
   }
   tmpdir = File::TranslatePath(tmpdir);
   String pbase = f_basename(prefix);
   if (pbase.size() > 64) pbase = pbase.substr(0, 63);
-  String templ = tmpdir + "/" + pbase + "XXXXXX";
+  if ((tmpdir.length() > 0) && (tmpdir[tmpdir.length() - 1] == '/')) {
+    trailing_slash = "";
+  }
+  String templ = tmpdir + trailing_slash + pbase + "XXXXXX";
   char buf[PATH_MAX + 1];
   strcpy(buf, templ.data());
   int fd = mkstemp(buf);
@@ -1456,7 +1473,7 @@ Variant f_getcwd() {
 bool f_chdir(const String& directory) {
   CHECK_PATH_FALSE(directory, 1);
   if (f_is_dir(directory)) {
-    g_context->setCwd(File::TranslatePath(directory));
+    g_context->setCwd(f_realpath(directory));
     return true;
   }
   raise_warning("No such file or directory (errno 2)");
@@ -1568,7 +1585,7 @@ Variant f_scandir(const String& directory, bool descending /* = false */,
   std::vector<String> names;
   while (true) {
     auto name = dir->read();
-    if (!name.toBoolean()) {
+    if (same(name, false)) {
       break;
     }
     names.push_back(name.toString());

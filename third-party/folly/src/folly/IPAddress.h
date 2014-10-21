@@ -24,12 +24,12 @@
 
 #include <boost/operators.hpp>
 
-#include "folly/Format.h"
-#include "folly/Range.h"
-#include "folly/IPAddressException.h"
-#include "folly/IPAddressV4.h"
-#include "folly/IPAddressV6.h"
-#include "folly/detail/IPAddress.h"
+#include <folly/Format.h>
+#include <folly/Range.h>
+#include <folly/IPAddressException.h>
+#include <folly/IPAddressV4.h>
+#include <folly/IPAddressV6.h>
+#include <folly/detail/IPAddress.h>
 
 namespace folly {
 
@@ -250,6 +250,12 @@ class IPAddress : boost::totally_ordered<IPAddress> {
   bool isIPv4Mapped() const {
     return isV6() && asV6().isIPv4Mapped();
   }
+
+  // @return true if address is uninitialized
+  bool empty() const { return (family_ == AF_UNSPEC); }
+
+  // @return true if address is initialized
+  explicit operator bool() const { return !empty(); }
 
   // @return true if this is an IPAddressV4 instance
   bool isV4() const { return (family_ == AF_INET); }

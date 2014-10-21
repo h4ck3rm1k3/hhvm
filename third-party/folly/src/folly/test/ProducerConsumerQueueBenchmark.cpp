@@ -23,10 +23,10 @@
 
 #include <gflags/gflags.h>
 #include <glog/logging.h>
-#include "folly/Benchmark.h"
-#include "folly/stats/Histogram.h"
-#include "folly/stats/Histogram-defs.h"
-#include "folly/ProducerConsumerQueue.h"
+#include <folly/Benchmark.h>
+#include <folly/stats/Histogram.h>
+#include <folly/stats/Histogram-defs.h>
+#include <folly/ProducerConsumerQueue.h>
 
 namespace {
 
@@ -232,7 +232,7 @@ BENCHMARK_PARAM(BM_ProducerConsumerLatency, 1048574);
 
 int main(int argc, char** argv) {
   google::InitGoogleLogging(argv[0]);
-  google::ParseCommandLineFlags(&argc, &argv, true);
+  gflags::ParseCommandLineFlags(&argc, &argv, true);
 
   runBenchmarks();
   return 0;

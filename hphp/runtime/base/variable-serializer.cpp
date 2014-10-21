@@ -44,7 +44,7 @@ VariableSerializer::VariableSerializer(Type type, int option /* = 0 */,
                                        int maxRecur /* = 3 */)
   : m_type(type), m_option(option), m_buf(nullptr), m_indent(0),
     m_valueCount(0), m_referenced(false), m_refCount(1), m_maxCount(maxRecur),
-    m_levelDebugger(0) {
+    m_levelDebugger(0), m_currentDepth(0), m_maxDepth(0) {
   m_maxLevelDebugger = g_context->debuggerSettings.printLevel;
   if (type == Type::Serialize ||
       type == Type::APCSerialize ||
@@ -207,8 +207,10 @@ void VariableSerializer::write(double v) {
       m_buf->append(buf);
       free(buf);
     } else {
-      // PHP issues a warning: double INF/NAN does not conform to the
-      // JSON spec, encoded as 0.
+      if (std::isnan(v) || std::isinf(v)) {
+        json_set_last_error_code(json_error_codes::JSON_ERROR_INF_OR_NAN);
+      }
+
       m_buf->append('0');
     }
     break;
@@ -434,7 +436,7 @@ void VariableSerializer::write(const char *v, int len /* = -1 */,
     m_buf->append("\";");
     break;
   case Type::JSON: {
-    if (m_option & k_JSON_NUMERIC_CHECK) {
+    if ((m_option & k_JSON_NUMERIC_CHECK) && !isArrayKey) {
       int64_t lval; double dval;
       switch (is_numeric_string(v, len, &lval, &dval, 0)) {
         case KindOfInt64:
@@ -508,15 +510,21 @@ void VariableSerializer::write(const Object& v) {
     if (v.instanceof(s_JsonSerializable)) {
       assert(!v->isCollection());
       Variant ret = v->o_invoke_few_args(s_jsonSerialize, 0);
-      // for non objects or when $this is returned
+      // for non objects or when $this is not returned
       if (!ret.isObject() || (ret.isObject() && !same(ret, v))) {
-        write(ret);
+        if (ret.isArray() || ret.isObject()) {
+          preventOverflow(v, [&ret, this]() {
+            write(ret);
+          });
+        } else {
+          // Don't need to check for overflows if ret is of primitive type
+          // because the depth does not change.
+          write(ret);
+        }
         return;
       }
     }
-    if (incNestedLevel(v.get(), true)) {
-      writeOverflow(v.get(), true);
-    } else {
+    preventOverflow(v, [&v, this]() {
       if (v->isCollection()) {
         collectionSerialize(v.get(), this);
       } else {
@@ -524,11 +532,20 @@ void VariableSerializer::write(const Object& v) {
         setObjectInfo(v->o_getClassName(), v->o_getId(), 'O');
         props.serialize(this);
       }
-    }
-    decNestedLevel(v.get());
+    });
   } else {
     v.serialize(this);
   }
+}
+
+void VariableSerializer::preventOverflow(const Object& v,
+                                         const std::function<void()>& func) {
+  if (incNestedLevel(v.get(), true)) {
+    writeOverflow(v.get(), true);
+  } else {
+    func();
+  }
+  decNestedLevel(v.get());
 }
 
 void VariableSerializer::write(const Variant& v, bool isArrayKey /* = false */) {
@@ -622,7 +639,7 @@ void VariableSerializer::writeOverflow(void* ptr, bool isObject /* = false */) {
     }
     break;
   case Type::JSON:
-    raise_warning("json_encode(): recursion detected");
+    json_set_last_error_code(json_error_codes::JSON_ERROR_RECURSION);
     m_buf->append("null");
     break;
   default:
@@ -889,7 +906,7 @@ void VariableSerializer::writeArrayKey(Variant key) {
           k++;
           len -= 2;
         }
-        write(k, len);
+        write(k, len, true);
       } else {
         m_buf->append('"');
         m_buf->append(keyCell->m_data.num);
@@ -1064,14 +1081,21 @@ void VariableSerializer::indent() {
 
 bool VariableSerializer::incNestedLevel(void *ptr,
                                         bool isObject /* = false */) {
+  ++m_currentDepth;
+
   switch (m_type) {
   case Type::VarExport:
   case Type::PHPOutput:
   case Type::PrintR:
   case Type::VarDump:
   case Type::DebugDump:
-  case Type::JSON:
   case Type::DebuggerDump:
+    return ++m_counts[ptr] >= m_maxCount;
+  case Type::JSON:
+    if (m_currentDepth > m_maxDepth) {
+      json_set_last_error_code(json_error_codes::JSON_ERROR_DEPTH);
+    }
+
     return ++m_counts[ptr] >= m_maxCount;
   case Type::DebuggerSerialize:
     if (m_maxLevelDebugger > 0 && ++m_levelDebugger > m_maxLevelDebugger) {
@@ -1100,6 +1124,7 @@ bool VariableSerializer::incNestedLevel(void *ptr,
 }
 
 void VariableSerializer::decNestedLevel(void *ptr) {
+  --m_currentDepth;
   --m_counts[ptr];
   if (m_type == Type::DebuggerSerialize && m_maxLevelDebugger > 0) {
     --m_levelDebugger;

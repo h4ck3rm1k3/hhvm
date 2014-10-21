@@ -26,6 +26,7 @@
 #include "hphp/runtime/debugger/cmd/cmd_signal.h"
 #include "hphp/runtime/debugger/cmd/cmd_machine.h"
 #include "hphp/runtime/debugger/debugger.h"
+#include "hphp/runtime/debugger/debugger_hook_handler.h"
 #include "hphp/runtime/base/runtime-option.h"
 #include "hphp/runtime/base/thread-info.h"
 #include "hphp/runtime/ext/ext_socket.h"
@@ -230,6 +231,9 @@ void DebuggerProxy::switchThreadMode(ThreadMode mode,
 }
 
 void DebuggerProxy::startDummySandbox() {
+  Lock lock(this);
+  if (m_stopped) return;
+
   TRACE(2, "DebuggerProxy::startDummySandbox\n");
   m_dummySandbox =
     new DummySandbox(this, RuntimeOption::DebuggerDefaultSandboxPath,
@@ -276,7 +280,7 @@ void DebuggerProxy::setBreakPoints(
     m_breakpoints = breakpoints;
     m_hasBreakPoints = !m_breakpoints.empty();
   }
-  phpSetBreakPoints(this);
+  proxySetBreakPoints(this);
 }
 
 void DebuggerProxy::getBreakPoints(
@@ -385,6 +389,9 @@ void DebuggerProxy::disableSignalPolling() {
 }
 
 void DebuggerProxy::startSignalThread() {
+  Lock lock(this);
+  if (m_stopped) return;
+
   TRACE(2, "DebuggerProxy::startSignalThread\n");
   m_signalThread.start();
 }
@@ -479,7 +486,7 @@ void DebuggerProxy::pollSignal() {
 // Grab the ip address and port of the client that is connected to this proxy.
 bool DebuggerProxy::getClientConnectionInfo(VRefParam address,
                                             VRefParam port) {
-  Resource s(getSocket().get());
+  Resource s(m_thrift.getSocket().get());
   return f_socket_getpeername(s, address, port);
 }
 

@@ -94,7 +94,8 @@ StringData* StringData::MakeShared(StringSlice sl, bool trueStatic) {
   }
 
   auto const sd = static_cast<StringData*>(
-    low_malloc(sizeof(StringData) + sl.len + 1)
+    trueStatic ? low_malloc(sizeof(StringData) + sl.len + 1)
+               : malloc(sizeof(StringData) + sl.len + 1)
   );
   auto const data = reinterpret_cast<char*>(sd + 1);
 
@@ -151,9 +152,15 @@ StringData* StringData::MakeEmpty() {
 }
 
 void StringData::destructStatic() {
-  assert(checkSane());
+  assert(checkSane() && isStatic());
   assert(isFlat());
   low_free(this);
+}
+
+void StringData::destructUncounted() {
+  assert(checkSane() && isUncounted());
+  assert(isFlat());
+  free(this);
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -532,7 +539,7 @@ StringData* StringData::reserve(size_t cap) {
   return ret;
 }
 
-StringData* StringData::shrink(size_t len) {
+StringData* StringData::shrinkImpl(size_t len) {
   assert(!isImmutable() && !hasMultipleRefs() && len >= 0);
   assert(isFlat());
   assert(len <= m_len);
@@ -551,6 +558,15 @@ StringData* StringData::shrink(size_t len) {
   assert(ret == sd);
   assert(ret->checkSane());
   return ret;
+}
+
+StringData* StringData::shrink(size_t len) {
+  if (len < size() && size() - len > kMinShrinkThreshold) {
+    return shrinkImpl(len);
+  }
+  assert(len < MaxSize);
+  setSize(len);
+  return this;
 }
 
 // State transition from Mode::Shared to Mode::Flat.

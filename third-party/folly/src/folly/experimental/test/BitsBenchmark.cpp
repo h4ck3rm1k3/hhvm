@@ -18,8 +18,8 @@
 #include <random>
 #include <memory>
 
-#include "folly/Benchmark.h"
-#include "folly/experimental/Bits.h"
+#include <folly/Benchmark.h>
+#include <folly/experimental/Bits.h>
 
 std::random_device rd;
 
@@ -111,7 +111,7 @@ benchmarkGet(i64)                                 85.78%     8.53ns  117.16M
 #endif
 
 int main(int argc, char *argv[]) {
-  google::ParseCommandLineFlags(&argc, &argv, true);
+  gflags::ParseCommandLineFlags(&argc, &argv, true);
   folly::runBenchmarks();
   return sum.load();
 }

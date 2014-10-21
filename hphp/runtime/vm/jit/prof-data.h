@@ -27,7 +27,7 @@
 #include "hphp/runtime/vm/jit/types.h"
 #include "hphp/runtime/vm/jit/region-selection.h"
 
-namespace HPHP { namespace JIT {
+namespace HPHP { namespace jit {
 
 //////////////////////////////////////////////////////////////////////
 
@@ -178,6 +178,7 @@ public:
   TransID                 numTrans()                  const;
   TransID                 curTransID()                const;
 
+  bool                    hasTransRec(TransID id)     const;
   SrcKey                  transSrcKey(TransID id)     const;
   Offset                  transStartBcOff(TransID id) const;
   Offset                  transLastBcOff(TransID id)  const;
@@ -216,6 +217,7 @@ public:
   void                    setOptimized(FuncId funcId);
   bool                    profiling(FuncId funcId) const;
   void                    setProfiling(FuncId funcId);
+  void                    freeFuncData(FuncId funcId);
 
 private:
   uint32_t                m_numTrans;

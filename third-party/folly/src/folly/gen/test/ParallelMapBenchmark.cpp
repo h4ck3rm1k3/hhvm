@@ -20,9 +20,9 @@
 #include <thread>
 #include <vector>
 
-#include "folly/Benchmark.h"
-#include "folly/gen/Base.h"
-#include "folly/gen/ParallelMap.h"
+#include <folly/Benchmark.h>
+#include <folly/gen/Base.h>
+#include <folly/gen/ParallelMap.h>
 
 using namespace folly::gen;
 
@@ -85,7 +85,7 @@ BENCHMARK_RELATIVE(FibSumThreads, n) {
 */
 
 int main(int argc, char *argv[]) {
-  google::ParseCommandLineFlags(&argc, &argv, true);
+  gflags::ParseCommandLineFlags(&argc, &argv, true);
   folly::runBenchmarks();
   return 0;
 }

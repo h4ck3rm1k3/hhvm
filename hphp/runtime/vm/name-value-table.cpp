@@ -27,20 +27,12 @@ namespace HPHP {
 
 //////////////////////////////////////////////////////////////////////
 
-NameValueTable::NameValueTable()
-  : m_fp(nullptr)
-  , m_table(nullptr)
-  , m_tabMask(0)
-  , m_elms(0)
-{
+NameValueTable::NameValueTable() {
   allocate(folly::nextPowTwo(RuntimeOption::EvalVMInitialGlobalTableSize));
 }
 
 NameValueTable::NameValueTable(ActRec* fp)
   : m_fp(fp)
-  , m_table(nullptr)
-  , m_tabMask(0)
-  , m_elms(0)
 {
   assert(m_fp);
   const auto func = m_fp->m_func;
@@ -64,8 +56,6 @@ NameValueTable::NameValueTable(ActRec* fp)
 
 NameValueTable::NameValueTable(const NameValueTable& nvTable, ActRec* fp)
   : m_fp(fp)
-  , m_table(nullptr)
-  , m_tabMask(0)
   , m_elms(nvTable.m_elms)
 {
   allocate(nvTable.m_tabMask + 1);
@@ -99,7 +89,7 @@ NameValueTable::~NameValueTable() {
       }
     }
   }
-  free(m_table);
+  smart_free(m_table);
 }
 
 void NameValueTable::suspend(const ActRec* oldFP, ActRec* newFP) {
@@ -155,7 +145,7 @@ void NameValueTable::detach(ActRec* fp) {
 void NameValueTable::leak() {
   m_elms = 0;
   m_tabMask = 0;
-  free(m_table);
+  smart_free(m_table);
   m_table = nullptr;
 }
 
@@ -218,12 +208,12 @@ void NameValueTable::allocate(const size_t newCapac) {
   Elm* oldTab = m_table;
   const size_t oldMask = m_tabMask;
 
-  m_table = static_cast<Elm*>(calloc(sizeof(Elm), newCapac));
+  m_table = static_cast<Elm*>(smart_calloc(sizeof(Elm), newCapac));
   m_tabMask = uint32_t(newCapac - 1);
 
   if (oldTab) {
     rehash(oldTab, oldMask);
-    free(oldTab);
+    smart_free(oldTab);
   }
 }
 
@@ -308,11 +298,19 @@ NameValueTable::Iterator::Iterator(const NameValueTable* tab)
 }
 
 NameValueTable::Iterator
-NameValueTable::Iterator::getEnd(const NameValueTable* tab) {
+NameValueTable::Iterator::getLast(const NameValueTable* tab) {
   Iterator it;
   it.m_tab = tab;
   it.m_idx = tab->m_tabMask + 1;
   it.prev();
+  return it;
+}
+
+NameValueTable::Iterator
+NameValueTable::Iterator::getEnd(const NameValueTable* tab) {
+  Iterator it;
+  it.m_tab = tab;
+  it.m_idx = tab->m_tabMask + 1;
   return it;
 }
 
@@ -333,7 +331,7 @@ NameValueTable::Iterator::Iterator(const NameValueTable* tab,
 }
 
 ssize_t NameValueTable::Iterator::toInteger() const {
-  const ssize_t invalid = ArrayData::invalid_index;
+  const ssize_t invalid = m_tab->m_tabMask + 1;
   return valid() ? m_idx : invalid;
 }
 
@@ -353,6 +351,14 @@ const TypedValue* NameValueTable::Iterator::curVal() const {
 
 void NameValueTable::Iterator::next() {
   size_t const sz = m_tab->m_tabMask + 1;
+  if (m_idx + 1 >= sz) {
+    m_idx = sz;
+    return;
+  }
+  ++m_idx;
+  if (LIKELY(!atEmpty())) {
+    return;
+  }
   do {
     ++m_idx;
   } while (size_t(m_idx) < sz && atEmpty());

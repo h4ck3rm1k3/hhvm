@@ -236,6 +236,9 @@ bool Scanner::nextIfToken(TokenStore::iterator& pos, int tok) {
 
 bool Scanner::tryParseTypeList(TokenStore::iterator& pos) {
   for (;;) {
+    if (pos->t == '+' || pos->t == '-') {
+      nextLookahead(pos);
+    }
     if (!tryParseNSType(pos)) return false;
     if (pos->t == T_AS) {
       nextLookahead(pos);
@@ -336,16 +339,18 @@ void Scanner::parseApproxParamDefVal(TokenStore::iterator& pos) {
       case T_NS_C:
       case T_COMPILER_HALT_OFFSET:
       case T_STRING:
+      case T_ENUM:
       case T_XHP_LABEL:
       case T_XHP_ATTRIBUTE:
       case T_XHP_CATEGORY:
       case T_XHP_CHILDREN:
       case T_XHP_REQUIRED:
-      case T_XHP_ENUM:
       case T_NS_SEPARATOR:
       case T_NAMESPACE:
       case T_SHAPE:
       case T_ARRAY:
+      case T_MIARRAY:
+      case T_MSARRAY:
       case T_FUNCTION:
       case T_DOUBLE_ARROW:
       case T_DOUBLE_COLON:
@@ -422,7 +427,7 @@ Scanner::tryParseNSType(TokenStore::iterator& pos) {
       case T_XHP_CATEGORY:
       case T_XHP_CHILDREN:
       case T_XHP_REQUIRED:
-      case T_XHP_ENUM:
+      case T_ENUM:
       case T_ARRAY:
         nextLookahead(pos);
         break;
@@ -717,7 +722,7 @@ std::string Scanner::escape(const char *str, int len, char quote_type) const {
             case 'r':  output += '\r'; break;
             case 'v':  output += '\v'; break;
             case 'f':  output += '\f'; break;
-            case 'e':  output += '\e'; break;
+            case 'e':  output += '\033'; break;
             case '\\': output += '\\'; break;
             case '$':  output += '$';  break;
             case '"':

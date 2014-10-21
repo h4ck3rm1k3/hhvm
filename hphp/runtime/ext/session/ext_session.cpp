@@ -21,6 +21,7 @@
 #include <sys/types.h>
 #include <sys/time.h>
 #include <sys/stat.h>
+#include <sys/file.h>
 #include <fcntl.h>
 #include <dirent.h>
 #include <vector>
@@ -44,7 +45,7 @@
 #include "hphp/runtime/base/zend-math.h"
 #include "hphp/runtime/ext/ext_function.h"
 #include "hphp/runtime/ext/ext_hash.h"
-#include "hphp/runtime/ext/ext_misc.h"
+#include "hphp/runtime/ext/std/ext_std_misc.h"
 #include "hphp/runtime/ext/std/ext_std_options.h"
 #include "hphp/runtime/ext/wddx/ext_wddx.h"
 #include "hphp/runtime/vm/jit/translator-inline.h"
@@ -773,9 +774,7 @@ private:
       m_fd = ::open(buf, O_CREAT | O_RDWR | O_BINARY, m_filemode);
 
       if (m_fd != -1) {
-#ifdef PHP_WIN32
         flock(m_fd, LOCK_EX);
-#endif
 
 #ifdef F_SETFD
 # ifndef FD_CLOEXEC
@@ -1008,8 +1007,9 @@ public:
           forceToArray(sess).set(key, vu.unserialize());
           php_global_set(s__SESSION, std::move(sess));
           p = vu.head();
-        } catch (Exception &e) {
-        }
+        } catch (const ResourceExceededException&) {
+          throw;
+        } catch (const Exception&) {}
       }
     }
     return true;
@@ -1072,8 +1072,9 @@ public:
           forceToArray(sess).set(key, vu.unserialize());
           php_global_set(s__SESSION, std::move(sess));
           q = vu.head();
-        } catch (Exception &e) {
-        }
+        } catch (const ResourceExceededException&) {
+          throw;
+        } catch (const Exception&) {}
       }
       p = q;
     }

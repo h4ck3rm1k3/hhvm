@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-#include "folly/Exception.h"
+#include <folly/Exception.h>
 
 #include <cstdio>
 #include <memory>
@@ -91,7 +91,7 @@ TEST(ExceptionTest, Simple) {
 
 int main(int argc, char *argv[]) {
   testing::InitGoogleTest(&argc, argv);
-  google::ParseCommandLineFlags(&argc, &argv, true);
+  gflags::ParseCommandLineFlags(&argc, &argv, true);
   return RUN_ALL_TESTS();
 }
 

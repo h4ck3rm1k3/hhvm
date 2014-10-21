@@ -25,8 +25,7 @@
 #include "hphp/runtime/vm/jit/mc-generator.h"
 #include "hphp/runtime/vm/jit/service-requests-inline.h"
 
-namespace HPHP {
-namespace JIT {
+namespace HPHP { namespace jit {
 
 TRACE_SET_MOD(trans)
 
@@ -64,7 +63,7 @@ void SrcRec::emitFallbackJump(CodeBlock& cb, ConditionCode cc /* = -1 */) {
   // This is a spurious platform dependency. TODO(2990497)
   mcg->backEnd().prepareForSmash(
     cb,
-    cc == CC_None ? X64::kJmpLen : X64::kJmpccLen
+    cc == CC_None ? x64::kJmpLen : x64::kJmpccLen
   );
   auto from = cb.frontier();
 
@@ -83,7 +82,7 @@ void SrcRec::emitFallbackJumpCustom(CodeBlock& cb, CodeBlock& frozen,
                                     SrcKey sk, TransFlags trflags,
                                     ConditionCode cc) {
   // Another platform dependency (the same one as above). TODO(2990497)
-  auto toSmash = X64::emitRetranslate(cb, frozen, cc, sk, trflags);
+  auto toSmash = x64::emitRetranslate(cb, frozen, cc, sk, trflags);
 
   auto incoming = cc < 0 ? IncomingBranch::jmpFrom(toSmash)
                          : IncomingBranch::jccFrom(toSmash);
@@ -213,4 +212,4 @@ void SrcRec::patch(IncomingBranch branch, TCA dest) {
   }
 }
 
-} } // HPHP::JIT
+} } // HPHP::jit

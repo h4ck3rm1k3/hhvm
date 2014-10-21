@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-#include "folly/experimental/TestUtil.h"
+#include <folly/experimental/TestUtil.h>
 
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -102,7 +102,7 @@ TEST(TemporaryDirectory, DeleteOnDestruction) {
 
 int main(int argc, char *argv[]) {
   testing::InitGoogleTest(&argc, argv);
-  google::ParseCommandLineFlags(&argc, &argv, true);
+  gflags::ParseCommandLineFlags(&argc, &argv, true);
   return RUN_ALL_TESTS();
 }
 

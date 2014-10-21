@@ -17,7 +17,7 @@
 //
 // Author: andrei.alexandrescu@fb.com
 
-#include "folly/FBString.h"
+#include <folly/FBString.h>
 
 #include <cstdlib>
 
@@ -30,10 +30,10 @@
 
 #include <gflags/gflags.h>
 
-#include "folly/Foreach.h"
-#include "folly/Portability.h"
-#include "folly/Random.h"
-#include "folly/Conv.h"
+#include <folly/Foreach.h>
+#include <folly/Portability.h>
+#include <folly/Random.h>
+#include <folly/Conv.h>
 
 using namespace std;
 using namespace folly;
@@ -1247,6 +1247,6 @@ TEST(FBString, moveTerminator) {
 
 int main(int argc, char** argv) {
   testing::InitGoogleTest(&argc, argv);
-  google::ParseCommandLineFlags(&argc, &argv, true);
+  gflags::ParseCommandLineFlags(&argc, &argv, true);
   return RUN_ALL_TESTS();
 }

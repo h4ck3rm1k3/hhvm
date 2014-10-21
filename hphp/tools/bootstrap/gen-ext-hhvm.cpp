@@ -533,7 +533,7 @@ void emitSlowPathHelper(const PhpFunc& func, const fbstring& prefix,
   if (func.usesThis()) {
     out << ", c_" << func.className() << "* this_";
   }
-  out << ") __attribute__((noinline,cold));\n";
+  out << ") __attribute__((__noinline__,cold));\n";
 
   out << "void " << prefix << func.getUniqueName()
       << "(TypedValue* rv, ActRec* ar, int32_t count";
@@ -720,7 +720,7 @@ void processSymbol(const fbstring& symbol, std::ostream& header,
       if (func.minNumParams() == 0) {
         cpp << in << "throw_toomany_arguments_nr(\""
             << escapeCpp(func.getPrettyName())
-            << "\", " << func.numParams() << ", 1, rv);\n";
+            << "\", " << func.numParams() << ", count, 1, rv);\n";
       } else {
         cpp << in << "throw_wrong_arguments_nr(\""
             << escapeCpp(func.getPrettyName())
@@ -757,10 +757,16 @@ int main(int argc, const char* argv[]) {
     return 0;
   }
 
+  fbstring invocation_trace;
+  makeInvocationTrace(invocation_trace, argc, argv);
+
   g_armMode = (strcmp(argv[1], "arm") == 0);
 
   std::ofstream header(argv[2]);
   std::ofstream cpp(argv[3]);
+
+  brandOutputFile(header, "gen-ext-hhvm.cpp", invocation_trace);
+  brandOutputFile(cpp, "gen-ext-hhvm.cpp", invocation_trace);
 
   fbvector<PhpFunc> funcs;
   fbvector<PhpClass> classes;

@@ -505,6 +505,11 @@ struct Class {
    * User attributes for this class declaration.
    */
   UserAttributeMap userAttributes;
+
+  /*
+   * The underlying base type, if this is an enum
+   */
+  TypeConstraint enumBaseTy;
 };
 
 //////////////////////////////////////////////////////////////////////
@@ -519,6 +524,7 @@ using TypeAlias = ::HPHP::TypeAlias;
 struct Unit {
   MD5 md5;
   SString filename;
+  int preloadPriority{0};
   std::unique_ptr<Func> pseudomain;
   std::vector<std::unique_ptr<Func>> funcs;
   std::vector<std::unique_ptr<Class>> classes;

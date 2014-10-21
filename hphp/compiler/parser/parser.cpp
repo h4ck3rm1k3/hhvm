@@ -201,6 +201,9 @@ bool Parser::parse() {
                                     "Parse error: %s",
                                     errString().c_str());
     }
+    if (scanner().isHHFile()) {
+      m_file->setHHFile();
+    }
     return true;
   } catch (const ParseTimeFatalException& e) {
     m_file->cleanupForError(m_ar);
@@ -837,6 +840,32 @@ Parser::onCollectionPair(Token &out, Token *pairs, Token *name, Token &value) {
   out->exp = expList;
 }
 
+void Parser::onEmptyCheckedArray(Token &out) {
+  out->exp = NEW_EXP0(ExpressionList);
+}
+
+void
+Parser::onCheckedArrayPair(Token &out, Token *pairs, Token *name, Token &value) {
+  if (!value->exp) return;
+
+  ExpressionPtr expList;
+  if (pairs && pairs->exp) {
+    expList = pairs->exp;
+  } else {
+    expList = NEW_EXP0(ExpressionList);
+  }
+  ExpressionPtr nameExp = name ? name->exp : ExpressionPtr();
+  expList->addElement(NEW_EXP(ArrayPairExpression, nameExp, value->exp, false));
+  out->exp = expList;
+}
+
+void Parser::onCheckedArray(Token &out, Token &pairs, int op) {
+  if (!m_scanner.isHHSyntaxEnabled()) {
+    PARSE_ERROR("varray, miarray, and msarray are not enabled");
+  }
+  onUnaryOpExp(out, pairs, op, true);
+}
+
 void Parser::onUserAttribute(Token &out, Token *attrList, Token &name,
                              Token &value) {
   ExpressionPtr expList;
@@ -1045,7 +1074,7 @@ StatementPtr Parser::onFunctionHelper(FunctionType type,
     : NEW_EXP0(ModifierExpression);
   modifiersExp->setHasPrivacy(type == FunctionType::Method);
   if (type == FunctionType::Closure && !modifiersExp->validForClosure()) {
-    PARSE_ERROR("Invalid modifier on closure funciton.");
+    PARSE_ERROR("Invalid modifier on closure function.");
   }
   if (type == FunctionType::Function) {
     if (!modifiersExp->validForFunction()) {
@@ -1209,7 +1238,8 @@ void Parser::onClassStart(int type, Token &name) {
 }
 
 void Parser::onClass(Token &out, int type, Token &name, Token &base,
-                     Token &baseInterface, Token &stmt, Token *attr) {
+                     Token &baseInterface, Token &stmt, Token *attr,
+                     Token *enumBase) {
   StatementListPtr stmtList;
   if (stmt->stmt) {
     stmtList = dynamic_pointer_cast<StatementList>(stmt->stmt);
@@ -1218,11 +1248,15 @@ void Parser::onClass(Token &out, int type, Token &name, Token &base,
   if (attr && attr->exp) {
     attrList = dynamic_pointer_cast<ExpressionList>(attr->exp);
   }
+  TypeAnnotationPtr enumBaseTy;
+  if (enumBase) {
+    enumBaseTy = enumBase->typeAnnotation;
+  }
 
   ClassStatementPtr cls = NEW_STMT
     (ClassStatement, type, name->text(), base->text(),
      dynamic_pointer_cast<ExpressionList>(baseInterface->exp),
-     popComment(), stmtList, attrList);
+     popComment(), stmtList, attrList, enumBaseTy);
 
   // look for argument promotion in ctor
   ExpressionListPtr promote = NEW_EXP(ExpressionList);
@@ -1264,6 +1298,13 @@ void Parser::onClass(Token &out, int type, Token &name, Token &base,
   m_clsName.clear();
   m_inTrait = false;
   registerAlias(name.text());
+}
+
+void Parser::onEnum(Token &out, Token &name, Token &baseTy,
+                    Token &stmt, Token *attr) {
+  Token dummyBase, dummyInterface;
+  dummyBase.setText("HH\\BuiltinEnum");
+  onClass(out, T_ENUM, name, dummyBase, dummyInterface, stmt, attr, &baseTy);
 }
 
 void Parser::onInterface(Token &out, Token &name, Token &base, Token &stmt,

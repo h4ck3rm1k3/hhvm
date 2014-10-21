@@ -27,14 +27,16 @@
 #include "hphp/runtime/vm/srckey.h"
 #include "hphp/runtime/vm/tread-hash-map.h"
 
-namespace HPHP {
-namespace JIT {
+namespace HPHP { namespace jit {
 
 struct CodeGenFixups;
 
 template<typename T>
 struct GrowableVector {
-  GrowableVector() : m_vec(nullptr) {}
+  GrowableVector() {}
+  GrowableVector(const GrowableVector&) = delete;
+  GrowableVector& operator=(const GrowableVector&) = delete;
+
   size_t size() const {
     return m_vec ? m_vec->m_size : 0;
   }
@@ -91,7 +93,7 @@ private:
       return gv;
     }
   };
-  Impl* m_vec;
+  Impl* m_vec{nullptr};
 };
 
 /*

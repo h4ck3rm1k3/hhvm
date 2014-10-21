@@ -20,30 +20,31 @@
 #include <thread>
 
 #include "WangleException.h"
-#include "detail.h"
+#include "detail/State.h"
 
 namespace folly { namespace wangle {
 
 template <class T>
-Promise<T>::Promise() : retrieved_(false), obj_(new detail::FutureObject<T>())
+Promise<T>::Promise() : retrieved_(false), state_(new detail::State<T>())
 {}
 
 template <class T>
-Promise<T>::Promise(Promise<T>&& other) :
-retrieved_(other.retrieved_), obj_(other.obj_) {
-  other.obj_ = nullptr;
+Promise<T>::Promise(Promise<T>&& other) : state_(nullptr) {
+  *this = std::move(other);
 }
 
 template <class T>
 Promise<T>& Promise<T>::operator=(Promise<T>&& other) {
-  std::swap(obj_, other.obj_);
+  std::swap(state_, other.state_);
   std::swap(retrieved_, other.retrieved_);
   return *this;
 }
 
 template <class T>
 void Promise<T>::throwIfFulfilled() {
-  if (!obj_)
+  if (!state_)
+    throw NoState();
+  if (state_->ready())
     throw PromiseAlreadySatisfied();
 }
 
@@ -55,44 +56,42 @@ void Promise<T>::throwIfRetrieved() {
 
 template <class T>
 Promise<T>::~Promise() {
-  if (obj_) {
-    setException(BrokenPromise());
+  detach();
+}
+
+template <class T>
+void Promise<T>::detach() {
+  if (state_) {
+    if (!retrieved_)
+      state_->detachFuture();
+    state_->detachPromise();
+    state_ = nullptr;
   }
 }
 
 template <class T>
 Future<T> Promise<T>::getFuture() {
   throwIfRetrieved();
-  throwIfFulfilled();
   retrieved_ = true;
-  return Future<T>(obj_);
+  return Future<T>(state_);
 }
 
 template <class T>
 template <class E>
 void Promise<T>::setException(E const& e) {
-  throwIfFulfilled();
   setException(std::make_exception_ptr<E>(e));
 }
 
 template <class T>
 void Promise<T>::setException(std::exception_ptr const& e) {
   throwIfFulfilled();
-  obj_->setException(e);
-  if (!retrieved_) {
-    delete obj_;
-  }
-  obj_ = nullptr;
+  state_->setException(e);
 }
 
 template <class T>
 void Promise<T>::fulfilTry(Try<T>&& t) {
   throwIfFulfilled();
-  obj_->fulfil(std::move(t));
-  if (!retrieved_) {
-    delete obj_;
-  }
-  obj_ = nullptr;
+  state_->fulfil(std::move(t));
 }
 
 template <class T>
@@ -101,12 +100,7 @@ void Promise<T>::setValue(M&& v) {
   static_assert(!std::is_same<T, void>::value,
                 "Use setValue() instead");
 
-  throwIfFulfilled();
-  obj_->fulfil(Try<T>(std::forward<M>(v)));
-  if (!retrieved_) {
-    delete obj_;
-  }
-  obj_ = nullptr;
+  fulfilTry(Try<T>(std::forward<M>(v)));
 }
 
 template <class T>
@@ -114,47 +108,14 @@ void Promise<T>::setValue() {
   static_assert(std::is_same<T, void>::value,
                 "Use setValue(value) instead");
 
-  throwIfFulfilled();
-  obj_->fulfil(Try<void>());
-  if (!retrieved_) {
-    delete obj_;
-  }
-  obj_ = nullptr;
+  fulfilTry(Try<void>());
 }
 
 template <class T>
 template <class F>
 void Promise<T>::fulfil(F&& func) {
-  fulfilHelper(std::forward<F>(func));
-}
-
-template <class T>
-template <class F>
-typename std::enable_if<
-  std::is_convertible<typename std::result_of<F()>::type, T>::value &&
-  !std::is_same<T, void>::value>::type
-inline Promise<T>::fulfilHelper(F&& func) {
   throwIfFulfilled();
-  try {
-    setValue(func());
-  } catch (...) {
-    setException(std::current_exception());
-  }
-}
-
-template <class T>
-template <class F>
-typename std::enable_if<
-  std::is_same<typename std::result_of<F()>::type, void>::value &&
-  std::is_same<T, void>::value>::type
-inline Promise<T>::fulfilHelper(F&& func) {
-  throwIfFulfilled();
-  try {
-    func();
-    setValue();
-  } catch (...) {
-    setException(std::current_exception());
-  }
+  fulfilTry(makeTryFunction(std::forward<F>(func)));
 }
 
 }}

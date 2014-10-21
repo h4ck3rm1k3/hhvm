@@ -150,7 +150,8 @@ Variant f_substr_compare(const String& main_str, const String& str, int offset,
 
 Variant f_strrchr(const String& haystack, const Variant& needle);
 Variant f_strstr(const String& haystack, const Variant& needle, bool before_needle = false);
-Variant f_stristr(const String& haystack, const Variant& needle);
+Variant f_stristr(const String& haystack, const Variant& needle,
+                  bool before_needle = false);
 Variant f_strpbrk(const String& haystack, const String& char_list);
 bool str_contains_any_of(const String& haystack, const String& char_list);
 
@@ -183,11 +184,6 @@ int64_t f_levenshtein(const String& str1, const String& str2, int cost_ins = 1,
 int64_t f_similar_text(const String& first, const String& second, VRefParam percent = uninit_null());
 Variant f_soundex(const String& str);
 Variant f_metaphone(const String& str, int phones = 0);
-
-///////////////////////////////////////////////////////////////////////////////
-// special
-
-void f_parse_str(const String& str, VRefParam arr = uninit_null());
 
 ///////////////////////////////////////////////////////////////////////////////
 }

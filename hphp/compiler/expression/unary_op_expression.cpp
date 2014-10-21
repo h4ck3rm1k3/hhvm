@@ -77,6 +77,9 @@ inline void UnaryOpExpression::ctorInit() {
     m_localEffects = CreateEffect;
     break;
   case T_ARRAY:
+  case T_VARRAY:
+  case T_MIARRAY:
+  case T_MSARRAY:
   default:
     break;
   }
@@ -115,6 +118,9 @@ bool UnaryOpExpression::isTemporary() const {
   case '-':
   case '~':
   case T_ARRAY:
+  case T_VARRAY:
+  case T_MIARRAY:
+  case T_MSARRAY:
     return true;
   }
   return false;
@@ -179,6 +185,9 @@ bool UnaryOpExpression::containsDynamicConstant(AnalysisResultPtr ar) const {
   case '+':
   case '-':
   case T_ARRAY:
+  case T_VARRAY:
+  case T_MIARRAY:
+  case T_MSARRAY:
     return m_exp && m_exp->containsDynamicConstant(ar);
   default:
     break;
@@ -347,6 +356,9 @@ ExpressionPtr UnaryOpExpression::preOptimize(AnalysisResultConstPtr ar) {
       return replaceValue(makeScalarExpression(ar, result));
     }
   } else if (m_op != T_ARRAY &&
+             m_op != T_VARRAY &&
+             m_op != T_MIARRAY &&
+             m_op != T_MSARRAY &&
              m_exp &&
              m_exp->isScalar() &&
              m_exp->getScalarValue(value) &&
@@ -417,6 +429,9 @@ ExpressionPtr UnaryOpExpression::postOptimize(AnalysisResultConstPtr ar) {
       return replaceValue(m_exp);
     }
   } else if (m_op != T_ARRAY &&
+             m_op != T_VARRAY &&
+             m_op != T_MIARRAY &&
+             m_op != T_MSARRAY &&
              m_exp &&
              m_exp->isScalar()) {
     Variant value;
@@ -461,7 +476,10 @@ TypePtr UnaryOpExpression::inferTypes(AnalysisResultPtr ar, TypePtr type,
   case T_INT_CAST:      et = rt = Type::Int64;                       break;
   case T_DOUBLE_CAST:   et = rt = Type::Double;                      break;
   case T_STRING_CAST:   et = rt = Type::String;                      break;
-  case T_ARRAY:         et = Type::Some;      rt = Type::Array;      break;
+  case T_ARRAY:
+  case T_VARRAY:
+  case T_MIARRAY:
+  case T_MSARRAY:       et = Type::Some;      rt = Type::Array;      break;
   case T_ARRAY_CAST:    et = rt = Type::Array;                       break;
   case T_OBJECT_CAST:   et = rt = Type::Object;                      break;
   case T_BOOL_CAST:     et = rt = Type::Boolean;                     break;
@@ -579,6 +597,9 @@ void UnaryOpExpression::outputCodeModel(CodeGenerator &cg) {
     case T_UNSET:
     case T_EXIT:
     case T_ARRAY:
+    case T_VARRAY:
+    case T_MIARRAY:
+    case T_MSARRAY:
     case T_ISSET:
     case T_EMPTY:
     case T_EVAL: {
@@ -588,6 +609,9 @@ void UnaryOpExpression::outputCodeModel(CodeGenerator &cg) {
         case T_UNSET: funcName = "unset"; break;
         case T_EXIT: funcName = "exit"; break;
         case T_ARRAY: funcName = "array"; break;
+        case T_VARRAY: funcName = "varray"; break;
+        case T_MIARRAY: funcName = "miarray"; break;
+        case T_MSARRAY: funcName = "msarray"; break;
         case T_ISSET: funcName = "isset"; break;
         case T_EMPTY: funcName = "empty"; break;
         case T_EVAL: funcName = "eval"; break;
@@ -700,6 +724,9 @@ void UnaryOpExpression::outputPHP(CodeGenerator &cg, AnalysisResultPtr ar) {
     case T_EXIT:          cg_printf("exit(");         break;
     case '@':             cg_printf("@");             break;
     case T_ARRAY:         cg_printf("array(");        break;
+    case T_VARRAY:        cg_printf("varray(");       break;
+    case T_MIARRAY:       cg_printf("miarray(");      break;
+    case T_MSARRAY:       cg_printf("msarray(");      break;
     case T_PRINT:         cg_printf("print ");        break;
     case T_ISSET:         cg_printf("isset(");        break;
     case T_EMPTY:         cg_printf("empty(");        break;
@@ -724,6 +751,9 @@ void UnaryOpExpression::outputPHP(CodeGenerator &cg, AnalysisResultPtr ar) {
     case T_UNSET:
     case T_EXIT:
     case T_ARRAY:
+    case T_VARRAY:
+    case T_MIARRAY:
+    case T_MSARRAY:
     case T_ISSET:
     case T_EMPTY:
     case T_EVAL:          cg_printf(")");  break;

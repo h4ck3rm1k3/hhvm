@@ -13,6 +13,12 @@ import re
 import shutil
 import subprocess
 import sys
+import tarfile
+import urllib2
+
+# The version that we will be importing the tests from.
+# Must be a valid, released version from php download site
+zend_version = "5.5.15"
 
 # Don't even pull these into the repo.
 # We want running the bad tests to still complete.
@@ -49,10 +55,8 @@ no_import = (
     # not implemented extensions
     '/ext/com_dotnet',
     '/ext/dba',
-    '/ext/dom',
     '/ext/enchant',
     '/ext/ereg',
-    '/ext/gmp',
     '/ext/interbase',
     '/ext/mssql',
     '/ext/mysqlnd',
@@ -66,7 +70,6 @@ no_import = (
     '/ext/pspell',
     '/ext/readline',
     '/ext/recode',
-    '/ext/reflection',
     '/ext/shmop',
     '/ext/skeleton',
     '/ext/snmp',
@@ -75,7 +78,6 @@ no_import = (
     '/ext/sysvsem',
     '/ext/sysvshm',
     '/ext/tidy',
-    '/ext/tokenizer',
     '/ext/wddx',
     '/ext/xmlrpc',
     '/sapi',
@@ -88,20 +90,16 @@ no_import = (
     '/ext/standard/versioning/php_sapi_name_variation001.phpt',
 )
 
-# For marking tests as always failing. Used to keep flaky tests in bad/.
-bad_tests = (
+# For marking tests as always failing. Used to keep flaky tests in flaky/.
+flaky_tests = (
     # line number is inconsistent on stack overflow
     '/Zend/tests/bug41633_3.php',
-
-    # doubles aren't serialized properly in the repo
-    '/ext/filter/tests/049.php',
 
     # "ls" sometimes prints on stderr
     '/ext/standard/tests/streams/bug64770.php',
 
     # our build machines have no members in group 0...
     '/ext/posix/tests/posix_getgrgid.php',
-    '/ext/posix/tests/posix_getgroups_basic.php',
 
     # concurrency issues
     '/ext/mysql/tests/001.php',
@@ -110,79 +108,63 @@ bad_tests = (
     '/ext/mysql/tests/mysql_select_db.php',
     '/ext/sqlite3/tests/sqlite3_08_udf.php',
     '/ext/sqlite3/tests/sqlite3_25_create_aggregate.php',
-    '/ext/sockets/tests/socket_connect_params.php',
-    '/ext/sockets/tests/socket_getpeername_ipv4loop.php',
+    '/ext/standard/tests/file/bug41655_2.php',
+    '/ext/standard/tests/file/disk_free_space_basic.php',
+    '/ext/standard/tests/file/disk_total_space_basic.php',
+    '/ext/standard/tests/file/disk_total_space_variation.php',
     '/ext/standard/tests/file/fread_socket_variation1.php',
+    '/ext/standard/tests/file/symlink_link_linkinfo_is_link_variation3.php',
     '/ext/standard/tests/network/fsockopen_variation1.php',
     '/ext/standard/tests/network/shutdown.php',
+    '/ext/standard/tests/strings/fprintf_variation_001.php',
+    '/ext/spl/tests/RecursiveDirectoryIterator_getSubPathname_basic.php',
+    '/ext/spl/tests/SplFileObject_fgetcsv_basic.php',
+    '/ext/spl/tests/SplFileObject_fgetcsv_delimiter_basic.php',
+    '/ext/spl/tests/SplFileObject_fgetcsv_escape_basic.php',
+    '/ext/spl/tests/SplFileObject_fgetcsv_escape_default.php',
+    '/ext/spl/tests/SplFileObject_fgetcsv_enclosure_basic.php',
+    '/ext/spl/tests/SplFileObject_fgetcsv_enclosure_error.php',
+    '/ext/spl/tests/SplFileObject_setCsvControl_error001.php',
+    '/ext/spl/tests/SplFileObject_setCsvControl_error002.php',
+    '/ext/spl/tests/SplFileObject_setCsvControl_error003.php',
+    '/ext/phar/tests/019.php',
+    '/ext/spl/tests/dit_006.php',
 
-    # time tests are hard to write, these are poorly written
-    '/ext/date/tests/bug48187.php',
+    # these tests use each other's data
+    '/ext/standard/tests/file/bug38086.php',
+    '/ext/standard/tests/file/stream_copy_to_stream.php',
+
+    # these all write to temp3.txt.gz
+    '/ext/zlib/tests/gzseek_basic2.php',
+    '/ext/zlib/tests/gzseek_variation1.php',
+    '/ext/zlib/tests/gzseek_variation4.php',
+    '/ext/zlib/tests/gzseek_variation5.php',
 
     # broken on ubuntu 12.04
     '/ext/date/tests/DateTimeZone_listAbbreviations_basic1.php',
     '/ext/date/tests/bug52290.php',
     '/ext/date/tests/timezone_abbreviations_list_basic1.php',
-    '/ext/gd/tests/bug24155.php',
-    '/ext/gd/tests/bug39366.php',
-    '/ext/gd/tests/bug48732.php',
-    '/ext/mbstring/tests/bug54494.php',
-    '/ext/openssl/tests/openssl_x509_parse_basic.php',
     '/ext/standard/tests/streams/bug61115-2.php',
-    '/ext/standard/tests/strings/moneyformat.php',
+
+    # timing dependent
+    '/ext/date/tests/bug48187.php',
 
     # works in interp but fails in JIT
     '/ext/standard/tests/array/array_next_error2.php',
     '/ext/standard/tests/array/prev_error3.php',
     '/ext/standard/tests/class_object/get_object_vars_variation_003.php',
-    '/ext/standard/tests/file/pathinfo_variation1.php',
-    '/ext/standard/tests/file/pathinfo_variaton.php',
     '/tests/lang/038.php',
-    '/tests/lang/045.php',
-    '/Zend/tests/lsb_021.php',
-    '/Zend/tests/lsb_022.php',
-
-    # broken in contbuild for unknown reasons
-    '/ext/standard/tests/strings/bug51059.php',
-    '/ext/posix/tests/posix_kill_basic.php',
-    '/ext/spl/tests/RecursiveDirectoryIterator_getSubPath_basic.php',
-    '/tests/classes/unset_properties.php',
-    '/ext/pcntl/tests/pcntl_wait.php',
 
     # flaky for various reasons
-    '/ext/standard/tests/network/gethostbyname_error004.php',
-    '/ext/standard/tests/network/getmxrr.php',
     '/ext/sockets/tests/socket_getpeername_ipv6loop.php',
-
-    # broken: t3036086
-    '/Zend/tests/bug55007.php',
-
-    # flaky: t3201846
-    '/ext/standard/tests/file/fileowner_basic.php',
-
-    # flaky: t3212114
-    '/ext/standard/tests/file/file_get_contents_variation1.php',
-
-    # flaky: t3241496
-    '/ext/standard/tests/file/copy_variation16.php',
 
     # segfaults on contbuild in opt
     '/ext/standard/tests/strings/explode_bug.php',
-
-    # broken on travis
-    '/ext/soap/tests/bugs/bug36999.php',
-
-    # flaky: t3390262
-    '/ext/standard/tests/file/readfile_variation6.php',
-
-    # flaky: t3396095
-    '/ext/standard/tests/file/file_exists_variation1.php',
 
     # XSL
     '/ext/xsl/tests/bug49634.php',
     '/ext/xsl/tests/bug54446_with_ini.php',
     '/ext/xsl/tests/xsl-phpinfo.php',
-    '/ext/xsl/tests/xslt008.php',
     '/ext/xsl/tests/xslt009.php',
     '/ext/xsl/tests/xsltprocessor_getParameter-wrongparam.php',
     '/ext/xsl/tests/xsltprocessor_removeParameter-wrongparams.php',
@@ -191,25 +173,13 @@ bad_tests = (
     '/ext/zlib/tests/gzfile_basic.php',
     '/ext/zlib/tests/readgzfile_basic.php',
 
-    # flaky: t3758194
-    '/ext/date/tests/bug36988.php',
-
-    # flaky: t3758218
-    '/ext/intl/tests/calendar_getNow_basic.php',
-
-    # flaky: t3798855
-    '/ext/standard/tests/strings/sha1_file.php',
-
-    # flaky: t3805998
-    '/ext/standard/tests/file/realpath_basic4.php',
-
     # flaky: t3817758
     '/ext/ftp/tests/ftp_nb_fget_basic1.php',
 
-    # flaky: t3846500
-    '/ext/standard/tests/file/copy_variation8.php',
-
     # flaky: t3851970
+    '/ext/session/tests/009.php',
+    '/ext/standard/tests/file/bug39538.php',
+    '/ext/standard/tests/file/bug53848.php',
     '/ext/standard/tests/general_functions/proc_open02.php',
     '/ext/ftp/tests/bug39458.php',
     '/ext/standard/tests/file/rename_variation3.php',
@@ -222,25 +192,30 @@ bad_tests = (
     '/ext/session/tests/027.php',
     '/ext/standard/tests/file/lchgrp_basic.php',
     '/ext/standard/tests/file/mkdir-001.php',
-    '/ext/standard/tests/file/symlink_link_linkinfo_is_link_variation4.php',
-    '/ext/standard/tests/file/symlink_link_linkinfo_is_link_variation3.php',
     '/ext/sockets/tests/ipv4loop.php',
+    '/ext/ftp/tests/ftp_alloc_basic1.php',
     '/ext/ftp/tests/ftp_alloc_basic2.php',
-    '/ext/sockets/tests/socket_write_params.php',
-    '/ext/curl/tests/bug52202.php',
-    '/ext/sockets/tests/socket_read_params.php',
-    '/ext/curl/tests/bug52202.php',
-    '/ext/standard/tests/network/bug20134.php',
-    '/ext/pcre/tests/preg_match_all_edit_basic.php',
-    '/ext/standard/tests/general_functions/bug39322.php',
-    '/ext/standard/tests/misc/time_sleep_until_basic.php',
 
     # flaky on Travis: t4088096
     '/ext/curl/tests/curl_copy_handle_basic_006.php',
     '/ext/curl/tests/curl_copy_handle_basic_007.php',
 
-    # fails on Travis, output doesn't match: t4117208
-    '/ext/intl/tests/locale_get_display_script3.php',
+    # a new process can crop up
+    '/ext/posix/tests/posix_kill_basic.php',
+
+    # unsure why
+    '/ext/standard/tests/file/symlink_link_linkinfo_is_link_variation4.php',
+
+    # don't use the internet in tests...
+    '/ext/standard/tests/network/gethostbyname_error004.php',
+    '/ext/standard/tests/network/getmxrr.php'
+
+    # php coderz are so l33t
+    '/ext/sockets/tests/ipv6loop.php',
+    '/ext/sockets/tests/socket_getpeername_ipv4loop.php',
+    '/ext/standard/tests/network/fsockopen_variation2.php',
+    '/ext/sockets/tests/socket_create_listen.php',
+    '/ext/sockets/tests/socket_create_listen-win32.php',
 )
 
 # Tests that work but not in repo mode
@@ -259,9 +234,11 @@ norepo_tests = (
     '/Zend/tests/bug43651.php',
     '/Zend/tests/bug44141.php',
     '/Zend/tests/bug47593.php',
+    '/Zend/tests/bug55007.php',
     '/Zend/tests/bug55578.php',
     '/Zend/tests/bug60771.php',
     '/Zend/tests/bug63741.php',
+    '/Zend/tests/bug67436/bug67436.php',
     '/Zend/tests/class_alias_013.php',
     '/Zend/tests/class_constants_003.php',
     '/Zend/tests/class_exists_001.php',
@@ -277,9 +254,12 @@ norepo_tests = (
     '/Zend/tests/halt_compiler2.php',
     '/Zend/tests/jump14.php',
     '/Zend/tests/lsb_013.php',
+    '/Zend/tests/lsb_021.php',
+    '/Zend/tests/lsb_022.php',
     '/Zend/tests/ns_041.php',
     '/Zend/tests/objects_029.php',
     '/Zend/tests/objects_030.php',
+    '/Zend/tests/traits/bug55554b.php',
     '/Zend/tests/traits/bug60369.php',
     '/Zend/tests/traits/bug60809.php',
     '/Zend/tests/traits/bugs/overridding-conflicting-property-initializer.php',
@@ -294,6 +274,8 @@ norepo_tests = (
     '/ext/pdo_sqlite/tests/bug46139.php',
     '/ext/pdo_sqlite/tests/bug52487.php',
     '/ext/phar/tests/012.php',
+    '/ext/reflection/tests/bug64936.php',
+    '/ext/reflection/tests/bug29268.php',
     '/ext/sqlite3/tests/bug47159.php',
     '/ext/sqlite3/tests/sqlite3_01_open.php',
     '/ext/sqlite3/tests/sqlite3_02_create.php',
@@ -374,31 +356,32 @@ norepo_tests = (
     '/ext/standard/tests/url/rawurlencode_variation_001.php',
     '/ext/standard/tests/url/urldecode_variation_001.php',
     '/ext/standard/tests/url/urlencode_variation_001.php',
-    '/ext/xsl/tests/bug48221.php.norepo',
-    '/ext/xsl/tests/bug54446.php.norepo',
-    '/ext/xsl/tests/xslt001.php.norepo',
-    '/ext/xsl/tests/xslt002.php.norepo',
-    '/ext/xsl/tests/xslt003.php.norepo',
-    '/ext/xsl/tests/xslt004.php.norepo',
-    '/ext/xsl/tests/xslt005.php.norepo',
-    '/ext/xsl/tests/xslt006.php.norepo',
-    '/ext/xsl/tests/xslt007.php.norepo',
-    '/ext/xsl/tests/xsltprocessor_getParameter-invalidparam.php.norepo',
-    '/ext/xsl/tests/xsltprocessor_getParameter.php.norepo',
-    '/ext/xsl/tests/xsltprocessor_registerPHPFunctions-allfuncs.php.norepo',
-    '/ext/xsl/tests/xsltprocessor_registerPHPFunctions-array-multiple.php.norepo',
-    '/ext/xsl/tests/xsltprocessor_registerPHPFunctions-array-notallowed.php.norepo',
-    '/ext/xsl/tests/xsltprocessor_registerPHPFunctions-array.php.norepo',
-    '/ext/xsl/tests/xsltprocessor_registerPHPFunctions-funcnostring.php.norepo',
-    '/ext/xsl/tests/xsltprocessor_registerPHPFunctions-funcundef.php.norepo',
-    '/ext/xsl/tests/xsltprocessor_registerPHPFunctions-null.php.norepo',
-    '/ext/xsl/tests/xsltprocessor_registerPHPFunctions-string-multiple.php.norepo',
-    '/ext/xsl/tests/xsltprocessor_registerPHPFunctions-string-notallowed.php.norepo',
-    '/ext/xsl/tests/xsltprocessor_registerPHPFunctions-string.php.norepo',
-    '/ext/xsl/tests/xsltprocessor_removeParameter-invalidparam.php.norepo',
-    '/ext/xsl/tests/xsltprocessor_removeParameter.php.norepo',
-    '/ext/xsl/tests/xsltprocessor_setparameter-errorquote.php.norepo',
-    '/ext/xsl/tests/xsltprocessor_setparameter-nostring.php.norepo',
+    '/ext/tokenizer/tests/token_get_all_variation19.php',
+    '/ext/xsl/tests/bug48221.php',
+    '/ext/xsl/tests/bug54446.php',
+    '/ext/xsl/tests/xslt001.php',
+    '/ext/xsl/tests/xslt002.php',
+    '/ext/xsl/tests/xslt003.php',
+    '/ext/xsl/tests/xslt004.php',
+    '/ext/xsl/tests/xslt005.php',
+    '/ext/xsl/tests/xslt006.php',
+    '/ext/xsl/tests/xslt007.php',
+    '/ext/xsl/tests/xsltprocessor_getParameter-invalidparam.php',
+    '/ext/xsl/tests/xsltprocessor_getParameter.php',
+    '/ext/xsl/tests/xsltprocessor_registerPHPFunctions-allfuncs.php',
+    '/ext/xsl/tests/xsltprocessor_registerPHPFunctions-array-multiple.php',
+    '/ext/xsl/tests/xsltprocessor_registerPHPFunctions-array-notallowed.php',
+    '/ext/xsl/tests/xsltprocessor_registerPHPFunctions-array.php',
+    '/ext/xsl/tests/xsltprocessor_registerPHPFunctions-funcnostring.php',
+    '/ext/xsl/tests/xsltprocessor_registerPHPFunctions-funcundef.php',
+    '/ext/xsl/tests/xsltprocessor_registerPHPFunctions-null.php',
+    '/ext/xsl/tests/xsltprocessor_registerPHPFunctions-string-multiple.php',
+    '/ext/xsl/tests/xsltprocessor_registerPHPFunctions-string-notallowed.php',
+    '/ext/xsl/tests/xsltprocessor_registerPHPFunctions-string.php',
+    '/ext/xsl/tests/xsltprocessor_removeParameter-invalidparam.php',
+    '/ext/xsl/tests/xsltprocessor_removeParameter.php',
+    '/ext/xsl/tests/xsltprocessor_setparameter-errorquote.php',
+    '/ext/xsl/tests/xsltprocessor_setparameter-nostring.php',
     '/ext/zip/tests/bug53579.php',
     '/ext/zip/tests/bug64342_1.php',
     '/ext/zip/tests/bug7658.php',
@@ -411,11 +394,14 @@ norepo_tests = (
     '/ext/zip/tests/oo_rename.php',
     '/ext/zip/tests/oo_setcomment.php',
     '/ext/zip/tests/oo_stream.php',
+    '/ext/zlib/tests/gzcompress_basic1.php',
     '/ext/zlib/tests/gzcompress_variation1.php',
     '/ext/zlib/tests/gzdeflate_basic1.php',
     '/ext/zlib/tests/gzdeflate_variation1.php',
+    '/ext/zlib/tests/gzencode_basic1.php',
     '/ext/zlib/tests/gzencode_variation1-win32.php',
     '/ext/zlib/tests/gzencode_variation1.php',
+    '/ext/zlib/tests/gzinflate_error1.php',
     '/ext/zlib/tests/gzuncompress_basic1.php',
     '/tests/classes/autoload_001.php',
     '/tests/classes/autoload_002.php',
@@ -446,6 +432,7 @@ norepo_tests = (
     '/Zend/tests/bug63305.php',
     '/Zend/tests/bug65254.php',
     '/Zend/tests/constants/dir-constant-eval.php',
+    '/Zend/tests/generators/bug67497.php',
     '/Zend/tests/is_a.php',
     '/Zend/tests/method_static_var.php',
     '/ext/session/tests/bug53141.php',
@@ -518,44 +505,15 @@ norepo_tests = (
 
 # Random other files that zend wants
 other_files = (
-    '/Zend/tests/014.inc',
-    '/Zend/tests/bug39542/bug39542.php',
-    '/Zend/tests/bug46665_autoload.inc',
-    '/Zend/tests/bug54804.inc',
-    '/Zend/tests/constants/fixtures/folder1/fixture.php',
-    '/Zend/tests/constants/fixtures/folder1/subfolder1/fixture.php',
-    '/Zend/tests/constants/fixtures/folder1/subfolder2/fixture.php',
-    '/Zend/tests/constants/fixtures/folder1/subfolder3/fixture.php',
-    '/Zend/tests/constants/fixtures/folder1/subfolder4/fixture.php',
-    '/Zend/tests/constants/fixtures/folder2/fixture.php',
-    '/Zend/tests/constants/fixtures/folder2/subfolder1/fixture.php',
-    '/Zend/tests/constants/fixtures/folder2/subfolder2/fixture.php',
-    '/Zend/tests/constants/fixtures/folder2/subfolder3/fixture.php',
-    '/Zend/tests/constants/fixtures/folder2/subfolder4/fixture.php',
-    '/Zend/tests/constants/fixtures/folder3/fixture.php',
-    '/Zend/tests/constants/fixtures/folder3/subfolder1/fixture.php',
-    '/Zend/tests/constants/fixtures/folder3/subfolder2/fixture.php',
-    '/Zend/tests/constants/fixtures/folder3/subfolder3/fixture.php',
-    '/Zend/tests/constants/fixtures/folder3/subfolder4/fixture.php',
-    '/Zend/tests/constants/fixtures/folder4/fixture.php',
-    '/Zend/tests/constants/fixtures/folder4/subfolder1/fixture.php',
-    '/Zend/tests/constants/fixtures/folder4/subfolder2/fixture.php',
-    '/Zend/tests/constants/fixtures/folder4/subfolder3/fixture.php',
-    '/Zend/tests/constants/fixtures/folder4/subfolder4/fixture.php',
-    '/Zend/tests/nowdoc.inc',
-    '/Zend/tests/ns_022.inc',
-    '/Zend/tests/ns_027.inc',
-    '/Zend/tests/ns_028.inc',
-    '/Zend/tests/ns_065.inc',
-    '/Zend/tests/ns_067.inc',
-    '/Zend/tests/ns_069.inc',
-    '/Zend/tests/unset.inc',
     '/ext/bz2/tests/004_1.txt.bz2',
     '/ext/bz2/tests/004_2.txt.bz2',
     '/ext/calendar/tests/skipif.inc',
+    '/ext/ctype/tests/skipif.inc',
     '/ext/curl/tests/curl_testdata1.txt',
     '/ext/curl/tests/curl_testdata2.txt',
     '/ext/curl/tests/responder/get.php',
+    '/ext/curl/tests/server.inc',
+    '/ext/curl/tests/skipif.inc',
     '/ext/date/tests/DateTime_data-absolute.inc',
     '/ext/date/tests/DateTime_data-dates.inc',
     '/ext/date/tests/DateTime_data-fall-type2-type2.inc',
@@ -569,6 +527,14 @@ other_files = (
     '/ext/date/tests/DateTime_data-spring-type3-type2.inc',
     '/ext/date/tests/DateTime_data-spring-type3-type3.inc',
     '/ext/date/tests/examine_diff.inc',
+    '/ext/dba/tests/skipif.inc',
+    '/ext/dom/tests/book.xml',
+    '/ext/dom/tests/book.xsd',
+    '/ext/dom/tests/book-attr.xml',
+    '/ext/dom/tests/book-non-conforming-schema.xsd',
+    '/ext/dom/tests/dom_test.inc',
+    '/ext/dom/tests/nsdoc.xml',
+    '/ext/dom/tests/skipif.inc',
     '/ext/exif/tests/bug34704.jpg',
     '/ext/exif/tests/bug48378.jpeg',
     '/ext/exif/tests/bug60150.jpg',
@@ -608,11 +574,11 @@ other_files = (
     '/ext/fileinfo/tests/resources/test.mp3',
     '/ext/fileinfo/tests/resources/test.pdf',
     '/ext/fileinfo/tests/resources/test.png',
+    '/ext/fileinfo/tests/resources/test.ppt',
+    '/ext/fileinfo/tests/skipif.inc',
     '/ext/ftp/tests/cert.pem',
     '/ext/ftp/tests/server.inc',
-    '/ext/gd/tests/Rochester-Regular.otf',
-    '/ext/gd/tests/Rochester-Regular.otf.LICENSE.txt',
-    '/ext/gd/tests/Tuffy.ttf',
+    '/ext/ftp/tests/skipif.inc',
     '/ext/gd/tests/bug37346.gif',
     '/ext/gd/tests/bug38112.gif',
     '/ext/gd/tests/bug43121.gif',
@@ -620,16 +586,20 @@ other_files = (
     '/ext/gd/tests/conv_test.jpeg',
     '/ext/gd/tests/conv_test.png',
     '/ext/gd/tests/conv_test.xbm',
+    '/ext/gd/tests/crafted.gd2',
     '/ext/gd/tests/php.gif',
+    '/ext/gd/tests/Rochester-Regular.otf',
+    '/ext/gd/tests/Rochester-Regular.otf.LICENSE.txt',
     '/ext/gd/tests/src.gd2',
     '/ext/gd/tests/src.wbmp',
-    '/ext/gd/tests/test.png',
     '/ext/gd/tests/test8859.ttf',
+    '/ext/gd/tests/test.png',
+    '/ext/gd/tests/Tuffy.ttf',
     '/ext/gettext/tests/locale/en/LC_CTYPE/dgettextTest.mo',
     '/ext/gettext/tests/locale/en/LC_CTYPE/dgettextTest.po',
+    '/ext/gettext/tests/locale/en/LC_CTYPE/dgettextTest_switched.po',
     '/ext/gettext/tests/locale/en/LC_CTYPE/dgettextTest_switch.mo',
     '/ext/gettext/tests/locale/en/LC_CTYPE/dgettextTest_switch.po',
-    '/ext/gettext/tests/locale/en/LC_CTYPE/dgettextTest_switched.po',
     '/ext/gettext/tests/locale/en/LC_CTYPE/dngettextTest.mo',
     '/ext/gettext/tests/locale/en/LC_CTYPE/dngettextTest.po',
     '/ext/gettext/tests/locale/en/LC_MESSAGES/dgettextTest.mo',
@@ -642,22 +612,29 @@ other_files = (
     '/ext/gettext/tests/locale/en/LC_MESSAGES/messages.po',
     '/ext/gettext/tests/locale/fi/LC_MESSAGES/messages.mo',
     '/ext/gettext/tests/locale/fi/LC_MESSAGES/messages.po',
+    '/ext/iconv/tests/skipif.inc',
+    '/ext/imap/tests/skipif.inc',
+    '/ext/interbase/tests/skipif.inc',
     '/ext/intl/tests/ut_common.inc',
     '/ext/ldap/tests/connect.inc',
-    '/ext/ldap/tests/skipif.inc',
     '/ext/ldap/tests/skipifbindfailure.inc',
+    '/ext/ldap/tests/skipif.inc',
     '/ext/mbstring/tests/common.inc',
+    '/ext/mbstring/tests/skipif.inc',
     '/ext/mcrypt/tests/vectors.txt',
-    '/ext/mysql/tests/connect.inc',
-    '/ext/mysql/tests/table.inc',
     '/ext/mysqli/tests/clean_table.inc',
     '/ext/mysqli/tests/connect.inc',
-    '/ext/mysqli/tests/skipif.inc',
     '/ext/mysqli/tests/skipifconnectfailure.inc',
     '/ext/mysqli/tests/skipifemb.inc',
+    '/ext/mysqli/tests/skipif.inc',
     '/ext/mysqli/tests/skipifnotemb.inc',
     '/ext/mysqli/tests/skipifunicode.inc',
     '/ext/mysqli/tests/table.inc',
+    '/ext/mysql/tests/connect.inc',
+    '/ext/mysql/tests/skipif.inc',
+    '/ext/mysql/tests/table.inc',
+    '/ext/oci8/tests/skipif.inc',
+    '/ext/odbc/tests/skipif.inc',
     '/ext/openssl/tests/005_crt.txt',
     '/ext/openssl/tests/bug28382cert.txt',
     '/ext/openssl/tests/bug37820cert.pem',
@@ -670,16 +647,22 @@ other_files = (
     '/ext/openssl/tests/openssl.cnf',
     '/ext/openssl/tests/private.key',
     '/ext/openssl/tests/public.key',
-    '/ext/pdo/tests/pdo_test.inc',
+    '/ext/pdo_firebird/tests/skipif.inc',
     '/ext/pdo_mysql/tests/common.phpt',
     '/ext/pdo_mysql/tests/config.inc',
+    '/ext/pdo_mysql/tests/skipif.inc',
     '/ext/pdo_sqlite/tests/common.phpt',
+    '/ext/pdo/tests/pdo_test.inc',
     '/ext/phar/tests/files/phar_test.inc',
+    '/ext/phar/tests/files/stuboflength1041.phar',
     '/ext/phar/tests/tar/files/P1-1.0.0.tgz',
+    '/ext/reflection/tests/bug64936.inc',
+    '/ext/reflection/tests/included4.inc',
     '/ext/session/tests/save_handler.inc',
     '/ext/session/tests/skipif.inc',
     '/ext/simplexml/tests/book.xml',
     '/ext/simplexml/tests/bug24392.xml',
+    '/ext/snmp/tests/skipif.inc',
     '/ext/soap/tests/bugs/bug27722.wsdl',
     '/ext/soap/tests/bugs/bug28985.wsdl',
     '/ext/soap/tests/bugs/bug29109.wsdl',
@@ -690,26 +673,42 @@ other_files = (
     '/ext/soap/tests/bugs/bug30928.wsdl',
     '/ext/soap/tests/bugs/bug34643.wsdl',
     '/ext/soap/tests/bugs/bug36614.wsdl',
+    '/ext/soap/tests/bugs/bug36908.wsdl',
     '/ext/soap/tests/bugs/bug36999.wsdl',
+    '/ext/soap/tests/bugs/bug37013.wsdl',
     '/ext/soap/tests/bugs/bug37083.wsdl',
     '/ext/soap/tests/bugs/bug38004.wsdl',
     '/ext/soap/tests/bugs/bug38055.wsdl',
     '/ext/soap/tests/bugs/bug38067.wsdl',
     '/ext/soap/tests/bugs/bug38536.wsdl',
     '/ext/soap/tests/bugs/bug41337.wsdl',
+    '/ext/soap/tests/bugs/bug42326.wsdl',
     '/ext/soap/tests/bugs/bug42692.wsdl',
     '/ext/soap/tests/bugs/skipif.inc',
     '/ext/soap/tests/classmap.wsdl',
+    '/ext/soap/tests/server030.wsdl',
+    '/ext/soap/tests/interop/Round2/Base/skipif.inc',
+    '/ext/soap/tests/interop/Round2/GroupB/skipif.inc',
+    '/ext/soap/tests/interop/Round3/GroupD/skipif.inc',
+    '/ext/soap/tests/interop/Round3/GroupE/skipif.inc',
     '/ext/soap/tests/interop/Round3/GroupF/round3_groupF_extreq.wsdl',
+    '/ext/soap/tests/interop/Round3/GroupF/skipif.inc',
+    '/ext/soap/tests/interop/Round4/GroupG/skipif.inc',
+    '/ext/soap/tests/interop/Round4/GroupH/skipif.inc',
+    '/ext/soap/tests/interop/Round4/GroupI/skipif.inc',
+    '/ext/soap/tests/schema/skipif.inc',
     '/ext/soap/tests/schema/test_schema.inc',
     '/ext/soap/tests/server025.wsdl',
+    '/ext/soap/tests/skipif.inc',
+    '/ext/soap/tests/soap12/skipif.inc',
     '/ext/soap/tests/soap12/soap12-test.inc',
     '/ext/soap/tests/soap12/soap12-test.wsdl',
-    '/ext/spl/tests/SplFileObject_testinput.csv',
     '/ext/spl/tests/fileobject_001a.txt',
     '/ext/spl/tests/fileobject_001b.txt',
+    '/ext/spl/tests/SplFileObject_testinput.csv',
     '/ext/spl/tests/testclass.class.inc',
     '/ext/sqlite3/tests/new_db.inc',
+    '/ext/sqlite3/tests/skipif.inc',
     '/ext/sqlite3/tests/stream_test.inc',
     '/ext/standard/tests/array/compare_function.inc',
     '/ext/standard/tests/array/data.inc',
@@ -718,13 +717,14 @@ other_files = (
     '/ext/standard/tests/class_object/AutoTest.inc',
     '/ext/standard/tests/class_object/AutoTrait.inc',
     '/ext/standard/tests/file/bug30362.txt',
+    '/ext/standard/tests/file/bug38086.txt',
     '/ext/standard/tests/file/bug40501.csv',
     '/ext/standard/tests/file/file.inc',
     '/ext/standard/tests/file/fopen_include_path.inc',
     '/ext/standard/tests/file/stream_rfc2397_003.gif',
-    '/ext/standard/tests/file/test.csv',
     '/ext/standard/tests/file/test2.csv',
     '/ext/standard/tests/file/test3.csv',
+    '/ext/standard/tests/file/test.csv',
     '/ext/standard/tests/general_functions/004.data',
     '/ext/standard/tests/general_functions/bug49692.ini',
     '/ext/standard/tests/general_functions/bug52138.data',
@@ -733,23 +733,51 @@ other_files = (
     '/ext/standard/tests/general_functions/get_included_files_inc3.inc',
     '/ext/standard/tests/general_functions/parse_ini_basic.data',
     '/ext/standard/tests/general_functions/parse_ini_booleans.data',
+    '/ext/standard/tests/image/200x100.bmp',
+    '/ext/standard/tests/image/200x100.gif',
+    '/ext/standard/tests/image/200x100.jpg',
+    '/ext/standard/tests/image/200x100.png',
+    '/ext/standard/tests/image/200x100.swf',
+    '/ext/standard/tests/image/200x100.tif',
+    '/ext/standard/tests/image/200x100_unknown.unknown',
     '/ext/standard/tests/image/246x247.png',
+    '/ext/standard/tests/image/2x2mm.tif',
     '/ext/standard/tests/image/384x385.png',
+    '/ext/standard/tests/image/75x50.wbmp',
+    '/ext/standard/tests/image/75x50.xbm',
+    '/ext/standard/tests/image/blank_file.bmp',
     '/ext/standard/tests/image/bug13213.jpg',
+    '/ext/standard/tests/image/skipif_imagetype.inc',
     '/ext/standard/tests/image/test13pix.swf',
+    '/ext/standard/tests/image/test1bpix.bmp',
+    '/ext/standard/tests/image/test-1pix.bmp',
+    '/ext/standard/tests/image/test1pix.bmp',
+    '/ext/standard/tests/image/test1pix.jp2',
+    '/ext/standard/tests/image/test1pix.jpc',
     '/ext/standard/tests/image/test1pix.jpg',
+    '/ext/standard/tests/image/test2pix.gif',
+    '/ext/standard/tests/image/test4pix.gif',
+    '/ext/standard/tests/image/test4pix.iff',
+    '/ext/standard/tests/image/test4pix.png',
+    '/ext/standard/tests/image/test4pix.psd',
+    '/ext/standard/tests/image/test4pix.swf',
+    '/ext/standard/tests/image/test4pix.tif',
     '/ext/standard/tests/image/testAPP.jpg',
+    '/ext/standard/tests/image/test.gif',
+    '/ext/standard/tests/image/test.txt',
     '/ext/standard/tests/math/allowed_rounding_error.inc',
     '/ext/standard/tests/serialize/autoload_implements.p5c',
     '/ext/standard/tests/serialize/autoload_interface.p5c',
     '/ext/standard/tests/url/urls.inc',
-    '/ext/xml/tests/xmltest.xml',
+    '/ext/sybase_ct/tests/skipif.inc',
     '/ext/xmlreader/tests/012.dtd',
     '/ext/xmlreader/tests/012.xml',
     '/ext/xmlreader/tests/dtdexample.dtd',
-    '/ext/xmlreader/tests/relaxNG.rng',
     '/ext/xmlreader/tests/relaxNG2.rng',
     '/ext/xmlreader/tests/relaxNG3.rng',
+    '/ext/xmlreader/tests/relaxNG.rng',
+    '/ext/xml/tests/skipif.inc',
+    '/ext/xml/tests/xmltest.xml',
     '/ext/xsl/tests/53965/collection.xml',
     '/ext/xsl/tests/53965/collection.xsl',
     '/ext/xsl/tests/53965/include.xsl',
@@ -773,6 +801,7 @@ other_files = (
     '/ext/xsl/tests/xslt.xsl.gz',
     '/ext/zlib/tests/004.txt.gz',
     '/ext/zlib/tests/data.inc',
+    '/ext/zlib/tests/gzopen_include_path.inc',
     '/ext/zlib/tests/reading_include_path.inc',
     '/tests/classes/autoload_derived.p5c',
     '/tests/classes/autoload_implements.p5c',
@@ -785,21 +814,49 @@ other_files = (
     '/tests/lang/023-1.inc',
     '/tests/lang/023-2.inc',
     '/tests/lang/inc.inc',
-    '/tests/lang/inc_throw.inc',
     '/tests/lang/include_files/echo.inc',
     '/tests/lang/include_files/eval.inc',
     '/tests/lang/include_files/function.inc',
+    '/tests/lang/inc_throw.inc',
     '/tests/quicktester.inc',
+    '/Zend/tests/014.inc',
+    '/Zend/tests/bug39542/bug39542.php',
+    '/Zend/tests/bug46665_autoload.inc',
+    '/Zend/tests/bug54804.inc',
+    '/Zend/tests/bug67436/a.php',
+    '/Zend/tests/bug67436/b.php',
+    '/Zend/tests/bug67436/c.php',
+    '/Zend/tests/constants/fixtures/folder1/fixture.php',
+    '/Zend/tests/constants/fixtures/folder1/subfolder1/fixture.php',
+    '/Zend/tests/constants/fixtures/folder1/subfolder2/fixture.php',
+    '/Zend/tests/constants/fixtures/folder1/subfolder3/fixture.php',
+    '/Zend/tests/constants/fixtures/folder1/subfolder4/fixture.php',
+    '/Zend/tests/constants/fixtures/folder2/fixture.php',
+    '/Zend/tests/constants/fixtures/folder2/subfolder1/fixture.php',
+    '/Zend/tests/constants/fixtures/folder2/subfolder2/fixture.php',
+    '/Zend/tests/constants/fixtures/folder2/subfolder3/fixture.php',
+    '/Zend/tests/constants/fixtures/folder2/subfolder4/fixture.php',
+    '/Zend/tests/constants/fixtures/folder3/fixture.php',
+    '/Zend/tests/constants/fixtures/folder3/subfolder1/fixture.php',
+    '/Zend/tests/constants/fixtures/folder3/subfolder2/fixture.php',
+    '/Zend/tests/constants/fixtures/folder3/subfolder3/fixture.php',
+    '/Zend/tests/constants/fixtures/folder3/subfolder4/fixture.php',
+    '/Zend/tests/constants/fixtures/folder4/fixture.php',
+    '/Zend/tests/constants/fixtures/folder4/subfolder1/fixture.php',
+    '/Zend/tests/constants/fixtures/folder4/subfolder2/fixture.php',
+    '/Zend/tests/constants/fixtures/folder4/subfolder3/fixture.php',
+    '/Zend/tests/constants/fixtures/folder4/subfolder4/fixture.php',
+    '/Zend/tests/nowdoc.inc',
+    '/Zend/tests/ns_022.inc',
+    '/Zend/tests/ns_027.inc',
+    '/Zend/tests/ns_028.inc',
+    '/Zend/tests/ns_065.inc',
+    '/Zend/tests/ns_067.inc',
+    '/Zend/tests/ns_069.inc',
+    '/Zend/tests/unset.inc',
 )
 
 parser = argparse.ArgumentParser()
-parser.add_argument(
-    "-z",
-    "--zend_path",
-    type=str,
-    required=True,
-    help="zend path to import tests from. git clone https://github.com/php/php-src"
-)
 parser.add_argument(
     "-o",
     "--only",
@@ -896,16 +953,16 @@ def walk(filename, dest_subdir):
 
     unsupported_sections = ('POST_RAW')
     for name in unsupported_sections:
-        if sections.has_key(name):
+        if name in sections:
             print "Unsupported test with section --%s--: " % name, filename
             return
 
-    if not sections.has_key('FILE'):
+    if not 'FILE' in sections:
         print "Malformed test, no --FILE--: ", filename
         return
 
     for key in ('EXPECT', 'EXPECTF', 'EXPECTREGEX'):
-        if sections.has_key(key):
+        if key in sections:
             exp = sections[key]
 
             # tests are really inconsistent about whitespace
@@ -932,9 +989,12 @@ def walk(filename, dest_subdir):
                     '\nNotice: '+match_rest_of_line, exp)
             exp = re.sub(r'object\((\w+)\)#\d+', 'object(\\1)#%d', exp)
 
+            exp = re.sub('string\(7\) "Closure"', 'string(%d) "Closure%s"', exp)
+            exp = re.sub('Closure(?!%s)', 'Closure%s', exp)
+
             sections[key] = exp
 
-    if sections.has_key('EXPECT'):
+    if 'EXPECT' in sections:
         exp = sections['EXPECT']
 
         if '/ext/zip/tests/bug51353.php' in full_dest_filename:
@@ -942,14 +1002,14 @@ def walk(filename, dest_subdir):
 
         # we use %a for error messages so always write expectf
         file(full_dest_filename+'.expectf', 'w').write(exp)
-    elif sections.has_key('EXPECTREGEX'):
+    elif 'EXPECTREGEX' in sections:
         exp = sections['EXPECTREGEX']
 
         if '/ext/standard/tests/strings/004.php' in full_dest_filename:
             exp = exp.replace(': 3', ': [3-4]')
 
         file(full_dest_filename+'.expectregex', 'w').write(exp)
-    elif sections.has_key('EXPECTF'):
+    elif 'EXPECTF' in sections:
         exp = sections['EXPECTF']
 
         if '/ext/standard/tests/file/tempnam_variation5.php' in full_dest_filename:
@@ -965,42 +1025,56 @@ def walk(filename, dest_subdir):
         print "Malformed test, no --EXPECT*--: ", filename
         return
 
-    if sections.has_key('INI'):
-        exp = sections['INI']
-        file(full_dest_filename+'.ini', 'w').write(exp)
+    if 'INI' in sections:
+        ini = sections['INI']
 
-    if sections.has_key('SKIPIF'):
-        skipif = sections['SKIPIF']
+        if '/tests/lang/bug24908.php' in full_dest_filename or \
+           '/ext/spl/tests/spl_autoload_011.php' in full_dest_filename:
+            ini = ini + '\n' + 'hhvm.enable_obj_destruct_call = true'
+        if '/ext/calendar/tests/cal_info.php' in full_dest_filename or \
+           '/ext/calendar/tests/easter_date.php' in full_dest_filename or \
+           '/ext/calendar/tests/jdtounix.php' in full_dest_filename or \
+           '/ext/date/tests/cal_days_in_month_invalid_date.php' in full_dest_filename or \
+           '/ext/date/tests/cal_days_in_month_invalid_calendar.php' in full_dest_filename or \
+           '/ext/soap/tests/bugs/bug36999.php' in full_dest_filename:
+            ini = ini + '\n' + 'hhvm.enable_zend_compat = true'
+
+        file(full_dest_filename + '.ini', 'w').write(ini)
+
+    if 'SKIPIF' in sections:
+        skipif = sections['SKIPIF'].strip()
+        if skipif[:2] != '<?':
+            skipif = '<?php' + skipif
 
         if '/ext/standard/tests/strings/fprintf_' in full_dest_filename:
             skipif = skipif.replace('dump.txt', dest_filename + '.txt')
 
         file(full_dest_filename + '.skipif', 'w').write(skipif)
 
-    test = sections['FILE']
+    test = sections['FILE'] + "\n"
 
-    if sections.has_key('POST'):
+    if 'POST' in sections:
         test = test.replace(
             '<?php',
             '<?php\nparse_str("' + sections['POST'] + '", $_POST);\n'
             '$_REQUEST = array_merge($_REQUEST, $_POST);\n'
             '_filter_snapshot_globals();\n'
         )
-    if sections.has_key('GET'):
+    if 'GET' in sections:
         test = test.replace(
             '<?php',
             '<?php\nparse_str("' + sections['GET'] + '", $_GET);\n'
             '$_REQUEST = array_merge($_REQUEST, $_GET);\n'
             '_filter_snapshot_globals();\n'
         )
-    if sections.has_key('COOKIE'):
+    if 'COOKIE' in sections:
         test = test.replace(
             '<?php',
             '<?php\n$_COOKIE = http_parse_cookie("' +
                 sections['COOKIE'] + '");\n'
             '_filter_snapshot_globals();\n'
         )
-    if sections.has_key('ENV'):
+    if 'ENV' in sections:
         for line in sections['ENV'].split('\n'):
             boom = line.split('=')
             if len(boom) == 2 and boom[0] and boom[1]:
@@ -1011,7 +1085,7 @@ def walk(filename, dest_subdir):
                     % (boom[0], boom[1])
                 )
 
-    if sections.has_key('CLEAN'):
+    if 'CLEAN' in sections:
         if not re.search(r'<\?php.*\?>', test, re.DOTALL):
             test += '?>\n'
         if not test.endswith('\n'):
@@ -1020,6 +1094,9 @@ def walk(filename, dest_subdir):
 
     # If you put an exception in here, please send a pull request upstream to
     # php-src. Then when it gets merged kill your hack.
+    if '/tests/classes/bug63462.php' in full_dest_filename:
+        exp = exp.replace("Notice:", "\nNotice:")
+        file(full_dest_filename + '.expectf', 'w').write(exp)
     if '/ext/ldap/tests/ldap_control_paged_results_variation1.php' in full_dest_filename:
         exp = exp.replace("resource(6)", "resource(%d)")
         file(full_dest_filename + '.expectf', 'w').write(exp)
@@ -1053,6 +1130,9 @@ def walk(filename, dest_subdir):
         test = test.replace("31337'", "'.$port")
     if '/ext/standard/tests/file/fputcsv.php' in full_dest_filename:
         test = test.replace("fgetcsv.csv", "fputcsv.csv")
+    if '/ext/spl/tests/SplFileObject_fgetcsv_' in full_dest_filename:
+        test = test.replace('SplFileObject__fgetcsv.csv',
+            os.path.basename(full_dest_filename).replace('.php', '.csv'))
     if '/ext/spl/tests/SplFileObject_fputcsv_' in full_dest_filename:
         test = test.replace('SplFileObject_fputcsv.csv',
             os.path.basename(full_dest_filename).replace('.php', '.csv'))
@@ -1088,6 +1168,7 @@ def walk(filename, dest_subdir):
     if '/ext/standard/tests/file/file_get_contents_variation1.php' in full_dest_filename:
         test = test.replace('afile.txt', 'file_get_contents_variation1.txt')
     if '/ext/standard/tests/file/readfile_variation6.php' in full_dest_filename:
+        test = test.replace('"readfileVar6.dir"', "tempnam(sys_get_temp_dir(), 'rfv6');\nunlink($thisTestDir)")
         test = test.replace('afile.txt', 'readfile_variation6.txt')
     if '/ext/standard/tests/file/rename_variation' in full_dest_filename:
         test = test.replace('rename_variation_dir', dest_filename+'_dir')
@@ -1098,6 +1179,40 @@ def walk(filename, dest_subdir):
         test = test.replace('/parse.ini', '/bug46347.ini')
     if '/ext/standard/tests/file/parse_ini_file.php' in full_dest_filename:
         test = test.replace('/parse.ini', '/parse_ini_file.ini')
+    if '/ext/standard/tests/strings/sha1_file.php' in full_dest_filename:
+        test = test.replace('DataFile.txt', 'sha1_DataFile.txt')
+        test = test.replace('EmptyFile.txt', 'sha1_EmptyFile.txt')
+    if '/ext/standard/tests/strings/md5_file.php' in full_dest_filename:
+        test = test.replace('DataFile.txt', 'md5_DataFile.txt')
+        test = test.replace('EmptyFile.txt', 'md5_EmptyFile.txt')
+    if '/ext/intl/tests/calendar_getNow_basic.php' in full_dest_filename:
+        test = test.replace('500)', '1000)')
+        test = test.replace('1000)', '2000)')
+    if '/Zend/tests/closure_016.php' in full_dest_filename:
+        # undo closure% only for first two instances
+        exp = exp.replace('Closure%s::', 'Closure::', 2)
+        file(full_dest_filename + '.expectf', 'w').write(exp)
+    if '/ext/json/tests/unsupported_type_error.php' in full_dest_filename:
+        exp = exp.replace('resource(5)', 'resource(%d)')
+        file(full_dest_filename + '.expectf', 'w').write(exp)
+    if ('/ext/xmlreader/tests/007.php' in full_dest_filename or
+       '/ext/xmlreader/tests/008.php' in full_dest_filename or
+       '/ext/xmlreader/tests/012.php' in full_dest_filename):
+        file(full_dest_filename + '.ini', 'w').write('hhvm.libxml.ext_entity_whitelist = "file"')
+    if '/ext/xsl/tests/xslt008.php' in full_dest_filename:
+        file(full_dest_filename + '.ini', 'w').write('hhvm.libxml.ext_entity_whitelist = "compress.zlib"')
+    if '/ext/standard/tests/file/realpath_basic' in full_dest_filename:
+        root_dest_filenname = os.path.splitext(dest_filename)[0]
+        test = test.replace('realpath_basic', root_dest_filenname)
+        exp = exp.replace('realpath_basic', root_dest_filenname)
+        file(full_dest_filename + '.expectf', 'w').write(exp)
+    if '/ext/standard/tests/network/bug20134.php' in full_dest_filename:
+        test = test.replace("<?php", "<?php\n$port = rand(1025, 65535);")
+        test = test.replace("65534", "$port")
+    if '/ext/dom/tests/DOMDocument_saveHTMLFile_basic.php' in full_dest_filename:
+        test = test.replace('tmp_savehtmlfile', 'DOMDocument_saveHTMLFile_basic')
+    if '/ext/dom/tests/DOMDocument_saveHTMLFile_formatOutput.php' in full_dest_filename:
+        test = test.replace('tmp_savehtmlfile', 'DOMDocument_saveHTMLFile_formatOutput')
     if '/ext/mysqli/tests/' in full_dest_filename:
 
         (testname, _) = os.path.splitext(os.path.basename(full_dest_filename))
@@ -1371,9 +1486,27 @@ def should_import(filename):
     return True
 
 script_dir = os.path.dirname(__file__)
-all_dir = os.path.join(script_dir, '../zend/all')
+zend_dir = os.path.normpath(os.path.join(script_dir, '../zend'))
+all_dir = os.path.join(zend_dir, 'all')
 
-for root, dirs, files in os.walk(args.zend_path):
+zend_release_name = "php-" + zend_version
+zend_release_filename = zend_release_name + ".tar.gz"
+zend_release_archive = os.path.join(zend_dir, zend_release_filename)
+zend_release_path = os.path.join(zend_dir, zend_release_name)
+
+if not os.path.isfile(zend_release_archive):
+    print 'Downloading ' + zend_release_name + '...'
+    zend_release_url = "http://php.net/get/" + zend_release_filename + "/from/this/mirror"
+    zend_release_request = urllib2.Request(zend_release_url)
+    zend_release_response = urllib2.urlopen(zend_release_request)
+    file(zend_release_archive, 'wb').write(zend_release_response.read())
+
+if not os.path.isdir(zend_release_path):
+    print 'Extracting ' + zend_release_name + '...'
+    zend_release_tar = tarfile.open(zend_release_archive, 'r:gz')
+    zend_release_tar.extractall(zend_dir)
+
+for root, dirs, files in os.walk(zend_release_path):
     for filename in files:
         full_file = os.path.join(root, filename)
 
@@ -1391,7 +1524,7 @@ for root, dirs, files in os.walk(args.zend_path):
         if matches(args.only) and should_import(full_file):
             walk(
                 full_file,
-                os.path.join(all_dir, os.path.relpath(root, args.zend_path))
+                os.path.join(all_dir, os.path.relpath(root, zend_release_path))
             )
 
 if not os.path.isdir(all_dir):
@@ -1428,28 +1561,38 @@ else:
 
 for test in results:
     filename = test['name']
+
     good_file = filename.replace('all', 'good', 1)
     bad_file = filename.replace('all', 'bad', 1)
-    mkdir_p(os.path.dirname(good_file))
-    mkdir_p(os.path.dirname(bad_file))
+    flaky_file = filename.replace('all', 'flaky', 1)
+
+    all_files = [good_file, bad_file, flaky_file]
+
+    for test_file in all_files:
+        mkdir_p(os.path.dirname(test_file))
 
     good = (test['status'] == 'passed')
-    for test in bad_tests:
+
+    flaky_test = False
+    for test in flaky_tests:
         if test in filename:
             good = False
+            flaky_test = True
 
     needs_norepo = False
+    for test in norepo_tests:
+        if test in filename:
+            needs_norepo = True
+
     if good:
         dest_file = good_file
-        delete_file = bad_file
         subpath = 'good'
-        for test in norepo_tests:
-            if test in filename:
-                needs_norepo = True
-    else:
+    elif not flaky_test:
         dest_file = bad_file
-        delete_file = good_file
         subpath = 'bad'
+    else:
+        dest_file = flaky_file
+        subpath = 'flaky'
 
     exps = glob.glob(filename + '.expect*')
     if not exps:
@@ -1462,17 +1605,23 @@ for test in results:
     file(dest_file + dest_ext, 'w').write(
         file(source_file_exp).read().replace('/all', '/' + subpath)
     )
+
     if needs_norepo:
         file(dest_file + '.norepo', 'w')
     if os.path.exists(filename + '.skipif'):
         shutil.copyfile(filename + '.skipif', dest_file + '.skipif')
     if os.path.exists(filename + '.ini'):
         shutil.copyfile(filename + '.ini', dest_file + '.ini')
-    for f in glob.glob(delete_file + "*"):
-        if os.path.isfile(f):
-            os.unlink(f)
-        else:
-            shutil.rmtree(f)
+
+    for test_file in all_files:
+        if dest_file == test_file:
+            continue
+
+        for f in glob.glob(test_file + "*"):
+            if os.path.isfile(f):
+                os.unlink(f)
+            else:
+                shutil.rmtree(f)
 
 # extra random files needed for tests...
 for root, dirs, files in os.walk(all_dir):

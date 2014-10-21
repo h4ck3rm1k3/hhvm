@@ -17,6 +17,7 @@
 
 #include "hphp/runtime/ext/json/ext_json.h"
 #include "hphp/runtime/ext/json/JSON_parser.h"
+#include "hphp/runtime/ext/ext_string.h"
 #include "hphp/runtime/base/utf8-decode.h"
 #include "hphp/runtime/base/variable-serializer.h"
 
@@ -74,14 +75,32 @@ String HHVM_FUNCTION(json_last_error_msg) {
   return json_get_last_error_msg();
 }
 
-String HHVM_FUNCTION(json_encode, const Variant& value,
-                                  int64_t options /* = 0 */,
-                                  int64_t depth /* = 512 */) {
+Variant HHVM_FUNCTION(json_encode, const Variant& value,
+                                   int64_t options /* = 0 */,
+                                   int64_t depth /* = 512 */) {
+  // Special case for resource since VariableSerializer does not take care of it
+  if (value.isResource()) {
+    json_set_last_error_code(json_error_codes::JSON_ERROR_UNSUPPORTED_TYPE);
+
+    if (options & k_JSON_PARTIAL_OUTPUT_ON_ERROR) {
+      return "null";
+    }
+
+    return false;
+  }
 
   json_set_last_error_code(json_error_codes::JSON_ERROR_NONE);
-
   VariableSerializer vs(VariableSerializer::Type::JSON, options);
-  return vs.serializeValue(value, !(options & k_JSON_FB_UNLIMITED));
+  vs.setDepthLimit(depth);
+
+  String json = vs.serializeValue(value, !(options & k_JSON_FB_UNLIMITED));
+
+  if ((json_get_last_error_code() != json_error_codes::JSON_ERROR_NONE) &&
+      !(options & k_JSON_PARTIAL_OUTPUT_ON_ERROR)) {
+    return false;
+  }
+
+  return json;
 }
 
 Variant HHVM_FUNCTION(json_decode, const String& json, bool assoc /* = false */,
@@ -104,16 +123,18 @@ Variant HHVM_FUNCTION(json_decode, const String& json, bool assoc /* = false */,
     return z;
   }
 
-  if (json.size() == 4) {
-    if (!strcasecmp(json.data(), "null")) {
+  String trimmed = f_trim(json, "\t\n\r ");
+
+  if (trimmed.size() == 4) {
+    if (!strcasecmp(trimmed.data(), "null")) {
       json_set_last_error_code(json_error_codes::JSON_ERROR_NONE);
       return init_null();
     }
-    if (!strcasecmp(json.data(), "true")) {
+    if (!strcasecmp(trimmed.data(), "true")) {
       json_set_last_error_code(json_error_codes::JSON_ERROR_NONE);
       return true;
     }
-  } else if (json.size() == 5 && !strcasecmp(json.data(), "false")) {
+  } else if (trimmed.size() == 5 && !strcasecmp(trimmed.data(), "false")) {
     json_set_last_error_code(json_error_codes::JSON_ERROR_NONE);
     return false;
   }
@@ -126,6 +147,20 @@ Variant HHVM_FUNCTION(json_decode, const String& json, bool assoc /* = false */,
     return p;
   } else if (type == KindOfDouble) {
     json_set_last_error_code(json_error_codes::JSON_ERROR_NONE);
+    if ((options & k_JSON_BIGINT_AS_STRING) &&
+        (json.toInt64() == LLONG_MAX || json.toInt64() == LLONG_MIN)
+        && errno == ERANGE) { // Overflow
+      bool is_float = false;
+      for (int i = (trimmed[0] == '-' ? 1 : 0); i < trimmed.size(); ++i) {
+        if (trimmed[i] < '0' || trimmed[i] > '9') {
+          is_float = true;
+          break;
+        }
+      }
+      if (!is_float) {
+        return trimmed;
+      }
+    }
     return d;
   }
 

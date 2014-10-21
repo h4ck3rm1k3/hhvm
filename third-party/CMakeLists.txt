@@ -24,6 +24,7 @@ set(THIRD_PARTY_MODULES)
 set(THIRD_PARTY_HEADERS)
 
 list(APPEND THIRD_PARTY_MODULES
+  pcre
   fastlz
   libafdt
   libmbfl
@@ -34,7 +35,7 @@ list(APPEND THIRD_PARTY_MODULES
   folly
   libzip)
 if(ENABLE_FASTCGI)
-  list(APPEND THIRD_PARTY_MODULES ti)
+  list(APPEND THIRD_PARTY_MODULES proxygen)
   list(APPEND THIRD_PARTY_MODULES thrift)
 endif()
 

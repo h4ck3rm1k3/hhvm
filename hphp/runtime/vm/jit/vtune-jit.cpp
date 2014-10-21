@@ -20,7 +20,7 @@
 #include <vector>
 #include <algorithm>
 
-namespace HPHP { namespace JIT {
+namespace HPHP { namespace jit {
 
 // Method ids reported to Vtune JIT API should not be less than 1000 (see
 // the comment in iJIT_Method_Load structure definition.) We use 1000 for
@@ -119,28 +119,6 @@ void reportTraceletToVtune(const Unit* unit,
   methodInfo.method_size = tr.acoldLen;
   methodInfo.line_number_size = coldLineMap.size();
   methodInfo.line_number_table = &coldLineMap[0];
-
-  iJIT_NotifyEvent(iJVM_EVENT_TYPE_METHOD_LOAD_FINISHED, (void *)&methodInfo);
-}
-
-void reportTrampolineToVtune(void* begin, size_t size)
-{
-  iJIT_Method_Load methodInfo;
-  memset(&methodInfo, 0, sizeof(methodInfo));
-
-  methodInfo.method_id = MIN_METHOD_ID;
-
-  methodInfo.method_name = const_cast<char *>("Trampoline");
-
-  methodInfo.source_file_name = const_cast<char *>("Undefined");
-
-  // Report main body
-
-  methodInfo.method_load_address = begin;
-  methodInfo.method_size = size;
-
-  methodInfo.line_number_size = 0;
-  methodInfo.line_number_table = 0;
 
   iJIT_NotifyEvent(iJVM_EVENT_TYPE_METHOD_LOAD_FINISHED, (void *)&methodInfo);
 }

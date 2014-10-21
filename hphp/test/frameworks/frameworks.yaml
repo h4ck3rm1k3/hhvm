@@ -51,9 +51,9 @@
       - assetic/tests/Assetic/Test/Asset/HttpAssetTest.php
   # Stable (2.x) doesn't use phpunit, so targetting the next major release
   cakephp3:
-    url: https://github.com/cakephp/cakephp
-    branch: 3.0
-    commit: 542eddbc8fdf0f56dbf283ae57015974d3276fa7
+    url: https://github.com/cakephp/cakephp.git
+    branch: "3.0.0-alpha2"
+    commit: 9054d6414a1d767b4742728319447f625b2e31fb
     install_root: cakephp3
     test_root: cakephp3
   codeigniter:
@@ -67,19 +67,23 @@
     clowns:
       # Errors + fails with PHP5
       - codeigniter/tests/codeigniter/core/URI_test.php
+    flakey:
+      # Assumes that calculating the current time in seconds twice will give
+      # the same result. Not true if you're unlucky.
+      - codeigniter/tests/codeigniter/helpers/date_helper_test.php
   composer:
     url: https://github.com/composer/composer.git
     # master is the only available branch
     branch: master
-    commit: 8881cec1742cc7e56bfc0e33b08f785ae53b78dc
+    commit: 4ecdbf89c4a3d1e5dfe73c57e3202a5e2a18c87e
     install_root: composer
     test_root: composer
   doctrine2:
     url: https://github.com/doctrine/doctrine2.git
-    # Stable is 2.4.2, but need master since we have pull requests.
+    # Stable is 2.4.4, but need master since we have pull requests.
     # e.g., https://github.com/doctrine/doctrine2/pull/928
     branch: master
-    commit: 73e5bbecbef311194085e30d8b7fd6516bc50425
+    commit: 723529ffff4880ab97499d03b23f90911db2e0b3
     install_root: doctrine2
     test_root: doctrine2
     clowns:
@@ -89,19 +93,21 @@
       - doctrine2/tests/Doctrine/Tests/ORM/Mapping/Symfony/YamlDriverTest.php
   drupal:
     url: https://github.com/drupal/drupal.git
-    # Stable is 7.26, but the test framework is lacking in 7.x
-    # 8.x has the real testing framework for our runner.
-    branch: 8.x
-    commit: 8b40554c5aa45ecf6dd11418ee8d48b379ff2a34
+    branch: 8.0-alpha13
+    commit: b4f282a55b7da8c883216392cb74bf795cad3ff7
     install_root: drupal
     test_root: drupal/core
-    clowns:
-      - drupal/core/modules/views/tests/Drupal/views/Tests/ViewsDataHelperTest.php
     flakey:
       # test has a race condition
       - drupal/core/tests/Drupal/Tests/Component/PhpStorage/MTimeProtectedFileStorageTest.php
       # Depends on previous
       - drupal/core/tests/Drupal/Tests/Component/PhpStorage/MTimeProtectedFastFileStorageTest.php
+  ezpublish-kernel:
+    url: https://github.com/ezsystems/ezpublish-kernel.git
+    branch: v2014.07.0
+    commit: b7f0a2fd5750bbc11ce5bd6eb6c92d3180834463
+    install_root: ezpublish-kernel
+    test_root: ezpublish-kernel
   facebookphpsdk:
     # v3.2.3 from facebook/facebook-php-sdk and
     # https://github.com/facebook/facebook-php-sdk/pull/184
@@ -113,55 +119,59 @@
     test_file_regex: /.*(tests\.php)$/
     test_find_mode: token
     sequential: true
+  factory-muffin:
+    url: https://github.com/thephpleague/factory-muffin.git
+    branch: master
+    commit: 3ce9084dfc2a98a8ff347ab56c61f3bd8d541a09
+    install_root: factory-muffin
+    test_root: factory-muffin
   fastroute:
     url: https://github.com/nikic/FastRoute.git
-    branch: master
-    commit: 40c897afe69ed59582b30cb05f437e544ce46bdf
+    branch: v0.2.0
+    commit: 7dc9a43cb856debc22fe158a1144018e16f7a637
     install_root: fastroute
     test_root: fastroute
   guzzle:
     url: https://github.com/guzzle/guzzle3.git
-    # Slightly after v3.8.1 - need:
-    #   https://github.com/guzzle/guzzle3/pull/20
-    #   https://github.com/guzzle/guzzle3/pull/22
-    branch: master
-    commit: fa0046309160ea52aeed51b5608adfd263dfa0a2
+    branch: v3.9.2
+    commit: 54991459675c1a2924122afbb0e5609ade581155
     install_root: guzzle
     test_root: guzzle
     flakey:
       # Depends on external resource (example.com), unreliable
       - guzzle/tests/Guzzle/Tests/Plugin/Async/AsyncPluginTest.php
   guzzle4:
-    # Slightly after 4.1.1, to include
-    # https://github.com/guzzle/guzzle/pull/701
-    url: https://github.com/fredemmott/guzzle.git
-    branch: change-port
-    commit: 4db19b75d9211e729ff277c238ef5de4bf658597
+    url: https://github.com/guzzle/guzzle.git
+    branch: 4.2.0
+    commit: cc79aa76054e3e5e45dfd87f7b0f61f54b3a759d
     install_root: guzzle4
     test_root: guzzle4
     test_find_mode: token
     sequential: true
-  hhvmquickinterp:
+  guzzle-streams:
+    url: https://github.com/guzzle/streams.git
+    branch: 2.1.0
+    commit: f91b721d73f0e561410903b3b3c90a5d0e40b534
+    install_root: guzzle-streams
+    test_root: guzzle-streams
+  hhvmquicktests:
     do_not_install: true
-    test_root: ../hhvm/quick_interp
+    test_root: ../hhvm/quick
   idiorm:
     url: https://github.com/j4mie/idiorm.git
-    branch: v1.4.1
-    commit: 11e964157a6a2c6128a0546673ad5e99ac1a62cd
+    branch: v1.5.1
+    commit: b0922d8719a94e3a0e0e4a0ca3876f4f91475dcf
     install_root: idiorm
     test_root: idiorm
   json_schema:
     url: https://github.com/justinrainbow/json-schema.git
-    branch: master
-    # Version 1.3.6
+    branch: 1.3.6
     commit: d97cf3ce890fe80f247fc08594a1c8a1029fc7ed
     install_root: json_schema
     test_root: json_schema
   joomla:
     url: https://github.com/joomla/joomla-framework.git
-    # Stable is 2.4.2, but need master since we have pull requests.
-    # e.g., https://github.com/joomla/joomla-framework/pull/314
-    branch: master
+    branch: 1.1.0
     commit: f8a2343d3147f595d43e735b89b11c277520f141
     install_root: joomla-framework
     test_root: joomla-framework
@@ -220,10 +230,13 @@
       - joomla-framework/src/Joomla/Filesystem/Tests/JFileTest.php
       - joomla-framework/src/Joomla/Log/Tests/Logger/FormattedtextTest.php
       - joomla-framework/src/Joomla/Log/Tests/Logger/W3cTest.php
+      # Assumes that getting the current time twice in a row will get
+      # the same result
+      - joomla-framework/src/Joomla/Log/Tests/LogEntryTest.php
   joomlacms:
     url: https://github.com/joomla/joomla-cms.git
     branch: "3.4-dev"
-    commit: 11b927eb40b6646733ead7a9e3cd5f2e68a289b8
+    commit: 7689d922ca373989e7328f510e94aa2fc541e272
     install_root: joomla-cms
     test_root: joomla-cms
     test_find_mode: token
@@ -305,17 +318,15 @@
     test_find_mode: token
   kohana:
     url: https://github.com/kohana/kohana.git
-    branch: "3.3/develop"
-    commit: 61e12755bf9eb32af82808b26d58ccb73cf2a971
+    branch: v3.3.2
+    commit: 9830a4313cf2d5b288614869cd2f551aa4fcd7a2
     install_root: kohana
     test_root: kohana
     test_find_mode: token
   laravel:
     url: https://github.com/laravel/framework.git
-    # Use the 4.1 branch instead of the 4.1.x tag because of pull request
-    # https://github.com/laravel/framework/pull/3563
-    branch: "4.1"
-    commit: 1faf4c8508378b0b102d148c53c322a8048b16dd
+    branch: "v4.2.8"
+    commit: e60ea917ab862254a6db37fa9cb8933138c1e73c
     install_root: laravel
     test_root: laravel
     flakey:
@@ -354,6 +365,11 @@
     test_root: mediawiki-core/tests/phpunit
     test_file_regex: /.*(\Test.*\.php)$/
     config_file: mediawiki-core/tests/phpunit/suite.xml
+    flakey:
+      # randomized test data. if it happens to come up with a base-36 string
+      # starting with '0x', and gmp is available, it will error out saying it's
+      # an invalid conversion. Also true on php5.
+      - mediawiki-core/tests/phpunit/includes/GlobalFunctions/wfBaseConvertTest.php
   jshrink:
     url: https://github.com/tedivm/JShrink.git
     branch: master
@@ -383,8 +399,8 @@
       - mustache/test/Mustache/Test/Cache/FilesystemCacheTest.php
   paris:
     url: https://github.com/j4mie/paris.git
-    branch: v1.4.2
-    commit: dd1a87544127874dce367f0252dcc81246dfc83b
+    branch: v1.5.3
+    commit: 8d94afe0b39e29f2a84bf9ce7e06088d5b93bb5b
     install_root: paris
     test_root: paris
   pear:
@@ -500,6 +516,8 @@
       - phpbb3/tests/template/template_test.php
       - phpbb3/tests/template/template_test_case.php
       - phpbb3/tests/template/template_test_case_with_tree.php
+      # race condition - https://github.com/phpbb/phpbb/pull/2890
+      - phpbb3/tests/lock/flock_test.php
   phpmyadmin:
     url: https://github.com/phpmyadmin/phpmyadmin.git
     # Stable is RELEASE_4_1_9 but we have many pull requests in master
@@ -514,12 +532,23 @@
     test_find_mode: token
     sequential: true
   phpunit:
-    url: https://github.com/fredemmott/phpunit.git
-    # 4.2.x branch + https://github.com/sebastianbergmann/phpunit/pull/1288
-    branch: json-test-on-latest-hhvm
-    commit: 8fdf5ff0df202957eca6c1d875138c6e48108c17
+    url: https://github.com/sebastianbergmann/phpunit.git
+    branch: "4.2.0"
+    commit: 58db726aa45fe26bca93f692cb3d77e9a46b7830
     install_root: phpunit
     test_root: phpunit
+  phpunit-mock-objects:
+    url: https://github.com/sebastianbergmann/phpunit-mock-objects.git
+    branch: "2.2.0"
+    commit: 42e589e08bc86e3e9bdf20d385e948347788505b
+    install_root: phpunit-mock-objects
+    test_root: phpunit-mock-objects
+  predis:
+    url: https://github.com/nrk/predis.git
+    branch: "v1.0.0"
+    commit: d4be306d0aca28b5633b96adef03b29fea569c2f
+    install_root: predis
+    test_root: predis
   proxymanager:
     url: https://github.com/Ocramius/ProxyManager.git
     branch: master
@@ -538,8 +567,8 @@
     test_root: ratchet
   reactphp:
     url: https://github.com/reactphp/react.git
-    branch: v0.4.0
-    commit: 3a5d12166b38d059a96c232d809332e7f3e60d9d
+    branch: v0.4.1
+    commit: 17044db0ab6a9c145fb1ac40822c5c17d045dc36
     install_root: reactphp
     test_root: reactphp
     flakey:
@@ -547,11 +576,8 @@
       - reactphp/tests/EventLoop/StreamSelectLoopTest.php
   silverstripe:
     url: https://github.com/silverstripe/silverstripe-installer.git
-    # Needed to go beyond the most likely stable 3.1.2 in order
-    # to pull request code added.
-    # https://github.com/silverstripe/silverstripe-framework/pull/2819
-    branch: master
-    commit: 3b3cda59d2d8a1618ed66c5d9fd1d76395040ddd
+    branch: "3.1.5"
+    commit: b3acbcfa5f3637c412bd36113e41dcf48b564fc5
     install_root: silverstripe
     test_root: silverstripe
     flakey:
@@ -562,9 +588,9 @@
   slim:
     url: https://github.com/fredemmott/Slim
     # This branch makes a test less flakey
-    # PR: https://github.com/codeguy/Slim/pull/796
-    branch: "v2.4.2-derace-testExpiresAsString"
-    commit: b86f11706b80972e3239c8ab0f24382b3b8dcf52
+    # https://github.com/codeguy/Slim/pull/884
+    branch: "v2.4.3-derace-testExpiresAsString"
+    commit: 340e658aec0b51df58cab4605578acf4c90c479c
     install_root: slim
     test_root: slim
   stash:
@@ -575,8 +601,8 @@
     test_root: stash
   symfony:
     url: https://github.com/symfony/symfony.git
-    branch: v2.4.3
-    commit: 3199b2e0d194f71fe2e13c95768b2ef22206682b
+    branch: v2.4.8
+    commit: 3da923989cce41c149c6f20b7723c052ac251b16
     install_root: symfony
     test_root: symfony
     blacklist:
@@ -589,14 +615,19 @@
       - symfony/src/Symfony/Component/ClassLoader/Tests/ApcUniversalClassLoaderTest.php
   twig:
     url: https://github.com/fabpot/Twig.git
-    branch: v1.15.1
-    commit: 1fb5784662f438d7d96a541e305e28b812e2eeed
+    branch: v1.16.0
+    commit: 8ce37115802e257a984a82d38254884085060024
     install_root: twig
     test_root: twig
+    clowns:
+	  # Dependent on system language settings.
+      - twig/test/Twig/Tests/CompilerTest.php
   vfsstream:
-    url: https://github.com/mikey179/vfsStream.git
-    branch: v1.2.0
-    commit: 063fb10633f10c5ccbcac26227e94f46d9336f90
+    # We're using Graham's fork to unskip a couple of tests
+    # The latest stable is v1.3.0 - the fork is slightly ahead
+    url: https://github.com/GrahamCampbell/vfsStream.git
+    branch: hhvm
+    commit: 00f21956ccf6cdff6201f28e598ff3ab5ccbd3c6
     install_root: vfsstream
     test_root: vfsstream
     config_file: vfsstream/phpunit.xml.dist
@@ -607,9 +638,9 @@
   yii:
     url: https://github.com/yiisoft/yii.git
     branch: master
-    # Stable is 1.1.14, but pull requests require master
+    # Stable is 1.1.15, but pull requests require master
     # e.g., https://github.com/yiisoft/yii/pull/3211
-    commit: ff72f51b9c46a3580df39d634c60eb8fc4687457
+    commit: 28f8e98757f4faa560e0801a0b8057459ed9cc6e
     install_root: yii
     test_root: yii/tests
     clowns:
@@ -625,26 +656,27 @@
       - yii/tests/framework/caching/CDirectoryCacheDependencyTest.php
   zf2:
     url: https://github.com/zendframework/zf2.git
-    # Stable is release-2.2.5, but pull requests require master
-    # e.g., https://github.com/zendframework/zf2/pull/5781
-    branch: master
-    commit: 2b718e20cfc22cd388ef3aeff0bc66302379ae02
+    branch: release-2.3.2
+    commit: 0b74b66dc07ff88140287bdf67d230c1bd32ee0c
     install_root: zf2
     test_root: zf2/tests
     test_find_mode: token
+    flakey:
+      - zf2/tests/ZendTest/Authentication/Adapter/Http/AuthTest.php
     blacklist:
       - zf2/tests/ZendTest/Code/Generator/ParameterGeneratorTest.php
       - zf2/tests/ZendTest/Code/Generator/PropertyGeneratorTest.php
       - zf2/tests/ZendTest/Code/Generator/ValueGeneratorTest.php
   html5php:
     url: https://github.com/Masterminds/html5-php.git
-    branch: master
-    commit: 45e0f801d896258022c6a70a7738b991cb19aafe
+    branch: "2.0.0"
+    commit: 2cad9c173f14eb390f78100dd74ef005f67e1fa5
     install_root: html5php
-    test_root: html5php      
+    test_root: html5php
   twital:
     url: https://github.com/goetas/twital.git
-    branch: master
-    commit: 9f5d2f66bea26fc590ec003f2488568b34bafe72
+    branch: "0.1.6"
+    commit: bd5751425e1c267c0b2b9dbf6f705b1f436439a4
     install_root: twital
     test_root: twital
+    test_find_mode: token

@@ -24,7 +24,7 @@
 
 #include "hphp/runtime/base/ini-parser/zend-ini.h"
 
-#include "hphp/runtime/ext/ext_misc.h"
+#include "hphp/runtime/ext/std/ext_std_misc.h"
 #include "hphp/runtime/ext/extension.h"
 
 #include "hphp/util/lock.h"
@@ -268,6 +268,14 @@ bool ini_on_update(const folly::dynamic& value, std::set<std::string>& p) {
   return true;
 }
 
+bool ini_on_update(const folly::dynamic& value, std::vector<std::string>& p) {
+  INI_ASSERT_ARR(value);
+  for (auto& v : value.values()) {
+    p.push_back(v.data());
+  }
+  return true;
+}
+
 folly::dynamic ini_get(bool& p) {
   return p ? "1" : "";
 }
@@ -329,6 +337,15 @@ folly::dynamic ini_get(std::set<std::string>& p) {
   folly::dynamic ret = folly::dynamic::object;
   for (auto& s : p) {
     ret.push_back(s);
+  }
+  return ret;
+}
+
+folly::dynamic ini_get(std::vector<std::string>& p) {
+  folly::dynamic ret = folly::dynamic::object;
+  auto idx = 0;
+  for (auto& s : p) {
+    ret.insert(idx++, s);
   }
   return ret;
 }
@@ -500,9 +517,11 @@ void IniSetting::SystemParserCallback::onPopEntry(const std::string& key,
     // Find the highest index
     auto max = 0;
     for (auto &a : ptr->keys()) {
-      if (a.isInt() && a >= max) {
-        max = a.asInt() + 1;
-      }
+      try {
+        if (a.asInt() >= max) {
+          max = a.asInt() + 1;
+        }
+      } catch (std::range_error const& e) { /* not an int */ }
     }
     (*ptr)[std::to_string(max)] = value;
   }

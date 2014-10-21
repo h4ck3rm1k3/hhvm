@@ -24,19 +24,12 @@
 #include "hphp/runtime/vm/func.h"
 #include "hphp/runtime/vm/resumable.h"
 #include "hphp/runtime/base/builtin-functions.h"
+#include "hphp/runtime/base/stats.h"
 
 namespace HPHP {
 
 struct HhbcExtFuncInfo;
 struct HhbcExtClassInfo;
-
-ObjectData* newVectorHelper(int nElms);
-ObjectData* newMapHelper(int nElms);
-ObjectData* newSetHelper(int nElms);
-ObjectData* newImmVectorHelper(int nElms);
-ObjectData* newImmMapHelper(int nElms);
-ObjectData* newImmSetHelper(int nElms);
-ObjectData* newPairHelper();
 
 StringData* concat_is(int64_t v1, StringData* v2);
 StringData* concat_si(StringData* v1, int64_t v2);
@@ -234,7 +227,10 @@ inline ObjectData*
 newInstance(Class* cls) {
   assert(cls);
   auto* inst = ObjectData::newInstance(cls);
-  if (UNLIKELY(RuntimeOption::EnableObjDestructCall)) {
+  Stats::inc(cls->getDtor() ? Stats::ObjectData_new_dtor_yes
+                            : Stats::ObjectData_new_dtor_no);
+
+  if (UNLIKELY(RuntimeOption::EnableObjDestructCall && cls->getDtor())) {
     g_context->m_liveBCObjs.insert(inst);
   }
   return inst;
@@ -268,8 +264,6 @@ void assertTv(const TypedValue* tv);
 
 // returns the number of things it put on sp
 int init_closure(ActRec* ar, TypedValue* sp);
-
-void defClsHelper(PreClass*);
 
 /*
  * Returns whether the interface named `s' supports any non-object

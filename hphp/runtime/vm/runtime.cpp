@@ -64,34 +64,6 @@ void print_boolean(bool val) {
   }
 }
 
-#define NEW_COLLECTION_HELPER(name) \
-  ObjectData* \
-  new##name##Helper(int nElms) { \
-    ObjectData *obj = NEWOBJ(c_##name)(); \
-    obj->incRefCount(); \
-    if (nElms) { \
-      collectionReserve(obj, nElms); \
-    } \
-    TRACE(2, "new" #name "Helper: capacity %d\n", nElms); \
-    return obj; \
-  }
-
-NEW_COLLECTION_HELPER(Vector)
-NEW_COLLECTION_HELPER(Map)
-NEW_COLLECTION_HELPER(Set)
-NEW_COLLECTION_HELPER(ImmMap)
-NEW_COLLECTION_HELPER(ImmVector)
-NEW_COLLECTION_HELPER(ImmSet)
-
-ObjectData* newPairHelper() {
-  ObjectData *obj = NEWOBJ(c_Pair)();
-  obj->incRefCount();
-  TRACE(2, "newPairHelper: capacity 2\n");
-  return obj;
-}
-
-#undef NEW_COLLECTION_HELPER
-
 /**
  * concat_ss will will incRef the output string
  * and decref its first argument
@@ -288,22 +260,6 @@ void raiseNotice(const StringData* sd) {
 
 void raiseArrayIndexNotice(const int64_t index) {
   raise_notice("Undefined index: %" PRId64, index);
-}
-
-void defClsHelper(PreClass* preClass) {
-  using namespace JIT;
-
-  assert(tl_regState == VMRegState::DIRTY);
-  tl_regState = VMRegState::CLEAN;
-  Unit::defClass(preClass);
-
-  /*
-   * UniqueStubs::defClsHelper sync'd the registers for us already.
-   * This means if an exception propagates we want to leave things as
-   * VMRegState::CLEAN, since we're still in sync.  Only set it to
-   * dirty if we are actually returning to run in the TC again.
-   */
-  tl_regState = VMRegState::DIRTY;
 }
 
 //////////////////////////////////////////////////////////////////////

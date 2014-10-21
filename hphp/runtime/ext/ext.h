@@ -37,7 +37,6 @@
 #include "hphp/runtime/ext/ext_collections.h"
 #include "hphp/runtime/ext/ext_generator.h"
 #include "hphp/runtime/ext/ext_datetime.h"
-#include "hphp/runtime/ext/debugger/ext_debugger.h"
 #include "hphp/runtime/ext/ext_domdocument.h"
 #include "hphp/runtime/ext/ext_fb.h"
 #include "hphp/runtime/ext/ext_file.h"
@@ -46,10 +45,8 @@
 #include "hphp/runtime/ext/ext_hash.h"
 #include "hphp/runtime/ext/ext_ipc.h"
 #include "hphp/runtime/ext/ext_ldap.h"
-#include "hphp/runtime/ext/ext_mailparse.h"
 #include "hphp/runtime/ext/ext_math.h"
 #include "hphp/runtime/ext/ext_mb.h"
-#include "hphp/runtime/ext/ext_misc.h"
 #include "hphp/runtime/ext/ext_pdo.h"
 #include "hphp/runtime/ext/ext_posix.h"
 #include "hphp/runtime/ext/ext_process.h"
@@ -65,7 +62,6 @@
 #include "hphp/runtime/ext/ext_thrift.h"
 #include "hphp/runtime/ext/ext_xml.h"
 #include "hphp/runtime/ext/ext_xmlreader.h"
-#include "hphp/runtime/ext/ext_xmlwriter.h"
 #include "hphp/runtime/ext/mysql/ext_mysql.h"
 
 #endif // incl_EXT_LIST_EXT_H_

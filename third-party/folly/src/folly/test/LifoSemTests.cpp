@@ -14,16 +14,16 @@
  * limitations under the License.
  */
 
-#include "folly/LifoSem.h"
-#include "folly/test/DeterministicSchedule.h"
+#include <folly/LifoSem.h>
+#include <folly/test/DeterministicSchedule.h>
 
 #include <thread>
 #include <semaphore.h>
 #include <gflags/gflags.h>
 #include <gtest/gtest.h>
 
-#include "folly/Benchmark.h"
-#include "folly/Random.h"
+#include <folly/Benchmark.h>
+#include <folly/Random.h>
 
 using namespace folly;
 using namespace folly::test;
@@ -430,7 +430,7 @@ BENCHMARK_NAMED_PARAM(contendedUse, 32_to_1000, 32, 1000)
 
 int main(int argc, char ** argv) {
   testing::InitGoogleTest(&argc, argv);
-  google::ParseCommandLineFlags(&argc, &argv, true);
+  gflags::ParseCommandLineFlags(&argc, &argv, true);
   int rv = RUN_ALL_TESTS();
   folly::runBenchmarksOnFlag();
   return rv;

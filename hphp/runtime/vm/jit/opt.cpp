@@ -24,8 +24,7 @@
 #include "hphp/runtime/vm/jit/print.h"
 #include "hphp/runtime/vm/jit/timer.h"
 
-namespace HPHP {
-namespace JIT {
+namespace HPHP { namespace jit {
 
 // insert inst after the point dst is defined
 static void insertAfter(IRInstruction* definer, IRInstruction* inst) {
@@ -112,9 +111,10 @@ void optimize(IRUnit& unit, IRBuilder& irBuilder, TransKind kind) {
     printUnit(6, unit, folly::format("after {}", msg).str().c_str());
     assert(checkCfg(unit));
     assert(checkTmpsSpanningCalls(unit));
-    if (debug) {
-      forEachInst(rpoSortCfg(unit), assertOperandTypes);
-    }
+    forEachInst(rpoSortCfg(unit),
+                [&](IRInstruction* inst) {
+                  assertOperandTypes(inst, &unit);
+                });
   };
 
   auto doPass = [&](void (*fn)(IRUnit&), const char* msg) {

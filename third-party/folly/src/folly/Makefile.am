@@ -109,6 +109,7 @@ nobase_follyinclude_HEADERS = \
 	io/RecordIO-inl.h \
 	io/TypedIOBuf.h \
 	io/async/AsyncTimeout.h \
+	io/async/DelayedDestruction.h \
 	io/async/EventBase.h \
 	io/async/EventFDWrapper.h \
 	io/async/EventHandler.h \
@@ -136,6 +137,7 @@ nobase_follyinclude_HEADERS = \
 	Preprocessor.h \
 	ProducerConsumerQueue.h \
 	Random.h \
+	Random-inl.h \
 	Range.h \
 	RWSpinLock.h \
 	ScopeGuard.h \
@@ -184,7 +186,7 @@ nobase_follyinclude_HEADERS = \
 	wangle/Try-inl.h \
 	wangle/Try.h \
 	wangle/WangleException.h \
-	wangle/detail.h
+	wangle/detail/State.h
 
 FormatTables.cpp: build/generate_format_tables.py
 	build/generate_format_tables.py
@@ -244,6 +246,7 @@ libfolly_la_SOURCES = \
 	ThreadCachedArena.cpp \
 	TimeoutQueue.cpp \
 	Uri.cpp \
+	Version.cpp \
 	wangle/InlineExecutor.cpp \
 	wangle/ManualExecutor.cpp \
 	wangle/ThreadGate.cpp \

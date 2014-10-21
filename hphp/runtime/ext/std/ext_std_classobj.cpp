@@ -94,6 +94,12 @@ bool HHVM_FUNCTION(trait_exists, const String& trait_name,
   return Unit::classExists(trait_name.get(), autoload, ClassKind::Trait);
 }
 
+bool HHVM_FUNCTION(enum_exists, const String& enum_name,
+                   bool autoload /* = true */) {
+  Class* cls = Unit::getClass(enum_name.get(), autoload);
+  return cls && isEnum(cls);
+}
+
 static void getMethodNamesImpl(const Class* cls,
                                const Class* ctx,
                                Array& out) {
@@ -277,6 +283,8 @@ Variant HHVM_FUNCTION(get_called_class) {
         Variant::StaticStrInit{});
     }
   }
+
+  raise_warning("get_called_class() called from outside a class");
   return Variant(false);
 }
 
@@ -407,6 +415,7 @@ void StandardExtension::initClassobj() {
   HHVM_FE(class_exists);
   HHVM_FE(interface_exists);
   HHVM_FE(trait_exists);
+  HHVM_FE(enum_exists);
   HHVM_FE(get_class_methods);
   HHVM_FE(get_class_constants);
   HHVM_FE(get_class_vars);

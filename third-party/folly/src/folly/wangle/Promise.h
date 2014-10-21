@@ -76,28 +76,17 @@ public:
   void fulfil(F&& func);
 
 private:
-  typedef typename Future<T>::objPtr objPtr;
+  typedef typename Future<T>::statePtr statePtr;
 
   // Whether the Future has been retrieved (a one-time operation).
   bool retrieved_;
 
   // shared state object
-  objPtr obj_;
+  statePtr state_;
 
   void throwIfFulfilled();
   void throwIfRetrieved();
-
-  template <class F>
-  typename std::enable_if<
-    std::is_convertible<typename std::result_of<F()>::type, T>::value &&
-    !std::is_same<T, void>::value>::type
-  fulfilHelper(F&& func);
-
-  template <class F>
-  typename std::enable_if<
-    std::is_same<typename std::result_of<F()>::type, void>::value &&
-    std::is_same<T, void>::value>::type
-  fulfilHelper(F&& func);
+  void detach();
 };
 
 }}

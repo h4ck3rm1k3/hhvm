@@ -35,6 +35,7 @@
 #include "hphp/runtime/server/files-match.h"
 #include "hphp/runtime/base/datetime.h"
 #include "hphp/runtime/debugger/debugger.h"
+#include "hphp/runtime/vm/debugger-hook.h"
 #include "hphp/util/alloc.h"
 #include "hphp/util/service-data.h"
 
@@ -117,14 +118,16 @@ void HttpRequestHandler::sendStaticContent(Transport *transport,
   transport->sendRaw((void*)data, len, 200, compressed);
 }
 
-void HttpRequestHandler::handleRequest(Transport *transport) {
+void HttpRequestHandler::handleRequestImpl(Transport *transport) {
   ExecutionProfiler ep(ThreadInfo::RuntimeFunctions);
 
   Logger::OnNewRequest();
   GetAccessLog().onNewRequest();
   transport->enableCompression();
 
-  ServerStatsHelper ssh("all", ServerStatsHelper::TRACK_MEMORY);
+  ServerStatsHelper ssh("all",
+                        ServerStatsHelper::TRACK_MEMORY |
+                        ServerStatsHelper::TRACK_HWINST);
   Logger::Verbose("receiving %s", transport->getCommand().c_str());
 
   // will clear all extra logging when this function goes out of scope
@@ -288,37 +291,51 @@ void HttpRequestHandler::handleRequest(Transport *transport) {
     ret = executePHPRequest(transport, reqURI, sourceRootInfo,
                             cachableDynamicContent);
   } catch (...) {
+    string emsg;
+    string response;
+    int code = 500;
     try {
       throw;
     } catch (const Eval::DebuggerException &e) {
-      transport->sendString(e.what(), 200);
-      transport->onSendEnd();
+      code = 200;
+      response = e.what();
     } catch (Object &e) {
-      string emsg;
       try {
         emsg = e.toString().data();
       } catch (...) {
         emsg = "Unknown";
       }
-      Logger::Error("Unhandled server exception: %s", emsg.c_str());
     } catch (const std::exception &e) {
-      Logger::Error("Unhandled server exception: %s", e.what());
+      emsg = e.what();
     } catch (...) {
-      Logger::Error("Unhandled unknown server exception.");
+      emsg = "Unknown";
     }
     g_context->onShutdownPostSend();
     Eval::Debugger::InterruptPSPEnded(transport->getUrl());
+    if (code != 200) {
+      Logger::Error("Unhandled server exception: %s", emsg.c_str());
+    }
+    transport->sendString(response, code);
+    transport->onSendEnd();
     hphp_context_exit();
   }
   GetAccessLog().log(transport, vhost);
+  HttpProtocol::ClearRecord(ret, tmpfile);
   /*
    * HPHP logs may need to access data in ServerStats, so we have to
    * clear the hashtable after writing the log entry.
    */
   ServerStats::Reset();
-  hphp_session_exit();
+}
 
-  HttpProtocol::ClearRecord(ret, tmpfile);
+void HttpRequestHandler::handleRequest(Transport *transport) {
+  handleRequestImpl(transport);
+  // Don't flatten handleRequestImpl into handleRequest
+  //
+  // We need hphp_session_exit to run after the destructors for
+  // locals in handleRequestImpl have run, because some of them
+  // free smart-allocated memory.
+  hphp_session_exit();
 }
 
 void HttpRequestHandler::abortRequest(Transport *transport) {
@@ -364,6 +381,9 @@ bool HttpRequestHandler::executePHPRequest(Transport *transport,
   int code;
   bool ret = true;
 
+  // Let the debugger initialize.
+  // FIXME: hphpd can be initialized this way as well
+  DEBUGGER_ATTACHED_ONLY(phpDebuggerRequestInitHook());
   if (RuntimeOption::EnableDebugger) {
     Eval::Debugger::InterruptRequestStarted(transport->getUrl());
   }
@@ -433,10 +453,21 @@ bool HttpRequestHandler::executePHPRequest(Transport *transport,
     Eval::Debugger::InterruptRequestEnded(transport->getUrl());
   }
 
-  transport->onSendEnd();
+  // If we have registered post-send shutdown functions, end the request before
+  // executing them. If we don't, be compatible with Zend by allowing usercode
+  // in hphp_context_shutdown to run before we end the request.
+  bool hasPostSend =
+    context->hasShutdownFunctions(ExecutionContext::ShutdownType::PostSend);
+  if (hasPostSend) {
+    transport->onSendEnd();
+  }
   context->onShutdownPostSend();
   Eval::Debugger::InterruptPSPEnded(transport->getUrl());
-  hphp_context_exit();
+  hphp_context_shutdown();
+  if (!hasPostSend) {
+    transport->onSendEnd();
+  }
+  hphp_context_exit(false);
   ServerStats::LogPage(file, code);
   return ret;
 }

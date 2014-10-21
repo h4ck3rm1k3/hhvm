@@ -33,7 +33,7 @@
 #include "hphp/runtime/vm/jit/simplifier.h"
 #include "hphp/runtime/vm/jit/state-vector.h"
 
-namespace HPHP {  namespace JIT {
+namespace HPHP { namespace jit {
 
 //////////////////////////////////////////////////////////////////////
 
@@ -79,7 +79,6 @@ struct IRBuilder {
   bool typeMightRelax(SSATmp* val = nullptr) const;
 
   IRUnit& unit() const { return m_unit; }
-  FrameState& state() { return m_state; }
   BCMarker marker() const { return m_state.marker(); }
   const Func* curFunc() const { return m_state.func(); }
   int32_t spOffset() { return m_state.spOffset(); }
@@ -101,18 +100,19 @@ struct IRBuilder {
    */
   void setConstrainGuards(bool constrain) { m_constrainGuards = constrain; }
   bool shouldConstrainGuards()      const { return m_constrainGuards; }
-  bool constrainGuard(IRInstruction* inst, TypeConstraint tc);
+  bool constrainGuard(const IRInstruction* inst, TypeConstraint tc);
   bool constrainValue(SSATmp* const val, TypeConstraint tc);
-  bool constrainLocal(uint32_t id, TypeConstraint tc,
-                      const std::string& why);
-  bool constrainLocal(uint32_t id, SSATmp* valSrc, TypeConstraint tc,
+  bool constrainLocal(uint32_t id, TypeConstraint tc, const std::string& why);
+  bool constrainLocal(uint32_t id,
+                      TypeSource typeSrc,
+                      TypeConstraint tc,
                       const std::string& why);
   bool constrainStack(int32_t offset, TypeConstraint tc);
   bool constrainStack(SSATmp* sp, int32_t offset, TypeConstraint tc);
 
   Type localType(uint32_t id, TypeConstraint tc);
   SSATmp* localValue(uint32_t id, TypeConstraint tc);
-  SSATmp* localTypeSource(uint32_t id) const {
+  TypeSource localTypeSource(uint32_t id) const {
     return m_state.localTypeSource(id);
   }
   bool inlinedFrameSpansCall() const { return m_state.frameSpansCall(); }
@@ -131,31 +131,12 @@ struct IRBuilder {
   /*
    * Start the given block.
    */
-  void startBlock(Block* block);
+  void startBlock(Block* block, const BCMarker& marker);
 
   /*
    * Create a new block corresponding to bytecode control flow.
    */
   Block* makeBlock(Offset offset);
-
-  /*
-   * Block has been created and added to the offset map.
-   */
-  bool blockExists(Offset offset);
-
-  /*
-   * True if translating the block at offset is incompatible with the
-   * current state.  This is possible if the target block has already
-   * been translated, or if the types of guarded locals do not match.
-   *
-   * TODO(t3730468): Should we check guarded stack types here as well?
-   */
-  bool blockIsIncompatible(Offset offset);
-
-  /*
-   * Note that we've seen this offset as the start of a block.
-   */
-  void recordOffset(Offset offset);
 
   /*
    * Clear the map from bytecode offsets to Blocks.
@@ -439,14 +420,17 @@ private:
 
 private:
   using ConstrainBoxedFunc = std::function<SSATmp*(Type)>;
-  SSATmp*   preOptimizeCheckTypeOp(IRInstruction* inst, Type oldType,
+  SSATmp*   preOptimizeCheckTypeOp(IRInstruction* inst,
+                                   Type oldType,
                                    ConstrainBoxedFunc func);
   SSATmp*   preOptimizeCheckType(IRInstruction*);
   SSATmp*   preOptimizeCheckStk(IRInstruction*);
   SSATmp*   preOptimizeCheckLoc(IRInstruction*);
 
-  SSATmp*   preOptimizeAssertTypeOp(IRInstruction* inst, Type oldType,
-                                    SSATmp* oldVal, IRInstruction* typeSrc);
+  SSATmp*   preOptimizeAssertTypeOp(IRInstruction* inst,
+                                    Type oldType,
+                                    SSATmp* oldVal,
+                                    const IRInstruction* typeSrc);
   SSATmp*   preOptimizeAssertType(IRInstruction*);
   SSATmp*   preOptimizeAssertStk(IRInstruction*);
   SSATmp*   preOptimizeAssertLoc(IRInstruction*);
@@ -487,7 +471,7 @@ private:
     BCMarker marker;
     folly::Optional<Block::iterator> where;
   };
-  smart::vector<BlockState> m_savedBlocks;
+  jit::vector<BlockState> m_savedBlocks;
   Block* m_curBlock;
   folly::Optional<Block::iterator> m_curWhere;
 
@@ -500,16 +484,7 @@ private:
   //
   // TODO(t3730559): Offset is used here since it's passed from
   // emitJmp*, but SrcKey might be better in case of inlining.
-  smart::flat_map<Offset,Block*> m_offsetToBlockMap;
-
-  // Track the offsets of every bytecode block that is started by
-  // translateRegion.
-  //
-  // TODO(t3730581): Slightly redundant with m_offsetToBlockMap, but
-  // not completely.  It is used to prevent translating backward
-  // branches to blocks on the main trace.  We should be able to kill
-  // this eventually.
-  smart::flat_set<Offset> m_offsetSeen;
+  jit::flat_map<Offset,Block*> m_offsetToBlockMap;
 };
 
 /*

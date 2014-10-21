@@ -14,15 +14,15 @@
  * limitations under the License.
  */
 
-#include "folly/experimental/EventCount.h"
+#include <folly/experimental/EventCount.h>
 
 #include <algorithm>
 #include <random>
 #include <glog/logging.h>
 #include <gtest/gtest.h>
 
-#include "folly/Random.h"
-#include "folly/Benchmark.h"
+#include <folly/Random.h>
+#include <folly/Benchmark.h>
 
 using namespace folly;
 
@@ -127,7 +127,7 @@ TEST(EventCount, Simple) {
 
 int main(int argc, char *argv[]) {
   testing::InitGoogleTest(&argc, argv);
-  google::ParseCommandLineFlags(&argc, &argv, true);
+  gflags::ParseCommandLineFlags(&argc, &argv, true);
   auto ret = RUN_ALL_TESTS();
   if (!ret) {
     folly::runBenchmarksOnFlag();

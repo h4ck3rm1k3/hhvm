@@ -54,6 +54,8 @@ module type MapSig = sig
   val choose : 'a t -> key * 'a
   val keys: 'a t -> key list
   val values: 'a t -> 'a list
+
+  val map_env: ('c -> 'a -> 'c * 'b) -> 'c -> 'a t -> 'c * 'b t
   (* use only in testing code *)
   val elements: 'a t -> (key * 'a) list
 end
@@ -82,13 +84,52 @@ module MyMap: functor (Ord: Map.OrderedType)
     let keys m = fold (fun k v acc -> k :: acc) m []
     let values m = fold (fun k v acc -> v :: acc) m []
     let elements m = fold (fun k v acc -> (k,v)::acc) m []
+
+    let map_env f env m =
+      fold (
+        fun x y (env, acc) ->
+          let env, y = f env y in
+          env, add x y acc
+      ) m (env, empty)
+
   end
 
 module SMap = MyMap(String)
 module IMap = MyMap(Ident)
 module ISet = Set.Make(Ident)
 module SSet = Set.Make(String)
+module CSet = Set.Make(Char)
 module Map = struct end
+
+(* HashSet is just a HashTable where the keys are actually the values, and we
+ * ignore the actual values inside the HashTable. *)
+module type HashSetSig = sig
+  type 'a t
+
+  val create: int -> 'a t
+  val clear: 'a t -> unit
+  val copy: 'a t -> 'a t
+  val add: 'a t -> 'a -> unit
+  val mem: 'a t -> 'a -> bool
+  val remove: 'a t -> 'a -> unit
+  val iter: ('a -> unit) -> 'a t -> unit
+  val fold: ('a -> 'b -> 'b) -> 'a t -> 'b -> 'b
+  val length: 'a t -> int
+end
+
+module HashSet = (struct
+  type 'a t = ('a, unit) Hashtbl.t
+
+  let create size = Hashtbl.create size
+  let clear set = Hashtbl.clear set
+  let copy set = Hashtbl.copy set
+  let add set x = Hashtbl.replace set x ()
+  let mem set x = Hashtbl.mem set x
+  let remove set x = Hashtbl.remove set x
+  let iter f set = Hashtbl.iter (fun k _ -> f k) set
+  let fold f set acc = Hashtbl.fold (fun k _ acc -> f k acc) set acc
+  let length set = Hashtbl.length set
+end : HashSetSig)
 
 let spf = Printf.sprintf
 
@@ -101,6 +142,10 @@ let internal_error s =
 let opt f env = function
   | None -> env, None
   | Some x -> let env, x = f env x in env, Some x
+
+let opt_map f = function
+  | None -> None
+  | Some x -> Some (f x)
 
 let default x y f =
   match y with
@@ -144,7 +189,6 @@ let imap_inter_list = function
   | x :: rl ->
       List.fold_left imap_inter x rl
 
-
 let partition_smap f m =
   SMap.fold (
   fun x ty (acc1, acc2) ->
@@ -152,13 +196,6 @@ let partition_smap f m =
     then SMap.add x ty acc1, acc2
     else acc1, SMap.add x ty acc2
  ) m (SMap.empty, SMap.empty)
-
-let smap_env f env m =
-  SMap.fold (
-  fun x y (env, acc) ->
-    let env, y = f env y in
-    env, SMap.add x y acc
- ) m (env, SMap.empty)
 
 (* This is a significant misnomer... you may want fold_left_env instead. *)
 let lfold = lmap
@@ -291,19 +328,13 @@ let str_starts_with long short =
   with Invalid_argument _ ->
     false
 
-
-let (spinner, spinner_used) =
-  let state = ref 0 in
-  (fun () ->
-    begin
-      let str = List.nth ["-"; "\\"; "|"; "/"] (!state mod 4) in
-      state := !state + 1;
-      str
-    end),
-  (fun () -> !state <> 0)
-
-(* ANSI escape sequence to clear whole line *)
-let clear_line_seq = "\r\x1b[0K"
+let str_ends_with long short =
+  try
+    let len = String.length short in
+    let long = String.sub long (String.length long - len) len in
+    long = short
+  with Invalid_argument _ ->
+    false
 
 (*****************************************************************************)
 (* Same as List.iter2, except that we only iterate as far as the shortest
@@ -315,3 +346,7 @@ let rec iter2_shortest f l1 l2 =
   match l1, l2 with
   | [], _ | _, [] -> ()
   | x1 :: rl1, x2 :: rl2 -> f x1 x2; iter2_shortest f rl1 rl2
+
+(* We may want to replace this with a tail-recursive map at some point,
+ * factoring here so we have a clean way to grep. *)
+let rev_rev_map f l = List.rev (List.rev_map f l)

@@ -379,7 +379,7 @@ static Variant dom_canonicalization(xmlNodePtr nodep, const String& file,
     if (arr.exists(s_namespaces)) {
       Variant tmp = arr.rvalAt(s_namespaces);
       if (tmp.isArray()) {
-        for (ArrayIter it = tmp.toArray().begin(); !it; ++it) {
+        for (ArrayIter it = tmp.toArray().begin(); it; ++it) {
           Variant prefix = it.first();
           Variant tmpns = it.second();
           if (prefix.isString() || tmpns.isString()) {
@@ -406,7 +406,7 @@ static Variant dom_canonicalization(xmlNodePtr nodep, const String& file,
       int nscount = 0;
       inclusive_ns_prefixes = (xmlChar**)malloc
         ((ns_prefixes.toArray().size()+1) * sizeof(xmlChar *));
-      for (ArrayIter it = ns_prefixes.toArray().begin(); !it; ++it) {
+      for (ArrayIter it = ns_prefixes.toArray().begin(); it; ++it) {
         Variant tmpns = it.second();
         if (tmpns.isString()) {
           inclusive_ns_prefixes[nscount++] = (xmlChar*)tmpns.toString().data();
@@ -415,7 +415,7 @@ static Variant dom_canonicalization(xmlNodePtr nodep, const String& file,
       inclusive_ns_prefixes[nscount] = NULL;
     } else {
       raise_notice("Inclusive namespace prefixes only allowed in "
-                   "exlcusive mode.");
+                   "exclusive mode.");
     }
   }
   if (mode == 1) {
@@ -633,35 +633,8 @@ static xmlNsPtr dom_get_ns(xmlNodePtr nodep, const char *uri, int *errorcode,
   return nsptr;
 }
 
-static String _dom_get_valid_file_path(const char *source) {
-  int isFileUri = 0;
-
-  xmlURI *uri = xmlCreateURI();
-  xmlChar *escsource = xmlURIEscapeStr((xmlChar*)source, (xmlChar*)":");
-  xmlParseURIReference(uri, (char*)escsource);
-  xmlFree(escsource);
-
-  if (uri->scheme != NULL) {
-    /* absolute file uris - libxml only supports localhost or empty host */
-    if (strncasecmp(source, "file:///",8) == 0) {
-      isFileUri = 1;
-      source += 7;
-    } else if (strncasecmp(source, "file://localhost/",17) == 0) {
-      isFileUri = 1;
-      source += 16;
-    }
-  }
-
-  String file_dest = String(source, CopyString);
-  if ((uri->scheme == NULL || isFileUri)) {
-    file_dest = File::TranslatePath(file_dest);
-  }
-  xmlFreeURI(uri);
-  return file_dest;
-}
-
 static xmlDocPtr dom_document_parser(c_DOMDocument * domdoc, int mode,
-                                     char *source, int source_len,
+                                     const String& source,
                                      int options) {
   xmlDocPtr ret = NULL;
   xmlParserCtxtPtr ctxt = NULL;
@@ -676,29 +649,39 @@ static xmlDocPtr dom_document_parser(c_DOMDocument * domdoc, int mode,
   xmlInitParser();
 
   if (mode == DOM_LOAD_FILE) {
-    String file_dest = _dom_get_valid_file_path(source);
+    String file_dest = libxml_get_valid_file_path(source);
     if (!file_dest.empty()) {
-      ctxt = xmlCreateFileParserCtxt(file_dest.data());
+      // This is considerably more verbose than just using
+      // xmlCreateFileParserCtxt, but it allows us to bypass the external
+      // entity loading path, which is locked down by default for security
+      // reasons.
+      auto stream = File::Open(file_dest, "rb");
+      if (!stream.isInvalid()) {
+        ctxt = xmlCreateIOParserCtxt(nullptr, nullptr,
+                                     libxml_streams_IO_read,
+                                     libxml_streams_IO_close,
+                                     stream.get(),
+                                     XML_CHAR_ENCODING_NONE);
+
+        // We're storing a reference in the xmlParserCtxt
+        if (ctxt) stream.get()->incRefCount();
+      }
     }
   } else {
-    ctxt = xmlCreateMemoryParserCtxt(source, source_len);
+    ctxt = xmlCreateMemoryParserCtxt(source.data(), source.size());
   }
 
-  if (ctxt == NULL) {
-    return NULL;
-  }
+  if (ctxt == nullptr) return nullptr;
 
-  /* If loading from memory, we need to set the base directory
-     for the document */
+  /* If loading from memory, we need to set the base directory for the
+   * document */
   if (mode != DOM_LOAD_FILE) {
     String directory = g_context->getCwd();
     if (!directory.empty()) {
-      if (ctxt->directory != NULL) {
-        xmlFree((char *) ctxt->directory);
-      }
-      if (directory[directory.size() - 1] != '/') {
-        directory += "/";
-      }
+      if (ctxt->directory != nullptr) xmlFree(ctxt->directory);
+
+      if (directory[directory.size() - 1] != '/') directory += "/";
+
       ctxt->directory =
         (char*)xmlCanonicPath((const xmlChar*)directory.c_str());
     }
@@ -739,9 +722,16 @@ static xmlDocPtr dom_document_parser(c_DOMDocument * domdoc, int mode,
     if (ctxt->recovery) {
       HHVM_FN(error_reporting)(old_error_reporting);
     }
-    /* If loading from memory, set the base reference uri for the document */
-    if (ret && ret->URL == NULL && ctxt->directory != NULL) {
-      ret->URL = xmlStrdup((xmlChar*)ctxt->directory);
+    if (ret && ret->URL == nullptr) {
+      if (mode == DOM_LOAD_FILE) {
+        ret->URL = xmlStrdup((xmlChar*)source.c_str());
+      } else {
+        /* If loading from memory, set the base reference uri for the
+         * document */
+        if (ctxt->directory != nullptr) {
+          ret->URL = xmlStrdup((xmlChar*)ctxt->directory);
+        }
+      }
     }
   } else {
     ret = NULL;
@@ -761,8 +751,7 @@ static Variant dom_parse_document(c_DOMDocument *domdoc, const String& source,
     return false;
   }
   xmlDoc *newdoc =
-    dom_document_parser(domdoc, mode, (char*)source.data(), source.length(),
-                        options);
+    dom_document_parser(domdoc, mode, source, options);
   if (!newdoc) {
     return false;
   }
@@ -824,7 +813,7 @@ static bool _dom_document_relaxNG_validate(c_DOMDocument *domdoc,
   switch (type) {
   case DOM_LOAD_FILE:
     {
-      String valid_file = _dom_get_valid_file_path(source.data());
+      String valid_file = libxml_get_valid_file_path(source.data());
       if (valid_file.empty()) {
         raise_warning("Invalid RelaxNG file source");
         return false;
@@ -883,7 +872,7 @@ static bool _dom_document_schema_validate(c_DOMDocument * domdoc,
   switch (type) {
   case DOM_LOAD_FILE:
     {
-      String valid_file = _dom_get_valid_file_path(source.data());
+      String valid_file = libxml_get_valid_file_path(source.data());
       if (valid_file.empty()) {
         raise_warning("Invalid Schema file source");
         return false;
@@ -924,110 +913,6 @@ static bool _dom_document_schema_validate(c_DOMDocument * domdoc,
   xmlSchemaFreeValidCtxt(vptr);
 
   return is_valid == 0;
-}
-
-static void php_libxml_node_free(xmlNodePtr node) {
-  if (node) {
-    switch (node->type) {
-    case XML_ATTRIBUTE_NODE:
-      xmlFreeProp((xmlAttrPtr) node);
-      break;
-    case XML_ENTITY_DECL:
-    case XML_ELEMENT_DECL:
-    case XML_ATTRIBUTE_DECL:
-      break;
-    case XML_NOTATION_NODE:
-      /* These require special handling */
-      if (node->name != NULL) {
-        xmlFree((char *) node->name);
-      }
-      if (((xmlEntityPtr) node)->ExternalID != NULL) {
-        xmlFree((char *) ((xmlEntityPtr) node)->ExternalID);
-      }
-      if (((xmlEntityPtr) node)->SystemID != NULL) {
-        xmlFree((char *) ((xmlEntityPtr) node)->SystemID);
-      }
-      xmlFree(node);
-      break;
-    case XML_NAMESPACE_DECL:
-      if (node->ns) {
-        xmlFreeNs(node->ns);
-        node->ns = NULL;
-      }
-      node->type = XML_ELEMENT_NODE;
-    default:
-      xmlFreeNode(node);
-    }
-  }
-}
-
-static void php_libxml_node_free_list(xmlNodePtr node) {
-  xmlNodePtr curnode;
-
-  if (node != NULL) {
-    curnode = node;
-    while (curnode != NULL) {
-      node = curnode;
-      switch (node->type) {
-      /* Skip property freeing for the following types */
-      case XML_NOTATION_NODE:
-        break;
-      case XML_ENTITY_REF_NODE:
-        php_libxml_node_free_list((xmlNodePtr) node->properties);
-        break;
-      case XML_ATTRIBUTE_NODE:
-        if ((node->doc != NULL) &&
-            (((xmlAttrPtr) node)->atype == XML_ATTRIBUTE_ID)) {
-          xmlRemoveID(node->doc, (xmlAttrPtr) node);
-        }
-      case XML_ATTRIBUTE_DECL:
-      case XML_DTD_NODE:
-      case XML_DOCUMENT_TYPE_NODE:
-      case XML_ENTITY_DECL:
-      case XML_NAMESPACE_DECL:
-      case XML_TEXT_NODE:
-        php_libxml_node_free_list(node->children);
-        break;
-      default:
-        php_libxml_node_free_list(node->children);
-        php_libxml_node_free_list((xmlNodePtr) node->properties);
-      }
-
-      curnode = node->next;
-      xmlUnlinkNode(node);
-      node->doc = NULL;
-      php_libxml_node_free(node);
-    }
-  }
-}
-
-void php_libxml_node_free_resource(xmlNodePtr node) {
-  if (node) {
-    switch (node->type) {
-    case XML_DOCUMENT_NODE:
-    case XML_HTML_DOCUMENT_NODE:
-      break;
-    default:
-      if (node->parent == NULL || node->type == XML_NAMESPACE_DECL) {
-        php_libxml_node_free_list((xmlNodePtr) node->children);
-        switch (node->type) {
-        /* Skip property freeing for the following types */
-        case XML_ATTRIBUTE_DECL:
-        case XML_DTD_NODE:
-        case XML_DOCUMENT_TYPE_NODE:
-        case XML_ENTITY_DECL:
-        case XML_ATTRIBUTE_NODE:
-        case XML_NAMESPACE_DECL:
-        case XML_TEXT_NODE:
-          break;
-        default:
-          php_libxml_node_free_list((xmlNodePtr) node->properties);
-        }
-        node->doc = NULL;
-        php_libxml_node_free(node);
-      }
-    }
-  }
 }
 
 static xmlNodePtr php_dom_free_xinclude_node(xmlNodePtr cur) {
@@ -2892,11 +2777,15 @@ bool c_DOMText::t_iswhitespaceinelementcontent() {
   return xmlIsBlankNode(m_node);
 }
 
+bool c_DOMText::t_iselementcontentwhitespace() {
+  return xmlIsBlankNode(m_node);
+}
+
 Variant c_DOMText::t_splittext(int64_t offset) {
   xmlNodePtr node = m_node;
   xmlChar *cur, *first, *second;
   xmlNodePtr nnode;
-  if (node->type != XML_TEXT_NODE) {
+  if (node->type != XML_TEXT_NODE && node->type != XML_CDATA_SECTION_NODE) {
     return false;
   }
   cur = xmlNodeGetContent(node);
@@ -2926,7 +2815,9 @@ Variant c_DOMText::t_splittext(int64_t offset) {
   c_DOMText *ret = NEWOBJ(c_DOMText)();
   ret->m_doc = doc();
   ret->m_node = nnode;
-  appendOrphan(*doc()->m_orphans, nnode);
+  if (doc().get()) {
+    appendOrphan(*doc()->m_orphans, nnode);
+  }
   return ret;
 }
 
@@ -3484,12 +3375,7 @@ Variant c_DOMDocument::t_importnode(const Object& importednode,
 Variant c_DOMDocument::t_load(const String& filename,
                               int64_t options /* = 0 */) {
   SYNC_VM_REGS_SCOPED();
-  String translated = File::TranslatePath(filename);
-  if (translated.empty()) {
-    raise_warning("Unable to read file: %s", filename.data());
-    return false;
-  }
-  return dom_parse_document(this, translated, options, DOM_LOAD_FILE);
+  return dom_parse_document(this, filename, options, DOM_LOAD_FILE);
 }
 
 Variant c_DOMDocument::t_loadhtml(const String& source) {
@@ -3499,12 +3385,7 @@ Variant c_DOMDocument::t_loadhtml(const String& source) {
 
 Variant c_DOMDocument::t_loadhtmlfile(const String& filename) {
   SYNC_VM_REGS_SCOPED();
-  String translated = File::TranslatePath(filename);
-  if (translated.empty()) {
-    raise_warning("Unable to read file: %s", filename.data());
-    return false;
-  }
-  return dom_load_html(this, translated, DOM_LOAD_FILE);
+  return dom_load_html(this, filename, DOM_LOAD_FILE);
 }
 
 Variant c_DOMDocument::t_loadxml(const String& source,
@@ -3555,19 +3436,13 @@ Variant c_DOMDocument::t_save(const String& file, int64_t options /* = 0 */) {
   xmlDocPtr docp = (xmlDocPtr)m_node;
   int bytes, format = 0, saveempty = 0;
 
-  String translated = File::TranslatePath(file);
-  if (translated.empty()) {
-    raise_warning("Invalid Filename");
-    return false;
-  }
-
   /* encoding handled by property on doc */
   format = m_formatoutput;
   if (options & LIBXML_SAVE_NOEMPTYTAG) {
     saveempty = xmlSaveNoEmptyTags;
     xmlSaveNoEmptyTags = 1;
   }
-  bytes = xmlSaveFormatFileEnc(translated.data(), docp, NULL, format);
+  bytes = xmlSaveFormatFileEnc(file.data(), docp, nullptr, format);
   if (options & LIBXML_SAVE_NOEMPTYTAG) {
     xmlSaveNoEmptyTags = saveempty;
   }
@@ -3581,14 +3456,9 @@ Variant c_DOMDocument::t_savehtmlfile(const String& file) {
   xmlDocPtr docp = (xmlDocPtr)m_node;
   int bytes, format = 0;
 
-  String translated = File::TranslatePath(file);
-  if (translated.empty()) {
-    raise_warning("Invalid Filename");
-    return false;
-  }
   /* encoding handled by property on doc */
   format = m_formatoutput;
-  bytes = htmlSaveFileFormat(translated.data(), docp, NULL, format);
+  bytes = htmlSaveFileFormat(file.data(), docp, nullptr, format);
   if (bytes == -1) {
     return false;
   }

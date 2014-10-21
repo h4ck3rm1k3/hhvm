@@ -27,7 +27,7 @@
 #include "hphp/runtime/vm/jit/code-gen.h"
 #include "hphp/runtime/vm/jit/arg-group.h"
 
-namespace HPHP { namespace JIT {
+namespace HPHP { namespace jit {
 
 struct IRInstruction;
 
@@ -121,9 +121,6 @@ struct CallInfo {
   DestType dest;
   SyncOptions sync;
   std::vector<Arg> args;
-
-  ArgGroup toArgGroup(const RegAllocInfo &regs,
-                      const IRInstruction* inst) const;
 };
 
 typedef std::initializer_list<CallInfo> CallInfoList;

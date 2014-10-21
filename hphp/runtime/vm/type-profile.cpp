@@ -17,6 +17,8 @@
 #include "hphp/runtime/base/runtime-option.h"
 #include "hphp/runtime/base/stats.h"
 #include "hphp/runtime/vm/jit/translator.h"
+#include "hphp/util/atomic-vector.h"
+#include "hphp/util/lock.h"
 #include "hphp/util/trace.h"
 
 #include "folly/String.h"
@@ -148,38 +150,111 @@ profileInit() {
 }
 
 /*
- * Warmup.
+ * Warmup/profiling.
  *
- * In cli mode, we only record samples if we're in recording to replay
- * later.
+ * In cli mode, we only record samples if we're in recording to replay later.
  *
- * For server mode, we record samples for all requests started after
- * the EvalJitWarmupRequests'th req.
+ * In server mode, we exclude warmup document requests from profiling, then
+ * record samples for EvalJitProfileInterpRequests standard requests.
  */
 bool __thread profileOn = false;
+static bool warmingUp;
 static int64_t numRequests;
+bool __thread standardRequest = true;
+static std::atomic<bool> singleJitLock;
+static std::atomic<int> singleJitRequests;
+
+void profileWarmupStart() {
+  warmingUp = true;
+}
+
+void profileWarmupEnd() {
+  warmingUp = false;
+}
+
+typedef std::pair<const Func*, uint32_t> FuncHotness;
+bool comp(const FuncHotness& a, const FuncHotness& b) {
+  return a.second > b.second;
+}
+
+/*
+ * Set AttrHot on hot functions. Sort all functions by
+ * their profile count, and set AttrHot to the top
+ * Eval.HotFuncCount functions.
+ */
+static Mutex syncLock;
+void setHotFuncAttr() {
+  static bool synced = false;
+  if (synced) return;
+
+  Lock lock(syncLock);
+  if (synced) return;
+
+  Func::s_treadmill = true;
+  SCOPE_EXIT {
+    Func::s_treadmill = false;
+  };
+
+  if (RuntimeOption::EvalHotFuncCount) {
+    std::priority_queue<FuncHotness,
+                        std::vector<FuncHotness>,
+                        bool(*)(const FuncHotness& a, const FuncHotness& b)>
+      queue(comp);
+
+    Func::getFuncVec().foreach([&](const Func* f) {
+        if (!f) return;
+        auto fh = FuncHotness(f, f->profCounter());
+        if (queue.size() >= RuntimeOption::EvalHotFuncCount) {
+          if (!comp(fh, queue.top())) return;
+          queue.pop();
+        }
+        queue.push(fh);
+      });
+
+    while (queue.size()) {
+      auto f = queue.top().first;
+      queue.pop();
+      const_cast<Func*>(f)->setHot();
+    }
+  }
+  synced = true;
+}
 
 int64_t requestCount() {
   return numRequests;
 }
 
-static inline bool warmedUp() {
-  return (numRequests >= RuntimeOption::EvalJitWarmupRequests) ||
+static inline bool doneProfiling() {
+  return (numRequests >= RuntimeOption::EvalJitProfileInterpRequests) ||
     (RuntimeOption::ClientExecutionMode() &&
      !RuntimeOption::EvalJitProfileRecord);
 }
 
 static inline bool profileThisRequest() {
-  if (warmedUp()) return false;
+  if (warmingUp) return false;
+  if (doneProfiling()) return false;
   if (RuntimeOption::ServerExecutionMode()) return true;
   return RuntimeOption::EvalJitProfileRecord;
 }
 
-void
-profileRequestStart() {
+void profileRequestStart() {
   bool p = profileThisRequest();
-  if (p != profileOn) {
-    profileOn = p;
+  if (profileOn && !p) {
+    // If we are turning off profiling, set AttrHot on
+    // functions that are "hot".
+    setHotFuncAttr();
+  }
+  profileOn = p;
+
+  bool okToJit = !warmingUp && !p;
+  if (okToJit && singleJitRequests < RuntimeOption::EvalNumSingleJitRequests) {
+    bool flag = false;
+    if (!singleJitLock.compare_exchange_strong(flag, true)) {
+      okToJit = false;
+    }
+  }
+  if (standardRequest != okToJit) {
+    standardRequest = okToJit;
     if (!ThreadInfo::s_threadInfo.isNull()) {
       ThreadInfo::s_threadInfo->m_reqInjectionData.updateJit();
     }
@@ -187,7 +262,14 @@ profileRequestStart() {
 }
 
 void profileRequestEnd() {
+  if (warmingUp) return;
   numRequests++; // racy RMW; ok to miss a rare few.
+  if (standardRequest &&
+      singleJitRequests < RuntimeOption::EvalNumSingleJitRequests) {
+    assert(singleJitLock);
+    ++singleJitRequests;
+    singleJitLock = false;
+  }
 }
 
 enum class KeyToVPMode {
@@ -243,7 +325,7 @@ keyToVP(TypeProfileKey key, KeyToVPMode mode) {
 
 void recordType(TypeProfileKey key, DataType dt) {
   if (!profiles) return;
-  if (!shouldProfile()) return;
+  if (!isProfileRequest()) return;
   assert(dt != KindOfUninit);
   // Normalize strings to KindOfString.
   if (dt == KindOfStaticString) dt = KindOfString;

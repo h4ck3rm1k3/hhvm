@@ -25,15 +25,15 @@
 #include <cstdint>
 #include <deque>
 #include <functional>
+#include <iosfwd>
 #include <mutex>
-#include <ostream>
 #include <utility>
 #include <vector>
 
 #include <boost/noncopyable.hpp>
 
-#include "folly/Portability.h"
-#include "folly/Range.h"
+#include <folly/Portability.h>
+#include <folly/Range.h>
 
 namespace folly {
 
@@ -233,6 +233,7 @@ class AsyncIOQueue {
    */
   typedef std::function<AsyncIOOp*()> OpFactory;
   void submit(OpFactory op);
+
  private:
   void onCompleted(AsyncIOOp* op);
   void maybeDequeue();

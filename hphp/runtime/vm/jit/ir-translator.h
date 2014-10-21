@@ -20,27 +20,9 @@
 #include "hphp/runtime/vm/jit/translator.h"
 #include "hphp/runtime/vm/jit/translator-instrs.h"
 
-namespace HPHP {
-namespace JIT {
+namespace HPHP { namespace jit {
 struct NormalizedInstruction;
 struct Location;
-}
-namespace JIT {
-
-/*
- * RegionIter is a temporary class used to traverse a region of hhbc
- * instruction that may be more than just a straight-line series of
- * instructions. It is used by shouldIRInline to traverse RegionDescs.
- */
-struct RegionIter {
-  virtual ~RegionIter() {}
-
-  virtual bool finished() const = 0;
-  virtual SrcKey sk() const = 0;
-  virtual void advance() = 0;
-};
-bool shouldIRInline(const Func* caller, const Func* callee,
-                    RegionIter& iter);
 
 /*
  * IRTranslator is used to convert hhbc instructions to a cfg of Blocks

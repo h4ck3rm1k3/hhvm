@@ -14,14 +14,14 @@
  * limitations under the License.
  */
 
-#include "folly/json.h"
+#include <folly/json.h>
 #include <gtest/gtest.h>
 #include <gflags/gflags.h>
 #include <cmath>
 #include <limits>
 #include <iostream>
 #include <boost/next_prior.hpp>
-#include "folly/Benchmark.h"
+#include <folly/Benchmark.h>
 
 using folly::dynamic;
 using folly::parseJson;
@@ -479,7 +479,7 @@ BENCHMARK(toJson, iters) {
 
 int main(int argc, char** argv) {
   testing::InitGoogleTest(&argc, argv);
-  google::ParseCommandLineFlags(&argc, &argv, true);
+  gflags::ParseCommandLineFlags(&argc, &argv, true);
   if (FLAGS_benchmark) {
     folly::runBenchmarks();
   }

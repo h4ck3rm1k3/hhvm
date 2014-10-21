@@ -14,9 +14,9 @@
  * limitations under the License.
  */
 
-#include "folly/Benchmark.h"
-#include "folly/Foreach.h"
-#include "folly/String.h"
+#include <folly/Benchmark.h>
+#include <folly/Foreach.h>
+#include <folly/String.h>
 #include <iostream>
 using namespace folly;
 using namespace std;
@@ -129,7 +129,7 @@ BENCHMARK_PARAM_MULTI(paramMulti, 5);
 BENCHMARK_RELATIVE_PARAM_MULTI(paramMultiRel, 5);
 
 int main(int argc, char** argv) {
-  google::ParseCommandLineFlags(&argc, &argv, true);
+  gflags::ParseCommandLineFlags(&argc, &argv, true);
   runBenchmarks();
   runBenchmarksOnFlag();
 }

@@ -17,13 +17,13 @@
 #ifndef incl_HPHP_VM_BLOCK_H_
 #define incl_HPHP_VM_BLOCK_H_
 
-#include "hphp/runtime/base/smart-containers.h"
+#include "hphp/runtime/vm/jit/containers.h"
 #include <algorithm>
 #include "hphp/runtime/vm/jit/ir.h"
 #include "hphp/runtime/vm/jit/edge.h"
 #include "hphp/runtime/vm/jit/ir-instruction.h"
 
-namespace HPHP { namespace JIT {
+namespace HPHP { namespace jit {
 
 /*
  * A Block refers to a basic block: single-entry, single-exit, list of
@@ -120,7 +120,11 @@ struct Block : boost::noncopyable {
   // which is the instruction in the predecessor block.
   EdgeList& preds()             { return m_preds; }
   const EdgeList& preds() const { return m_preds; }
-  size_t numPreds() const { return m_preds.size(); }
+
+  size_t numPreds() const {
+    // NB: The entry block has an invisible predecessor.
+    return m_preds.size() + safe_cast<size_t>(isEntry());
+  }
 
   // Remove edge from its destination's predecessor list and insert it in
   // new_to's predecessor list.
@@ -173,7 +177,7 @@ struct Block : boost::noncopyable {
   Hint m_hint;              // execution frequency hint
 };
 
-typedef smart::vector<Block*> BlockList;
+typedef jit::vector<Block*> BlockList;
 
 inline Block::reference Block::front() {
   assert(!m_instrs.empty());

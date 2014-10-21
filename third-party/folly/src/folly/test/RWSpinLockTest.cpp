@@ -26,7 +26,7 @@
 #include <gtest/gtest.h>
 #include <gflags/gflags.h>
 #include <glog/logging.h>
-#include "folly/RWSpinLock.h"
+#include <folly/RWSpinLock.h>
 
 DEFINE_int32(num_threads, 8, "num threads");
 
@@ -237,6 +237,6 @@ TEST(RWSpinLock, concurrent_holder_test) {
 
 int main(int argc, char** argv) {
   testing::InitGoogleTest(&argc, argv);
-  google::ParseCommandLineFlags(&argc, &argv, true);
+  gflags::ParseCommandLineFlags(&argc, &argv, true);
   return RUN_ALL_TESTS();
 }

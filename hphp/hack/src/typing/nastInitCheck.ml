@@ -212,8 +212,8 @@ and stmt env acc st =
       let acc = List.fold_left expr acc el in
       assign env acc parent_init_cvar
     | Expr e -> expr acc e
-    | Break -> acc
-    | Continue -> acc
+    | Break _ -> acc
+    | Continue _ -> acc
     | Throw (_, e) -> expr acc e
     | Return (p, None) ->
       if are_all_init env acc
@@ -356,8 +356,8 @@ and expr_ env acc p e =
   | Null
   | String _
   | String2 _ -> acc
-  | Assert (AE_assert e)
-  | Yield e -> expr acc e
+  | Assert (AE_assert e) -> expr acc e
+  | Yield e -> afield acc e
   | Yield_break -> acc
   | Await e -> expr acc e
   | List _ ->
@@ -408,7 +408,7 @@ and expr_ env acc p e =
       let acc = exprl acc l in
       exprl acc el
   | Shape fdm ->
-      SMap.fold begin fun _ v acc ->
+      ShapeMap.fold begin fun _ v acc ->
         expr acc v
       end fdm acc
 

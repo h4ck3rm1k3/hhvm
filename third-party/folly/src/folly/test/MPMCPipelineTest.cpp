@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-#include "folly/MPMCPipeline.h"
+#include <folly/MPMCPipeline.h>
 
 #include <thread>
 #include <vector>
@@ -22,7 +22,7 @@
 #include <glog/logging.h>
 #include <gtest/gtest.h>
 
-#include "folly/Conv.h"
+#include <folly/Conv.h>
 
 namespace folly { namespace test {
 
@@ -160,7 +160,7 @@ TEST(MPMCPipeline, MultiThreaded) {
 
 int main(int argc, char *argv[]) {
   testing::InitGoogleTest(&argc, argv);
-  google::ParseCommandLineFlags(&argc, &argv, true);
+  gflags::ParseCommandLineFlags(&argc, &argv, true);
   return RUN_ALL_TESTS();
 }
 

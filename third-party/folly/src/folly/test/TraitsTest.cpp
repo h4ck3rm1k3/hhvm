@@ -14,8 +14,8 @@
  * limitations under the License.
  */
 
-#include "folly/Benchmark.h"
-#include "folly/Traits.h"
+#include <folly/Benchmark.h>
+#include <folly/Traits.h>
 
 #include <gflags/gflags.h>
 #include <gtest/gtest.h>
@@ -120,7 +120,7 @@ TEST(Traits, is_complete) {
 
 int main(int argc, char ** argv) {
   testing::InitGoogleTest(&argc, argv);
-  google::ParseCommandLineFlags(&argc, &argv, true);
+  gflags::ParseCommandLineFlags(&argc, &argv, true);
   if (FLAGS_benchmark) {
     folly::runBenchmarks();
   }

@@ -21,8 +21,9 @@
 #include "hphp/runtime/vm/jit/state-vector.h"
 #include "hphp/runtime/vm/jit/translator.h"
 #include "hphp/util/code-cache.h"
+#include "hphp/runtime/vm/jit/vasm-x64.h"
 
-namespace HPHP { namespace JIT {
+namespace HPHP { namespace jit {
 
 struct RegAllocInfo;
 
@@ -33,11 +34,6 @@ enum class SyncOptions {
   kSmashableAndSyncPoint,
 };
 
-// Returned information from cgCallHelper
-struct CallHelperInfo {
-  TCA returnAddress;
-};
-
 // Information about where code was generated, for pretty-printing.
 struct AsmInfo {
   explicit AsmInfo(const IRUnit& unit)
@@ -46,19 +42,19 @@ struct AsmInfo {
     , acoldRanges(unit, TcaRange(nullptr, nullptr))
     , afrozenRanges(unit, TcaRange(nullptr, nullptr))
   {}
+  void updateForInstruction(IRInstruction* inst, TCA start, TCA end);
 
   // Asm address info for each instruction and block
   StateVector<IRInstruction,TcaRange> instRanges;
   StateVector<Block,TcaRange> asmRanges;
   StateVector<Block,TcaRange> acoldRanges;
   StateVector<Block,TcaRange> afrozenRanges;
-
-  void updateForInstruction(IRInstruction* inst, TCA start, TCA end);
 };
 
 typedef StateVector<IRInstruction, RegSet> LiveRegs;
 
 struct CatchInfo {
+  bool valid;
   /* afterCall is the address after the call instruction that this catch trace
    * belongs to. It's the key used to look up catch traces by the
    * unwinder, since it's the value of %rip during unwinding. */
@@ -89,6 +85,8 @@ struct CodegenState {
     , asmInfo(asmInfo)
     , catches(unit, CatchInfo())
     , pastGuards(false)
+    , labels(unit, Vlabel())
+    , locs(unit, x64::Vloc{})
   {}
 
   // Each block has a list of addresses to patch, and an address if
@@ -119,6 +117,13 @@ struct CodegenState {
   // we're translating code that can properly be attributed to specific
   // bytecode.
   bool pastGuards;
+
+  // Postponed code "points" can obtain code addresses after Vasm::finish().
+  Vmeta meta;
+
+  // vasm block labels, one for each hhir block
+  StateVector<Block,Vlabel> labels;
+  StateVector<SSATmp,x64::Vloc> locs;
 };
 
 LiveRegs computeLiveRegs(const IRUnit& unit, const RegAllocInfo& regs);

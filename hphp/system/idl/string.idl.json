@@ -1225,84 +1225,6 @@
             ]
         },
         {
-            "name": "printf",
-            "flags": [
-                "VariableArguments"
-            ],
-            "return": {
-                "type": "Variant",
-                "desc": "Returns the length of the outputted string."
-            },
-            "args": [
-                {
-                    "name": "format",
-                    "type": "String",
-                    "desc": "See sprintf() for a description of format."
-                }
-            ]
-        },
-        {
-            "name": "vprintf",
-            "desc": "Display array values as a formatted string according to format (which is described in the documentation for sprintf()).\n\nOperates as printf() but accepts an array of arguments, rather than a variable number of arguments.",
-            "flags": [
-            ],
-            "return": {
-                "type": "Variant",
-                "desc": "Returns the length of the outputted string."
-            },
-            "args": [
-                {
-                    "name": "format",
-                    "type": "String",
-                    "desc": "See sprintf() for a description of format."
-                },
-                {
-                    "name": "args",
-                    "type": "VariantVec"
-                }
-            ]
-        },
-        {
-            "name": "sprintf",
-            "desc": "Returns a string produced according to the formatting string format.",
-            "flags": [
-                "VariableArguments",
-                "FunctionIsFoldable"
-            ],
-            "return": {
-                "type": "Variant",
-                "desc": "Returns a string produced according to the formatting string format."
-            },
-            "args": [
-                {
-                    "name": "format",
-                    "type": "String"
-                }
-            ]
-        },
-        {
-            "name": "vsprintf",
-            "desc": "Operates as sprintf() but accepts an array of arguments, rather than a variable number of arguments.",
-            "flags": [
-                "FunctionIsFoldable"
-            ],
-            "return": {
-                "type": "Variant",
-                "desc": "Return array values as a formatted string according to format (which is described in the documentation for sprintf())."
-            },
-            "args": [
-                {
-                    "name": "format",
-                    "type": "String",
-                    "desc": "See sprintf() for a description of format."
-                },
-                {
-                    "name": "args",
-                    "type": "VariantVec"
-                }
-            ]
-        },
-        {
             "name": "sscanf",
             "desc": "The function sscanf() is the input analog of printf(). sscanf() reads from the string str and interprets it according to the specified format, which is described in the documentation for sprintf().\n\nAny whitespace in the format string matches any whitespace in the input string. This means that even a tab \\t in the format string can match a single space character in the input string.",
             "flags": [
@@ -1721,6 +1643,12 @@
                     "name": "needle",
                     "type": "Variant",
                     "desc": "If needle is not a string, it is converted to an integer and applied as the ordinal value of a character."
+                },
+                {
+                    "name": "before_needle",
+                    "type": "Boolean",
+                    "value": "false",
+                    "desc": "If TRUE, strstr() returns the part of the haystack before the first occurrence of the needle (excluding the needle)."
                 }
             ]
         },
@@ -2184,30 +2112,6 @@
                     "type": "Int32",
                     "value": "0",
                     "desc": "This parameter restricts the returned metaphone key to phonemes characters in length. The default value of 0 means no restriction."
-                }
-            ]
-        },
-        {
-            "name": "parse_str",
-            "desc": "Parses str as if it were the query string passed via a URL and sets variables in the current scope.\n\nTo get the current QUERY_STRING, you may use the variable $_SERVER['QUERY_STRING']. Also, you may want to read the section on variables from external sources.\n\nThe magic_quotes_gpc setting affects the output of this function, as parse_str() uses the same mechanism that PHP uses to populate the $_GET, $_POST, etc. variables.",
-            "flags": [
-            ],
-            "return": {
-                "type": null,
-                "desc": "No value is returned."
-            },
-            "args": [
-                {
-                    "name": "str",
-                    "type": "String",
-                    "desc": "The input string."
-                },
-                {
-                    "name": "arr",
-                    "type": "Variant",
-                    "value": "null",
-                    "desc": "If the second parameter arr is present, variables are stored in this variable as array elements instead.",
-                    "ref": true
                 }
             ]
         }

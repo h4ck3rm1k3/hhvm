@@ -21,12 +21,12 @@
 #include <set>
 #include <vector>
 
-#include "folly/FBVector.h"
-#include "folly/MapUtil.h"
-#include "folly/Memory.h"
-#include "folly/dynamic.h"
-#include "folly/gen/Base.h"
-#include "folly/experimental/TestUtil.h"
+#include <folly/FBVector.h>
+#include <folly/MapUtil.h>
+#include <folly/Memory.h>
+#include <folly/dynamic.h>
+#include <folly/gen/Base.h>
+#include <folly/experimental/TestUtil.h>
 
 using namespace folly::gen;
 using namespace folly;
@@ -306,6 +306,47 @@ TEST(Gen, Take) {
       | as<vector>();
     EXPECT_EQ(expected, actual);
   }
+}
+
+
+TEST(Gen, Stride) {
+  {
+    EXPECT_THROW(stride(0), std::invalid_argument);
+  }
+  {
+    auto expected = vector<int>{1, 2, 3, 4};
+    auto actual
+      = seq(1, 4)
+      | stride(1)
+      | as<vector<int>>();
+    EXPECT_EQ(expected, actual);
+  }
+  {
+    auto expected = vector<int>{1, 3, 5, 7};
+    auto actual
+      = seq(1, 8)
+      | stride(2)
+      | as<vector<int>>();
+    EXPECT_EQ(expected, actual);
+  }
+  {
+    auto expected = vector<int>{1, 4, 7, 10};
+    auto actual
+      = seq(1, 12)
+      | stride(3)
+      | as<vector<int>>();
+    EXPECT_EQ(expected, actual);
+  }
+  {
+    auto expected = vector<int>{1, 3, 5, 7, 9, 1, 4, 7, 10};
+    auto actual
+      = ((seq(1, 10) | stride(2)) +
+         (seq(1, 10) | stride(3)))
+      | as<vector<int>>();
+    EXPECT_EQ(expected, actual);
+  }
+  EXPECT_EQ(500, seq(1) | take(1000) | stride(2) | count);
+  EXPECT_EQ(10, seq(1) | take(1000) | stride(2) | take(10) | count);
 }
 
 TEST(Gen, Sample) {
@@ -767,8 +808,8 @@ class TestIntSeq : public GenImpl<int, TestIntSeq> {
     return true;
   }
 
-  TestIntSeq(TestIntSeq&&) = default;
-  TestIntSeq& operator=(TestIntSeq&&) = default;
+  TestIntSeq(TestIntSeq&&) noexcept = default;
+  TestIntSeq& operator=(TestIntSeq&&) noexcept = default;
   TestIntSeq(const TestIntSeq&) = delete;
   TestIntSeq& operator=(const TestIntSeq&) = delete;
 };
@@ -809,7 +850,7 @@ struct CopyCounter {
     ++alive;
   }
 
-  CopyCounter(CopyCounter&& source) {
+  CopyCounter(CopyCounter&& source) noexcept {
     *this = std::move(source);
     ++alive;
   }
@@ -1029,6 +1070,6 @@ TEST(Gen, BatchMove) {
 
 int main(int argc, char *argv[]) {
   testing::InitGoogleTest(&argc, argv);
-  google::ParseCommandLineFlags(&argc, &argv, true);
+  gflags::ParseCommandLineFlags(&argc, &argv, true);
   return RUN_ALL_TESTS();
 }

@@ -31,13 +31,13 @@
 #include <unordered_set>
 #include <unordered_map>
 
-#include "folly/Conv.h"
-#include "folly/Demangle.h"
-#include "folly/FBString.h"
-#include "folly/FBVector.h"
-#include "folly/Portability.h"
-#include "folly/Range.h"
-#include "folly/ScopeGuard.h"
+#include <folly/Conv.h>
+#include <folly/Demangle.h>
+#include <folly/FBString.h>
+#include <folly/FBVector.h>
+#include <folly/Portability.h>
+#include <folly/Range.h>
+#include <folly/ScopeGuard.h>
 
 // Compatibility function, to make sure toStdString(s) can be called
 // to convert a std::string or fbstring variable s into type std::string
@@ -448,7 +448,8 @@ void splitTo(const Delim& delimiter,
 template <class T>
 using IsSplitTargetType = std::integral_constant<bool,
   std::is_arithmetic<T>::value ||
-  std::is_same<T, StringPiece>::value>;
+  std::is_same<T, StringPiece>::value ||
+  IsSomeString<T>::value>;
 
 template<bool exact = true,
          class Delim,
@@ -503,37 +504,26 @@ std::string join(const Delim& delimiter,
   return output;
 }
 
+/**
+ * Returns a subpiece with all whitespace removed from the front of @sp.
+ * Whitespace means any of [' ', '\n', '\r', '\t'].
+ */
+StringPiece skipWhitespace(StringPiece sp);
+
+/**
+ * Fast, in-place lowercasing of ASCII alphabetic characters in strings.
+ * Leaves all other characters unchanged, including those with the 0x80
+ * bit set.
+ * @param str String to convert
+ * @param len Length of str, in bytes
+ */
+void toLowerAscii(char* str, size_t length);
+
+inline void toLowerAscii(MutableStringPiece str) {
+  toLowerAscii(str.begin(), str.size());
+}
+
 } // namespace folly
-
-// Hash functions to make std::string usable with e.g. hash_map
-//
-// Handle interaction with different C++ standard libraries, which
-// expect these types to be in different namespaces.
-namespace std {
-
-template <class C>
-struct hash<std::basic_string<C> > : private hash<const C*> {
-  size_t operator()(const std::basic_string<C> & s) const {
-    return hash<const C*>::operator()(s.c_str());
-  }
-};
-
-}
-
-#if FOLLY_HAVE_DEPRECATED_ASSOC
-#if defined(_GLIBCXX_SYMVER) && !defined(__BIONIC__)
-namespace __gnu_cxx {
-
-template <class C>
-struct hash<std::basic_string<C> > : private hash<const C*> {
-  size_t operator()(const std::basic_string<C> & s) const {
-    return hash<const C*>::operator()(s.c_str());
-  }
-};
-
-}
-#endif
-#endif
 
 // Hook into boost's type traits
 namespace boost {
@@ -543,6 +533,6 @@ struct has_nothrow_constructor<folly::basic_fbstring<T> > : true_type {
 };
 } // namespace boost
 
-#include "folly/String-inl.h"
+#include <folly/String-inl.h>
 
 #endif

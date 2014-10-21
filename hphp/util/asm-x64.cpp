@@ -18,7 +18,14 @@
 
 #include "folly/Format.h"
 
-namespace HPHP { namespace JIT {
+namespace HPHP { namespace jit {
+
+// These are in order according to the binary encoding of the X64
+// condition codes.
+const char* cc_names[] = {
+  "O", "NO", "B", "AE", "E", "NE", "BE", "A",
+  "S", "NS", "P", "NP", "L", "GE", "LE", "G"
+};
 
 void DecodedInstruction::decode(uint8_t* ip) {
   m_ip = ip;

@@ -18,10 +18,10 @@
 #define __STDC_FORMAT_MACROS
 #endif
 
-#include "folly/io/async/EventBase.h"
+#include <folly/io/async/EventBase.h>
 
-#include "folly/ThreadName.h"
-#include "folly/io/async/NotificationQueue.h"
+#include <folly/ThreadName.h>
+#include <folly/io/async/NotificationQueue.h>
 
 #include <boost/static_assert.hpp>
 #include <fcntl.h>
@@ -392,10 +392,6 @@ bool EventBase::bumpHandlingTime() {
 
 void EventBase::terminateLoopSoon() {
   VLOG(5) << "EventBase(): Received terminateLoopSoon() command.";
-
-  if (!isRunning()) {
-    return;
-  }
 
   // Set stop to true, so the event loop will know to exit.
   // TODO: We should really use an atomic operation here with a release

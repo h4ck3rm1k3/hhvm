@@ -14,14 +14,14 @@
  * limitations under the License.
  */
 
-#include "folly/io/IOBuf.h"
+#include <folly/io/IOBuf.h>
 
 #include <gflags/gflags.h>
 #include <boost/random.hpp>
 #include <gtest/gtest.h>
-#include "folly/Benchmark.h"
-#include "folly/Range.h"
-#include "folly/io/Cursor.h"
+#include <folly/Benchmark.h>
+#include <folly/Range.h>
+#include <folly/io/Cursor.h>
 
 DECLARE_bool(benchmark);
 
@@ -643,7 +643,7 @@ BENCHMARK(skipBenchmark, iters) {
 
 int main(int argc, char** argv) {
   testing::InitGoogleTest(&argc, argv);
-  google::ParseCommandLineFlags(&argc, &argv, true);
+  gflags::ParseCommandLineFlags(&argc, &argv, true);
 
   auto ret = RUN_ALL_TESTS();
 

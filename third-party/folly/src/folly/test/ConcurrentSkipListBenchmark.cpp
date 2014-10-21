@@ -22,10 +22,10 @@
 
 #include <gflags/gflags.h>
 #include <glog/logging.h>
-#include "folly/Benchmark.h"
-#include "folly/ConcurrentSkipList.h"
-#include "folly/Hash.h"
-#include "folly/RWSpinLock.h"
+#include <folly/Benchmark.h>
+#include <folly/ConcurrentSkipList.h>
+#include <folly/Hash.h>
+#include <folly/RWSpinLock.h>
 
 
 DEFINE_int32(num_threads, 12, "num concurrent threads to test");
@@ -599,7 +599,7 @@ BENCHMARK_DRAW_LINE();
 
 int main(int argc, char** argv) {
   google::InitGoogleLogging(argv[0]);
-  google::ParseCommandLineFlags(&argc, &argv, true);
+  gflags::ParseCommandLineFlags(&argc, &argv, true);
 
   initData();
   runBenchmarks();

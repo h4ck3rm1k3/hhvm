@@ -24,9 +24,9 @@
 
 #include <glog/logging.h>
 #include <gflags/gflags.h>
-#include "folly/ConcurrentSkipList.h"
-#include "folly/Foreach.h"
-#include "folly/String.h"
+#include <folly/ConcurrentSkipList.h>
+#include <folly/Foreach.h>
+#include <folly/String.h>
 #include <gtest/gtest.h>
 
 DEFINE_int32(num_threads, 12, "num concurrent threads to test");
@@ -389,7 +389,7 @@ TEST(ConcurrentSkipList, ConcurrentAccess) {
 int main(int argc, char* argv[]) {
   testing::InitGoogleTest(&argc, argv);
   google::InitGoogleLogging(argv[0]);
-  google::ParseCommandLineFlags(&argc, &argv, true);
+  gflags::ParseCommandLineFlags(&argc, &argv, true);
 
   return RUN_ALL_TESTS();
 }

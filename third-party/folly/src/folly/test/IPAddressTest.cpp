@@ -18,10 +18,10 @@
 
 #include <gtest/gtest.h>
 
-#include "folly/Bits.h"
-#include "folly/Format.h"
-#include "folly/String.h"
-#include "folly/MacAddress.h"
+#include <folly/Bits.h>
+#include <folly/Format.h>
+#include <folly/String.h>
+#include <folly/MacAddress.h>
 
 using namespace folly;
 using namespace std;
@@ -31,14 +31,20 @@ TEST(IPAddress, CodeExample) {
   EXPECT_EQ(4, sizeof(IPAddressV4));
   EXPECT_EQ(16, sizeof(IPAddressV6));
   EXPECT_EQ(20, sizeof(IPAddress));
+  IPAddress uninitaddr;
   IPAddress v4addr("192.0.2.129");
   IPAddress v6map("::ffff:192.0.2.129");
+  ASSERT_TRUE(uninitaddr.empty());
+  ASSERT_FALSE(v4addr.empty());
+  ASSERT_FALSE(v6map.empty());
   EXPECT_TRUE(v4addr.inSubnet("192.0.2.0/24"));
   EXPECT_TRUE(v4addr.inSubnet(IPAddress("192.0.2.0"), 24));
   EXPECT_TRUE(v4addr.inSubnet("192.0.2.128/30"));
   EXPECT_FALSE(v4addr.inSubnet("192.0.2.128/32"));
   EXPECT_EQ(2164392128, v4addr.asV4().toLong());
   EXPECT_EQ(3221226113, v4addr.asV4().toLongHBO());
+  ASSERT_FALSE(uninitaddr.isV4());
+  ASSERT_FALSE(uninitaddr.isV6());
   ASSERT_TRUE(v4addr.isV4());
   ASSERT_TRUE(v6map.isV6());
   EXPECT_TRUE(v4addr == v6map);
@@ -433,6 +439,26 @@ TEST_P(IPAddressMaskBoundaryTest, NonMaskedSubnet) {
   IPAddress ip(param.address);
   IPAddress subnet(param.subnet);
   EXPECT_EQ(param.inSubnet, ip.inSubnet(subnet, param.mask));
+}
+
+TEST(IPAddress, UnitializedEqual) {
+  IPAddress addrEmpty;
+  IPAddress ip4("127.0.0.1");
+  EXPECT_FALSE(addrEmpty == ip4);
+  EXPECT_FALSE(ip4 == addrEmpty);
+  IPAddress ip6("::1");
+  EXPECT_FALSE(addrEmpty == ip6);
+  EXPECT_FALSE(ip6 == addrEmpty);
+  IPAddress ip6Map("::ffff:192.0.2.129");
+  EXPECT_FALSE(addrEmpty == ip6Map);
+  EXPECT_FALSE(ip6Map == addrEmpty);
+  IPAddress ip4Zero("0.0.0.0");
+  EXPECT_FALSE(addrEmpty == ip4Zero);
+  EXPECT_FALSE(ip4Zero == addrEmpty);
+  IPAddress ip6Zero("::");
+  EXPECT_FALSE(addrEmpty == ip6Zero);
+  EXPECT_FALSE(ip6Zero == addrEmpty);
+  EXPECT_EQ(addrEmpty, addrEmpty);
 }
 
 // Test subnet calcs with 6to4 addresses

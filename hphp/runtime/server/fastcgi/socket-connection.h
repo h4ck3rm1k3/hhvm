@@ -21,7 +21,7 @@
 #include "thrift/lib/cpp/async/TAsyncTransport.h"
 #include "thrift/lib/cpp/transport/TSocketAddress.h"
 #include "thrift/lib/cpp/transport/TTransportException.h"
-#include "ti/proxygen/lib/services/ManagedConnection.h"
+#include "proxygen/lib/services/ManagedConnection.h"
 
 namespace HPHP {
 
@@ -45,7 +45,7 @@ public:
   virtual void dumpConnectionState(uint8_t loglevel);
 
   virtual bool shouldShutdown() { return false; }
-  void shutdownTransport();
+  void close();
 
 protected:
   apache::thrift::transport::TSocketAddress m_localAddr;

@@ -56,9 +56,10 @@ struct Resumable {
   }
 
   template <bool clone>
-  static void* Create(const ActRec* fp, size_t numSlots, JIT::TCA resumeAddr,
+  static void* Create(const ActRec* fp, size_t numSlots, jit::TCA resumeAddr,
                       Offset resumeOffset, size_t objSize) {
     assert(fp);
+    assert(fp->resumed() == clone);
     DEBUG_ONLY auto const func = fp->func();
     assert(func);
     assert(func->isResumable());
@@ -76,6 +77,9 @@ struct Resumable {
       auto src = (void *)((uintptr_t)fp - frameSize);
       memcpy(mem, src, frameSize + sizeof(ActRec));
 
+      // Set resumed flag.
+      actRec->setResumed();
+
       // Suspend VarEnv if needed
       if (UNLIKELY(fp->hasVarEnv())) {
         fp->getVarEnv()->suspend(fp, actRec);
@@ -85,9 +89,6 @@ struct Resumable {
       // caller will take care of copying locals, setting the VarEnv, etc.
       memcpy(actRec, fp, sizeof(ActRec));
     }
-
-    // Set resumed flag.
-    actRec->setResumed();
 
     // Populate Resumable.
     resumable->m_resumeAddr = resumeAddr;
@@ -99,14 +100,14 @@ struct Resumable {
   }
 
   ActRec* actRec() { return &m_actRec; }
-  JIT::TCA resumeAddr() const { return m_resumeAddr; }
+  jit::TCA resumeAddr() const { return m_resumeAddr; }
   Offset resumeOffset() const {
     assert(m_actRec.func()->contains(m_resumeOffset));
     return m_resumeOffset;
   }
   size_t size() const { return m_size; }
 
-  void setResumeAddr(JIT::TCA resumeAddr, Offset resumeOffset) {
+  void setResumeAddr(jit::TCA resumeAddr, Offset resumeOffset) {
     assert(m_actRec.func()->contains(resumeOffset));
     m_resumeAddr = resumeAddr;
     m_resumeOffset = resumeOffset;
@@ -124,14 +125,14 @@ private:
   ActRec m_actRec;
 
   // Resume address.
-  JIT::TCA m_resumeAddr;
+  jit::TCA m_resumeAddr;
 
   // Resume offset.
   Offset m_resumeOffset;
 
   // Size of the smart allocated memory that includes this resumable.
   int32_t m_size;
-} __attribute__((aligned(16)));
+} __attribute__((__aligned__(16)));
 
 static_assert(Resumable::arOff() == 0,
               "ActRec must be in the beginning of Resumable");

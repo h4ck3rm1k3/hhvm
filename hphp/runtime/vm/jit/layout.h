@@ -16,10 +16,9 @@
 #ifndef incl_HPHP_JIT_LAYOUT_H_
 #define incl_HPHP_JIT_LAYOUT_H_
 
-#include "hphp/runtime/base/smart-containers.h"
 #include "hphp/runtime/vm/jit/block.h"
 
-namespace HPHP { namespace JIT {
+namespace HPHP { namespace jit {
 
 //////////////////////////////////////////////////////////////////////
 

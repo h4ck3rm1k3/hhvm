@@ -191,9 +191,12 @@ module Full = struct
     )
 
   and fun_type st env o ft =
-    (match ft.ft_tparams with
-    | [] -> ()
-    | l -> o "<"; list_sep o ", " (tparam o) l; o ">");
+    (match ft.ft_tparams, ft.ft_arity with
+      | [], Fstandard _ -> ()
+      | [], _ -> o "<...>";
+      | l, Fstandard _ -> o "<"; list_sep o ", " (tparam o) l; o ">"
+      | l, _ -> o "<"; list_sep o ", " (tparam o) l; o "..."; o ">"
+    );
     o "("; list_sep o ", " (fun_param st env o) ft.ft_params; o "): ";
     ty st env o ft.ft_ret
 
@@ -247,6 +250,7 @@ module PrintClass = struct
     | Ast.Cnormal -> "Cnormal"
     | Ast.Cinterface -> "Cinterface"
     | Ast.Ctrait -> "Ctrait"
+    | Ast.Cenum -> "Cenum"
 
   let ty_opt = function
     | None -> ""
@@ -303,9 +307,12 @@ module PrintClass = struct
       "("^field^": expr) "^acc
     end m ""
 
-  let class_elt_option = function
-    | None -> ""
-    | Some ce -> class_elt ce
+  let constructor (ce_opt, consist) =
+    let consist_str = if consist then " (consistent in hierarchy)" else "" in
+    let ce_str = match ce_opt with
+      | None -> ""
+      | Some ce -> class_elt ce
+    in ce_str^consist_str
 
   let class_type c =
     let tc_need_init = bool c.tc_need_init in
@@ -320,11 +327,11 @@ module PrintClass = struct
     let tc_scvars = class_elt_smap c.tc_scvars in
     let tc_methods = class_elt_smap_with_breaks c.tc_methods in
     let tc_smethods = class_elt_smap_with_breaks c.tc_smethods in
-    let tc_construct = class_elt_option c.tc_construct in
+    let tc_construct = constructor c.tc_construct in
     let tc_ancestors = ancestors_smap c.tc_ancestors in
     let tc_ancestors_checked_when_concrete =
       ancestors_smap c.tc_ancestors_checked_when_concrete in
-    let tc_req_ancestors = sset c.tc_req_ancestors in
+    let tc_req_ancestors = ancestors_smap c.tc_req_ancestors in
     let tc_req_ancestors_extends = sset c.tc_req_ancestors_extends in
     let tc_extends = sset c.tc_extends in
     let tc_user_attributes = user_attribute_smap c.tc_user_attributes in
@@ -362,6 +369,12 @@ module PrintFun = struct
       | Some s -> s in
     s ^ " " ^ (Full.to_string tenv ty) ^ ", "
 
+  let farity = function
+    | Fstandard (min, max) -> Printf.sprintf "non-variadic: %d to %d" min max
+    | Fvariadic (min, _) ->
+      Printf.sprintf "variadic: ...$arg-style (PHP 5.6); min: %d" min
+    | Fellipsis min -> Printf.sprintf "variadic: ...-style (Hack); min: %d" min
+
   let fparams l =
     List.fold_right (fun x acc -> (fparam x)^acc) l ""
 
@@ -369,16 +382,14 @@ module PrintFun = struct
     let ft_pos = PrintClass.pos f.ft_pos in
     let ft_unsafe = bool f.ft_unsafe in
     let ft_abstract = bool f.ft_abstract in
-    let ft_arity_min = int f.ft_arity_min in
-    let ft_arity_max = int f.ft_arity_max in
+    let ft_arity = farity f.ft_arity in
     let ft_tparams = PrintClass.tparam_list f.ft_tparams in
     let ft_params = fparams f.ft_params in
     let ft_ret = Full.to_string tenv f.ft_ret in
     "ft_pos: "^ft_pos^"\n"^
     "ft_unsafe: "^ft_unsafe^"\n"^
     "ft_abstract: "^ft_abstract^"\n"^
-    "ft_arity_min: "^ft_arity_min^"\n"^
-    "ft_arity_max: "^ft_arity_max^"\n"^
+    "ft_arity: "^ft_arity^"\n"^
     "ft_tparams: "^ft_tparams^"\n"^
     "ft_params: "^ft_params^"\n"^
     "ft_ret: "^ft_ret^"\n"^

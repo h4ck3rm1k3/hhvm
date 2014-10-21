@@ -18,6 +18,7 @@
 #include "hphp/runtime/ext/asio/gen_array_wait_handle.h"
 
 #include "hphp/runtime/ext/ext_closure.h"
+#include "hphp/runtime/ext/asio/asio_blockable.h"
 #include "hphp/runtime/ext/asio/asio_context.h"
 #include "hphp/runtime/ext/asio/asio_session.h"
 #include <hphp/runtime/ext/asio/static_wait_handle.h>
@@ -45,7 +46,7 @@ void c_GenArrayWaitHandle::ti_setoncreatecallback(const Variant& callback) {
   AsioSession::Get()->setOnGenArrayCreateCallback(callback);
 }
 
-NEVER_INLINE __attribute__((noreturn))
+NEVER_INLINE __attribute__((__noreturn__))
 static void fail() {
   Object e(SystemLib::AllocInvalidArgumentExceptionObject(
     "Expected dependencies to be an array of WaitHandle instances"));
@@ -54,16 +55,14 @@ static void fail() {
 
 Object c_GenArrayWaitHandle::ti_create(const Array& inputDependencies) {
   Array depCopy(inputDependencies->copy());
-  if (UNLIKELY(depCopy->kind() > ArrayData::kMixedKind) &&
-      depCopy->kind() != ArrayData::kEmptyKind) {
+  if (UNLIKELY(depCopy->kind() > ArrayData::kEmptyKind)) {
     // The only array kind that can return a non-k{Packed,Mixed,Empty}Kind
     // from ->copy() is NameValueTableWrapper, which returns itself.
     // This is only for $GLOBALS, which is about to throw anyway since it
     // will fail the WaitHandle checks below.
     fail();
   }
-  assert(depCopy->kind() == ArrayData::kPackedKind ||
-         depCopy->kind() == ArrayData::kMixedKind ||
+  assert(depCopy->isPacked() || depCopy->isMixed() ||
          depCopy->kind() == ArrayData::kEmptyKind);
 
   if (depCopy->kind() == ArrayData::kEmptyKind) {
@@ -193,7 +192,7 @@ void c_GenArrayWaitHandle::onUnblocked() {
 
   m_iterPos = arrIter.currentPos();
 
-  auto const parentChain = getFirstParent();
+  auto parentChain = getParentChain();
   if (m_exception.isNull()) {
     setState(STATE_SUCCEEDED);
     cellDup(make_tv<KindOfArray>(m_deps.get()), m_resultOrException);
@@ -204,7 +203,7 @@ void c_GenArrayWaitHandle::onUnblocked() {
   }
 
   m_deps = nullptr;
-  UnblockChain(parentChain);
+  parentChain.unblock();
   decRefObj(this);
 }
 
@@ -223,7 +222,7 @@ void c_GenArrayWaitHandle::enterContextImpl(context_idx_t ctx_idx) {
 
   // recursively import current child
   {
-    assert(m_iterPos != ArrayData::invalid_index);
+    assert(m_iterPos != m_deps->iter_end());
     auto const current = tvAssertCell(
       m_deps->getValueRef(m_iterPos).asTypedValue());
 
@@ -238,8 +237,9 @@ void c_GenArrayWaitHandle::enterContextImpl(context_idx_t ctx_idx) {
 
   // try to import other children
   try {
-    for (ssize_t iter_pos = m_deps->iter_advance(m_iterPos);
-         iter_pos != ArrayData::invalid_index;
+    auto iter_limit = m_deps->iter_end();
+    for (size_t iter_pos = m_deps->iter_advance(m_iterPos);
+         iter_pos != iter_limit;
          iter_pos = m_deps->iter_advance(iter_pos)) {
 
       auto const current = tvAssertCell(

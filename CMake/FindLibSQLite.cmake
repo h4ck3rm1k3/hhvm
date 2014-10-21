@@ -8,12 +8,20 @@
 find_package(PkgConfig)
 pkg_check_modules(PC_SQLITE3 QUIET sqlite3)
 
-find_path(LIBSQLITE3_INCLUDE_DIR
-    NAMES sqlite3.h
-    HINTS ${PC_SQLITE3_INCLUDE_DIRS})
+if (PC_SQLITE3_FOUND AND (PC_SQLITE3_VERSION VERSION_LESS "3.8.6" AND
+                          NOT (PC_SQLITE3_VERSION VERSION_LESS "3.8.4")))
+  set(LIBSQLITE3_FOUND 0)
+  set(LIBSQLITE3_INCLUDE_DIR "LIBSQLITE3_INCLUDE_DIR-NOTFOUND")
+  set(LIBSQLITE3_LIBRARY "LIBSQLITE3_LIBRARY-NOTFOUND")
+else()
+  find_path(LIBSQLITE3_INCLUDE_DIR
+            NAMES sqlite3.h
+            HINTS ${PC_SQLITE3_INCLUDE_DIRS})
 
-find_library(LIBSQLITE3_LIBRARY
-    NAMES sqlite3)
+    find_library(LIBSQLITE3_LIBRARY
+                 NAMES sqlite3)
+endif (PC_SQLITE3_FOUND AND (PC_SQLITE3_VERSION VERSION_LESS "3.8.6" AND
+                             NOT (PC_SQLITE3_VERSION VERSION_LESS "3.8.4")))
 
 include(FindPackageHandleStandardArgs)
 FIND_PACKAGE_HANDLE_STANDARD_ARGS(

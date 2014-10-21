@@ -86,13 +86,14 @@ type token =
   | Tdecr
   | Tunderscore
   | Trequired
-  | Topt_args
+  | Tellipsis
   | Tdollar
   | Tpercent
   | Teof
   | Tquote
   | Tdquote
   | Tunsafe
+  | Tunsafeexpr
   | Tfallthrough
   | Theredoc
   | Txhpname
@@ -132,7 +133,7 @@ let yyback n lexbuf =
   Lexing.(
   lexbuf.lex_curr_pos <- lexbuf.lex_curr_pos - n;
   let currp = lexbuf.lex_curr_p in
-  lexbuf.lex_curr_p <- 
+  lexbuf.lex_curr_p <-
     { currp with pos_cnum = currp.pos_cnum - n }
  )
 
@@ -199,7 +200,7 @@ let token_to_string = function
   | Tincr         -> "++"
   | Tdecr         -> "--"
   | Tunderscore   -> "_"
-  | Topt_args     -> "..."
+  | Tellipsis     -> "..."
   | Tdollar       -> "$"
   | Tpercent      -> "%"
   | Tquote        -> "'"
@@ -233,6 +234,7 @@ let token_to_string = function
   | Txhpname      -> "xhpname"
   | Terror        -> "error"
   | Tunsafe       -> "unsafe"
+  | Tunsafeexpr   -> "unsafeexpr"
   | Tfallthrough  -> "fallthrough"
   | Tnewline      -> "newline"
   | Tany          -> "any"
@@ -268,12 +270,22 @@ let float =
   (digit+ ('.' digit*) ((('e'|'E') ('+'?|'-') digit+))?) |
   (digit+ ('e'|'E') ('+'?|'-') digit+)
 let unsafe = "//" ws* "UNSAFE" [^'\n']*
+let unsafeexpr_start = "/*" ws* "UNSAFE_EXPR"
 let fallthrough = "//" ws* "FALLTHROUGH" [^'\n']*
 
 rule token = parse
   (* ignored *)
   | ws+                { token lexbuf }
   | '\n'               { Lexing.new_line lexbuf; token lexbuf }
+  | unsafeexpr_start   { let buf = Buffer.create 256 in
+                         let start = lexbuf.Lexing.lex_start_p in
+                         ignore (comment buf lexbuf);
+                         (* unsafeexpr is technically made up of multiple
+                          * tokens, but we want to treat it as a single token
+                          * as far as start / end positions are concerned *)
+                         lexbuf.Lexing.lex_start_p <- start;
+                         Tunsafeexpr
+                       }
   | "/*"               { let buf = Buffer.create 256 in
                          comment_list := comment buf lexbuf :: !comment_list;
                          token lexbuf
@@ -346,7 +358,7 @@ rule token = parse
   | "--"               { Tdecr        }
   | "_"                { Tunderscore  }
   | "@required"        { Trequired    }
-  | "..."              { Topt_args    }
+  | "..."              { Tellipsis    }
   | unsafe             { Tunsafe      }
   | fallthrough        { Tfallthrough }
   | eof                { Teof         }
@@ -496,22 +508,6 @@ and header = parse
   | "<?php"                     { `php_mode }
   | _                           { `error }
 
-and ignore_body = parse
-  | eof                { Teof }
-  | ws+                { ignore_body lexbuf }
-  | '\n'               { Lexing.new_line lexbuf; ignore_body lexbuf }
-  | "//"               { line_comment lexbuf; ignore_body lexbuf }
-  | "/*"               { ignore (comment (Buffer.create 256) lexbuf);
-                         ignore_body lexbuf }
-  | '{'                { Tlcb }
-  | '}'                { Trcb }
-  | '''                { Tquote }
-  | '\"'               { Tdquote }
-  | "<<<"              { Theredoc }
-  | '<'                { Tlt }
-  | word               { Tword }
-  | _                  { ignore_body lexbuf }
-
 and next_newline_or_close_cb = parse
   | eof                { () }
   | '\n'               { Lexing.new_line lexbuf }
@@ -596,7 +592,7 @@ and format_token = parse
   | "++"               { Tincr         }
   | "--"               { Tdecr         }
   | "_"                { Tunderscore   }
-  | "..."              { Topt_args     }
+  | "..."              { Tellipsis     }
   | eof                { Teof          }
   | _                  { Terror        }
 

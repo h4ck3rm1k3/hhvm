@@ -47,8 +47,7 @@
 // Include last to localize effects to this file
 #include "hphp/util/assert-throw.h"
 
-namespace HPHP {
-namespace JIT {
+namespace HPHP { namespace jit {
 
 using namespace reg;
 using namespace Trace;
@@ -64,32 +63,29 @@ TRACE_SET_MOD(hhir);
 
 #define HHIR_UNIMPLEMENTED_OP(op)                       \
   do {                                                  \
-    throw JIT::FailedIRGen(__FILE__, __LINE__, op);     \
+    throw jit::FailedIRGen(__FILE__, __LINE__, op);     \
   } while (0)
 
 
 #define HHIR_UNIMPLEMENTED(op)                          \
   do {                                                  \
-    throw JIT::FailedIRGen(__FILE__, __LINE__, #op);    \
+    throw jit::FailedIRGen(__FILE__, __LINE__, #op);    \
   } while (0)
 
 #define HHIR_UNIMPLEMENTED_WHEN(expr, op)               \
   do {                                                  \
     if (expr) {                                         \
-      throw JIT::FailedIRGen(__FILE__, __LINE__, #op);  \
+      throw jit::FailedIRGen(__FILE__, __LINE__, #op);  \
     }                                                   \
   } while (0)
 
 static JmpFlags instrJmpFlags(const NormalizedInstruction& ni) {
   JmpFlags flags = JmpFlagNone;
-  if (ni.breaksTracelet) {
-    flags = flags | JmpFlagBreakTracelet;
+  if (ni.endsRegion) {
+    flags = flags | JmpFlagEndsRegion;
   }
   if (ni.nextIsMerge) {
     flags = flags | JmpFlagNextIsMerge;
-  }
-  if (ni.includeBothPaths) {
-    flags = flags | JmpFlagBothPaths;
   }
   return flags;
 }
@@ -179,26 +175,27 @@ IRTranslator::translateBranchOp(const NormalizedInstruction& i) {
 
   Offset takenOffset    = i.offset() + i.imm[0].u_BA;
   Offset fallthruOffset = i.offset() + instrLen((Op*)(i.pc()));
-  assert(!i.includeBothPaths || !i.breaksTracelet);
 
   auto jmpFlags = instrJmpFlags(i);
-  if (i.breaksTracelet || i.nextOffset == fallthruOffset) {
+
+  if (i.nextOffset == takenOffset) {
+    // invert the branch
     if (op == OpJmpZ) {
-      HHIR_EMIT(JmpZ,  takenOffset, fallthruOffset, jmpFlags);
+      HHIR_EMIT(JmpNZ, fallthruOffset, jmpFlags);
     } else {
-      HHIR_EMIT(JmpNZ, takenOffset, fallthruOffset, jmpFlags);
+      HHIR_EMIT(JmpZ,  fallthruOffset, jmpFlags);
+    }
+    if (i.nextOffset != takenOffset) {
+      always_assert(RuntimeOption::EvalJitPGORegionSelector == "wholecfg");
+      HHIR_EMIT(Jmp, takenOffset, jmpFlags);
     }
     return;
   }
-  // invert the branch
+
   if (op == OpJmpZ) {
-    HHIR_EMIT(JmpNZ, fallthruOffset, takenOffset, jmpFlags);
+    HHIR_EMIT(JmpZ,  takenOffset, jmpFlags);
   } else {
-    HHIR_EMIT(JmpZ,  fallthruOffset, takenOffset, jmpFlags);
-  }
-  if (i.nextOffset != takenOffset) {
-    always_assert(RuntimeOption::EvalJitPGORegionSelector == "wholecfg");
-    HHIR_EMIT(Jmp, takenOffset, jmpFlags);
+    HHIR_EMIT(JmpNZ, takenOffset, jmpFlags);
   }
 }
 
@@ -212,39 +209,6 @@ IRTranslator::translateAssignToLocalOp(const NormalizedInstruction& ni) {
   } else {
     HHIR_EMIT(BindL, ni.imm[0].u_LA);
   }
-}
-
-void
-IRTranslator::translateUnboxR(const NormalizedInstruction& i) {
-  if (i.noOp) {
-    // statically proved to be unboxed -- just pass that info to the IR
-    TRACE(1, "HHIR: translateUnboxR: output inferred to be Cell\n");
-    m_hhbcTrans.assertTypeStack(0, JIT::Type::Cell);
-  } else {
-    HHIR_EMIT(UnboxR);
-  }
-}
-
-void IRTranslator::translateUnboxRNop(const NormalizedInstruction& i) {
-  TRACE(1, "HHIR: translateUnboxR: output inferred to be Cell\n");
-  assert(i.noOp);
-  m_hhbcTrans.assertTypeStack(0, JIT::Type::Cell);
-}
-
-void
-IRTranslator::translateBoxR(const NormalizedInstruction& i) {
-  if (i.noOp) {
-    // statically proved to be unboxed -- just pass that info to the IR
-    TRACE(1, "HHIR: translateBoxR: output inferred to be Box\n");
-    m_hhbcTrans.assertTypeStack(0, JIT::Type::BoxedCell);
-  } else {
-    HHIR_UNIMPLEMENTED(BoxR);
-  }
-}
-
-void IRTranslator::translateBoxRNop(const NormalizedInstruction& i) {
-  assert(i.noOp);
-  m_hhbcTrans.assertTypeStack(0, JIT::Type::BoxedCell);
 }
 
 void
@@ -455,31 +419,24 @@ void IRTranslator::translateDefCls(const NormalizedInstruction& i) {
   HHIR_EMIT(DefCls, cid, i.source.offset());
 }
 
-void IRTranslator::translateNopDefCls(const NormalizedInstruction&) {}
-
 void
 IRTranslator::translateFPassCOp(const NormalizedInstruction& i) {
   auto const op = i.op();
-  if (i.noOp) return;
-  if (i.preppedByRef && (op == OpFPassCW || op == OpFPassCE)) {
-    // These cases might have to raise a warning or an error
-    HHIR_UNIMPLEMENTED(FPassCW_FPassCE_byref);
-  } else {
-    HHIR_EMIT(FPassCOp);
-  }
+  always_assert(op == OpFPassCW || op == OpFPassCE);
+
+  // These cases might have to raise a warning or an error
+  HHIR_UNIMPLEMENTED_WHEN(i.preppedByRef, FPassCW_FPassCE_byref);
+
+  // Nothing to do otherwise.
 }
 
 void
 IRTranslator::translateFPassV(const NormalizedInstruction& i) {
-  if (i.preppedByRef || i.noOp) {
+  if (i.preppedByRef) {
     TRACE(1, "HHIR: translateFPassV: noOp\n");
     return;
   }
   HHIR_EMIT(FPassV);
-}
-
-void IRTranslator::translateFPassVNop(const NormalizedInstruction& i) {
-  assert(i.noOp);
 }
 
 void
@@ -512,227 +469,7 @@ IRTranslator::translateFCallBuiltin(const NormalizedInstruction& i) {
   Id funcId = i.imm[2].u_SA;
 
   HHIR_EMIT(FCallBuiltin, numArgs, numNonDefault, funcId,
-            JIT::callDestroysLocals(i, m_hhbcTrans.curFunc()));
-}
-
-static bool isInlinableCPPBuiltin(const Func* f) {
-  if (f->attrs() & AttrNoFCallBuiltin ||
-      f->numParams() > Native::maxFCallBuiltinArgs() ||
-      !f->nativeFuncPtr()) {
-    return false;
-  }
-  if (f->returnType() == KindOfDouble && !Native::allowFCallBuiltinDoubles()) {
-    return false;
-  }
-  if (auto const info = f->methInfo()) {
-    if (info->attribute & (ClassInfo::NoFCallBuiltin |
-                           ClassInfo::VariableArguments |
-                           ClassInfo::RefVariableArguments |
-                           ClassInfo::MixedVariableArguments)) {
-      return false;
-    }
-    // Note: there is no need for a similar-to-the-above check for HNI
-    // builtins---they'll just have a nullptr nativeFuncPtr (if they
-    // were declared as needing an ActRec).
-  }
-
-  // Don't do this for things which require this pointer adjustments
-  // for now.
-  if (f->cls() && f->cls()->preClass()->builtinODOffset() != 0) {
-    return false;
-  }
-
-  /*
-   * Right now the IR isn't prepared to do parameter coercing during
-   * an inlining of NativeImpl for any of our param modes.  We'll want
-   * to expand this in the short term, but for now we're targeting
-   * collection member functions, which are a) idl-based (so no hni
-   * support here yet), and b) take const Variant&'s for every param.
-   *
-   * So for now, we only inline cases where the params are Variants.
-   */
-  for (auto i = uint32_t{0}; i < f->numParams(); ++i) {
-    if (f->params()[i].builtinType != KindOfUnknown) {
-      if (f->isParamCoerceMode()) return false;
-    }
-  }
-
-  return true;
-}
-
-// Conservative whitelist for hhbc opcodes we know are safe to inline,
-// even if the entire callee body required a AttrMayUseVV.  This
-// affects cases where we're able to eliminate control flow while
-// inlining due to the parameter types, and the AttrMayUseVV flag was
-// due to something happening in a block we won't inline.
-static bool isInliningVVSafe(Op op) {
-  switch (op) {
-  case Op::Null:
-  case Op::AssertRATL:
-  case Op::AssertRATStk:
-  case Op::SetL:
-  case Op::CGetL:
-  case Op::PopC:
-  case Op::JmpNS:
-  case Op::JmpNZ:
-  case Op::JmpZ:
-  case Op::VerifyParamType:
-  case Op::VerifyRetTypeC:
-  case Op::IsTypeL:
-  case Op::RetC:
-    return true;
-  default:
-    break;
-  }
-  return false;
-}
-
-bool shouldIRInline(const Func* caller, const Func* callee, RegionIter& iter) {
-  if (!RuntimeOption::EvalHHIREnableGenTimeInlining) {
-    return false;
-  }
-  if (arch() == Arch::ARM) {
-    // TODO(#3331014): hack until more ARM codegen is working.
-    return false;
-  }
-  if (caller->isPseudoMain()) {
-    // TODO(#4238160): Hack inlining into pseudomain callsites is still buggy
-    return false;
-  }
-
-  auto refuse = [&](const char* why) -> bool {
-    FTRACE(1, "shouldIRInline: refusing {} <reason: {}> [NI = {}]\n",
-           callee->fullName()->data(), why,
-           iter.finished() ? "<end>" : iter.sk().showInst());
-    return false;
-  };
-  auto accept = [&](const char* kind) -> bool {
-    FTRACE(1, "shouldIRInline: inlining {} <kind: {}>\n",
-           callee->fullName()->data(), kind);
-    return true;
-  };
-
-  if (callee->isCPPBuiltin() &&
-      static_cast<Op>(*callee->getEntry()) == Op::NativeImpl) {
-    if (isInlinableCPPBuiltin(callee)) {
-      return accept("inlinable CPP builtin");
-    }
-    return refuse("non-inlinable CPP builtin");
-  }
-
-  // If the function may use a varenv or may be variadic, we only
-  // support certain whitelisted instructions which we know won't
-  // actually require this.
-  bool const needCheckVVSafe = callee->attrs() & AttrMayUseVV;
-
-  if (callee->numIterators() != 0) {
-    return refuse("iterators");
-  }
-  if (callee->isMagic() || Func::isSpecial(callee->name())) {
-    return refuse("special or magic function");
-  }
-  if (callee->isResumable()) {
-    return refuse("resumables");
-  }
-  if (callee->maxStackCells() >= kStackCheckLeafPadding) {
-    return refuse("function stack depth too deep");
-  }
-  if (callee->isMethod() && callee->cls() == c_Generator::classof()) {
-    return refuse("Generator member function");
-  }
-
-  ////////////
-
-  /*
-   * Note: this code contains a stack of Func*'s and looks like it's
-   * trying to track multi-level inlining of calls, but it doesn't
-   * ever happen if you are using a Tracelet that came from analyze().
-   *
-   * Don't rely on it for correctness.
-   */
-  assert(!iter.finished() && "shouldIRInline given empty region");
-  const bool hotCallingCold = !(callee->attrs() & AttrHot) &&
-                               (caller->attrs() & AttrHot);
-  uint64_t cost = 0;
-  int inlineDepth = 0;
-  auto op = Op::LowInvalid;
-  smart::vector<const Func*> funcs;
-  auto func = callee;
-  funcs.push_back(func);
-
-  for (; !iter.finished(); iter.advance()) {
-    // If func has changed after an FCall, we've started an inlined call. This
-    // will have to change when we support inlining recursive calls.
-    if (func != iter.sk().func()) {
-      assert(isRet(op) || op == Op::NativeImpl ||
-             op == Op::FCall || op == Op::FCallD);
-      if (op == Op::FCall || op == Op::FCallD) {
-        funcs.push_back(iter.sk().func());
-        int totalDepth = 0;
-        for (auto* f : funcs) {
-          totalDepth += f->maxStackCells();
-        }
-        if (totalDepth >= kStackCheckLeafPadding) {
-          // NB: for correctness a situation like this /must/ also be
-          // refused earlier in analyzeCallee if you are using a
-          // Tracelet---this code is not going to run if 'iter' is a
-          // TraceletIter.
-          return refuse("stack too deep after nested inlining");
-        }
-        ++inlineDepth;
-      }
-    }
-    op = iter.sk().op();
-    func = iter.sk().func();
-
-    if (needCheckVVSafe && !isInliningVVSafe(op)) {
-      FTRACE(2, "shouldIRInline: {} is not VV safe\n", opcodeToName(op));
-      return refuse("may use dynamic environment");
-    }
-
-    // If we hit a RetC/V while inlining, leave that level and
-    // continue. Otherwise, accept the tracelet.
-    if (isRet(op) || op == Op::NativeImpl) {
-      if (inlineDepth > 0) {
-        --inlineDepth;
-        funcs.pop_back();
-        continue;
-      } else {
-        assert(inlineDepth == 0);
-        return accept("entire function fits in one region");
-      }
-    }
-
-    if (op == Op::FCallArray) return refuse("FCallArray");
-
-    // These opcodes don't indicate any additional work in the callee,
-    // so they shouldn't count toward the inlining cost.
-    if (op == Op::AssertRATL || op == Op::AssertRATStk) {
-      continue;
-    }
-
-    cost += 1;
-
-    // Check for an immediate vector, and if it's present add its size to the
-    // cost.
-    auto const pc = reinterpret_cast<const Op*>(iter.sk().pc());
-    if (hasMVector(op)) {
-      cost += getMVector(pc).size();
-    } else if (hasImmVector(op)) {
-      cost += getImmVector(pc).size();
-    }
-
-    if (cost > RuntimeOption::EvalHHIRInliningMaxCost) {
-      return refuse("too expensive");
-    }
-
-    if (cost > RuntimeOption::EvalHHIRAlwaysInlineMaxCost &&
-        hotCallingCold) {
-      return refuse("inlining sizeable cold func into hot func");
-    }
-  }
-
-  return refuse("region doesn't end in RetC/RetV");
+            jit::callDestroysLocals(i, m_hhbcTrans.curFunc()));
 }
 
 void
@@ -745,7 +482,7 @@ IRTranslator::translateFCall(const NormalizedInstruction& i) {
     srcFunc->unit()->offsetOf(after - srcFunc->base());
 
   HHIR_EMIT(FCall, numArgs, returnBcOffset, i.funcd,
-            JIT::callDestroysLocals(i, m_hhbcTrans.curFunc()));
+            jit::callDestroysLocals(i, m_hhbcTrans.curFunc()));
 }
 
 void IRTranslator::translateFCallD(const NormalizedInstruction& i) {
@@ -759,7 +496,7 @@ IRTranslator::translateFCallArray(const NormalizedInstruction& i) {
   const Offset after = next.offset();
 
   HHIR_EMIT(FCallArray, pcOffset, after,
-            JIT::callDestroysLocals(i, m_hhbcTrans.curFunc()));
+            jit::callDestroysLocals(i, m_hhbcTrans.curFunc()));
 }
 
 void
@@ -789,7 +526,7 @@ static Offset getBranchTarget(const NormalizedInstruction& i,
   Offset targetOffset = i.offset() + i.imm[1].u_BA;
   invertCond = false;
 
-  if (!i.breaksTracelet && i.nextOffset == targetOffset) {
+  if (!i.endsRegion && i.nextOffset == targetOffset) {
     invertCond = true;
     Offset fallthruOffset = i.offset() + instrLen((Op*)i.pc());
     targetOffset = fallthruOffset;
@@ -807,7 +544,8 @@ IRTranslator::translateIterInit(const NormalizedInstruction& i) {
             i.imm[0].u_IVA,
             targetOffset,
             i.imm[2].u_IVA,
-            invertCond);
+            invertCond,
+            instrJmpFlags(i));
 }
 
 void
@@ -820,7 +558,8 @@ IRTranslator::translateIterInitK(const NormalizedInstruction& i) {
             targetOffset,
             i.imm[2].u_IVA,
             i.imm[3].u_IVA,
-            invertCond);
+            invertCond,
+            instrJmpFlags(i));
 }
 
 void
@@ -832,7 +571,8 @@ IRTranslator::translateIterNext(const NormalizedInstruction& i) {
             i.imm[0].u_IVA,
             targetOffset,
             i.imm[2].u_IVA,
-            invertCond);
+            invertCond,
+            instrJmpFlags(i));
 }
 
 void
@@ -845,7 +585,8 @@ IRTranslator::translateIterNextK(const NormalizedInstruction& i) {
             targetOffset,
             i.imm[2].u_IVA,
             i.imm[3].u_IVA,
-            invertCond);
+            invertCond,
+            instrJmpFlags(i));
 }
 
 void
@@ -853,7 +594,8 @@ IRTranslator::translateMIterInit(const NormalizedInstruction& i) {
   HHIR_EMIT(MIterInit,
             i.imm[0].u_IVA,
             i.offset() + i.imm[1].u_BA,
-            i.imm[2].u_IVA);
+            i.imm[2].u_IVA,
+            instrJmpFlags(i));
 }
 
 void
@@ -862,7 +604,8 @@ IRTranslator::translateMIterInitK(const NormalizedInstruction& i) {
             i.imm[0].u_IVA,
             i.offset() + i.imm[1].u_BA,
             i.imm[2].u_IVA,
-            i.imm[3].u_IVA);
+            i.imm[3].u_IVA,
+            instrJmpFlags(i));
 }
 
 void
@@ -871,7 +614,8 @@ IRTranslator::translateMIterNext(const NormalizedInstruction& i) {
   HHIR_EMIT(MIterNext,
             i.imm[0].u_IVA,
             i.offset() + i.imm[1].u_BA,
-            i.imm[2].u_IVA);
+            i.imm[2].u_IVA,
+            instrJmpFlags(i));
 }
 
 void
@@ -881,7 +625,8 @@ IRTranslator::translateMIterNextK(const NormalizedInstruction& i) {
             i.imm[0].u_IVA,
             i.offset() + i.imm[1].u_BA,
             i.imm[2].u_IVA,
-            i.imm[3].u_IVA);
+            i.imm[3].u_IVA,
+            instrJmpFlags(i));
 }
 
 void
@@ -893,7 +638,8 @@ IRTranslator::translateWIterInit(const NormalizedInstruction& i) {
             i.imm[0].u_IVA,
             targetOffset,
             i.imm[2].u_IVA,
-            invertCond);
+            invertCond,
+            instrJmpFlags(i));
 }
 
 void
@@ -906,7 +652,8 @@ IRTranslator::translateWIterInitK(const NormalizedInstruction& i) {
             targetOffset,
             i.imm[2].u_IVA,
             i.imm[3].u_IVA,
-            invertCond);
+            invertCond,
+            instrJmpFlags(i));
 }
 
 void
@@ -918,7 +665,8 @@ IRTranslator::translateWIterNext(const NormalizedInstruction& i) {
             i.imm[0].u_IVA,
             targetOffset,
             i.imm[2].u_IVA,
-            invertCond);
+            invertCond,
+            instrJmpFlags(i));
 }
 
 void
@@ -931,20 +679,22 @@ IRTranslator::translateWIterNextK(const NormalizedInstruction& i) {
             targetOffset,
             i.imm[2].u_IVA,
             i.imm[3].u_IVA,
-            invertCond);
+            invertCond,
+            instrJmpFlags(i));
 }
 
 void
 IRTranslator::translateIterBreak(const NormalizedInstruction& i) {
 
-  assert(i.breaksTracelet);
-  HHIR_EMIT(IterBreak, i.immVec, i.offset() + i.imm[1].u_BA, i.breaksTracelet);
+  assert(i.endsRegion);
+  HHIR_EMIT(IterBreak, i.immVec, i.offset() + i.imm[1].u_BA, i.endsRegion);
 }
 
 void
 IRTranslator::translateDecodeCufIter(const NormalizedInstruction& i) {
 
-  HHIR_EMIT(DecodeCufIter, i.imm[0].u_IVA, i.offset() + i.imm[1].u_BA);
+  HHIR_EMIT(DecodeCufIter, i.imm[0].u_IVA, i.offset() + i.imm[1].u_BA,
+            instrJmpFlags(i));
 }
 
 bool
@@ -1160,7 +910,7 @@ static Type flavorToType(FlavorDesc f) {
 void IRTranslator::translateInstr(const NormalizedInstruction& ni) {
   auto& ht = m_hhbcTrans;
   ht.setBcOff(ni.source.offset(),
-              ni.breaksTracelet && !m_hhbcTrans.isInlining());
+              ni.endsRegion && !m_hhbcTrans.isInlining());
   FTRACE(1, "\n{:-^60}\n", folly::format("Translating {}: {} with stack:\n{}",
                                          ni.offset(), ni.toString(),
                                          ht.showStack()));
@@ -1179,7 +929,9 @@ void IRTranslator::translateInstr(const NormalizedInstruction& ni) {
     ht.emitDbgAssertRetAddr();
   }
 
-  if (instrMustInterp(ni) || ni.interp) {
+  if (isAlwaysNop(ni.op())) {
+    // Do nothing
+  } else if (instrMustInterp(ni) || ni.interp) {
     interpretInstr(ni);
   } else {
     translateInstrWork(ni);

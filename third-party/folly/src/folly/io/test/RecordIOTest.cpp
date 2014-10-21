@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-#include "folly/io/RecordIO.h"
+#include <folly/io/RecordIO.h>
 
 #include <sys/types.h>
 #include <unistd.h>
@@ -25,11 +25,11 @@
 #include <glog/logging.h>
 #include <gtest/gtest.h>
 
-#include "folly/Conv.h"
-#include "folly/FBString.h"
-#include "folly/Random.h"
-#include "folly/experimental/TestUtil.h"
-#include "folly/io/IOBufQueue.h"
+#include <folly/Conv.h>
+#include <folly/FBString.h>
+#include <folly/Random.h>
+#include <folly/experimental/TestUtil.h>
+#include <folly/io/IOBufQueue.h>
 
 DEFINE_int32(random_seed, folly::randomNumberSeed(), "random seed");
 
@@ -267,6 +267,6 @@ TEST(RecordIOTest, Randomized) {
 
 int main(int argc, char *argv[]) {
   testing::InitGoogleTest(&argc, argv);
-  google::ParseCommandLineFlags(&argc, &argv, true);
+  gflags::ParseCommandLineFlags(&argc, &argv, true);
   return RUN_ALL_TESTS();
 }

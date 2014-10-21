@@ -26,33 +26,52 @@
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
 
+/**
+ * Normalizes hdf string names to their ini counterparts
+ *
+ * We have special handling for a few hdf strings such as those containing
+ * MySQL, Eval, IPv[4|6] and EnableHipHopSyntax
+ */
 static std::string normalize(const std::string &name) {
-  std::string out = "";
-  bool start = true;
-  bool supress_next_underscore = false;
+  std::string out = ".";
+  size_t idx = 0;
   for (auto &c : name) {
-    if (start) {
-      out += ".";
+    // This is the first or last character
+    if (idx == 0 || idx == name.length() - 1) {
       out += tolower(c);
-      start = false;
-      supress_next_underscore = true;
     } else if (!isalpha(c)) {
+      // Any . or _ or numeral is just output with no special behavior
       out += c;
-      supress_next_underscore = true;
-    } else if (isupper(c)) {
-      if (!supress_next_underscore) {
-        out += "_";
-      }
-      out += tolower(c);
-      supress_next_underscore = true;
     } else {
-      out += c;
-      supress_next_underscore = false;
+      if (isupper(c) && isupper(name[idx - 1 ]) && islower(name[idx + 1])) {
+      // Handle something like "SSLPort", and c = "P", which will then put
+      // the underscore between the "L" and "P"
+        out += "_";
+        out += tolower(c);
+      } else if (islower(c) && isupper(name[idx + 1])) {
+      // Handle something like "PathDebug", and c = "h", which will then put
+      // the underscore between the "h" and "D"
+        out += tolower(c);
+        out += "_";
+      } else {
+      // Otherwise we just output as lower
+        out += tolower(c);
+      }
     }
+    idx++;
   }
+
+  // Make sure IPv6 or IPv4 are handled correctly
+  boost::replace_first(out, "_i_pv", "_ipv");
+  boost::replace_first(out, ".i_pv", ".ipv");
+  // urls are special too. Let's not have "ur_ls"
+  boost::replace_first(out, "_ur_ls", "_urls");
+  boost::replace_first(out, ".ur_ls", ".urls");
+  // No use of Eval in our ini strings
   boost::replace_first(out, ".eval.", ".");
   boost::replace_first(out, ".my_sql.", ".mysql.");
   boost::replace_first(out, ".enable_hip_hop_syntax", ".force_hh");
+
   return out;
 }
 
@@ -73,7 +92,6 @@ void Config::Parse(const std::string &config, IniSetting::Map &ini, Hdf &hdf) {
     hdf.append(config);
   }
 }
-
 
 const char* Config::Get(const IniSetting::Map &ini, const Hdf& config,
                          const char *defValue /* = nullptr */) {
@@ -102,6 +120,17 @@ void Config::Bind(T& loc, const IniSetting::Map &ini, const Hdf& config, \
   loc = Get##METHOD(ini, config, defValue); \
   IniSetting::Bind(IniSetting::CORE, IniSetting::PHP_INI_SYSTEM, \
                    IniName(config), &loc); \
+} \
+void Config::Bind(T& loc, const IniSetting::Map &ini, std::string name, \
+                  const T defValue /* = 0ish */) { \
+  auto* value = ini.get_ptr(name); \
+  if (value && value->isString()) { \
+    ini_on_update(value->data(), loc); \
+  } else { \
+    loc = defValue; \
+  } \
+  IniSetting::Bind(IniSetting::CORE, IniSetting::PHP_INI_SYSTEM, \
+                   name, &loc); \
 }
 
 CONFIG_BODY(bool, Bool)
@@ -138,6 +167,26 @@ void Config::Bind(HackStrictOption& loc, const IniSettingMap& ini,
   // Currently this doens't bind to ini_get since it is hard to thread through
   // an enum
   loc = GetHackStrictOption(ini, config);
+}
+
+void Config::Bind(std::vector<std::string>& loc, const IniSettingMap& ini,
+                  const Hdf& config) {
+  std::vector<std::string> ret;
+  auto ini_name = IniName(config);
+  auto* value = ini.get_ptr(ini_name);
+  if (value && value->isObject()) {
+    ini_on_update(*value, ret);
+    loc = ret;
+  }
+  // If there is an HDF setting for the config, then it still wins for
+  // the RuntimeOption value until we obliterate HDFs
+  ret.clear();
+  config.configGet(ret);
+  if (ret.size() > 0) {
+    loc = ret;
+  }
+  IniSetting::Bind(IniSetting::CORE, IniSetting::PHP_INI_SYSTEM, ini_name,
+                   &loc);
 }
 
 }

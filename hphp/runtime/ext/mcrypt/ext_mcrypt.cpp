@@ -17,6 +17,7 @@
 
 #include "hphp/runtime/base/base-includes.h"
 #include "hphp/runtime/base/runtime-error.h"
+#include "hphp/runtime/ext/ext_math.h"
 
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -131,15 +132,15 @@ static Variant php_mcrypt_do_crypt(const String& cipher, const String& key,
   if (mcrypt_enc_mode_has_iv(td) == 1) {
     if (!iv.empty()) {
       if (iv_size != iv.size()) {
-        raise_warning("mcrypt_encrypt(): The IV parameter must be as long as "
-                      "the blocksize");
+        raise_warning("%s(): The IV parameter must be as long as "
+                      "the blocksize", name);
       } else {
         iv_s = (char*)malloc(iv_size + 1);
         memcpy(iv_s, iv.data(), iv_size);
       }
     } else {
-      raise_warning("mcrypt_encrypt(): The IV parameter must be as long as "
-                    "the blocksize");
+      raise_warning("%s(): The IV parameter must be as long as "
+                    "the blocksize", name);
       iv_s = (char*)malloc(iv_size + 1);
       memset(iv_s, 0, iv_size + 1);
     }
@@ -376,7 +377,8 @@ Variant HHVM_FUNCTION(mcrypt_create_iv, int size, int source /* = 0 */) {
   } else {
     n = size;
     while (size) {
-      iv[--size] = (char)(255.0 * rand() / RAND_MAX);
+      // Use userspace rand() function because it handles auto-seeding
+      iv[--size] = (char)f_rand(0, 255);
     }
   }
   return String(iv, n, AttachString);

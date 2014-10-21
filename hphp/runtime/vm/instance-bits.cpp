@@ -23,6 +23,7 @@
 #include "folly/ScopeGuard.h"
 #include "folly/MapUtil.h"
 
+#include "hphp/util/lock.h"
 #include "hphp/util/trace.h"
 #include "hphp/runtime/base/complex-types.h"
 #include "hphp/runtime/vm/class.h"
@@ -77,7 +78,7 @@ void profile(const StringData* name) {
 }
 
 void init() {
-  assert(JIT::Translator::WriteLease().amOwner());
+  assert(jit::Translator::WriteLease().amOwner());
   if (initFlag.load(std::memory_order_acquire)) return;
 
   s_currentlyInitializing = true;

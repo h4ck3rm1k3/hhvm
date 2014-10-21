@@ -14,8 +14,8 @@
  * limitations under the License.
  */
 
-#include "folly/FileUtil.h"
-#include "folly/detail/FileUtilDetail.h"
+#include <folly/FileUtil.h>
+#include <folly/detail/FileUtilDetail.h>
 
 #include <deque>
 
@@ -23,9 +23,9 @@
 #include <gflags/gflags.h>
 #include <gtest/gtest.h>
 
-#include "folly/Benchmark.h"
-#include "folly/Range.h"
-#include "folly/String.h"
+#include <folly/Benchmark.h>
+#include <folly/Range.h>
+#include <folly/String.h>
 
 namespace folly { namespace test {
 
@@ -287,6 +287,6 @@ TEST(String, readFile) {
 
 int main(int argc, char *argv[]) {
   testing::InitGoogleTest(&argc, argv);
-  google::ParseCommandLineFlags(&argc, &argv, true);
+  gflags::ParseCommandLineFlags(&argc, &argv, true);
   return RUN_ALL_TESTS();
 }

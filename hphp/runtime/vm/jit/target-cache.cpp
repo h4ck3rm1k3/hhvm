@@ -35,7 +35,7 @@
 #include "hphp/runtime/vm/treadmill.h"
 #include "hphp/util/text-util.h"
 
-namespace HPHP { namespace JIT {
+namespace HPHP { namespace jit {
 
 TRACE_SET_MOD(targetcache);
 
@@ -150,7 +150,7 @@ namespace MethodCache {
 namespace {
 ///////////////////////////////////////////////////////////////////////////////
 
-NEVER_INLINE __attribute__((noreturn))
+NEVER_INLINE __attribute__((__noreturn__))
 void raiseFatal(ActRec* ar, Class* cls, StringData* name, Class* ctx) {
   try {
     g_context->lookupMethodCtx(
@@ -451,7 +451,8 @@ void handlePrimeCacheInit(Entry* mce,
 
   auto smashMov = [&] (TCA addr, uintptr_t value) -> bool {
     always_assert(mcg->backEnd().isSmashable(addr, kMovLen));
-    assert(addr[0] == 0x49 && addr[1] == 0xba);
+    //XX these assume the immediate move was to r10
+    //assert(addr[0] == 0x49 && addr[1] == 0xba);
     auto const ptr = reinterpret_cast<uintptr_t*>(addr + kMovImmOff);
     if (!(*ptr & 1)) {
       return false;
@@ -505,7 +506,7 @@ void handlePrimeCacheInit(Entry* mce,
   // call to start doing real dispatch.
   //
   // XXX Use of kCallLen here is a layering violation.
-  mcg->backEnd().smashCall(retAddr - X64::kCallLen,
+  mcg->backEnd().smashCall(retAddr - x64::kCallLen,
                            reinterpret_cast<TCA>(handleSlowPath<fatal>));
 }
 

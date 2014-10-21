@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-#include "folly/Format.h"
+#include <folly/Format.h>
 
 namespace folly {
 namespace detail {
@@ -96,7 +96,15 @@ void FormatArg::initSlow() {
       while (p != end && *p >= '0' && *p <= '9') {
         ++p;
       }
-      precision = to<int>(StringPiece(b, p));
+      if (p != b) {
+        precision = to<int>(StringPiece(b, p));
+        if (p != end && *p == '.') {
+          trailingDot = true;
+          ++p;
+        }
+      } else {
+        trailingDot = true;
+      }
 
       if (p == end) return;
     }

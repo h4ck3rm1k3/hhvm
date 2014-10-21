@@ -26,10 +26,10 @@
 #include <stdexcept>
 #include <system_error>
 
-#include "folly/Conv.h"
-#include "folly/Likely.h"
-#include "folly/Range.h"
-#include "folly/SafeAssert.h"
+#include <folly/Conv.h>
+#include <folly/Likely.h>
+#include <folly/Range.h>
+#include <folly/SafeAssert.h>
 
 namespace folly {
 namespace symbolizer {
@@ -49,8 +49,15 @@ class ElfFile {
   explicit ElfFile(const char* name, bool readOnly=true);
 
   // Open the ELF file.
-  // Returns 0 on success, -1 (and sets errno) on failure and (if msg is not
-  // NULL) sets *msg to a static string indicating what failed.
+  // Returns 0 on success, kSystemError (guaranteed to be -1) (and sets errno)
+  // on IO error, kInvalidElfFile (and sets errno to EINVAL) for an invalid
+  // Elf file. On error, if msg is not NULL, sets *msg to a static string
+  // indicating what failed.
+  enum {
+    kSuccess = 0,
+    kSystemError = -1,
+    kInvalidElfFile = -2,
+  };
   int openNoThrow(const char* name, bool readOnly=true,
                   const char** msg=nullptr) noexcept;
 
@@ -59,7 +66,7 @@ class ElfFile {
 
   ~ElfFile();
 
-  ElfFile(ElfFile&& other);
+  ElfFile(ElfFile&& other) noexcept;
   ElfFile& operator=(ElfFile&& other);
 
   /** Retrieve the ELF header */
@@ -185,7 +192,7 @@ class ElfFile {
   const ElfW(Shdr)* getSectionContainingAddress(ElfW(Addr) addr) const;
 
  private:
-  void init();
+  bool init(const char** msg);
   void destroy();
   ElfFile(const ElfFile&) = delete;
   ElfFile& operator=(const ElfFile&) = delete;
@@ -233,7 +240,7 @@ class ElfFile {
 }  // namespace symbolizer
 }  // namespace folly
 
-#include "folly/experimental/symbolizer/Elf-inl.h"
+#include <folly/experimental/symbolizer/Elf-inl.h>
 
 #endif /* FOLLY_EXPERIMENTAL_SYMBOLIZER_ELF_H_ */
 

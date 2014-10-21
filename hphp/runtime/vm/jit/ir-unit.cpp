@@ -22,7 +22,7 @@
 #include "hphp/runtime/vm/jit/simplifier.h"
 #include "hphp/runtime/vm/jit/timer.h"
 
-namespace HPHP {  namespace JIT {
+namespace HPHP { namespace jit {
 
 TRACE_SET_MOD(hhir);
 
@@ -32,7 +32,7 @@ IRUnit::IRUnit(TransContext context)
 {}
 
 IRInstruction* IRUnit::defLabel(unsigned numDst, BCMarker marker,
-                                const smart::vector<unsigned>& producedRefs) {
+                                const jit::vector<unsigned>& producedRefs) {
   IRInstruction inst(DefLabel, marker);
   IRInstruction* label = cloneInstruction(&inst);
   always_assert(producedRefs.size() == numDst);
@@ -70,20 +70,32 @@ SSATmp* IRUnit::findConst(Type type) {
   return m_constTable.insert(cloneInstruction(&inst)->dst());
 }
 
+/*
+ * Whether the block is a part of the main code path.
+ */
+static bool isMainBlock(const Block* b) {
+  auto const hint = b->hint();
+  return hint != Block::Hint::Unlikely && hint != Block::Hint::Unused;
+}
+
+/*
+ * Whether the block appears to be the exit block of the main code
+ * path of a region. This is conservative, so it may return false on
+ * all blocks in a region.
+ */
 static bool isMainExit(const Block* b) {
-  if (b->hint() == Block::Hint::Unlikely) return false;
-  if (b->hint() == Block::Hint::Unused) return false;
+  if (!isMainBlock(b)) return false;
+
   if (b->next()) return false;
+
   // The Await bytecode instruction does a RetCtrl to the scheduler,
   // which is in a likely block.  We don't want to consider this as
   // the main exit.
-  if (b->back().op() == RetCtrl && b->back().marker().sk().op() == OpAwait) {
-    return false;
-  }
-  auto taken = b->taken();
-  if (!taken) return true;
-  if (taken->isCatch()) return true;
-  return false;
+  auto const& back = b->back();
+  if (back.op() == RetCtrl && back.marker().sk().op() == OpAwait) return false;
+
+  auto const taken = b->taken();
+  return !taken || taken->isCatch();
 }
 
 /*
@@ -102,17 +114,21 @@ void IRUnit::collectPostConditions() {
   // We want the state for the last block on the "main trace".  Figure
   // out which that is.
   Block* mainExit = nullptr;
+  Block* lastMainBlock = nullptr;
+
   FrameState state{*this, entry()->front().marker()};
   ITRACE(2, "collectPostConditions starting\n");
   Trace::Indent _i;
 
   for (auto* block : rpoSortCfg(*this)) {
-    state.startBlock(block);
+    state.startBlock(block, block->front().marker());
 
     for (auto& inst : *block) {
       state.setMarker(inst.marker());
       state.update(&inst);
     }
+
+    if (isMainBlock(block)) lastMainBlock = block;
 
     if (isMainExit(block)) {
       mainExit = block;
@@ -121,7 +137,10 @@ void IRUnit::collectPostConditions() {
 
     state.finishBlock(block);
   }
-  always_assert(mainExit != nullptr);
+
+  // If we didn't find an obvious exit, then use the last block in the region.
+  always_assert(lastMainBlock != nullptr);
+  if (mainExit == nullptr) mainExit = lastMainBlock;
 
   FTRACE(1, "mainExit: B{}\n", mainExit->id());
 

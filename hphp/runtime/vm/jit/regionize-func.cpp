@@ -19,13 +19,14 @@
 
 #include "hphp/util/assertions.h"
 #include "hphp/runtime/base/runtime-option.h"
+#include "hphp/runtime/vm/jit/prof-data.h"
 #include "hphp/runtime/vm/jit/region-selection.h"
-#include "hphp/runtime/vm/jit/translator.h"
+#include "hphp/runtime/vm/jit/timer.h"
 #include "hphp/runtime/vm/jit/trans-cfg.h"
 #include "hphp/runtime/vm/jit/translator-inline.h"
-#include "hphp/runtime/vm/jit/timer.h"
+#include "hphp/runtime/vm/jit/translator.h"
 
-namespace HPHP { namespace JIT {
+namespace HPHP { namespace jit {
 
 TRACE_SET_MOD(pgo);
 
@@ -45,8 +46,8 @@ static void markCovered(const TransCFG& cfg, const RegionDescPtr region,
                         TransCFG::ArcPtrSet& coveredArcs) {
   assert(selectedVec.size() > 0);
   TransID newHead = selectedVec[0];
-  assert(region->blocks.size() > 0);
-  assert(newHead == getTransId(region->blocks[0]->id()));
+  assert(!region->empty());
+  assert(newHead == getTransId(region->entry()->id()));
 
   // Mark all region's nodes as covered.
   coveredNodes.insert(selectedVec.begin(), selectedVec.end());
@@ -60,10 +61,10 @@ static void markCovered(const TransCFG& cfg, const RegionDescPtr region,
   }
 
   // Mark all CFG arcs within the region as covered.
-  for (auto& arc : region->arcs) {
-    if (!hasTransId(arc.src) || !hasTransId(arc.dst)) continue;
-    TransID srcTid = getTransId(arc.src);
-    TransID dstTid = getTransId(arc.dst);
+  region->forEachArc([&](RegionDesc::BlockId src, RegionDesc::BlockId dst) {
+    if (!hasTransId(src) || !hasTransId(dst)) return;
+    TransID srcTid = getTransId(src);
+    TransID dstTid = getTransId(dst);
     assert(cfg.hasArc(srcTid, dstTid));
     bool foundArc = false;
     for (auto arc : cfg.outArcs(srcTid)) {
@@ -73,7 +74,7 @@ static void markCovered(const TransCFG& cfg, const RegionDescPtr region,
       }
     }
     always_assert(foundArc);
-  }
+  });
 
   // Mark all outgoing arcs from the region to a head node as covered.
   for (auto node : selectedVec) {
@@ -271,6 +272,8 @@ void regionizeFunc(const Func* func,
         region = selectWholeCFG(newHead, profData, cfg, selectedSet,
                                 &selectedVec);
       }
+      FTRACE(6, "regionizeFunc: selected region to cover node {}\n{}\n",
+             newHead, show(*region));
       profData->setOptimized(profData->transSrcKey(newHead));
       assert(selectedVec.size() > 0 && selectedVec[0] == newHead);
       regions.push_back(region);

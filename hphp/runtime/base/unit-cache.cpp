@@ -22,19 +22,23 @@
 #include <string>
 #include <ctime>
 #include <cstdlib>
+#include <thread>
 
 #include "folly/ScopeGuard.h"
 
+#include "hphp/util/assertions.h"
 #include "hphp/util/rank.h"
 #include "hphp/util/mutex.h"
-#include "hphp/util/assertions.h"
+#include "hphp/util/process.h"
 #include "hphp/runtime/base/runtime-option.h"
 #include "hphp/runtime/base/zend-string.h"
+#include "hphp/runtime/base/string-util.h"
 #include "hphp/runtime/base/file-util.h"
 #include "hphp/runtime/base/stat-cache.h"
 #include "hphp/runtime/base/stream-wrapper-registry.h"
 #include "hphp/runtime/base/file-stream-wrapper.h"
 #include "hphp/runtime/base/profile-dump.h"
+#include "hphp/runtime/base/program-functions.h"
 #include "hphp/runtime/base/rds.h"
 #include "hphp/runtime/server/source-root-info.h"
 #include "hphp/runtime/vm/debugger-hook.h"
@@ -167,22 +171,12 @@ bool isChanged(const CachedUnitNonRepo& cu, const struct stat& s) {
          cu.devId != s.st_dev;
 }
 
-folly::Optional<String> readFileAsString(const StringData* path,
-                                         off_t fileSize) {
-  if (fileSize > StringData::MaxSize) {
-    throw FatalErrorException(0, "file %s is too big", path->data());
-  }
-
+folly::Optional<String> readFileAsString(const StringData* path) {
   auto const fd = open(path->data(), O_RDONLY);
   if (!fd) return folly::none;
-  SCOPE_EXIT { close(fd); };
 
-  String str(fileSize, ReserveString);
-  auto const input = str.bufferSlice().ptr;
-  auto const nbytes = read(fd, input, fileSize);
-  str.setSize(fileSize);
-  if (nbytes != fileSize) return folly::none;
-  return str;
+  PlainFile file(fd);
+  return file.read();
 }
 
 CachedUnit createUnitFromString(const char* path,
@@ -208,8 +202,8 @@ CachedUnit createUnitFromUrl(const StringData* const requestedPath) {
   return createUnitFromString(requestedPath->data(), sb.detach());
 }
 
-CachedUnit createUnitFromFile(StringData* const path, off_t fileSize) {
-  auto const contents = readFileAsString(path, fileSize);
+CachedUnit createUnitFromFile(StringData* const path) {
+  auto const contents = readFileAsString(path);
   return contents ? createUnitFromString(path->data(), *contents)
                   : CachedUnit{};
 }
@@ -260,7 +254,7 @@ CachedUnit lookupUnitNonRepoAuth(StringData* requestedPath,
    * Treadmill for eventual reclaimation.  We can't delete it immediately
    * because other requests may still be using it.
    */
-  auto const cu = createUnitFromFile(path, statInfo.st_size);
+  auto const cu = createUnitFromFile(path);
   if (auto const oldUnit = acc->second.cachedUnit.unit) {
     Treadmill::enqueue([oldUnit] { reclaimUnit(oldUnit); });
   }
@@ -273,8 +267,6 @@ CachedUnit lookupUnitNonRepoAuth(StringData* requestedPath,
 
 //////////////////////////////////////////////////////////////////////
 // resolveVmInclude callbacks
-
-const StaticString s_file_url("file://");
 
 struct ResolveIncludeContext {
   String path;    // translated path of the file
@@ -315,7 +307,7 @@ bool findFileWrapper(const String& file, void* ctx) {
   }
 
   // handle file://
-  if (file.substr(0, 7) == s_file_url) {
+  if (StringUtil::IsFileUrl(file)) {
     return findFileWrapper(file.substr(7), ctx);
   }
 
@@ -468,6 +460,56 @@ Unit* lookupUnit(StringData* path, const char* currentDir, bool* initial_opt) {
   }
 
   return cunit.unit;
+}
+
+//////////////////////////////////////////////////////////////////////
+
+void preloadRepo() {
+  auto& repo = Repo::get();
+  auto units = repo.enumerateUnits(RepoIdLocal, true, false);
+  if (units.size() == 0) {
+    units = repo.enumerateUnits(RepoIdCentral, true, false);
+  }
+  if (!units.size()) return;
+
+  std::vector<std::thread> workers;
+  auto numWorkers = Process::GetCPUCount();
+  // Compute a batch size that causes each thread to process approximately 16
+  // batches.  Even if the batches are somewhat imbalanced in what they contain,
+  // the straggler workers are very unlikey to take more than 10% longer than
+  // the first worker to finish.
+  size_t batchSize{std::max(units.size() / numWorkers / 16, size_t(1))};
+  std::atomic<size_t> index{0};
+  for (auto worker = 0; worker < numWorkers; ++worker) {
+    workers.push_back(std::thread([&] {
+      hphp_session_init();
+      hphp_context_init();
+
+      while (true) {
+        auto begin = index.fetch_add(batchSize);
+        auto end = std::min(begin + batchSize, units.size());
+        if (begin >= end) break;
+        auto unitCount = end - begin;
+        for (auto i = size_t{0}; i < unitCount; ++i) {
+          auto& kv = units[begin + i];
+          try {
+            lookupUnit(String(RuntimeOption::SourceRoot + kv.first).get(),
+                       "", nullptr);
+          } catch (...) {
+            // swallow errors silently
+          }
+        }
+      }
+
+      hphp_context_exit();
+      hphp_session_exit();
+      hphp_thread_exit();
+
+    }));
+  }
+  for (auto& worker : workers) {
+    worker.join();
+  }
 }
 
 //////////////////////////////////////////////////////////////////////

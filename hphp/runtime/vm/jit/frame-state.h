@@ -17,19 +17,21 @@
 #ifndef incl_HPHP_RUNTIME_VM_JIT_FRAME_STATE_H_
 #define incl_HPHP_RUNTIME_VM_JIT_FRAME_STATE_H_
 
-#include <vector>
+#include <boost/dynamic_bitset.hpp>
 #include <memory>
+#include <vector>
 
 #include "folly/Optional.h"
 
 #include "hphp/runtime/vm/jit/cfg.h"
 #include "hphp/runtime/vm/jit/state-vector.h"
+#include "hphp/runtime/vm/jit/type-source.h"
 
 namespace HPHP {
 
 struct Func;
 
-namespace JIT {
+namespace jit {
 
 struct IRInstruction;
 struct SSATmp;
@@ -78,7 +80,7 @@ struct EvalStack {
   int  size()  const { return m_vector.size(); }
   void clear()       { m_vector.clear(); }
 
-  void swap(std::vector<SSATmp*> &vector) {
+  void swap(std::vector<SSATmp*>& vector) {
     m_vector.swap(vector);
   }
 private:
@@ -90,7 +92,7 @@ private:
 /*
  * LocalStateHook is used to separate the acts of determining which locals are
  * affected by an instruction and recording those changes. It allows consumers
- * of FrameState to get details about how an instruciton affects the locals
+ * of FrameState to get details about how an instruction affects the locals
  * without having to query the state of each local before and after having
  * FrameState process the instruction.
  */
@@ -103,9 +105,9 @@ struct LocalStateHook {
                                    SSATmp* oldRef, SSATmp* newRef) {}
   virtual void dropLocalInnerType(uint32_t id, unsigned inlineIdx) {}
 
-  virtual void refineLocalType(uint32_t id, Type type, SSATmp* typeSource) {}
+  virtual void refineLocalType(uint32_t id, Type type, TypeSource typeSrc) {}
   virtual void setLocalType(uint32_t id, Type type) {}
-  virtual void setLocalTypeSource(uint32_t id, SSATmp* typeSource) {}
+  virtual void setLocalTypeSource(uint32_t id, TypeSource typeSrc) {}
 };
 
 //////////////////////////////////////////////////////////////////////
@@ -132,21 +134,28 @@ struct LocalStateHook {
  */
 struct FrameState final : private LocalStateHook {
   FrameState(IRUnit& unit, BCMarker firstMarker);
-  FrameState(IRUnit& unit, Offset initialSpOffset, const Func* func,
-             uint32_t numLocals);
+  FrameState(IRUnit& unit, Offset initialSpOffset, const Func* func);
 
   FrameState(const FrameState&) = delete;
   FrameState& operator=(const FrameState&) = delete;
 
   FrameState(FrameState&&) = default;
 
-  void update(const IRInstruction* inst);
+  /*
+   * Update state by computing the effects of an instruction.
+   */
+  void update(const IRInstruction*);
+
+  /*
+   * Whether we have state saved for the given block.
+   */
+  bool hasStateFor(Block*) const;
 
   /*
    * Starts tracking state for a block and reloads any previously
    * saved state.
    */
-  void startBlock(Block*);
+  void startBlock(Block*, BCMarker);
 
   /*
    * Finish tracking state for a block and save the current state to
@@ -161,12 +170,19 @@ struct FrameState final : private LocalStateHook {
   void pauseBlock(Block*);
 
   /*
-   * Clear state associate with the given block.
+   * Clear state associated with the given block.
    */
   void clearBlock(Block*);
 
   /*
-   * Clear all tracked state.
+   * Clear the current state, but keeps the state associated with all
+   * other blocks intact.
+   */
+  void clearCurrentState();
+
+  /*
+   * Clear all tracked state, including both the current state and the
+   * state associated with all blocks.
    */
   void clear();
 
@@ -176,10 +192,10 @@ struct FrameState final : private LocalStateHook {
   void clearCse();
 
   /*
-   * Check current state for compatibility (matching types of
-   * stack/locals) with the state at block.
+   * Clears the current state and resets the current marker to the
+   * given value.
    */
-  bool compatible(Block*);
+  void resetCurrentState(BCMarker);
 
   const Func* func() const { return m_curFunc; }
   Offset spOffset() const { return m_spOffset; }
@@ -201,7 +217,7 @@ struct FrameState final : private LocalStateHook {
 
   Type localType(uint32_t id) const;
   SSATmp* localValue(uint32_t id) const;
-  SSATmp* localTypeSource(uint32_t id) const;
+  TypeSource localTypeSource(uint32_t id) const;
 
   typedef std::function<void(SSATmp*, int32_t)> FrameFunc;
   // Call func for all enclosing frames, starting with the current one and
@@ -223,28 +239,37 @@ struct FrameState final : private LocalStateHook {
    * LocalState stores information about a local in the current function.
    */
   struct LocalState {
-    LocalState()
-      : value(nullptr)
-      , type(Type::Gen)
-      , typeSource(nullptr)
-    {}
+    /*
+     * The current value of the local.
+     */
+    SSATmp* value{nullptr};
 
-    SSATmp* value; // The current value of the local. nullptr if unknown
-    Type type;     // The current type of the local.
-    SSATmp* typeSource; // The source of the currently known type: either the
-                        // current value, a FramePtr with a guard, or nullptr
-                        // if the value is new and unknown.
+    /*
+     * The current type of the local.
+     */
+    Type type{Type::Gen};
+
+    /*
+     * The source of the currently known type. The source may be a value. If
+     * the value is unavailable, we won't hold onto it in the value field, but
+     * we'll keep it around in typeSrc.value for guard relaxation.
+     */
+    TypeSource typeSrc;
 
     bool operator==(const LocalState& b) const {
-      return value == b.value &&
-        type == b.type &&
-        typeSource == b.typeSource;
+      return value == b.value && type == b.type && typeSrc == b.typeSrc;
     }
   };
 
-  typedef smart::vector<LocalState> LocalVec;
+  using LocalVec = jit::vector<LocalState>;
 
-  const LocalVec& localsForBlock(Block* b) const;
+  const LocalVec& localsForBlock(Block*) const;
+
+  /*
+   * Marks a block as visited in the current iteration. FrameState::startBlock
+   * does this automatically.
+   */
+  void markVisited(const Block*);
 
  private:
   /*
@@ -262,7 +287,7 @@ struct FrameState final : private LocalStateHook {
     LocalVec locals;
     bool frameSpansCall;
     BCMarker curMarker;
-    smart::vector<Snapshot> inlineSavedStates;
+    jit::vector<Snapshot> inlineSavedStates;
 
     bool operator==(const Snapshot& b) const {
       return spValue == b.spValue &&
@@ -288,9 +313,9 @@ struct FrameState final : private LocalStateHook {
   void updateLocalRefValue(uint32_t id, unsigned inlineIdx, SSATmp* oldRef,
                            SSATmp* newRef) override;
   void dropLocalInnerType(uint32_t id, unsigned inlineIdx) override;
-  void refineLocalType(uint32_t id, Type type, SSATmp* typeSource) override;
+  void refineLocalType(uint32_t id, Type type, TypeSource typeSrc) override;
   void setLocalType(uint32_t id, Type type) override;
-  void setLocalTypeSource(uint32_t id, SSATmp* typeSource) override;
+  void setLocalTypeSource(uint32_t id, TypeSource typeSrc) override;
 
   LocalVec& locals(unsigned inlineIdx);
 
@@ -316,6 +341,11 @@ struct FrameState final : private LocalStateHook {
   void load(Snapshot& state);
   void merge(Snapshot& s1);
 
+  /*
+   * Whether a block has been visited in the current iteration.
+   */
+  bool isVisited(const Block*) const;
+
  private:
   IRUnit& m_unit;
 
@@ -324,8 +354,8 @@ struct FrameState final : private LocalStateHook {
    * fp, and bytecode position.
    */
   const Func* m_curFunc;
-  SSATmp* m_spValue;
-  SSATmp* m_fpValue;
+  SSATmp* m_spValue{nullptr};
+  SSATmp* m_fpValue{nullptr};
   int32_t m_spOffset;
   BCMarker m_marker;
 
@@ -333,19 +363,19 @@ struct FrameState final : private LocalStateHook {
    * m_thisAvailable tracks whether the current frame is known to have a
    * non-null $this pointer.
    */
-  bool m_thisAvailable;
+  bool m_thisAvailable{false};
 
   /*
    * m_frameSpansCall is true iff a Call instruction has been seen since the
    * definition of the current frame pointer.
    */
-  bool m_frameSpansCall;
+  bool m_frameSpansCall{false};
 
   /*
    * m_building is true if we're using FrameState to build the IR,
    * since some state updates are conditional in that case.
    */
-  bool m_building = false;
+  bool m_building{false};
 
   /*
    * Tracking of the state of the virtual execution stack:
@@ -360,7 +390,7 @@ struct FrameState final : private LocalStateHook {
    *   m_stackDeficit represents the number of cells we've popped off
    *   the virtual stack since the last sync.
    */
-  uint32_t m_stackDeficit;
+  uint32_t m_stackDeficit{0};
   EvalStack m_evalStack;
 
   /*
@@ -372,19 +402,24 @@ struct FrameState final : private LocalStateHook {
    * m_inlineSavedStates holds snapshots of the caller(s)'s state while in an
    * inlined callee.
    */
-  smart::vector<Snapshot> m_inlineSavedStates;
+  jit::vector<Snapshot> m_inlineSavedStates;
 
   /*
    * m_cseHash holds the destination of all tracked instructions that produced
    * values eligible for CSE.
    */
   CSEHash m_cseHash;
-  bool m_enableCse;
+  bool m_enableCse{false};
 
   /*
    * Saved snapshots of the incoming state for Blocks.
    */
-  smart::hash_map<Block*, Snapshot> m_snapshots;
+  jit::hash_map<Block*, Snapshot> m_snapshots;
+
+  /*
+   * Set of visited blocks during the traversal of the unit.
+   */
+  boost::dynamic_bitset<> m_visited;
 };
 
 /*

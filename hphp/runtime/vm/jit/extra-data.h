@@ -25,7 +25,7 @@
 #include "hphp/runtime/vm/srckey.h"
 #include "hphp/util/ringbuffer.h"
 
-namespace HPHP { namespace JIT {
+namespace HPHP { namespace jit {
 
 //////////////////////////////////////////////////////////////////////
 
@@ -751,6 +751,7 @@ struct ClassKindData : IRExtraData {
       case ClassKind::Class:     return "cls";
       case ClassKind::Interface: return "interface";
       case ClassKind::Trait:     return "trait";
+      case ClassKind::Enum:      return "enum";
     }
     not_reached();
   }
@@ -788,7 +789,7 @@ struct RawMemData : IRExtraData {
   struct Info {
     const int offset;
     const int size;
-    const JIT::Type type;
+    const jit::Type type;
   };
 
   explicit RawMemData(Type t) : type(t) {}

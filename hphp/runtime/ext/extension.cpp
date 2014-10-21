@@ -14,8 +14,12 @@
    | license@php.net so we can mail you a copy immediately.               |
    +----------------------------------------------------------------------+
 */
-
 #include "hphp/runtime/ext/extension.h"
+
+#include <cstdio>
+
+#include "hphp/util/exception.h"
+#include "hphp/util/assertions.h"
 #include "hphp/runtime/ext/ext_apc.h"
 #include "hphp/runtime/ext/apache/ext_apache.h"
 #include "hphp/runtime/ext/ext_string.h"
@@ -25,12 +29,12 @@
 #include "hphp/runtime/vm/runtime.h"
 #include "hphp/runtime/vm/unit.h"
 #include "hphp/system/systemlib.h"
-#include "hphp/util/exception.h"
+
+#include <map>
+#include <vector>
 
 #ifdef HAVE_LIBDL
 # include <dlfcn.h>
-#include <map>
-#include <vector>
 # ifndef RTLD_LAZY
 #  define RTLD_LAZY 1
 # endif
@@ -54,7 +58,12 @@ IMPLEMENT_DEFAULT_EXTENSION_VERSION(redis, NO_EXTENSION_VERSION_YET);
 
 typedef std::map<std::string, Extension*, stdltistr> ExtensionMap;
 static ExtensionMap *s_registered_extensions = NULL;
+
+typedef std::vector<Extension*> OrderedExtensionVector;
+static OrderedExtensionVector s_ordered_extensions;
+
 static bool s_modules_initialised = false;
+static bool s_extensions_sorted = false;
 static std::vector<Unit*> s_systemlib_units;
 
 // just to make valgrind cleaner
@@ -112,31 +121,119 @@ Extension::Extension(litstr name, const char *version /* = "" */)
   (*s_registered_extensions)[name] = this;
 }
 
+inline Extension* findResolvedExt(const Extension::DependencySetMap& unresolved,
+                                  const Extension::DependencySet& resolved) {
+  if (unresolved.empty()) return nullptr;
+
+  for (auto& ed : unresolved) {
+    Extension* ret = ed.first;
+    for (auto& req : ed.second) {
+      if (resolved.find(req) == resolved.end()) {
+        // Something we depend on still isn't resolved, try another
+        ret = nullptr;
+        break;
+      }
+    }
+    if (ret) return ret;
+  }
+  return nullptr;
+}
+
+void Extension::SortDependencies() {
+  assert(s_registered_extensions);
+  s_ordered_extensions.clear();
+
+  DependencySet resolved;
+  DependencySetMap unresolved;
+
+  // First pass, identify the easy(common) case of modules
+  // with no dependencies and put that at the front of the list
+  // defer all other for slower resolution
+  for (auto& kv : *s_registered_extensions) {
+    auto ext = kv.second;
+    auto deps = ext->getDeps();
+    if (deps.empty()) {
+      s_ordered_extensions.push_back(ext);
+      resolved.insert(kv.first);
+      continue;
+    }
+    unresolved[ext] = deps;
+  }
+
+  // Second pass, check each remaining extension against
+  // their dependency list until they have all been loaded
+  while (auto ext = findResolvedExt(unresolved, resolved)) {
+    s_ordered_extensions.push_back(ext);
+    resolved.insert(ext->m_name);
+    unresolved.erase(ext);
+  }
+
+  if (UNLIKELY(!unresolved.empty())) {
+    // Alerts user to cirular dependency in extensions
+    // e.g. Unable to resovle dependencies for extension(s):
+    //         A(depends: B) B(depends: C) C(depends: A)
+
+    std::stringstream ss;
+    ss << "Unable to resolve dependencies for extension(s):";
+    for (auto& kv : unresolved) {
+      ss << " " << kv.first->m_name << "(depends:";
+      for (auto& req : kv.second) {
+        ss << " " << req;
+      }
+      ss << ")";
+    }
+    throw Exception(ss.str());
+  }
+
+  assert(s_ordered_extensions.size() == s_registered_extensions->size());
+  s_extensions_sorted = true;
+}
+
 void Extension::LoadModules(const IniSetting::Map& ini, Hdf hdf) {
-  // Load up any dynamic extensions
-  std::string path = Config::GetString(ini, hdf["DynamicExtensionPath"], ".");
-  for (Hdf ext = hdf["DynamicExtensions"].firstChild();
-       ext.exists(); ext = ext.next()) {
-    std::string extLoc = Config::GetString(ini, ext);
+  std::set<std::string> extFiles;
+
+  // Load up any dynamic extensions from extension_dir
+  std::string extDir = RuntimeOption::ExtensionDir;
+  for (auto& extLoc : RuntimeOption::Extensions) {
     if (extLoc.empty()) {
       continue;
     }
     if (extLoc[0] != '/') {
-      extLoc = path + "/" + extLoc;
+      if (extDir == "") {
+        continue;
+      }
+      extLoc = extDir + "/" + extLoc;
     }
 
+    extFiles.insert(extLoc);
+  }
+
+  // Load up any dynamic extensions from dynamic extensions options
+  for (auto& extLoc : RuntimeOption::DynamicExtensions) {
+    if (extLoc.empty()) {
+      continue;
+    }
+    if (extLoc[0] != '/') {
+      extLoc = RuntimeOption::DynamicExtensionPath + "/" + extLoc;
+    }
+
+    extFiles.insert(extLoc);
+  }
+
+
+  for (std::string extFile : extFiles) {
     // Extensions are self-registering,
     // so we bring in the SO then
     // throw away its handle.
-    void *ptr = dlopen(extLoc.c_str());
+    void *ptr = dlopen(extFile.c_str());
     if (!ptr) {
       throw Exception("Could not open extension %s: %s",
-                      extLoc.c_str(), dlerror());
+                      extFile.c_str(), dlerror());
     }
     auto getModule = (Extension *(*)())dlsym(ptr, "getModule");
     if (!getModule) {
       throw Exception("Could not load extension %s: %s (%s)",
-                      extLoc.c_str(),
+                      extFile.c_str(),
                       "getModule() symbol not defined.",
                       dlerror());
     }
@@ -145,17 +242,23 @@ void Extension::LoadModules(const IniSetting::Map& ini, Hdf hdf) {
       throw Exception("Could not use extension %s: "
                       "Compiled with HHVM API Version %" PRId64 ", "
                       "this version of HHVM expects %ld",
-                      extLoc.c_str(),
+                      extFile.c_str(),
                       mod->m_hhvmAPIVersion,
                       HHVM_API_VERSION);
     }
-    mod->setDSOName(extLoc);
+    mod->setDSOName(extFile);
   }
 
   // Invoke Extension::moduleLoad() callbacks
   assert(s_registered_extensions);
-  for (auto& kv : *s_registered_extensions) {
-    kv.second->moduleLoad(ini, hdf);
+
+  if (extFiles.size() > 0 || !s_extensions_sorted) {
+    SortDependencies();
+  }
+  assert(s_extensions_sorted);
+
+  for (auto& ext : s_ordered_extensions) {
+    ext->moduleLoad(ini, hdf);
   }
 }
 
@@ -171,37 +274,42 @@ void Extension::InitModules() {
     RuntimeOption::EvalDumpBytecode = wasDB;
   };
   SystemLib::s_inited = false;
-  for (auto& kv : *s_registered_extensions) {
-    kv.second->moduleInit();
+  assert(s_extensions_sorted);
+  for (auto& ext : s_ordered_extensions) {
+    ext->moduleInit();
   }
   s_modules_initialised = true;
 }
 
 void Extension::ThreadInitModules() {
-  assert(s_registered_extensions);
-  for (auto& kv : *s_registered_extensions) {
-    kv.second->threadInit();
+  // This can actually happen both before and after LoadModules()
+  if (!s_extensions_sorted) SortDependencies();
+  assert(s_extensions_sorted);
+  for (auto& ext : s_ordered_extensions) {
+    ext->threadInit();
   }
 }
 
 void Extension::ThreadShutdownModules() {
-  assert(s_registered_extensions);
-  for (auto& kv : *s_registered_extensions) {
-    kv.second->threadShutdown();
+  assert(s_extensions_sorted);
+  for (auto it = s_ordered_extensions.rbegin();
+       it != s_ordered_extensions.rend(); ++it) {
+    (*it)->threadShutdown();
   }
 }
 
 void Extension::RequestInitModules() {
-  assert(s_registered_extensions);
-  for (auto& kv : *s_registered_extensions) {
-    kv.second->requestInit();
+  assert(s_extensions_sorted);
+  for (auto& ext : s_ordered_extensions) {
+    ext->requestInit();
   }
 }
 
 void Extension::RequestShutdownModules() {
-  assert(s_registered_extensions);
-  for (auto& kv : *s_registered_extensions) {
-    kv.second->requestShutdown();
+  assert(s_extensions_sorted);
+  for (auto it = s_ordered_extensions.rbegin();
+       it != s_ordered_extensions.rend(); ++it) {
+    (*it)->requestShutdown();
   }
 }
 
@@ -210,30 +318,20 @@ bool Extension::ModulesInitialised() {
 }
 
 void Extension::ShutdownModules() {
-  assert(s_registered_extensions);
-  for (auto& kv : *s_registered_extensions) {
-    kv.second->moduleShutdown();
+  assert(s_extensions_sorted);
+  for (auto it = s_ordered_extensions.rbegin();
+       it != s_ordered_extensions.rend(); ++it) {
+    (*it)->moduleShutdown();
   }
   s_registered_extensions->clear();
+  s_ordered_extensions.clear();
+  s_extensions_sorted = false;
 }
 
-const StaticString
-  s_apache("apache"),
-  s_apc("apc"),
-  s_xhp("xhp");
-
 bool Extension::IsLoaded(const String& name) {
-  if (name == s_apache) {
-    return ApacheExtension::Enable;
-  }
-  if (name == s_apc) {
-    return apcExtension::Enable;
-  } else if (name == s_xhp) {
-    return RuntimeOption::EnableXHP;
-  }
   assert(s_registered_extensions);
-  return s_registered_extensions->find(name.data()) !=
-    s_registered_extensions->end();
+  auto it = s_registered_extensions->find(name.data());
+  return (it != s_registered_extensions->end()) && it->second->moduleEnabled();
 }
 
 const static std::string
@@ -258,13 +356,9 @@ Array Extension::GetLoadedExtensions() {
   assert(s_registered_extensions);
   Array ret = Array::Create();
   for (auto& kv : *s_registered_extensions) {
-    if (!apcExtension::Enable && kv.second->m_name == s_apc.toCppString()) {
-      continue;
+    if (kv.second->moduleEnabled()) {
+      ret.append(String(kv.second->m_name));
     }
-    if (!RuntimeOption::EnableXHP && kv.second->m_name == s_xhp.toCppString()) {
-      continue;
-    }
-    ret.append(String(kv.second->m_name));
   }
   return ret;
 }
@@ -281,9 +375,21 @@ void Extension::CompileSystemlib(const std::string &slib,
   // encountered during systemlib compilation have valid filename pointers
   // which won't be the case for now unless these pointers are long-lived.
   auto const moduleName = makeStaticString(name.c_str());
-  Unit *unit = compile_systemlib_string(slib.c_str(), slib.size(),
-                                        moduleName->data());
-  assert(unit);
+  auto const unit = compile_systemlib_string(slib.c_str(), slib.size(),
+                                             moduleName->data());
+  always_assert_flog(unit, "No unit created for systemlib `{}'", name);
+
+  const StringData* msg;
+  int line;
+  if (unit->compileTimeFatal(msg, line) ||
+      unit->parseFatal(msg, line)) {
+    std::fprintf(stderr, "Systemlib `%s' contains a fataling unit: %s, %d\n",
+                 name.c_str(),
+                 msg->data(),
+                 line);
+    _Exit(0);
+  }
+
   unit->merge();
   s_systemlib_units.push_back(unit);
 }
@@ -294,12 +400,13 @@ void Extension::CompileSystemlib(const std::string &slib,
  *
  * If {name} is not passed, then {m_name} is assumed.
  */
-void Extension::loadSystemlib(const std::string& name /*= "" */) {
+void Extension::loadSystemlib(const std::string& name) {
   std::string n = name.empty() ?
     std::string(m_name.data(), m_name.size()) : name;
   std::string section("ext.");
   section += f_md5(n, false).substr(0, 12).data();
-  std::string hhas, slib = get_systemlib(&hhas, section, m_dsoName);
+  std::string hhas;
+  std::string slib = get_systemlib(&hhas, section, m_dsoName);
   if (!slib.empty()) {
     std::string phpname = s_systemlibPhpName + n;
     CompileSystemlib(slib, phpname);

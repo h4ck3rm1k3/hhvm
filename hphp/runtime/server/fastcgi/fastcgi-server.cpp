@@ -23,8 +23,8 @@
 #include "folly/io/IOBufQueue.h"
 #include "thrift/lib/cpp/async/TEventBaseManager.h" // @nolint
 #include "thrift/lib/cpp/async/TAsyncTransport.h" // @nolint
-#include "ti/proxygen/lib/workers/WorkerThread.h" // @nolint
-#include "ti/proxygen/lib/services/Acceptor.h" // @nolint
+#include "proxygen/lib/workers/WorkerThread.h" // @nolint
+#include "proxygen/lib/services/Acceptor.h" // @nolint
 
 namespace HPHP {
 
@@ -119,11 +119,12 @@ void FastCGIConnection::readDataAvailable(size_t len) noexcept {
 }
 
 void FastCGIConnection::readEOF() noexcept {
-  shutdownTransport();
+  m_session.onClose();
+  close();
 }
 
 void FastCGIConnection::readError(const TTransportException& ex) noexcept {
-  shutdownTransport();
+  readEOF();
 }
 
 bool FastCGIConnection::hasReadDataAvailable() {
@@ -160,7 +161,7 @@ void FastCGIConnection::onSessionError() {
 }
 
 void FastCGIConnection::onSessionClose() {
-  shutdownTransport();
+  close();
   m_shutdown = true;
   if (m_writeCount == 0) {
     delete this;

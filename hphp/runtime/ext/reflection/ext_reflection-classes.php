@@ -131,7 +131,7 @@ class ReflectionParameter implements Reflector {
     } else {
       $out .= '<required> '.$type.'$'.$this->getName();
     }
-    $out .= " ]\n";
+    $out .= ' ]';
     return $out;
   }
 
@@ -264,8 +264,14 @@ class ReflectionParameter implements Reflector {
       'hh\bool' => 1,
       'hh\int' => 1,
       'hh\float' => 1,
+      'hh\num' => 1,
       'hh\string' => 1,
-      'array' => 1
+      'hh\resource' => 1,
+      'hh\mixed' => 1,
+      'hh\void' => 1,
+      /* TODO Task #4813871: Add 'hh\this' to this list */
+      'array' => 1,
+      'callable' => 1,
     );
     if (isset($nonClassTypehints[$ltype])) {
       return null;
@@ -276,10 +282,8 @@ class ReflectionParameter implements Reflector {
   private static function stripHHPrefix($str) {
     if (!is_string($str)) return $str;
     return str_ireplace(
-      array('HH\\bool', 'HH\\int', 'HH\\float', 'HH\\string', 'HH\\num',
-            'HH\\resource', 'HH\\void', 'HH\\this'),
-      array('bool',     'int',     'float',     'string',     'num',
-            'resource',     'void', 'this'),
+      array('HH\\this'),
+      array('this'),
       $str
     );
   }
@@ -741,13 +745,13 @@ class ReflectionProperty implements Reflector {
     // Can be removed once we support ParamCoerceMode in PHP
     if (func_num_args() != 1) {
       trigger_error('ReflectionProperty::getValue() expects exactly 1'
-        . ' parameter, ' . func_num_args() . ' given', E_USER_WARNING);
+        . ' parameter, ' . func_num_args() . ' given', E_WARNING);
       return null;
     }
     // Can be removed once we support ParamCoerceMode in PHP
-    if (gettype($obj) != "object") {
+    if (!is_object($obj)) {
       trigger_error('ReflectionProperty::getValue() expects parameter 1'
-         . ' to be object, ' . gettype($obj) . ' given', E_USER_WARNING);
+         . ' to be object, ' . gettype($obj) . ' given', E_WARNING);
       return null;
     }
     return hphp_get_property(
@@ -777,6 +781,12 @@ class ReflectionProperty implements Reflector {
       $value = $obj;
       $obj = null;
     }
+    if (!$this->isAccessible()) {
+      throw new ReflectionException(
+        "Cannot access non-public member " . $this->class .
+        "::" . $this->getName()
+      );
+    }
     if ($this->isStatic()) {
       hphp_set_static_property(
         $this->info['class'],
@@ -788,13 +798,13 @@ class ReflectionProperty implements Reflector {
       // Can be removed once we support ParamCoerceMode in PHP
       if (func_num_args() != 2) {
         trigger_error('ReflectionProperty::setValue() expects exactly 2'
-          . ' parameters, ' . func_num_args() . ' given', E_USER_WARNING);
+          . ' parameters, ' . func_num_args() . ' given', E_WARNING);
         return null;
       }
       // Can be removed once we support ParamCoerceMode in PHP
-      if (gettype($obj) != "object") {
+      if (!is_object($obj)) {
         trigger_error('ReflectionProperty::setValue() expects parameter 1'
-          . ' to be object, ' . gettype($obj) . ' given', E_USER_WARNING);
+          . ' to be object, ' . gettype($obj) . ' given', E_WARNING);
         return null;
       }
       hphp_set_property(
@@ -840,10 +850,8 @@ class ReflectionProperty implements Reflector {
   private static function stripHHPrefix($str) {
     if (!is_string($str)) return $str;
     return str_ireplace(
-      array('HH\\bool', 'HH\\int', 'HH\\float', 'HH\\string', 'HH\\num',
-            'HH\\resource', 'HH\\void', 'HH\\this'),
-      array('bool',     'int',     'float',     'string',     'num',
-            'resource',     'void', 'this'),
+      array('HH\\this'),
+      array('this'),
       $str
     );
   }
@@ -853,6 +861,10 @@ class ReflectionProperty implements Reflector {
       return self::stripHHPrefix($this->info['type']);
     }
     return '';
+  }
+
+  private function isAccessible() {
+    return ($this->isPublic() || $this->forceAccessible);
   }
 }
 

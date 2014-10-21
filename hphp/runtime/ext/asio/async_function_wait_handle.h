@@ -61,7 +61,7 @@ class c_AsyncFunctionWaitHandle : public c_ResumableWaitHandle {
   }
   static c_AsyncFunctionWaitHandle* Create(const ActRec* origFp,
                                            size_t numSlots,
-                                           JIT::TCA resumeAddr,
+                                           jit::TCA resumeAddr,
                                            Offset resumeOffset,
                                            c_WaitableWaitHandle* child);
   static void PrepareChild(const ActRec* fp, c_WaitableWaitHandle* child);
@@ -100,6 +100,11 @@ class c_AsyncFunctionWaitHandle : public c_ResumableWaitHandle {
   static const int8_t STATE_SCHEDULED = 3;
   static const int8_t STATE_RUNNING   = 4;
 };
+
+inline c_AsyncFunctionWaitHandle* c_WaitHandle::asAsyncFunction() {
+  assert(getKind() == Kind::AsyncFunction);
+  return static_cast<c_AsyncFunctionWaitHandle*>(this);
+}
 
 ///////////////////////////////////////////////////////////////////////////////
 }

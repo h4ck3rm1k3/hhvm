@@ -19,12 +19,11 @@
 #include "hphp/runtime/vm/jit/mc-generator.h"
 #include "translator.h"
 
-namespace HPHP { namespace JIT {
+namespace HPHP { namespace jit {
 
 void reportTraceletToVtune(const Unit* unit,
                            const Func* func,
                            const TransRec& transRec);
-void reportTrampolineToVtune(void* begin, size_t size);
 
 }}
 

@@ -21,6 +21,7 @@
 #include "hphp/runtime/ext/asio/asio_session.h"
 #include "hphp/runtime/ext/asio/async_function_wait_handle.h"
 #include "hphp/runtime/ext/asio/async_generator_wait_handle.h"
+#include "hphp/runtime/ext/asio/await_all_wait_handle.h"
 #include "hphp/runtime/ext/asio/gen_array_wait_handle.h"
 #include "hphp/runtime/ext/asio/gen_map_wait_handle.h"
 #include "hphp/runtime/ext/asio/gen_vector_wait_handle.h"
@@ -37,7 +38,7 @@ namespace HPHP {
 c_WaitableWaitHandle::c_WaitableWaitHandle(Class* cb)
     : c_WaitHandle(cb) {
   setContextIdx(AsioSession::Get()->getCurrentContextIdx());
-  m_firstParent = nullptr;
+  m_parentChain.init();
 }
 
 c_WaitableWaitHandle::~c_WaitableWaitHandle() {
@@ -66,15 +67,7 @@ Array c_WaitableWaitHandle::t_getparents() {
     return empty_array();
   }
 
-  Array result = Array::Create();
-  c_BlockableWaitHandle* curr = m_firstParent;
-
-  while (curr) {
-    result.append(curr);
-    curr = curr->getNextParent();
-  }
-
-  return result;
+  return getParentChain().toArray();
 }
 
 // throws on context depth level overflows and cross-context cycles
@@ -104,24 +97,16 @@ void c_WaitableWaitHandle::join() {
 
 String c_WaitableWaitHandle::getName() {
   switch (getKind()) {
-    case Kind::Static:
-      not_reached();
-    case Kind::AsyncFunction:
-      return static_cast<c_AsyncFunctionWaitHandle*>(this)->getName();
-    case Kind::AsyncGenerator:
-      return static_cast<c_AsyncGeneratorWaitHandle*>(this)->getName();
-    case Kind::GenArray:
-      return static_cast<c_GenArrayWaitHandle*>(this)->getName();
-    case Kind::GenMap:
-      return static_cast<c_GenMapWaitHandle*>(this)->getName();
-    case Kind::GenVector:
-      return static_cast<c_GenVectorWaitHandle*>(this)->getName();
-    case Kind::Reschedule:
-      return static_cast<c_RescheduleWaitHandle*>(this)->getName();
-    case Kind::Sleep:
-      return static_cast<c_SleepWaitHandle*>(this)->getName();
-    case Kind::ExternalThreadEvent:
-      return static_cast<c_ExternalThreadEventWaitHandle*>(this)->getName();
+    case Kind::Static:              not_reached();
+    case Kind::AsyncFunction:       return asAsyncFunction()->getName();
+    case Kind::AsyncGenerator:      return asAsyncGenerator()->getName();
+    case Kind::AwaitAll:            return asAwaitAll()->getName();
+    case Kind::GenArray:            return asGenArray()->getName();
+    case Kind::GenMap:              return asGenMap()->getName();
+    case Kind::GenVector:           return asGenVector()->getName();
+    case Kind::Reschedule:          return asReschedule()->getName();
+    case Kind::Sleep:               return asSleep()->getName();
+    case Kind::ExternalThreadEvent: return asExternalThreadEvent()->getName();
   }
   not_reached();
 }
@@ -130,22 +115,16 @@ c_WaitableWaitHandle* c_WaitableWaitHandle::getChild() {
   assert(!isFinished());
 
   switch (getKind()) {
-    case Kind::Static:
-      not_reached();
-    case Kind::AsyncFunction:
-      return static_cast<c_AsyncFunctionWaitHandle*>(this)->getChild();
-    case Kind::AsyncGenerator:
-      return static_cast<c_AsyncGeneratorWaitHandle*>(this)->getChild();
-    case Kind::GenArray:
-      return static_cast<c_GenArrayWaitHandle*>(this)->getChild();
-    case Kind::GenMap:
-      return static_cast<c_GenMapWaitHandle*>(this)->getChild();
-    case Kind::GenVector:
-      return static_cast<c_GenVectorWaitHandle*>(this)->getChild();
-    case Kind::Reschedule:
-    case Kind::Sleep:
-    case Kind::ExternalThreadEvent:
-      return nullptr;
+    case Kind::Static:              not_reached();
+    case Kind::AsyncFunction:       return asAsyncFunction()->getChild();
+    case Kind::AsyncGenerator:      return asAsyncGenerator()->getChild();
+    case Kind::AwaitAll:            return asAwaitAll()->getChild();
+    case Kind::GenArray:            return asGenArray()->getChild();
+    case Kind::GenMap:              return asGenMap()->getChild();
+    case Kind::GenVector:           return asGenVector()->getChild();
+    case Kind::Reschedule:          return nullptr;
+    case Kind::Sleep:               return nullptr;
+    case Kind::ExternalThreadEvent: return nullptr;
   }
   not_reached();
 }
@@ -155,30 +134,23 @@ void c_WaitableWaitHandle::enterContextImpl(context_idx_t ctx_idx) {
     case Kind::Static:
       not_reached();
     case Kind::AsyncFunction:
-      static_cast<c_AsyncFunctionWaitHandle*>(this)->enterContextImpl(ctx_idx);
-      return;
+      return asAsyncFunction()->enterContextImpl(ctx_idx);
     case Kind::AsyncGenerator:
-      static_cast<c_AsyncGeneratorWaitHandle*>(this)->enterContextImpl(ctx_idx);
-      return;
+      return asAsyncGenerator()->enterContextImpl(ctx_idx);
+    case Kind::AwaitAll:
+      return asAwaitAll()->enterContextImpl(ctx_idx);
     case Kind::GenArray:
-      static_cast<c_GenArrayWaitHandle*>(this)->enterContextImpl(ctx_idx);
-      return;
+      return asGenArray()->enterContextImpl(ctx_idx);
     case Kind::GenMap:
-      static_cast<c_GenMapWaitHandle*>(this)->enterContextImpl(ctx_idx);
-      return;
+      return asGenMap()->enterContextImpl(ctx_idx);
     case Kind::GenVector:
-      static_cast<c_GenVectorWaitHandle*>(this)->enterContextImpl(ctx_idx);
-      return;
+      return asGenVector()->enterContextImpl(ctx_idx);
     case Kind::Reschedule:
-      static_cast<c_RescheduleWaitHandle*>(this)->enterContextImpl(ctx_idx);
-      return;
+      return asReschedule()->enterContextImpl(ctx_idx);
     case Kind::Sleep:
-      static_cast<c_SleepWaitHandle*>(this)->enterContextImpl(ctx_idx);
-      return;
+      return asSleep()->enterContextImpl(ctx_idx);
     case Kind::ExternalThreadEvent:
-      static_cast<c_ExternalThreadEventWaitHandle*>(this)->enterContextImpl(
-        ctx_idx);
-      return;
+      return asExternalThreadEvent()->enterContextImpl(ctx_idx);
   }
   not_reached();
 }
@@ -195,8 +167,8 @@ c_WaitableWaitHandle::isDescendantOf(c_WaitableWaitHandle* wait_handle) const {
 }
 
 Array c_WaitableWaitHandle::t_getdependencystack() {
+  if (isFinished()) return empty_array();
   Array result = Array::Create();
-  if (isFinished()) return result;
   hphp_hash_set<int64_t> visited;
   auto wait_handle = this;
   auto session = AsioSession::Get();
@@ -206,16 +178,11 @@ Array c_WaitableWaitHandle::t_getdependencystack() {
     auto context_idx = wait_handle->getContextIdx();
 
     // 1. find parent in the same context
-    auto p = wait_handle->getFirstParent();
-    while (p) {
-      if ((p->getContextIdx() == context_idx) &&
-          visited.find(p->t_getid()) == visited.end()) {
-        wait_handle = p;
-        break;
-      }
-      p = p->getNextParent();
+    auto p = wait_handle->getParentChain().firstInContext(context_idx);
+    if (p && visited.find(p->t_getid()) == visited.end()) {
+      wait_handle = p;
+      continue;
     }
-    if (p) continue;
 
     // 2. cross the context boundary
     auto context = session->getContext(context_idx);

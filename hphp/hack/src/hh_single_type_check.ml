@@ -51,18 +51,37 @@ let builtins = "<?hh // decl\n"^
   "final class Set<Tv> extends ConstSet<Tv> {}\n"^
   "final class ImmSet<Tv> extends ConstSet<Tv> {}\n"^
   "class Exception { public function __construct(string $x) {} }\n"^
-  "interface Continuation<Tv> implements Iterator<Tv> { \n"^
+  "class Generator<Tk, Tv, Ts> implements KeyedIterator<Tk, Tv> {\n"^
   "  public function next(): void;\n"^
   "  public function current(): Tv;\n"^
-  "  public function key(): int;\n"^
+  "  public function key(): Tk;\n"^
   "  public function rewind(): void;\n"^
   "  public function valid(): bool;\n"^
+  "  public function send(?Ts $v): void;\n"^
   "}\n"^
+  "type Continuation<Tv> = Generator<int, Tv, void>;\n"^
   "final class Pair<Tk, Tv> extends Indexish<int,mixed> {public function isEmpty(): bool {}}\n"^
   "interface Stringish {public function __toString(): string {}}\n"^
   "interface XHPChild {}\n"^
   "function hh_show($val) {}\n"^
-  "interface Countable { public function count(): int; }\n"
+  "interface Countable { public function count(): int; }\n"^
+  "interface AsyncIterator<Tv> {}\n"^
+  "interface AsyncKeyedIterator<Tk, Tv> extends AsyncIterator<Tv> {}\n"^
+  "class AsyncGenerator<Tk, Tv, Ts> implements AsyncKeyedIterator<Tk, Tv> {\n"^
+  "  public function next(): Awaitable<?(Tk, Tv)> {}\n"^
+  "  public function send(?Ts $v): Awaitable<?(Tk, Tv)> {}\n"^
+  "  public function raise(Exception $e): Awaitable<?(Tk, Tv)> {}"^
+  "}\n"^
+  "namespace HH {\n"^
+  "abstract class BuiltinEnum<T> {\n"^
+  "  final public static function getValues(): array<string, T>;\n"^
+  "  final public static function getNames(): array<T, string>;\n"^
+  "  final public static function coerce(mixed $value): ?T;\n"^
+  "  final public static function assert(mixed $value): T;\n"^
+  "  final public static function isValid(mixed $value): bool;\n"^
+  "  final public static function assertAll(Traversable<mixed> $values): Container<T>;\n"^
+  "}\n"^
+  "}\n"
 
 (*****************************************************************************)
 (* Helpers *)
@@ -174,8 +193,9 @@ let collect_defs ast =
  * with 'Typing_env.Classes.get "Foo";;'
  *)
 let main_hack { filename; suggest; _ } =
+  ignore (Sys.signal Sys.sigusr1 (Sys.Signal_handle Typing.debug_print_last_pos));
   SharedMem.init();
-  Typing.debug := true;
+  Hhi.set_hhi_root_for_unit_test (Path.mk_path "/tmp/hhi");
   let errors, () =
     Errors.do_ begin fun () ->
       Pos.file := builtins_filename;
@@ -210,4 +230,3 @@ let _ =
   else
     let options = parse_options () in
     main_hack options
-

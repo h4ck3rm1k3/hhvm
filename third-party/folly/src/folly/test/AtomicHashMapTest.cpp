@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-#include "folly/AtomicHashMap.h"
+#include <folly/AtomicHashMap.h>
 
 #include <glog/logging.h>
 #include <gtest/gtest.h>
@@ -22,8 +22,8 @@
 #include <thread>
 #include <atomic>
 #include <memory>
-#include "folly/Benchmark.h"
-#include "folly/Conv.h"
+#include <folly/Benchmark.h>
+#include <folly/Conv.h>
 
 using std::vector;
 using std::string;
@@ -773,15 +773,15 @@ void benchmarkSetup() {
   string numIters = folly::to<string>(
     std::min(1000000, int(FLAGS_numBMElements)));
 
-  google::SetCommandLineOptionWithMode(
-    "bm_max_iters", numIters.c_str(), google::SET_FLAG_IF_DEFAULT
+  gflags::SetCommandLineOptionWithMode(
+    "bm_max_iters", numIters.c_str(), gflags::SET_FLAG_IF_DEFAULT
   );
-  google::SetCommandLineOptionWithMode(
-    "bm_min_iters", numIters.c_str(), google::SET_FLAG_IF_DEFAULT
+  gflags::SetCommandLineOptionWithMode(
+    "bm_min_iters", numIters.c_str(), gflags::SET_FLAG_IF_DEFAULT
   );
   string numCoresStr = folly::to<string>(numCores);
-  google::SetCommandLineOptionWithMode(
-    "numThreads", numCoresStr.c_str(), google::SET_FLAG_IF_DEFAULT
+  gflags::SetCommandLineOptionWithMode(
+    "numThreads", numCoresStr.c_str(), gflags::SET_FLAG_IF_DEFAULT
   );
 
   std::cout << "\nRunning AHM benchmarks on machine with " << numCores
@@ -793,7 +793,7 @@ void benchmarkSetup() {
 
 int main(int argc, char** argv) {
   testing::InitGoogleTest(&argc, argv);
-  google::ParseCommandLineFlags(&argc, &argv, true);
+  gflags::ParseCommandLineFlags(&argc, &argv, true);
   auto ret = RUN_ALL_TESTS();
   if (!ret && FLAGS_benchmark) {
     benchmarkSetup();

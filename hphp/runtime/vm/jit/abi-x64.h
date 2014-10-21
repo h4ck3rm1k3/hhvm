@@ -31,7 +31,7 @@
 #include "hphp/runtime/vm/jit/phys-reg.h"
 #include "hphp/runtime/vm/jit/reserved-stack.h"
 
-namespace HPHP { namespace JIT { namespace X64 {
+namespace HPHP { namespace jit { namespace x64 {
 
 //////////////////////////////////////////////////////////////////////
 /*
@@ -63,14 +63,6 @@ constexpr PhysReg rVmTl      = reg::r12;
  * scratch register
  */
 constexpr Reg64 rAsm         = reg::r10;
-
-/*
- * Reserved for CodeGenerator.
- */
-constexpr Reg64 rCgGP        = reg::r11;
-constexpr RegXMM rCgXMM0     = reg::xmm6;
-constexpr RegXMM rCgXMM1     = reg::xmm7;
-constexpr RegXMM rCgXMM2     = reg::xmm5;
 
 //////////////////////////////////////////////////////////////////////
 /*
@@ -107,7 +99,7 @@ const RegSet kGPReserved = RegSet()
   | RegSet(reg::rsp)
   | RegSet(rVmFp)
   | RegSet(rVmTl)
-  | RegSet(rCgGP)
+  | RegSet(reg::r11)
   | RegSet(rAsm)
   ;
 
@@ -122,9 +114,9 @@ const RegSet kXMMCallerSaved = RegSet()
   | RegSet(reg::xmm2)
   | RegSet(reg::xmm3)
   | RegSet(reg::xmm4)
-  //| RegSet(reg::xmm5) rCgXmm2
-  //| RegSet(reg::xmm6) rCgXMM0
-  //| RegSet(reg::xmm7) rCgXMM1
+  //| RegSet(reg::xmm5) for vasm
+  //| RegSet(reg::xmm6) for vasm
+  //| RegSet(reg::xmm7) for vasm
   | RegSet(reg::xmm8)
   | RegSet(reg::xmm9)
   | RegSet(reg::xmm10)
@@ -132,7 +124,7 @@ const RegSet kXMMCallerSaved = RegSet()
   | RegSet(reg::xmm12)
   | RegSet(reg::xmm13)
   | RegSet(reg::xmm14)
-  | RegSet(reg::xmm15)
+  // | RegSet(reg::xmm15) for vasm
   ;
 
 const RegSet kXMMCalleeSaved = RegSet()
@@ -144,9 +136,10 @@ const RegSet kXMMUnreserved = RegSet()
   ;
 
 const RegSet kXMMReserved = RegSet()
-  | RegSet(rCgXMM0)
-  | RegSet(rCgXMM1)
-  | RegSet(rCgXMM2)
+  | RegSet(reg::xmm5) // for vasm
+  | RegSet(reg::xmm6) // for vasm
+  | RegSet(reg::xmm7) // for vasm
+  | RegSet(reg::xmm15) // for vasm
   ;
 
 const RegSet kCallerSaved = RegSet()
@@ -217,6 +210,14 @@ const PhysReg argNumToRegName[] = {
   reg::rdi, reg::rsi, reg::rdx, reg::rcx, reg::r8, reg::r9
 };
 const int kNumRegisterArgs = sizeof(argNumToRegName) / sizeof(PhysReg);
+
+inline RegSet argSet(int n) {
+  RegSet regs;
+  for (int i = 0; i < n; i++) {
+    regs.add(argNumToRegName[i]);
+  }
+  return regs;
+}
 
 // x64 SSE class argument registers.
 const PhysReg argNumToSIMDRegName[] = {

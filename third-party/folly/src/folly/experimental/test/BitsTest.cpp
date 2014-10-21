@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-#include "folly/experimental/Bits.h"
+#include <folly/experimental/Bits.h>
 
 #include <glog/logging.h>
 #include <gtest/gtest.h>
@@ -310,7 +310,7 @@ TEST(Bits, ConcatenationAligned) {
 
 int main(int argc, char *argv[]) {
   testing::InitGoogleTest(&argc, argv);
-  google::ParseCommandLineFlags(&argc, &argv, true);
+  gflags::ParseCommandLineFlags(&argc, &argv, true);
   return RUN_ALL_TESTS();
 }
 

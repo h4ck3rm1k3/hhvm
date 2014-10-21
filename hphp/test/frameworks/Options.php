@@ -24,10 +24,11 @@ class Options {
   public static bool $get_latest_framework_code = false;
   public static bool $generate_new_expect_file = false;
   public static bool $include_flakey = false;
-  public static ?string $zend_path = null;
+  public static ?string $php_path = null;
   public static bool $all = false;
   public static bool $allexcept = false;
   public static bool $test_by_single_test = false;
+  public static bool $run_tests = true;
   public static string $results_root = __DIR__.'/results';
   public static string $script_errors_file = __DIR__.'/results/_script.errors';
   public static string $generated_ini_file = __DIR__.'/.generated.php.ini';
@@ -35,6 +36,7 @@ class Options {
   public static array $original_framework_info = [];
   public static int $num_threads = -1;
   public static bool $as_phpunit = false;
+  public static ?string $toran_proxy = null;
 
   public static function parse(OptionMap $options, array $argv): Vector {
     $ini_settings = Map { };
@@ -66,6 +68,11 @@ class Options {
       $framework_names->removeKey(0);
     } else if ($options->containsKey('allexcept')) {
       self::$allexcept = true;
+      $framework_names->removeKey(0);
+    }
+
+    if ($options->containsKey('install-only')) {
+      self::$run_tests = false;
       $framework_names->removeKey(0);
     }
 
@@ -145,11 +152,8 @@ class Options {
       $framework_names->removeKey(0);
     }
 
-    if ($options->containsKey('zend')) {
-      verbose("Will try Zend if necessary. If Zend doesn't work, the script ".
-              "will still continue; the particular framework on which Zend ".
-           "was attempted may not be available though.\n");
-       self::$zend_path = (string) $options['zend'];
+    if ($options->containsKey('with-php')) {
+       self::$php_path = (string) $options['with-php'];
       $framework_names->removeKey(0);
       $framework_names->removeKey(0);
     }
@@ -176,6 +180,11 @@ class Options {
 
     if ($options->containsKey('record')) {
       self::$generate_new_expect_file = true;
+      $framework_names->removeKey(0);
+    }
+
+    if ($options->containsKey('toran-proxy')) {
+      self::$toran_proxy = ((string) $options['toran-proxy']) ?: null;
       $framework_names->removeKey(0);
     }
 

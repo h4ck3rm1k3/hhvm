@@ -23,10 +23,10 @@
 #include <stdexcept>
 #include <system_error>
 
-#include "folly/Conv.h"
-#include "folly/FBString.h"
-#include "folly/Likely.h"
-#include "folly/Portability.h"
+#include <folly/Conv.h>
+#include <folly/FBString.h>
+#include <folly/Likely.h>
+#include <folly/Portability.h>
 
 namespace folly {
 
@@ -108,6 +108,20 @@ void checkFopenErrorExplicit(FILE* fp, int savedErrno, Args&&... args) {
     throwSystemErrorExplicit(savedErrno, std::forward<Args>(args)...);
   }
 }
+
+template <typename E, typename V, typename... Args>
+void throwOnFail(V&& value, Args&&... args) {
+  if (!value) {
+    throw E(std::forward<Args>(args)...);
+  }
+}
+
+/**
+ * If cond is not true, raise an exception of type E.  E must have a ctor that
+ * works with const char* (a description of the failure).
+ */
+#define CHECK_THROW(cond, E) \
+  ::folly::throwOnFail<E>((cond), "Check failed: " #cond)
 
 }  // namespace folly
 

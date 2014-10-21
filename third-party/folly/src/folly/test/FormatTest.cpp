@@ -14,16 +14,18 @@
  * limitations under the License.
  */
 
-#include "folly/Format.h"
+#include <folly/Format.h>
 
 #include <glog/logging.h>
 #include <gflags/gflags.h>
 #include <gtest/gtest.h>
 
-#include "folly/FBVector.h"
-#include "folly/FileUtil.h"
-#include "folly/dynamic.h"
-#include "folly/json.h"
+#include <folly/FBVector.h>
+#include <folly/FileUtil.h>
+#include <folly/dynamic.h>
+#include <folly/json.h>
+
+#include <string>
 
 using namespace folly;
 
@@ -237,6 +239,14 @@ TEST(Format, Float) {
   EXPECT_EQ("0.10", sformat("{:.2f}", 0.1));
   EXPECT_EQ("0.01", sformat("{:.2f}", 0.01));
   EXPECT_EQ("0.00", sformat("{:.2f}", 0.001));
+
+  EXPECT_EQ("100000. !== 100000", sformat("{:.} !== {:.}", 100000.0, 100000));
+  EXPECT_EQ("100000.", sformat("{:.}", 100000.0));
+  EXPECT_EQ("1e+6", sformat("{:.}", 1000000.0));
+  EXPECT_EQ(" 100000.", sformat("{:8.}", 100000.0));
+  EXPECT_EQ("100000.", sformat("{:4.}", 100000.0));
+  EXPECT_EQ("  100000", sformat("{:8.8}", 100000.0));
+  EXPECT_EQ(" 100000.", sformat("{:8.8.}", 100000.0));
 }
 
 TEST(Format, MultiLevel) {
@@ -379,9 +389,61 @@ TEST(Format, BogusFormatString) {
   EXPECT_THROW(sformatChecked("{0[test}"), std::exception);
 }
 
+template <bool containerMode, class... Args>
+class TestExtendingFormatter;
+
+template <bool containerMode, class... Args>
+class TestExtendingFormatter
+    : public BaseFormatter<TestExtendingFormatter<containerMode, Args...>,
+                           containerMode,
+                           Args...> {
+ private:
+  explicit TestExtendingFormatter(StringPiece& str, Args&&... args)
+      : BaseFormatter<TestExtendingFormatter<containerMode, Args...>,
+                      containerMode,
+                      Args...>(str, std::forward<Args>(args)...) {}
+
+  template <size_t K, class Callback>
+  void doFormatArg(FormatArg& arg, Callback& cb) const {
+    std::string result;
+    auto appender = [&result](StringPiece s) {
+      result.append(s.data(), s.size());
+    };
+    std::get<K>(this->values_).format(arg, appender);
+    result = sformat("{{{}}}", result);
+    cb(StringPiece(result));
+  }
+
+  friend class BaseFormatter<TestExtendingFormatter<containerMode, Args...>,
+                             containerMode,
+                             Args...>;
+
+  template <class... A>
+  friend std::string texsformat(StringPiece fmt, A&&... arg);
+};
+
+template <class... Args>
+std::string texsformat(StringPiece fmt, Args&&... args) {
+  return TestExtendingFormatter<false, Args...>(
+      fmt, std::forward<Args>(args)...).str();
+}
+
+TEST(Format, Extending) {
+  EXPECT_EQ(texsformat("I {} brackets", "love"), "I {love} brackets");
+  EXPECT_EQ(texsformat("I {} nesting", sformat("really {}", "love")),
+            "I {really love} nesting");
+  EXPECT_EQ(
+      sformat("I also {} nesting", texsformat("have an {} for", "affinity")),
+      "I also have an {affinity} for nesting");
+  EXPECT_EQ(texsformat("Extending {} in {}",
+                       texsformat("a {}", "formatter"),
+                       "another formatter"),
+            "Extending {a {formatter}} in {another formatter}");
+}
+
 int main(int argc, char *argv[]) {
   testing::InitGoogleTest(&argc, argv);
-  google::ParseCommandLineFlags(&argc, &argv, true);
+  gflags::ParseCommandLineFlags(&argc, &argv, true);
   return RUN_ALL_TESTS();
 }
 

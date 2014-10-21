@@ -25,13 +25,13 @@
 
 #include "hphp/runtime/vm/jit/test/test-context.h"
 
-namespace HPHP { namespace JIT {
+namespace HPHP { namespace jit {
 
 TEST(RefcountOpts, trivial) {
   BCMarker dummy = BCMarker::Dummy();
   IRUnit unit(test_context);
   Block* b = unit.entry();
-  FrameState fs{unit, 0, nullptr, 0};
+  FrameState fs{unit, 0, nullptr};
 
   auto fp  = unit.gen(DefFP, dummy);
   auto str = unit.gen(Conjure, dummy, Type::CountedStr);

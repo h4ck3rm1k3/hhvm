@@ -366,6 +366,20 @@ class Redis {
     return $this->processBooleanResponse();
   }
 
+  /* Sets ---------------------------------------------------------------- */
+
+  public function sRandMember($key, $count = null) {
+    $args = [$this->prefix($key)];
+    if ($count !== null) {
+       $args[] = $count;
+    }
+    $this->processArrayCommand('SRANDMEMBER', $args);
+    if ($count !== null) {
+       return $this->processVectorResponse(true);
+    }
+    return $this->processStringResponse();
+  }
+
   /* zSets --------------------------------------------------------------- */
 
   public function zAdd($key, $score, $value/*, $scoreN, $valueN */) {
@@ -597,7 +611,8 @@ class Redis {
     array_unshift($args, $numKeys);
     array_unshift($args, $script);
     $this->processArrayCommand($cmd, $args);
-    return $this->processVariantResponse();
+    $response = $this->processVariantResponse();
+    return ($response !== NULL) ? $response : false;
   }
 
   public function evaluate($script, array $args = [], $numKeys = 0) {
@@ -807,7 +822,7 @@ class Redis {
     'lpushx' => [ 'format' => 'kl', 'return' => 'Long' ],
     'lrange' => [ 'format' => 'kll', 'return' => 'Vector', 'retargs' => [1] ],
     'lgetrange' => [ 'alias' => 'lrange' ],
-    'lrem' => [ 'format' => 'kvl', 'return' => 'Long' ],
+    'lrem' => [ 'format' => 'kvs', 'return' => 'Long' ],
     'lremove' => [ 'alias' => 'lrem' ],
     'lset' => [ 'format' => 'klv', 'return' => 'Boolean' ],
     'ltrim' => [ 'format' => 'kll', 'return' => 'Boolean' ],
@@ -833,8 +848,6 @@ class Redis {
     'sgetmembers' => [ 'alias' => 'smembers' ],
     'smove' => [ 'format' => 'kkv', 'return' => '1' ],
     'spop' => [ 'format' => 'k', 'return' => 'Serialized' ],
-    'srandmember' => [ 'format' => 'kl', 'return' => 'Serialized',
-                       'default' => [ 1 => 1 ] ],
     'srem' => [ 'vararg' => self::VAR_KEY_FIRST_AND_SERIALIZE,
                 'return' => 'Long' ],
     'sremove' => [ 'alias' => 'srem' ],
@@ -1207,8 +1220,11 @@ class Redis {
   protected function processSerializedResponse() {
     if ($this->mode === self::ATOMIC) {
       $resp = $this->sockReadData($type);
+      if ($resp === null) {
+        return false;
+      }
       return (($type === self::TYPE_LINE) OR ($type === self::TYPE_BULK))
-             ? $this->unserialize($resp) : null;
+             ? $this->unserialize($resp) : false;
     }
     $this->multiHandler[] = [ 'cb' => [$this,'processSerializedResponse'] ];
     if (($this->mode === self::MULTI) && !$this->processQueuedResponse()) {
@@ -1294,7 +1310,7 @@ class Redis {
       if ($unser AND (($lineNo % $unser) == 0)) {
         $val = $this->unserialize($val);
       }
-      $ret[] = $val;
+      $ret[] = $val !== null ? $val : false;
     }
     return $ret;
   }
@@ -1357,7 +1373,7 @@ class Redis {
       if ($unser_val) {
         $val = $this->unserialize($val);
       }
-      $ret[$key] = $val;
+      $ret[$key] = $val !== null ? $val : false;
     }
     return $ret;
   }
@@ -1454,7 +1470,7 @@ class Redis {
   public function __call($fname, $args) {
     $fname = strtolower($fname);
     if (!isset(self::$map[$fname])) {
-      trigger_error("Call to undefined function Redis::$fname()", E_USER_ERROR);
+      trigger_error("Call to undefined function Redis::$fname()", E_ERROR);
       return null;
     }
     $func = self::$map[$fname];
@@ -1506,7 +1522,7 @@ class Redis {
         } else {
           trigger_error(
             "Redis::$fname requires at least $flen parameters $argc given",
-            E_USER_ERROR);
+            E_ERROR);
           return null;
         }
       }
@@ -1521,10 +1537,22 @@ class Redis {
           if (($args[$i] !== self::BEFORE) AND ($args[$i] !== self::AFTER)) {
             trigger_error(
               "Argument $i to Redis::$fname must be 'before' or 'after'",
-              E_USER_ERROR);
+              E_ERROR);
             return null;
           } break;
       }
+    }
+    if ($func['cmd'] == "LREM") {
+      //
+      // The PHP interface has arguments in one order:
+      //   https://github.com/nicolasff/phpredis#lrem-lremove
+      // But the server wants them in another:
+      //   http://redis.io/commands/lrem
+      // So just swap them prior to marshalling them out.
+      //
+      $tmp = $args[1];
+      $args[1] = $args[2];
+      $args[2] = $tmp;
     }
     $this->processArrayCommand($func['cmd'], $args);
     if (empty($func['handler'])) {
@@ -1579,7 +1607,7 @@ class Redis {
     if (!$conn) {
       trigger_error(
         "Failed connecting to redis server at {$host}: {$errstr}",
-        E_USER_WARNING);
+        E_WARNING);
       return false;
     }
     stream_set_blocking($conn, true);

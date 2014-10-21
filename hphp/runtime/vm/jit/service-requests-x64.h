@@ -20,7 +20,7 @@
 #include "hphp/util/asm-x64.h"
 #include "hphp/util/data-block.h"
 
-namespace HPHP { namespace JIT { namespace X64 {
+namespace HPHP { namespace jit { namespace x64 {
 
 /*
  * emitServiceReqWork --
@@ -45,23 +45,23 @@ TCA emitServiceReqWork(CodeBlock& cb, TCA start, SRFlags flags,
  */
 void emitBindJmp(CodeBlock& cb, CodeBlock& frozen, SrcKey dest,
                  TransFlags trflags = TransFlags{});
-void emitBindJcc(CodeBlock& cb, CodeBlock& frozen, JIT::ConditionCode cc,
+void emitBindJcc(CodeBlock& cb, CodeBlock& frozen, jit::ConditionCode cc,
                  SrcKey dest);
-void emitBindSideExit(CodeBlock& cb, CodeBlock& frozen, JIT::ConditionCode cc,
+void emitBindSideExit(CodeBlock& cb, CodeBlock& frozen, jit::ConditionCode cc,
                       SrcKey dest, TransFlags trflags = TransFlags{});
 
 /*
  * Similar to the emitBindJ() series.  The address of the jmp is returned.
  */
-TCA emitRetranslate(CodeBlock& cb, CodeBlock& frozen, JIT::ConditionCode cc,
+TCA emitRetranslate(CodeBlock& cb, CodeBlock& frozen, jit::ConditionCode cc,
                     SrcKey dest, TransFlags trflags);
 
 /*
- * Returns the amount by which rVmSp should be adjusted.
+ * Emits a REQ_BIND_CALL service request, and adjusts rVmSp after the call.
  */
-int32_t emitBindCall(CodeBlock& mainCode, CodeBlock& coldCode,
-                     CodeBlock& frozenCode, SrcKey srcKey,
-                     const Func* funcd, int numArgs);
+void emitBindCall(CodeBlock& mainCode, CodeBlock& coldCode,
+                  CodeBlock& frozenCode, SrcKey srcKey,
+                  const Func* funcd, int numArgs);
 
 }}}
 

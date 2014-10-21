@@ -16,10 +16,10 @@
 #include <thread>
 #include <glog/logging.h>
 
-#include "folly/Benchmark.h"
-#include "folly/File.h"
-#include "folly/gen/Base.h"
-#include "folly/gen/File.h"
+#include <folly/Benchmark.h>
+#include <folly/File.h>
+#include <folly/gen/Base.h>
+#include <folly/gen/File.h>
 
 using namespace folly::gen;
 
@@ -64,7 +64,7 @@ BENCHMARK(ByLine_Pipes, iters) {
 // ============================================================================
 
 int main(int argc, char *argv[]) {
-  google::ParseCommandLineFlags(&argc, &argv, true);
+  gflags::ParseCommandLineFlags(&argc, &argv, true);
   folly::runBenchmarks();
   return 0;
 }

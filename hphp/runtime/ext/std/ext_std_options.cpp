@@ -28,7 +28,7 @@
 #include "folly/ScopeGuard.h"
 #include "folly/String.h"
 
-#include "hphp/runtime/ext/ext_misc.h"
+#include "hphp/runtime/ext/std/ext_std_misc.h"
 #include "hphp/runtime/ext/std/ext_std_errorfunc.h"
 #include "hphp/runtime/ext/ext_function.h"
 #include "hphp/runtime/ext/extension.h"
@@ -158,7 +158,8 @@ static Variant eval_for_assert(ActRec* const curFP, const String& codeStr) {
   return tvAsVariant(&retVal);
 }
 
-static Variant HHVM_FUNCTION(assert, const Variant& assertion) {
+static Variant HHVM_FUNCTION(assert, const Variant& assertion,
+                                     const Variant& message/* = null */) {
   if (!s_option_data->assertActive) return true;
 
   CallerFrame cf;
@@ -188,12 +189,12 @@ static Variant HHVM_FUNCTION(assert, const Variant& assertion) {
     ai.append(assertion.isString() ? assertion : empty_string_variant_ref);
     f_call_user_func(1, s_option_data->assertCallback, ai.toArray());
   }
-
+  String name(message.isNull() ? "Assertion" : message.toString());
   if (s_option_data->assertWarning) {
     auto const str = !assertion.isString()
-      ? String("Assertion failed")
-      : concat3("Assertion \"", assertion.toString(), "\" failed");
-    raise_warning("%s", str.data());
+      ? " failed"
+      : concat3(" \"",  assertion.toString(), "\" failed");
+    raise_warning("%s%s", name.data(),  str.data());
   }
   if (s_option_data->assertBail) {
     throw ExtendedException("An assertion was raised.");
@@ -767,11 +768,25 @@ static String HHVM_FUNCTION(cpu_get_model) {
 }
 
 Variant HHVM_FUNCTION(ini_get, const String& varname) {
-  String value = empty_string();
+  Variant value;
   bool ret = IniSetting::Get(varname, value);
+
+  // ret will be false if varname isn't a valid ini setting
   if (!ret) {
     return false;
   }
+
+  // Anything other than array for ini_get can be converted to
+  // the expected string result for this function call.
+  // If value is null, an empty string is returned, which is good
+  // and expected.
+  if (!value.isArray()) {
+    return value.toString();
+  }
+  // For arrays, this will return an array of values. It will also return
+  // an empty array if the values for a valid collection-like configuration
+  // has not been set. This is similar to returning an empty-string for
+  // standard configuration options.
   return value;
 }
 

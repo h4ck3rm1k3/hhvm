@@ -90,12 +90,12 @@ inline bool Class::ifaceofDirect(const StringData* name) const {
 ///////////////////////////////////////////////////////////////////////////////
 // Basic info.
 
-inline const PreClass* Class::preClass() const {
-  return m_preClass.get();
-}
-
 inline const StringData* Class::name() const {
   return m_preClass->name();
+}
+
+inline const PreClass* Class::preClass() const {
+  return m_preClass.get();
 }
 
 inline Class* Class::parent() const {
@@ -245,12 +245,22 @@ inline const std::vector<const Func*>& Class::pinitVec() const {
 ///////////////////////////////////////////////////////////////////////////////
 // Property storage.
 
+inline void Class::initPropHandle() const {
+  m_propDataCache.bind();
+}
+
 inline RDS::Handle Class::propHandle() const {
   return m_propDataCache.handle();
 }
 
 inline RDS::Handle Class::sPropInitHandle() const {
   return m_sPropCacheInit.handle();
+}
+
+inline RDS::Handle Class::sPropHandle(Slot index) const {
+  assert(m_sPropCacheInit.bound());
+  assert(numStaticProperties() > index);
+  return m_sPropCache[index].handle();
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -312,8 +322,25 @@ inline RDS::Handle Class::classHandle() const {
   return m_cachedClass.handle();
 }
 
+inline void Class::setClassHandle(RDS::Link<Class*> link) const {
+  assert(!m_cachedClass.bound());
+  m_cachedClass = link;
+}
+
+inline Class* Class::getCached() const {
+  return *m_cachedClass;
+}
+
+inline void Class::setCached() {
+  *m_cachedClass = this;
+}
+
 inline const Native::NativeDataInfo* Class::getNativeDataInfo() const {
   return m_nativeDataInfo;
+}
+
+inline DataType Class::enumBaseTy() const {
+  return m_enumBaseTy;
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -326,12 +353,20 @@ inline bool isTrait(const Class* cls) {
   return cls->attrs() & AttrTrait;
 }
 
+inline bool isEnum(const Class* cls) {
+  return cls->attrs() & AttrEnum;
+}
+
 inline bool isInterface(const Class* cls) {
   return cls->attrs() & AttrInterface;
 }
 
 inline bool isNormalClass(const Class* cls ) {
-  return !(cls->attrs() & (AttrTrait | AttrInterface));
+  return !(cls->attrs() & (AttrTrait | AttrInterface | AttrEnum));
+}
+
+inline bool isAbstract(const Class* cls) {
+  return cls->attrs() & AttrAbstract;
 }
 
 inline bool classHasPersistentRDS(const Class* cls) {

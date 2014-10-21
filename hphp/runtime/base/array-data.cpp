@@ -95,21 +95,49 @@ static ArrayData* ZAppendThrow(ArrayData* ad, RefData* v, int64_t* key_ptr) {
 #define DISPATCH(entry)                         \
   { PackedArray::entry,                         \
     MixedArray::entry,                          \
-    APCLocalArray::entry,                       \
+    MixedArray::entry,                          \
+    MixedArray::entry,                          \
+    PackedArray::entry,                         \
     EmptyArray::entry,                          \
+    APCLocalArray::entry,                       \
     NameValueTableWrapper::entry,               \
-    ProxyArray::entry,                          \
-    MixedArray::entry                           \
+    ProxyArray::entry                           \
   },
 
 #define DISPATCH_INTMAP_SPECIALIZED(entry)      \
   { PackedArray::entry,                         \
     MixedArray::entry,                          \
-    APCLocalArray::entry,                       \
+    MixedArray::entry,                          \
+    MixedArray::entry##Impl<ArrayData::kIntMapKind>, \
+    PackedArray::entry,                         \
     EmptyArray::entry,                          \
+    APCLocalArray::entry,                       \
     NameValueTableWrapper::entry,               \
-    ProxyArray::entry,                          \
-    MixedArray::entry##Impl<ArrayData::kIntMapKind>   \
+    ProxyArray::entry                           \
+  },
+
+#define DISPATCH_STRMAP_SPECIALIZED(entry)      \
+  { PackedArray::entry,                         \
+    MixedArray::entry,                          \
+    MixedArray::entry##Impl<ArrayData::kStrMapKind>, \
+    MixedArray::entry,                          \
+    PackedArray::entry,                         \
+    EmptyArray::entry,                          \
+    APCLocalArray::entry,                       \
+    NameValueTableWrapper::entry,               \
+    ProxyArray::entry                           \
+  },
+
+#define DISPATCH_MAP_ARRAY_SPECIALIZED(entry)   \
+  { PackedArray::entry,                         \
+    MixedArray::entry,                          \
+    MixedArray::entry##Impl<ArrayData::kStrMapKind>, \
+    MixedArray::entry##Impl<ArrayData::kIntMapKind>, \
+    PackedArray::entry,                         \
+    EmptyArray::entry,                          \
+    APCLocalArray::entry,                       \
+    NameValueTableWrapper::entry,               \
+    ProxyArray::entry                           \
   },
 
 /*
@@ -160,7 +188,27 @@ extern const ArrayFunctions g_array_funcs = {
    *   Lookup a value in an array using an integer key.  Returns
    *   nullptr if the key is not in the array.
    */
-  DISPATCH(NvGetInt)
+  DISPATCH_STRMAP_SPECIALIZED(NvGetInt)
+
+  /*
+   * const TypedValue* NvGetIntConverted(const ArrayData*, int64_t key)
+   *
+   *   Lookup a value in an array using an integer key. Signifies that the key
+   *   was originally a numeric-string key that was converted to int.
+   *   Returns nullptr if the key is not in the array.
+   */
+  {
+    PackedArray::NvGetInt,
+    MixedArray::NvGetInt,
+    MixedArray::NvGetIntImpl<ArrayData::kStrMapKind>,
+    /* IntMapArray */
+    MixedArray::NvGetIntConverted,
+    PackedArray::NvGetIntConverted,
+    EmptyArray::NvGetInt,
+    APCLocalArray::NvGetInt,
+    NameValueTableWrapper::NvGetInt,
+    ProxyArray::NvGetInt,
+  },
 
   /*
    * const TypedValue* NvGetStr(const ArrayData*, const StringData*)
@@ -185,7 +233,27 @@ extern const ArrayFunctions g_array_funcs = {
    *   Set a value in the array for an integer key.  This function has
    *   copy/grow semantics.
    */
-  DISPATCH(SetInt)
+  DISPATCH_STRMAP_SPECIALIZED(SetInt)
+
+  /*
+   * ArrayData* SetIntConverted(ArrayData*, int64_t key, Cell v, bool copy)
+   *
+   *   Set a value in the array for an integer key. Signifies that the key
+   *   was originally a numeric-string key that was converted to int.
+   *   This function has copy/grow semantics.
+   */
+  {
+    PackedArray::SetInt,
+    MixedArray::SetInt,
+    MixedArray::SetIntImpl<ArrayData::kStrMapKind>,
+    /* IntMapArray */
+    MixedArray::SetIntConverted,
+    PackedArray::SetIntConverted,
+    EmptyArray::SetInt,
+    APCLocalArray::SetInt,
+    NameValueTableWrapper::SetInt,
+    ProxyArray::SetInt,
+  },
 
   /*
    * ArrayData* SetStr(ArrayData*, StringData*, Cell v, bool copy)
@@ -234,7 +302,7 @@ extern const ArrayFunctions g_array_funcs = {
    *   Returns true iff this array contains an element with the
    *   supplied integer key.
    */
-  DISPATCH(ExistsInt)
+  DISPATCH_STRMAP_SPECIALIZED(ExistsInt)
 
   /*
    * bool ExistsStr(const ArrayData*, const StringData*)
@@ -252,7 +320,7 @@ extern const ArrayFunctions g_array_funcs = {
    *   creating it as a KindOfNull if it doesn't exist, and sets `out'
    *   to point to it.  This function has copy/grow semantics.
    */
-  DISPATCH(LvalInt)
+  DISPATCH_STRMAP_SPECIALIZED(LvalInt)
 
   /*
    * ArrayData* LvalStr(ArrayData*, StringData* key, Variant*& out, bool copy)
@@ -273,7 +341,23 @@ extern const ArrayFunctions g_array_funcs = {
    *   function sets out to point to the lvalBlackHole.  This function
    *   has copy/grow semantics.
    */
-  DISPATCH_INTMAP_SPECIALIZED(LvalNew)
+  DISPATCH_MAP_ARRAY_SPECIALIZED(LvalNew)
+
+  /*
+   * ArrayData* LvalNewRef(ArrayData*, Variant*& out, bool copy)
+   */
+  {
+    PackedArray::LvalNewRef,
+    MixedArray::LvalNew,
+    MixedArray::LvalNewImpl<ArrayData::kStrMapKind>,
+    /* IntMapArray */
+    MixedArray::LvalNewImpl<ArrayData::kIntMapKind>,
+    PackedArray::LvalNewRef,
+    EmptyArray::LvalNew,
+    APCLocalArray::LvalNew,
+    NameValueTableWrapper::LvalNew,
+    ProxyArray::LvalNew,
+  },
 
   /*
    * ArrayData* SetRefInt(ArrayData*, int64_t key, Variant& v, bool copy)
@@ -282,7 +366,7 @@ extern const ArrayFunctions g_array_funcs = {
    *   boxed, and then insert a KindOfRef that points to v's RefData.
    *   This function has copy/grow semantics.
    */
-  DISPATCH_INTMAP_SPECIALIZED(SetRefInt)
+  DISPATCH_MAP_ARRAY_SPECIALIZED(SetRefInt)
 
   /*
    * ArrayData* SetRefStr(ArrayData*, StringData* key, Variant& v, bool copy)
@@ -292,7 +376,7 @@ extern const ArrayFunctions g_array_funcs = {
    *  then insert a KindOfRef that points to v's RefData.  This
    *  function has copy/grow semantics.
    */
-  DISPATCH_INTMAP_SPECIALIZED(SetRefStr)
+  DISPATCH_MAP_ARRAY_SPECIALIZED(SetRefStr)
 
   /*
    * ArrayData* AddInt(ArrayData*, int64_t key, Cell, bool copy)
@@ -303,7 +387,7 @@ extern const ArrayFunctions g_array_funcs = {
    *   already contain a value for the key `key' if it can make the
    *   operation more efficient.
    */
-  DISPATCH(SetInt)
+  DISPATCH_STRMAP_SPECIALIZED(SetInt)
   DISPATCH_INTMAP_SPECIALIZED(SetStr)
 
   /*
@@ -313,7 +397,7 @@ extern const ArrayFunctions g_array_funcs = {
    *   entry for that element, this function does not remove it, and
    *   may or may not cow.  This function has copy/grow semantics.
    */
-  DISPATCH(RemoveInt)
+  DISPATCH_STRMAP_SPECIALIZED(RemoveInt)
 
   /*
    * ArrayData* RemoveStr(ArrayData*, const StringData*, bool copy)
@@ -325,35 +409,43 @@ extern const ArrayFunctions g_array_funcs = {
   DISPATCH_INTMAP_SPECIALIZED(RemoveStr)
 
   /*
-   * ssize_t IterBegin(const ArrayData*)
    * ssize_t IterEnd(const ArrayData*)
    *
-   *   Array positions are represented as an opaque ssize_t.
-   *   IterBegin returns the position of the first element in the
-   *   array, and IterEnd returns the position of the last element in
-   *   the array.  Either function may return ArrayData::invalid_index
-   *   if there is no first or last element.
+   *   Returns the canonical invalid position for this array.  Note
+   *   that if elements are added or removed from the array, the value
+   *   of the array's canonical invalid position may change.
+   *
+   * ssize_t IterBegin(const ArrayData*)
+   *
+   *   Returns the position of the first element, or the canonical
+   *   invalid position if this array is empty.
+   *
+   * ssize_t IterLast(const ArrayData*)
+   *
+   *   Returns the position of the last element, or the canonical
+   *   invalid position if this array is empty.
    */
   DISPATCH(IterBegin)
+  DISPATCH(IterLast)
   DISPATCH(IterEnd)
 
   /*
-   * ssize_t IterAdvance(const ArrayData*, ssize_t pos)
+   * ssize_t IterAdvance(const ArrayData*, size_t pos)
    *
-   *   Advance `pos' to the next position in the array.  `pos' may be
-   *   invalid_index, in which case this function returns the position
-   *   of the first element in the array.  Returns invalid_index if
-   *   there is no next position in the array.
+   *   Returns the position of the element that comes after pos, or the
+   *   canonical invalid position if there are no more elements after pos.
+   *   If pos is the canonical invalid position, this method will return
+   *   the canonical invalid position.
    */
   DISPATCH(IterAdvance)
 
   /*
-   * ssize_t IterRewind(const ArrayData*, ssize_t pos)
+   * ssize_t IterRewind(const ArrayData*, size_t pos)
    *
-   *   Move `pos' to the position of the previous element in the
-   *   array.  `pos' may be invalid_index, in which case this function
-   *   returns invalid_index.  Returns invalid_index if there is no
-   *   previous position in the array.
+   *   Returns the position of the element that comes before pos, or the
+   *   canonical invalid position if there are no elements before pos. If
+   *   pos is the canonical invalid position, no guarantees are made about
+   *   what this method returns.
    */
   DISPATCH(IterRewind)
 
@@ -380,7 +472,7 @@ extern const ArrayFunctions g_array_funcs = {
    *
    *   Pre: fp.getContainer() == ad
    */
-  DISPATCH_INTMAP_SPECIALIZED(AdvanceMArrayIter)
+  DISPATCH_MAP_ARRAY_SPECIALIZED(AdvanceMArrayIter)
 
   /*
    * ArrayData* EscalateForSort(ArrayData*)
@@ -405,7 +497,19 @@ extern const ArrayFunctions g_array_funcs = {
    *   Sort an array, by values, and then assign new keys to the
    *   elements in the resulting array.
    */
-  DISPATCH(Sort)
+  {
+    PackedArray::Sort,
+    MixedArray::Sort,
+    /* StrMapArray */
+    MixedArray::WarnAndSort,
+    /* IntMapArray */
+    MixedArray::WarnAndSort,
+    PackedArray::Sort,
+    EmptyArray::Sort,
+    APCLocalArray::Sort,
+    NameValueTableWrapper::Sort,
+    ProxyArray::Sort,
+  },
 
   /*
    * void Asort(int sort_flags, bool ascending)
@@ -432,7 +536,19 @@ extern const ArrayFunctions g_array_funcs = {
    *   function (in the variant).  Returns false if the user-defined
    *   comparison function modifies the array we are sorting.
    */
-  DISPATCH(Usort)
+  {
+    PackedArray::Usort,
+    MixedArray::Usort,
+    /* StrMapArray */
+    MixedArray::WarnAndUsort,
+    /* IntMapArray */
+    MixedArray::WarnAndUsort,
+    PackedArray::Usort,
+    EmptyArray::Usort,
+    APCLocalArray::Usort,
+    NameValueTableWrapper::Usort,
+    ProxyArray::Usort,
+  },
 
   /*
    * bool Uasort(ArrayData*, const Variant&)
@@ -481,7 +597,7 @@ extern const ArrayFunctions g_array_funcs = {
    *   integer key.  If there is no next available integer key, no
    *   value is appended.  This function has copy/grow semantics.
    */
-  DISPATCH_INTMAP_SPECIALIZED(Append)
+  DISPATCH_MAP_ARRAY_SPECIALIZED(Append)
 
   /*
    * ArrayData* AppendRef(ArrayData*, Variant& v, bool copy)
@@ -492,7 +608,7 @@ extern const ArrayFunctions g_array_funcs = {
    *   If there is no next available integer key, this function does
    *   not append a value.  This function has copy/grow semantics.
    */
-  DISPATCH_INTMAP_SPECIALIZED(AppendRef)
+  DISPATCH_MAP_ARRAY_SPECIALIZED(AppendRef)
 
   /*
    * ArrayData* AppendWithRef(ArrayData*, const Variant& v, bool copy)
@@ -504,7 +620,7 @@ extern const ArrayFunctions g_array_funcs = {
    *   referenced"---i.e. if `v' is already KindOfRef and
    *   RefData::isReferenced is true.
    */
-  DISPATCH_INTMAP_SPECIALIZED(AppendWithRef)
+  DISPATCH_MAP_ARRAY_SPECIALIZED(AppendWithRef)
 
   /*
    * ArrayData* PlusEq(ArrayData*, const ArrayData* elems)
@@ -534,7 +650,7 @@ extern const ArrayFunctions g_array_funcs = {
    *   `value'.  This function may return a new (not yet incref'd)
    *   array if it decided to COW due to hasMultipleRefs().
    */
-  DISPATCH_INTMAP_SPECIALIZED(Pop)
+  DISPATCH_MAP_ARRAY_SPECIALIZED(Pop)
 
   /*
    * ArrayData* Dequeue(ArrayData*, Variant& value)
@@ -543,7 +659,7 @@ extern const ArrayFunctions g_array_funcs = {
    *   `value'.  This function may return a new (not yet incref'd)
    *   array if it decided to COW due to hasMultipleRefs().
    */
-  DISPATCH_INTMAP_SPECIALIZED(Dequeue)
+  DISPATCH_MAP_ARRAY_SPECIALIZED(Dequeue)
 
   /*
    * ArrayData* Prepend(ArrayData*, const Variant& `v', bool copy)
@@ -558,7 +674,7 @@ extern const ArrayFunctions g_array_funcs = {
    *
    *   Renumber integer keys on the array in place.
    */
-  DISPATCH_INTMAP_SPECIALIZED(Renumber)
+  DISPATCH(Renumber)
 
   /*
    * void OnSetEvalScalar(ArrayData*)
@@ -587,31 +703,47 @@ extern const ArrayFunctions g_array_funcs = {
    *   These functions are part of the zend compat layer but their
    *   effects currently aren't documented.
    */
-  { &PackedArray::ZSetInt,
+  {
+    &PackedArray::ZSetInt,
     &MixedArray::ZSetInt,
+    &MixedArray::ZSetInt,
+    &MixedArray::ZSetInt,
+    &PackedArray::ZSetInt,
     &ZSetIntThrow,
     &ZSetIntThrow,
     &ZSetIntThrow,
     &ProxyArray::ZSetInt,
-    &MixedArray::ZSetInt },
-  { &PackedArray::ZSetStr,
+  },
+
+  {
+    &PackedArray::ZSetStr,
     &MixedArray::ZSetStr,
+    &MixedArray::ZSetStr,
+    &MixedArray::ZSetStr,
+    &PackedArray::ZSetStr,
     &ZSetStrThrow,
     &ZSetStrThrow,
     &ZSetStrThrow,
     &ProxyArray::ZSetStr,
-    &MixedArray::ZSetStr },
-  { &PackedArray::ZAppend,
+  },
+
+  {
+    &PackedArray::ZAppend,
     &MixedArray::ZAppend,
+    &MixedArray::ZAppend,
+    &MixedArray::ZAppend,
+    &PackedArray::ZAppend,
     &ZAppendThrow,
     &ZAppendThrow,
     &ZAppendThrow,
     &ProxyArray::ZAppend,
-    &MixedArray::ZAppend },
+  },
 };
 
 #undef DISPATCH
 #undef DISPATCH_INTMAP_SPECIALIZED
+#undef DISPATCH_STRMAP_SPECIALIZED
+#undef DISPATCH_MAP_ARRAY_SPECIALIZED
 
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -719,23 +851,24 @@ bool ArrayData::equal(const ArrayData *v2, bool strict) const {
 
 Variant ArrayData::reset() {
   setPosition(iter_begin());
-  return m_pos != invalid_index ? getValue(m_pos) : Variant(false);
-}
-
-Variant ArrayData::prev() {
-  if (m_pos != invalid_index) {
-    setPosition(iter_rewind(m_pos));
-    if (m_pos != invalid_index) {
-      return getValue(m_pos);
-    }
-  }
-  return Variant(false);
+  return m_pos != iter_end() ? getValue(m_pos) : Variant(false);
 }
 
 Variant ArrayData::next() {
-  if (m_pos != invalid_index) {
-    setPosition(iter_advance(m_pos));
-    if (m_pos != invalid_index) {
+  // We call iter_advance() without checking if m_pos is the canonical invalid
+  // position. This is okay, since all IterAdvance() impls handle this
+  // correctly, but it means that EmptyArray::IterAdvance() is reachable.
+  setPosition(iter_advance(m_pos));
+  return m_pos != iter_end() ? getValue(m_pos) : Variant(false);
+}
+
+Variant ArrayData::prev() {
+  // We only call iter_rewind() if m_pos is not the canonical invalid position.
+  // Thus, EmptyArray::IterRewind() is not reachable.
+  auto pos_limit = iter_end();
+  if (m_pos != pos_limit) {
+    setPosition(iter_rewind(m_pos));
+    if (m_pos != pos_limit) {
       return getValue(m_pos);
     }
   }
@@ -743,20 +876,20 @@ Variant ArrayData::next() {
 }
 
 Variant ArrayData::end() {
-  setPosition(iter_end());
-  return m_pos != invalid_index ? getValue(m_pos) : Variant(false);
+  setPosition(iter_last());
+  return m_pos != iter_end() ? getValue(m_pos) : Variant(false);
 }
 
 Variant ArrayData::key() const {
-  return m_pos != invalid_index ? getKey(m_pos) : uninit_null();
+  return m_pos != iter_end() ? getKey(m_pos) : uninit_null();
 }
 
 Variant ArrayData::value(int32_t &pos) const {
-  return pos != invalid_index ? getValue(pos) : Variant(false);
+  return pos != iter_end() ? getValue(pos) : Variant(false);
 }
 
 Variant ArrayData::current() const {
-  return m_pos != invalid_index ? getValue(m_pos) : Variant(false);
+  return m_pos != iter_end() ? getValue(m_pos) : Variant(false);
 }
 
 const StaticString
@@ -764,7 +897,7 @@ const StaticString
   s_key("key");
 
 Variant ArrayData::each() {
-  if (m_pos != invalid_index) {
+  if (m_pos != iter_end()) {
     ArrayInit ret(4, ArrayInit::Mixed{});
     Variant key(getKey(m_pos));
     Variant value(getValue(m_pos));
@@ -849,14 +982,16 @@ const Variant& ArrayData::getNotFound(const Variant& k) {
 }
 
 const char* ArrayData::kindToString(ArrayKind kind) {
-  std::array<const char*,7> names = {{
+  std::array<const char*,9> names = {{
     "PackedKind",
     "MixedKind",
-    "SharedKind",
+    "StrMapKind",
+    "IntMapKind",
+    "VPackedKind",
     "EmptyKind",
+    "SharedKind",
     "NvtwKind",
     "ProxyKind",
-    "IntMapKind",
   }};
   static_assert(names.size() == kNumKinds, "add new kinds here");
   return names[kind];

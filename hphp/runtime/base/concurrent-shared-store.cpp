@@ -260,7 +260,9 @@ APCHandle* ConcurrentTableSharedStore::unserialize(const String& key,
     sval->size = size;
     APCStats::getAPCStats().addAPCValue(sval->var, size, true);
     return sval->var;
-  } catch (Exception &e) {
+  } catch (ResourceExceededException&) {
+    throw;
+  } catch (Exception& e) {
     raise_notice("APC Primed fetch failed: key %s (%s).",
                  key.c_str(), e.getMessage().c_str());
     return nullptr;
@@ -322,7 +324,7 @@ bool ConcurrentTableSharedStore::get(const String& key, Variant &value) {
   return true;
 }
 
-static int64_t get_int64_value(StoreValue* sval) {
+static Variant get_Variant_value(StoreValue* sval) {
   Variant v;
   if (sval->inMem()) {
     v = sval->var->toLocal();
@@ -330,6 +332,11 @@ static int64_t get_int64_value(StoreValue* sval) {
     assert(sval->inFile());
     v = apc_unserialize(sval->sAddr, sval->getSerializedSize());
   }
+  return v;
+}
+
+static int64_t get_int64_value(StoreValue* sval) {
+  Variant v = get_Variant_value(sval);
   return v.toInt64();
 }
 
@@ -344,7 +351,8 @@ int64_t ConcurrentTableSharedStore::inc(const String& key, int64_t step,
     Map::accessor acc;
     if (m_vars.find(acc, tagStringData(key.get()))) {
       sval = &acc->second;
-      if (!sval->expired()) {
+      Variant sval_variant = get_Variant_value(sval);
+      if (!sval->expired() && sval_variant.isNumeric()) {
         ret = get_int64_value(sval) + step;
         size_t size = 0;
         APCHandle *svar = construct(Variant(ret), size);

@@ -17,7 +17,7 @@
 // @author Mark Rabkin (mrabkin@fb.com)
 // @author Andrei Alexandrescu (andrei.alexandrescu@fb.com)
 
-#include "folly/Range.h"
+#include <folly/Range.h>
 
 #if FOLLY_HAVE_EMMINTRIN_H
 #include <emmintrin.h>  // __v16qi
@@ -33,6 +33,11 @@ const AsciiCaseSensitive asciiCaseSensitive = AsciiCaseSensitive();
 const AsciiCaseInsensitive asciiCaseInsensitive = AsciiCaseInsensitive();
 
 std::ostream& operator<<(std::ostream& os, const StringPiece& piece) {
+  os.write(piece.start(), piece.size());
+  return os;
+}
+
+std::ostream& operator<<(std::ostream& os, const MutableStringPiece& piece) {
   os.write(piece.start(), piece.size());
   return os;
 }

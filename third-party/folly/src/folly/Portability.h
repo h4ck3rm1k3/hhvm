@@ -21,6 +21,10 @@
 #include "folly-config.h"
 #endif
 
+#ifdef FOLLY_PLATFORM_CONFIG
+#include FOLLY_PLATFORM_CONFIG
+#endif
+
 #if FOLLY_HAVE_FEATURES_H
 #include <features.h>
 #endif
@@ -169,6 +173,7 @@ struct MaxAlign { char c; } __attribute__((aligned));
 // the 'std' namespace; the latter uses inline namepsaces. Wrap this decision
 // up in a macro to make forward-declarations easier.
 #if FOLLY_USE_LIBCPP
+#include <__config>
 #define FOLLY_NAMESPACE_STD_BEGIN     _LIBCPP_BEGIN_NAMESPACE_STD
 #define FOLLY_NAMESPACE_STD_END       _LIBCPP_END_NAMESPACE_STD
 #else
@@ -181,14 +186,14 @@ struct MaxAlign { char c; } __attribute__((aligned));
 #if FOLLY_HAVE_CLOCK_GETTIME
 #include <time.h>
 #else
-#include "folly/detail/Clock.h"
+#include <folly/detail/Clock.h>
 #endif
 
 // Provide our own std::__throw_* wrappers for platforms that don't have them
 #if FOLLY_HAVE_BITS_FUNCTEXCEPT_H
 #include <bits/functexcept.h>
 #else
-#include "folly/detail/FunctionalExcept.h"
+#include <folly/detail/FunctionalExcept.h>
 #endif
 
 #if defined(__cplusplus)
@@ -231,6 +236,13 @@ typedef SSIZE_T ssize_t;
 
 // compiler specific to compiler specific
 # define __PRETTY_FUNCTION__ __FUNCSIG__
+#endif
+
+#if FOLLY_UNUSUAL_GFLAGS_NAMESPACE
+namespace FOLLY_GFLAGS_NAMESPACE { }
+namespace gflags {
+using namespace FOLLY_GFLAGS_NAMESPACE;
+}  // namespace gflags
 #endif
 
 #endif // FOLLY_PORTABILITY_H_

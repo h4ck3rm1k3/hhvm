@@ -26,7 +26,7 @@
 #include "hphp/runtime/vm/jit/ssa-tmp.h"
 #include "hphp/runtime/vm/jit/timer.h"
 
-namespace HPHP { namespace JIT {
+namespace HPHP { namespace jit {
 
 TRACE_SET_MOD(hhir);
 using Trace::Indent;
@@ -96,38 +96,6 @@ bool typeMightRelax(const SSATmp* tmp) {
 #undef DLdRaw
 #undef DCns
 
-/*
- * Trace back through the source of fp, looking for a guard with the
- * given locId. If one can't be found, return nullptr.
- */
-IRInstruction* guardForLocal(uint32_t locId, SSATmp* fp) {
-  ITRACE(2, "guardForLocal({}, {})\n", locId, *fp);
-  Indent _i;
-
-  for (auto fpInst = fp->inst(); !fpInst->is(DefFP, DefInlineFP);
-       fpInst = fpInst->src(0)->inst()) {
-    ITRACE(2, "fp = {}\n", *fpInst);
-    assert(fpInst->dst()->isA(Type::FramePtr));
-    auto instLoc = [fpInst]{ return fpInst->extra<LocalId>()->locId; };
-
-    switch (fpInst->op()) {
-      case GuardLoc:
-      case CheckLoc:
-      case AssertLoc:
-        if (instLoc() == locId) return fpInst;
-        break;
-
-      case FreeActRec:
-        always_assert(0 && "Attempt to read a local after freeing its frame");
-
-      default:
-        not_reached();
-    }
-  }
-
-  return nullptr;
-}
-
 namespace {
 /*
  * Given a load and the new type of that load's guard, update the type
@@ -136,7 +104,13 @@ namespace {
 void retypeLoad(IRInstruction* load, Type newType) {
   newType = load->is(LdLocAddr, LdStackAddr) ? newType.ptr() : newType;
 
-  if (!newType.equals(load->typeParam())) {
+  // Set new typeParam of 'load' if different from previous one,
+  // but avoid doing it if newType is Bottom.  Note that we may end up
+  // here with newType == Bottom, in case there's a type-check
+  // instruction that is always going to fail but wasn't simplified
+  // during IR generation.  In this case, this code is unreacheble and
+  // will be eliminated later.
+  if (!newType.equals(load->typeParam()) && newType != Type::Bottom) {
     ITRACE(2, "retypeLoad changing type param of {} to {}\n",
            *load, newType);
     load->setTypeParam(newType);
@@ -283,13 +257,13 @@ bool relaxGuards(IRUnit& unit, const GuardConstraints& constraints,
   for (auto* block : blocks) {
     ITRACE(2, "relaxGuards reflow entering B{}\n", block->id());
     Indent _i;
-    state.startBlock(block);
+    state.startBlock(block, block->front().marker());
 
     for (auto& inst : *block) {
       state.setMarker(inst.marker());
       copyProp(&inst);
       visitLoad(&inst, state);
-      retypeDests(&inst);
+      retypeDests(&inst, &unit);
       state.update(&inst);
     }
 

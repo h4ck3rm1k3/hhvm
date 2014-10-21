@@ -28,6 +28,11 @@
 #include <vector>
 
 namespace HPHP {
+///////////////////////////////////////////////////////////////////////////////
+
+struct UnitEmitter;
+
+///////////////////////////////////////////////////////////////////////////////
 
 /*
  * Information about an extension subclass of ObjectData.
@@ -140,6 +145,10 @@ class PreClassEmitter {
   void setHoistable(PreClass::Hoistable h) { m_hoistable = h; }
   PreClass::Hoistable hoistability() const { return m_hoistable; }
   void setOffset(Offset off) { m_offset = off; }
+  void setEnumBaseTy(TypeConstraint ty) { m_enumBaseTy = ty; }
+  const TypeConstraint &enumBaseTy() const {
+    return m_enumBaseTy;
+  }
   Id id() const { return m_id; }
   const MethodVec& methods() const { return m_methods; }
   const PropMap::Builder& propMap() const { return m_propMap; }
@@ -152,6 +161,7 @@ class PreClassEmitter {
     return m_interfaces;
   }
   bool addMethod(FuncEmitter* method);
+  void renameMethod(const StringData* oldName, const StringData *newName);
   bool addProperty(const StringData* n,
                    Attr attrs,
                    const StringData* typeConstraint,
@@ -215,6 +225,7 @@ class PreClassEmitter {
   Attr m_attrs;
   LowStringPtr m_parent;
   LowStringPtr m_docComment;
+  TypeConstraint m_enumBaseTy;
   Id m_id;
   PreClass::Hoistable m_hoistable;
   BuiltinCtorFunction m_instanceCtor{nullptr};
@@ -270,6 +281,7 @@ class PreClassRepoProxy : public RepoProxy {
 #undef PCRP_OP
 };
 
-} // HPHP
+///////////////////////////////////////////////////////////////////////////////
+}
 
 #endif

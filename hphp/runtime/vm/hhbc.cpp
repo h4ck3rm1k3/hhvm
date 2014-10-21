@@ -382,6 +382,34 @@ Offset instrJumpTarget(const Op* instrs, Offset pos) {
   }
 }
 
+OffsetSet instrSuccOffsets(Op* opc, const Unit* unit) {
+  OffsetSet succBcOffs;
+  Op* bcStart = (Op*)(unit->entry());
+
+  if (!instrIsControlFlow(*opc)) {
+    Offset succOff = opc + instrLen(opc) - bcStart;
+    succBcOffs.insert(succOff);
+    return succBcOffs;
+  }
+
+  if (instrAllowsFallThru(*opc)) {
+    Offset succOff = opc + instrLen(opc) - bcStart;
+    succBcOffs.insert(succOff);
+  }
+
+  if (isSwitch(*opc)) {
+    foreachSwitchTarget(opc, [&](Offset& offset) {
+        succBcOffs.insert(offset);
+      });
+  } else {
+    Offset target = instrJumpTarget(bcStart, opc - bcStart);
+    if (target != InvalidAbsoluteOffset) {
+      succBcOffs.insert(target);
+    }
+  }
+  return succBcOffs;
+}
+
 /**
  * Return the number of successor-edges including fall-through paths but not
  * implicit exception paths.
@@ -1178,6 +1206,29 @@ bool instrIsNonCallControlFlow(Op opcode) {
   }
 }
 
+bool instrHasConditionalBranch(Op opcode) {
+  switch (opcode) {
+    case OpJmpZ:
+    case OpJmpNZ:
+    case OpIterInit:
+    case OpMIterInit:
+    case OpWIterInit:
+    case OpIterInitK:
+    case OpMIterInitK:
+    case OpWIterInitK:
+    case OpIterNext:
+    case OpMIterNext:
+    case OpWIterNext:
+    case OpIterNextK:
+    case OpMIterNextK:
+    case OpWIterNextK:
+    case OpDecodeCufIter:
+      return true;
+    default:
+      return false;
+  }
+}
+
 bool instrAllowsFallThru(Op opcode) {
   InstrFlags opFlags = instrFlags(opcode);
   return (opFlags & TF) == 0;
@@ -1271,7 +1322,7 @@ const uint8_t* ImmVector::findLastMember() const {
     assert(vec - m_start < m_length);
   }
 
-  NOT_REACHED();
+  not_reached();
 }
 
 bool ImmVector::decodeLastMember(const Unit* u,

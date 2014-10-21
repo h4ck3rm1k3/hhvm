@@ -19,6 +19,7 @@
 #define incl_HPHP_EXT_APACHE_H_
 
 #include "hphp/runtime/base/base-includes.h"
+#include "hphp/util/health-monitor-types.h"
 
 namespace HPHP {
 
@@ -26,9 +27,21 @@ class ApacheExtension : public Extension {
  public:
   ApacheExtension();
   virtual ~ApacheExtension();
-  virtual void moduleInit();
-  virtual void moduleLoad(const IniSetting::Map& ini, Hdf config);
+  void moduleInit() override;
+  void moduleLoad(const IniSetting::Map& ini, Hdf config) override;
   static bool Enable;
+  bool moduleEnabled() const override { return Enable; }
+
+  static void UpdateHealthLevel(HealthLevel newStatus) {
+    m_healthLevel = newStatus;
+  }
+
+  static HealthLevel GetHealthLevel() {
+    return m_healthLevel;
+  }
+
+ private:
+  static HealthLevel m_healthLevel;
 };
 
 }
