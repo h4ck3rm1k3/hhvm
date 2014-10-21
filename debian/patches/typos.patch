@@ -58,19 +58,6 @@ Index: hhvm/hphp/neo/neo_hdf.c
    }
    *str = s+1;
    return STATUS_OK;
-Index: hhvm/hphp/runtime/ext/ext_domdocument.cpp
-===================================================================
---- hhvm.orig/hphp/runtime/ext/ext_domdocument.cpp
-+++ hhvm/hphp/runtime/ext/ext_domdocument.cpp
-@@ -415,7 +415,7 @@ static Variant dom_canonicalization(xmlN
-       inclusive_ns_prefixes[nscount] = NULL;
-     } else {
-       raise_notice("Inclusive namespace prefixes only allowed in "
--                   "exlcusive mode.");
-+                   "exclusive mode.");
-     }
-   }
-   if (mode == 1) {
 Index: hhvm/hphp/system/idl/stream.idl.json
 ===================================================================
 --- hhvm.orig/hphp/system/idl/stream.idl.json
@@ -145,13 +132,6 @@ Index: hhvm/hphp/test/zend/bad/ext/mbstring/tests/htmlent.php
  // &128... will stay as they are since their character codes are above 127
  // and they do not have a named entity representaion.
  ?>
-@@ -13,4 +13,4 @@
- <?php mb_parse_str("test=&#38;&#64;&#65;&#66;&#128;&#129;&#130;&auml;&ouml;&uuml;&euro;&lang;&rang;", $test);
- print_r($test);
- ?>
--===DONE===
-\ No newline at end of file
-+===DONE===
 Index: hhvm/hphp/system/idl/pdo.idl.json
 ===================================================================
 --- hhvm.orig/hphp/system/idl/pdo.idl.json
