@@ -1,4 +1,14 @@
-hhvm (3.2.0+dfsg1-2) UNRELEASED; urgency=medium
+hhvm (3.3.0+dfsg1-1) UNRELEASED; urgency=medium
+  [ Giuseppe Lavagetto ]
+  * Updated to version 3.3.0
+  * debian/patches:
+    - Removed all patches obsoleted by 3.3.0
+    - Updated remaining patches so that they apply cleanly
+    - Use system-provided pcre library
+
+ -- Giuseppe Lavagetto <glavagetto@wikimedia.org>  Tue, 21 Oct 2014 12:00:22 +0200
+
+hhvm (3.2.0+dfsg1-2) unstable; urgency=medium
 
    [ Faidon Liambotis ]
    * Fix the build system to be able to build a release build but with
