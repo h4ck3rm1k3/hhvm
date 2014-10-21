@@ -1,4 +1,4 @@
 usr/bin/hphpize
-usr/lib/x86_64-linux-gnu/hhvm/CMake/*
-usr/lib/x86_64-linux-gnu/hhvm/hphpize/*
+usr/lib/*/hhvm/CMake/*
+usr/lib/*/hhvm/hphpize/*
 usr/include/hphp/*
