@@ -206,12 +206,12 @@ Files: third-party/libmbfl/*
 Copyright: 1998,1999,2000,2001 HappySize, Inc.
 License: LGPL-2.1
 
-Files: third-party/thrift/*
-Copyright: 2006-2014 Facebook, Inc. (http://www.facebook.com)
+Files: third-party/proxygen/*
+Copyright: 2004-2014 Facebook, Inc. (http://www.facebook.com)
 License: Apache-2.0
 
-Files: third-party/ti/*
-Copyright: 2004-2014 Facebook, Inc. (http://www.facebook.com)
+Files: third-party/thrift/*
+Copyright: 2006-2014 Facebook, Inc. (http://www.facebook.com)
 License: Apache-2.0
 
 Files: third-party/timelib/*
@@ -221,6 +221,7 @@ License: PHP-3.01
 Files: debian/*
 Copyright: 2014 David Martínez Moreno <ender@debian.org>
            2014 Faidon Liambotis <paravoid@debian.org>
+           2014 Giuseppe Lavagetto <glavagetto@wikimedia.org>
 License: GPL-2+
 
 Files: *
