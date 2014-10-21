@@ -2,7 +2,7 @@ use_system_libzip.patch
 use_system_libsqlite3.patch
 use_system_lz4.patch
 use_system_double_conversion.patch
-fix_freetype_include.patch
+use_system_pcre.patch
 typos.patch
 fix_hphp_lexer.patch
 link_libiconv_hook.patch

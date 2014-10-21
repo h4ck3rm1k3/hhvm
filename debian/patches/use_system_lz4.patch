@@ -2,13 +2,13 @@ Description: Use the system liblz4 instead of something in third-party
  There is a version of liblz4 in third-party that shouldn't be used.
 Author: Faidon Liambotis <paravoid@debian.org>
 Forwarded: no
-Last-Update: 2014-07-25
+Last-Update: 2014-10-21
 
 Index: hhvm/third-party/CMakeLists.txt
 ===================================================================
 --- hhvm.orig/third-party/CMakeLists.txt
 +++ hhvm/third-party/CMakeLists.txt
-@@ -28,7 +28,6 @@ list(APPEND THIRD_PARTY_MODULES
+@@ -29,7 +29,6 @@
    libafdt
    libmbfl
    timelib
