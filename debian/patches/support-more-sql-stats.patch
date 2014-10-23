@@ -1,0 +1,32 @@
+Description: Support DDL and empty select statements in SQL stats collection.
+ At the moment, any code performing one a DDL (create, alter, drop table)
+ and/or any code doing tableless selects (like SELECT 1; or SELECT
+ MASTER_LOG_POS...) will cause HHVM to issue a warning and not update the
+ statistics. This patch should add support for those.
+
+Author: Giuseppe Lavagetto <glavagetto@wikimedia.org>
+Origin: backport, https://reviews.facebook.net/D23433
+Last-Update: 2014-09-18
+
+--- a/hphp/runtime/ext/mysql/mysql_common.cpp
++++ b/hphp/runtime/ext/mysql/mysql_common.cpp
+@@ -1319,7 +1319,8 @@ MySQLQueryReturn php_mysql_do_query(const String& query, const Variant& link_id,
+                         "(update|set|show)\\s+([^\\s\\(,]+)|"
+                         "(replace).*?\\s+into\\s+([^\\s\\(,]+)|"
+                         "(delete).*?\\s+from\\s+([^\\s\\(,]+)|"
+-                        "(select).*?[\\s`]+from\\s+([^\\s\\(,]+))/is",
++                        "(select).*?[\\s`]+from\\s+([^\\s\\(,]+)|"
++                        "(create|alter|drop).*?\\s+table\\s+([^\\s\\(,]+))/is",
+                         q, ref(matches));
+     int size = matches.toArray().size();
+     if (size > 2) {
+@@ -1347,7 +1348,7 @@ MySQLQueryReturn php_mysql_do_query(const String& query, const Variant& link_id,
+       }
+     } else {
+       HHVM_FN(preg_match)("/^(?:(?:\\/\\*.*?\\*\\/)|\\(|\\s)*"
+-                          "(begin|commit|rollback)/is",
++                          "(begin|commit|rollback|select)/is",
+                           query, ref(matches));
+       size = matches.toArray().size();
+       auto marray = matches.toArray();
+
