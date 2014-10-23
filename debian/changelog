@@ -5,6 +5,8 @@ hhvm (3.3.0+dfsg1-1) UNRELEASED; urgency=medium
     - Removed all patches obsoleted by 3.3.0
     - Updated remaining patches so that they apply cleanly
     - Use system-provided pcre library
+    - Fixed the config file path that is broken in 3.3.0
+    - Backported some patches from upstream for stability/functionality
 
  -- Giuseppe Lavagetto <glavagetto@wikimedia.org>  Tue, 21 Oct 2014 12:00:22 +0200
 
