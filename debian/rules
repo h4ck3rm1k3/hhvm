@@ -31,6 +31,11 @@ override_dh_auto_test:
 	hphp/hhvm/hhvm hphp/test/run -m interp quick
 endif
 
+override_dh_gencontrol:
+	hhvmapi=$(shell $(CURDIR)/debian/hhvm/usr/bin/hhvm --version | sed -ne 's/^Extension API:\ //p') && \
+		[ -n "$${hhvmapi}" ] && echo "hhvm:ApiVersion=hhvm-api-$${hhvmapi}" >> debian/hhvm.substvars
+	dh_gencontrol
+
 override_dh_strip:
 	dh_strip --dbg-package=hhvm-dbg
 
@@ -40,4 +45,4 @@ override_dh_fixperms:
 			chown www-data:www-data \
 			debian/hhvm/var/log/hhvm || true
 
-.PHONY: override_dh_auto_build override_dh_auto_configure override_dh_auto_test override_dh_strip override_dh_fixperms
+.PHONY: override_dh_auto_build override_dh_auto_configure override_dh_auto_test override_dh_strip override_dh_fixperms override_dh_gencontrol
