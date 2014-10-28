@@ -15,5 +15,6 @@ fix_leak_bitwise_string_operations.patch
 
 # WMF specific patches go here
 pcre-cache-refactor.patch
+only-initialize-sweepables-on-new-threads.patch
 
 

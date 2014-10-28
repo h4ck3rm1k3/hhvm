@@ -1,0 +1,35 @@
+Subject: Only initialze sweepables on new threads.
+Author: Nik Everett <neverett@wikimedia.org>
+Last-Updated: 28-10-2014
+Origin: commit: https://github.com/nik9000/hhvm/commit/199f07e5c0c744bd28c7038b403f9972c7ebfa9b
+
+--- a/hphp/runtime/base/sweepable.cpp
++++ b/hphp/runtime/base/sweepable.cpp
+@@ -39,6 +39,7 @@ void Sweepable::Node::delist() {
+   p->next = n;
+ }
+ 
++// Called once per thread initialization from ThreadInfo::init
+ void Sweepable::InitSweepableList() {
+   t_sweep.init();
+ }
+--- a/hphp/runtime/base/thread-info.cpp
++++ b/hphp/runtime/base/thread-info.cpp
+@@ -65,6 +65,7 @@ ThreadInfo::ThreadInfo()
+ 
+   Lock lock(s_thread_info_mutex);
+   s_thread_infos.insert(this);
++  Sweepable::InitSweepableList();
+ }
+ 
+ ThreadInfo::~ThreadInfo() {
+--- a/hphp/runtime/base/thread-init-fini.cpp
++++ b/hphp/runtime/base/thread-init-fini.cpp
+@@ -50,7 +50,6 @@ InitFiniNode::InitFiniNode(void(*f)(), When init) {
+ }
+ 
+ void init_thread_locals(void *arg /* = NULL */) {
+-  Sweepable::InitSweepableList();
+   ServerStats::GetLogger();
+   zend_get_bigint_data();
+   zend_get_rand_data();
