@@ -1,4 +1,4 @@
-hhvm (3.3.0+dfsg1-1) UNRELEASED; urgency=medium
+hhvm (3.3.0+dfsg1-1+wm1) trusty-wikimedia; urgency=medium
   [ Giuseppe Lavagetto ]
   * Updated to version 3.3.0
   * debian/patches:
@@ -7,6 +7,11 @@ hhvm (3.3.0+dfsg1-1) UNRELEASED; urgency=medium
     - Use system-provided pcre library
     - Fixed the config file path that is broken in 3.3.0
     - Backported some patches from upstream for stability/functionality
+
+  [ Wikimedia specific ]
+  * Rebased the source on upstream
+  * Added WMF-specific patches for PCRE and sweepers init
+  * Added the upstart script and updated the init script
 
  -- Giuseppe Lavagetto <glavagetto@wikimedia.org>  Tue, 21 Oct 2014 12:00:22 +0200
 

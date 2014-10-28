@@ -7,4 +7,5 @@ hhvm: embedded-library usr/bin/hhvm: file
 # HHVM is in fact code from PHP with a lot of it rewritten in C++.
 # HHVM reuses a lot of original PHP code (tests, for example, to be
 # able to mimic PHP).
-E: hhvm source: license-problem-php-license LICENSE.PHP
+#E: hhvm source: license-problem-php-license LICENSE.PHP
+hhvm: binary-without-manpage usr/bin/hphpize
