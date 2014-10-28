@@ -8,7 +8,7 @@ Author: Giuseppe Lavagetto <glavagetto@wikimedia.org>
 Last-Updated: 2014-10-22
 Forwarded: No
 
--- a/hphp/runtime/base/emulate-zend.cpp
+--- a/hphp/runtime/base/emulate-zend.cpp
 +++ b/hphp/runtime/base/emulate-zend.cpp
 @@ -229,12 +229,12 @@ int emulate_zend(int argc, char** argv) {
  
