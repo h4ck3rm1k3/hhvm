@@ -73,6 +73,7 @@ do_start()
         #   2 if daemon could not be started
         touch $PIDFILE
         chown $RUN_AS_USER:$RUN_AS_GROUP $PIDFILE
+	install -d -m0700 -o ${RUN_AS_USER} -g ${RUN_AS_GROUP} /var/cache/hhvm
         start-stop-daemon --start --quiet --pidfile $PIDFILE --exec $DAEMON --test > /dev/null \
                 || return 1
         start-stop-daemon --start --quiet --pidfile $PIDFILE --exec $DAEMON -- \

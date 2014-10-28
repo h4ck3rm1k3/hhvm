@@ -1,0 +1,27 @@
+# hhvm - The HHVM FastCGI Server
+
+description "The HHVM FastCGI Server"
+author "Giuseppe Lavagetto <lavagetto@wikimedia.org>"
+
+start on runlevel [2345]
+stop on runlevel [016]
+
+pre-start script
+   RUN_AS_USER="www-data"
+   RUN_AS_GROUP="www-data"
+   [ -r /etc/default/hhvm ] && . /etc/default/hhvm
+   install -d -m0755 -o ${RUN_AS_USER} -g ${RUN_AS_GROUP} /run/hhvm
+   install -d -m0700 -o ${RUN_AS_USER} -g ${RUN_AS_GROUP} /var/cache/hhvm
+end script
+
+respawn
+script
+    RUN_AS_USER="www-data"
+    RUN_AS_GROUP="www-data"
+    DAEMON_OPTS=""
+    [ -r /etc/default/hhvm ] && . /etc/default/hhvm
+    /sbin/start-stop-daemon --quiet --start \
+        --chuid $RUN_AS_USER:$RUN_AS_GROUP \
+        --pidfile /run/hhvm/hhvm.pid \
+        --startas /usr/bin/hhvm -- $DAEMON_OPTS
+end script
