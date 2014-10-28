@@ -1,0 +1,941 @@
+Description: Refactor the pcre cache
+ We backport a few fixes to the pcre cache behaviour from upstream,
+ namely: 
+ * In the AHM for pcre cache, optimistically check for StringData
+   pointer equality before doing a full comparison.
+ * Steady growth of the PCRE cache can cause HHVM to start swapping
+   after sufficient uptime.  This diff adds a configurable expiration
+   interval for the cache, which simply clears the whole thing every N
+   seconds.
+ * pcre_fullinfo can be precomputed for a given compiled regular
+   expression. 
+ * It seemed out of place for pcre_ functions to be declared in
+   program-functions.h.  Moved them to preg.h for documentation, and
+   forward declared them where necessary to keep dependencies
+   minimal.
+ * Introduce a thread-local PCRE cache with LRU eviction, used alongside
+  the existing cache.
+ * Do not place an entry in the shared cache unless the input text is a
+   static string. This prevents pollution of the shared cache with
+   regexes derived from user input.
+ * If the shared cache is full, or if the regex text is non-static, store
+   the pcre object in the local cache.
+ * Use reference counting for local cache entries so that recursive code
+   which requires more than 1024 regexes to be active at a given time
+   will not crash. But for entries in the shared cache, do not update the
+   reference count, to avoid degrading performance due bus activity.
+ * Retain the thread-local cache beyond the end of the request. This is
+   basically the same as the way Zend manages its PCRE cache, and should
+   reduce startup overhead.
+ * Additional code cleanups
+Origin: commit: https://github.com/atdt/hhvm/compare/facebook:HHVM-3.3...pcre-fix
+Author: aravind <aravind@fb.com>
+Author: Bert Maher <bertrand@fb.com>
+Author: Tim Starling <tstarling@wikimedia.org>
+Last-updated: 2014-10-28
+--- a/hphp/compiler/compiler.cpp
++++ b/hphp/compiler/compiler.cpp
+@@ -147,6 +147,7 @@ int hhbcTarget(const CompilerOptions &po, AnalysisResultPtr ar,
+ int runTargetCheck(const CompilerOptions &po, AnalysisResultPtr ar,
+                    AsyncFileCacheSaver &fcThread);
+ int runTarget(const CompilerOptions &po);
++void pcre_init();
+ 
+ ///////////////////////////////////////////////////////////////////////////////
+ 
+--- a/hphp/runtime/base/preg.cpp
++++ b/hphp/runtime/base/preg.cpp
+@@ -16,25 +16,30 @@
+ 
+ #include "hphp/runtime/base/preg.h"
+ 
+-#include "hphp/runtime/base/string-util.h"
+-#include "hphp/runtime/base/request-local.h"
+-#include "hphp/util/lock.h"
+-#include "hphp/util/logger.h"
++#include <atomic>
++#include <fstream>
++#include <mutex>
+ #include <pcre.h>
+ #include <onigposix.h>
+-#include "hphp/runtime/base/runtime-option.h"
+-#include "hphp/runtime/base/builtin-functions.h"
+-#include "hphp/runtime/base/zend-functions.h"
++#include <utility>
++
++#include <folly/AtomicHashArray.h>
++
+ #include "hphp/runtime/base/array-iterator.h"
++#include "hphp/runtime/base/builtin-functions.h"
++#include "hphp/runtime/base/container-functions.h"
++#include "hphp/runtime/base/execution-context.h"
+ #include "hphp/runtime/base/ini-setting.h"
++#include "hphp/runtime/base/request-local.h"
++#include "hphp/runtime/base/runtime-option.h"
++#include "hphp/runtime/base/string-util.h"
+ #include "hphp/runtime/base/thread-init-fini.h"
+-#include "hphp/runtime/base/execution-context.h"
+-#include "hphp/runtime/vm/jit/translator-inline.h"
++#include "hphp/runtime/base/zend-functions.h"
+ #include "hphp/runtime/ext/ext_function.h"
+ #include "hphp/runtime/ext/ext_string.h"
+-#include "hphp/runtime/base/container-functions.h"
+-#include <tbb/concurrent_hash_map.h>
+-#include <utility>
++#include "hphp/runtime/vm/treadmill.h"
++#include "hphp/runtime/vm/vm-regs.h"
++#include "hphp/util/logger.h"
+ 
+ /* Only defined in pcre >= 8.32 */
+ #ifndef PCRE_STUDY_JIT_COMPILE
+@@ -45,7 +50,7 @@ namespace HPHP {
+ ///////////////////////////////////////////////////////////////////////////////
+ // regex cache and helpers
+ 
+-IMPLEMENT_THREAD_LOCAL(PCREglobals, s_pcre_globals);
++IMPLEMENT_THREAD_LOCAL(PCREglobals, tl_pcre_globals);
+ 
+ pcre_cache_entry::~pcre_cache_entry() {
+   if (extra) {
+@@ -55,89 +60,130 @@ pcre_cache_entry::~pcre_cache_entry() {
+     pcre_free_study(extra);
+ #endif
+   }
++  free(subpat_names);
+   pcre_free(re);
+ }
+ 
+-void PCREglobals::onSessionExit() {
+-  for (auto entry: m_overflow) {
+-    delete entry;
+-  }
+-  smart::vector<const pcre_cache_entry*>().swap(m_overflow);
+-}
+-
+-PCREglobals::~PCREglobals() {
+-  onSessionExit();
+-}
+-
+-void pcre_session_exit() {
+-  s_pcre_globals->onSessionExit();
+-}
+-
+-void PCREglobals::cleanupOnRequestEnd(const pcre_cache_entry* ent) {
+-  m_overflow.push_back(ent);
+-}
+-
+ struct ahm_string_data_same {
+   bool operator()(const StringData* s1, const StringData* s2) {
+     // ahm uses -1, -2, -3 as magic values
+-    return int64_t(s1) > 0 && s1->same(s2);
++    return int64_t(s1) > 0 && (s1 == s2 || s1->same(s2));
+   }
+ };
+-typedef folly::AtomicHashArray<const StringData*, const pcre_cache_entry*,
++typedef folly::AtomicHashArray<const StringData*, pcre_cache_entry_ptr,
+                          string_data_hash, ahm_string_data_same> PCREStringMap;
+-typedef std::pair<const StringData*, const pcre_cache_entry*> PCREEntry;
++typedef std::pair<const StringData*, pcre_cache_entry_ptr> PCREEntry;
+ 
+-static PCREStringMap* s_pcreCacheMap;
++static std::atomic<PCREStringMap*> s_pcreCacheMap;
++static std::atomic<time_t> s_pcreCacheExpire;
++static std::mutex s_clearMutex;
+ 
+-void pcre_init() {
+-  if (!s_pcreCacheMap) {
+-    PCREStringMap::Config config;
+-    config.maxLoadFactor = 0.5;
+-    s_pcreCacheMap = PCREStringMap::create(
+-                       RuntimeOption::EvalPCRETableSize, config).release();
++static StaticString s_bump_re_text("/./us");
++
++static PCREStringMap* pcre_cache_create() {
++  PCREStringMap::Config config;
++  config.maxLoadFactor = 0.5;
++  return PCREStringMap::create(
++    RuntimeOption::EvalPCRETableSize, config).release();
++}
++
++static void pcre_cache_destroy(PCREStringMap* cache) {
++  for (auto& it : *cache) {
++    it.second.reset();
+   }
++  PCREStringMap::destroy(cache);
++}
++
++void pcre_init() {
++  assert(!s_pcreCacheMap);
++  s_pcreCacheMap = pcre_cache_create();
++  s_pcreCacheExpire = time(nullptr) + RuntimeOption::EvalPCREExpireInterval;
+ }
+ 
+ void pcre_reinit() {
+-  PCREStringMap::Config config;
+-  config.maxLoadFactor = 0.5;
+-  PCREStringMap* newMap = PCREStringMap::create(
+-                     RuntimeOption::EvalPCRETableSize, config).release();
+   if (s_pcreCacheMap) {
+-    PCREStringMap::iterator it;
+-    for (it = s_pcreCacheMap->begin(); it != s_pcreCacheMap->end(); it++) {
+-      // there should not be a lot of entries created before runtime
+-      // options were parsed.
+-      delete(it->second);
+-    }
+-    PCREStringMap::destroy(s_pcreCacheMap);
++    // there should not be a lot of entries created before runtime
++    // options were parsed.
++    pcre_cache_destroy(s_pcreCacheMap);
++  }
++  s_pcreCacheMap = pcre_cache_create();
++  s_pcreCacheExpire = time(nullptr) + RuntimeOption::EvalPCREExpireInterval;
++}
++
++void pcre_dump_cache(const std::string& filename) {
++  std::ofstream out(filename.c_str());
++  for (auto& it : *s_pcreCacheMap) {
++    out << it.first->data() << "\n";
+   }
+-  s_pcreCacheMap = newMap;
++  out.close();
+ }
+ 
+-static const pcre_cache_entry* lookup_cached_pcre(const String& regex) {
++#if 0
++void pcre_dump_local_cache() {
++  for (auto& it : tl_pcre_globals->m_local_cache) {
++    std::cout << it.first << "\n";
++  }
++}
++#endif
++
++static const pcre_cache_entry_ptr pcre_lookup_static_cache(const String& regex) {
+   assert(s_pcreCacheMap);
+   PCREStringMap::iterator it;
+-  if ((it = s_pcreCacheMap->find(regex.get())) != s_pcreCacheMap->end()) {
++  auto cache = s_pcreCacheMap.load(std::memory_order_acquire);
++  if ((it = cache->find(regex.get())) != cache->end()) {
+     return it->second;
+   }
+-  return 0;
++  return pcre_cache_entry_ptr(nullptr);
++}
++
++static const pcre_cache_entry_ptr pcre_lookup_local_cache(const String& regex) {
++  auto it = tl_pcre_globals->m_local_cache.find(regex.toCppString());
++  if (it != tl_pcre_globals->m_local_cache.end()) {
++    return it->second;
++  }
++  return pcre_cache_entry_ptr(nullptr);
++}
++
++static void pcre_clear_cache() {
++  std::unique_lock<std::mutex> lock(s_clearMutex, std::try_to_lock);
++  if (!lock) return;
++
++  auto newExpire = time(nullptr) + RuntimeOption::EvalPCREExpireInterval;
++  s_pcreCacheExpire.store(newExpire, std::memory_order_relaxed);
++
++  auto tmpMap = pcre_cache_create();
++  tmpMap = s_pcreCacheMap.exchange(tmpMap, std::memory_order_acq_rel);
++
++  Treadmill::enqueue([tmpMap]() {
++      pcre_cache_destroy(tmpMap);
++   });
++}
++
++static const pcre_cache_entry_ptr
++pcre_insert_local_cache(const String& regex, const pcre_cache_entry_ptr ent) {
++  tl_pcre_globals->m_local_cache.set(regex.toCppString(), ent);
++  return ent;
+ }
+ 
+-static const pcre_cache_entry*
+-insert_cached_pcre(const String& regex, const pcre_cache_entry* ent) {
++static const pcre_cache_entry_ptr
++pcre_insert_static_cache(const String& regex, const pcre_cache_entry_ptr ent) {
+   assert(s_pcreCacheMap);
+-  auto pair = s_pcreCacheMap->insert(
+-    PCREEntry(makeStaticString(regex.get()), ent));
+-  if (!pair.second) {
+-    if (pair.first == s_pcreCacheMap->end()) {
+-      // Global Cache is full
+-      // still return the entry and free it at the end of the request
+-      s_pcre_globals->cleanupOnRequestEnd(ent);
++  assert(regex.get()->isStatic());
++  // Clear the cache if we haven't refreshed it in a while
++  if (time(nullptr) > s_pcreCacheExpire) {
++    pcre_clear_cache();
++  }
++  auto cache = s_pcreCacheMap.load(std::memory_order_acquire);
++  auto pair = cache->insert(PCREEntry(regex.get(), pcre_cache_entry_ptr(ent)));
++  if (pair.second) {
++    pair.first->second->setStatic();
++  } else {
++    if (pair.first == cache->end()) {
++      // Global Cache is full, insert into the local cache instead
++      pcre_insert_local_cache(regex, ent);
+       return ent;
+     }
+-    // collision, delete the new one
+-    delete ent;
++    // collision, return the old one, the new one will go out of scope
+     return pair.first->second;
+   }
+   return ent;
+@@ -150,10 +196,10 @@ insert_cached_pcre(const String& regex, const pcre_cache_entry* ent) {
+  * FIXME: It's unclear why this needs to be thread-local data instead
+  * of just existing on the stack during the calls to preg_ functions.
+  */
+-static __thread pcre_extra t_extra_data;
++static __thread pcre_extra tl_extra_data;
+ 
+ // The last pcre error code is available for the whole thread.
+-static __thread int t_last_error_code;
++static __thread int tl_last_error_code;
+ 
+ namespace {
+ 
+@@ -171,12 +217,103 @@ private:
+ typedef FreeHelperImpl<true> SmartFreeHelper;
+ }
+ 
+-static const pcre_cache_entry*
++static void set_extra_limits(pcre_extra*& extra) {
++  if (extra == nullptr) {
++    pcre_extra& extra_data = tl_extra_data;
++    extra_data.flags = PCRE_EXTRA_MATCH_LIMIT |
++      PCRE_EXTRA_MATCH_LIMIT_RECURSION;
++    extra = &extra_data;
++  }
++  extra->match_limit = tl_pcre_globals->m_preg_backtrace_limit;
++  extra->match_limit_recursion = tl_pcre_globals->m_preg_recursion_limit;
++}
++
++static const char* const * get_subpat_names(const pcre_cache_entry* pce) {
++  char **subpat_names = pce->subpat_names.load(std::memory_order_relaxed);
++  if (subpat_names) {
++    return subpat_names;
++  }
++
++  /*
++  * Build a mapping from subpattern numbers to their names. We will always
++  * allocate the table, even though there may be no named subpatterns. This
++  * avoids somewhat more complicated logic in the inner loops.
++  */
++  pcre_extra *extra = pce->extra;
++  set_extra_limits(extra);
++
++  int name_count;
++  subpat_names = (char **)calloc(pce->num_subpats, sizeof(char *));
++  int rc = pcre_fullinfo(pce->re, extra, PCRE_INFO_NAMECOUNT, &name_count);
++  if (rc < 0) {
++    raise_warning("Internal pcre_fullinfo() error %d", rc);
++    return nullptr;
++  }
++  if (name_count > 0) {
++    int name_size, ni = 0;
++    unsigned short name_idx;
++    char* name_table;
++    int rc1, rc2;
++
++    rc1 = pcre_fullinfo(pce->re, extra, PCRE_INFO_NAMETABLE, &name_table);
++    rc2 = pcre_fullinfo(pce->re, extra, PCRE_INFO_NAMEENTRYSIZE, &name_size);
++    rc = rc2 ? rc2 : rc1;
++    if (rc < 0) {
++      raise_warning("Internal pcre_fullinfo() error %d", rc);
++      return nullptr;
++    }
++    while (ni++ < name_count) {
++      name_idx = 0xff * (unsigned char)name_table[0] +
++                 (unsigned char)name_table[1];
++      subpat_names[name_idx] = name_table + 2;
++      if (is_numeric_string(subpat_names[name_idx],
++                            strlen(subpat_names[name_idx]),
++                            nullptr, nullptr, 0) != KindOfNull) {
++        raise_warning("Numeric named subpatterns are not allowed");
++        return nullptr;
++      }
++      name_table += name_size;
++    }
++  }
++  // Store subpat_names into the cache entry
++  char **expected = nullptr;
++  if (!pce->subpat_names.compare_exchange_strong(expected, subpat_names)) {
++    // Another thread stored subpat_names already. The array created by the
++    // other thread is now in expected, return it instead and delete the one
++    // we just made.
++    free(subpat_names);
++    return expected;
++  }
++  return subpat_names;
++}
++
++static bool get_pcre_fullinfo(pcre_cache_entry* pce) {
++  pcre_extra *extra = pce->extra;
++  set_extra_limits(extra);
++
++  /* Calculate the size of the offsets array*/
++  int rc = pcre_fullinfo(pce->re, extra, PCRE_INFO_CAPTURECOUNT,
++                         &pce->num_subpats);
++  if (rc < 0) {
++    raise_warning("Internal pcre_fullinfo() error %d", rc);
++    return false;
++  }
++  pce->num_subpats++;
++  return true;
++}
++
++static const pcre_cache_entry_ptr
+ pcre_get_compiled_regex_cache(const String& regex) {
++  pcre_cache_entry_ptr entry;
+   /* Try to lookup the cached regex entry, and if successful, just pass
+      back the compiled pattern, otherwise go on and compile it. */
+-  if (const pcre_cache_entry* pce = lookup_cached_pcre(regex)) {
+-    return pce;
++  entry = pcre_lookup_static_cache(regex);
++  if (entry.get() != nullptr) {
++    return entry;
++  }
++  entry = pcre_lookup_local_cache(regex);
++  if (entry.get() != nullptr) {
++    return entry;
+   }
+ 
+   /* Parse through the leading whitespace, and display a warning if we
+@@ -185,7 +322,7 @@ pcre_get_compiled_regex_cache(const String& regex) {
+   while (isspace((int)*(unsigned char *)p)) p++;
+   if (*p == 0) {
+     raise_warning("Empty regular expression");
+-    return nullptr;
++    return pcre_cache_entry_ptr(nullptr);
+   }
+ 
+   /* Get the delimiter and display a warning if it is alphanumeric
+@@ -193,7 +330,7 @@ pcre_get_compiled_regex_cache(const String& regex) {
+   char delimiter = *p++;
+   if (isalnum((int)*(unsigned char *)&delimiter) || delimiter == '\\') {
+     raise_warning("Delimiter must not be alphanumeric or backslash");
+-    return nullptr;
++    return pcre_cache_entry_ptr(nullptr);
+   }
+ 
+   char start_delimiter = delimiter;
+@@ -217,7 +354,7 @@ pcre_get_compiled_regex_cache(const String& regex) {
+     if (*pp == 0) {
+       raise_warning("No ending delimiter '%c' found: [%s]", delimiter,
+                       regex.data());
+-      return nullptr;
++      return pcre_cache_entry_ptr(nullptr);
+     }
+   } else {
+     /* We iterate through the pattern, searching for the matching ending
+@@ -238,7 +375,7 @@ pcre_get_compiled_regex_cache(const String& regex) {
+     if (*pp == 0) {
+       raise_warning("No ending matching delimiter '%c' found: [%s]",
+                       end_delimiter, regex.data());
+-      return nullptr;
++      return pcre_cache_entry_ptr(nullptr);
+     }
+   }
+ 
+@@ -286,7 +423,7 @@ pcre_get_compiled_regex_cache(const String& regex) {
+ 
+     default:
+       raise_warning("Unknown modifier '%c': [%s]", pp[-1], regex.data());
+-      return nullptr;
++      return pcre_cache_entry_ptr(nullptr);
+     }
+   }
+ 
+@@ -302,7 +439,7 @@ pcre_get_compiled_regex_cache(const String& regex) {
+   pcre *re = pcre_compile(pattern, coptions, &error, &erroffset, 0);
+   if (re == nullptr) {
+     raise_warning("Compilation failed: %s at offset %d", error, erroffset);
+-    return nullptr;
++    return pcre_cache_entry_ptr(nullptr);
+   }
+   // Careful: from here 're' needs to be freed if something throws.
+ 
+@@ -327,86 +464,35 @@ pcre_get_compiled_regex_cache(const String& regex) {
+   }
+ 
+   /* Store the compiled pattern and extra info in the cache. */
+-  pcre_cache_entry *new_entry = new pcre_cache_entry();
+-  new_entry->re = re;
+-  new_entry->extra = extra;
+-  new_entry->preg_options = poptions;
+-  new_entry->compile_options = coptions;
+-  return insert_cached_pcre(regex, new_entry);
+-}
++  entry = new pcre_cache_entry();
++  entry->re = re;
++  entry->extra = extra;
+ 
+-static void set_extra_limits(pcre_extra*& extra) {
+-  if (extra == nullptr) {
+-    pcre_extra& extra_data = t_extra_data;
+-    extra_data.flags = PCRE_EXTRA_MATCH_LIMIT |
+-      PCRE_EXTRA_MATCH_LIMIT_RECURSION;
+-    extra = &extra_data;
+-  }
+-  extra->match_limit = s_pcre_globals->m_preg_backtrace_limit;
+-  extra->match_limit_recursion = s_pcre_globals->m_preg_recursion_limit;
+-}
++  assert((poptions & ~0x1) == 0);
++  entry->preg_options = poptions;
+ 
+-static int *create_offset_array(const pcre_cache_entry *pce,
+-                                int &size_offsets) {
+-  pcre_extra *extra = pce->extra;
+-  set_extra_limits(extra);
++  assert((coptions & 0x80000000) == 0);
++  entry->compile_options = coptions;
+ 
+-  /* Calculate the size of the offsets array, and allocate memory for it. */
+-  int num_subpats; // Number of captured subpatterns
+-  int rc = pcre_fullinfo(pce->re, extra, PCRE_INFO_CAPTURECOUNT, &num_subpats);
+-  if (rc < 0) {
+-    raise_warning("Internal pcre_fullinfo() error %d", rc);
+-    return nullptr;
++  /* Get pcre full info */
++  if (!get_pcre_fullinfo(entry.get())) {
++    return pcre_cache_entry_ptr(nullptr);
+   }
+-  num_subpats++;
+-  size_offsets = num_subpats * 3;
+-  return (int *)smart_malloc(size_offsets * sizeof(int));
+-}
+-
+-/*
+- * Build a mapping from subpattern numbers to their names. We will always
+- * allocate the table, even though there may be no named subpatterns. This
+- * avoids somewhat more complicated logic in the inner loops.
+- */
+-static char** make_subpats_table(int num_subpats, const pcre_cache_entry* pce) {
+-  pcre_extra* extra = pce->extra;
+-  set_extra_limits(extra);
+-  char **subpat_names = (char **)smart_calloc(num_subpats, sizeof(char *));
+-  int name_cnt = 0, name_size, ni = 0;
+-  char *name_table;
+-  unsigned short name_idx;
+ 
+-  int rc = pcre_fullinfo(pce->re, extra, PCRE_INFO_NAMECOUNT, &name_cnt);
+-  if (rc < 0) {
+-    raise_warning("Internal pcre_fullinfo() error %d", rc);
+-    return nullptr;
+-  }
+-  if (name_cnt > 0) {
+-    int rc1, rc2;
+-    rc1 = pcre_fullinfo(pce->re, extra, PCRE_INFO_NAMETABLE, &name_table);
+-    rc2 = pcre_fullinfo(pce->re, extra, PCRE_INFO_NAMEENTRYSIZE, &name_size);
+-    rc = rc2 ? rc2 : rc1;
+-    if (rc < 0) {
+-      raise_warning("Internal pcre_fullinfo() error %d", rc);
+-      return nullptr;
+-    }
+-
+-    while (ni++ < name_cnt) {
+-      name_idx = 0xff * (unsigned char)name_table[0] +
+-                 (unsigned char)name_table[1];
+-      subpat_names[name_idx] = name_table + 2;
+-      if (is_numeric_string(subpat_names[name_idx],
+-                            strlen(subpat_names[name_idx]),
+-                            nullptr, nullptr, 0) != KindOfNull) {
+-        raise_warning("Numeric named subpatterns are not allowed");
+-        return nullptr;
+-      }
+-      name_table += name_size;
+-    }
++  if (regex.get()->isStatic()) {
++    entry = pcre_insert_static_cache(regex, entry);
++  } else {
++    entry = pcre_insert_local_cache(regex, entry);
+   }
+-  return subpat_names;
++  return entry;
+ }
+ 
++static int *create_offset_array(const pcre_cache_entry *pce,
++                                int &size_offsets) {
++  /* Allocate memory for the offsets array */
++  size_offsets = pce->num_subpats * 3;
++  return (int *)smart_malloc(size_offsets * sizeof(int));
++}
+ 
+ static inline void add_offset_pair(Array& result,
+                                    const String& str,
+@@ -450,8 +536,8 @@ static void pcre_log_error(const char *func, int line, int pcre_code,
+     "limits=(%" PRId64 ", %" PRId64 "), extra=(%d, %d, %d, %d)",
+     func, line, pcre_code, errString,
+     escapedPattern, escapedSubject, escapedRepl,
+-    s_pcre_globals->m_preg_backtrace_limit,
+-    s_pcre_globals->m_preg_recursion_limit,
++    tl_pcre_globals->m_preg_backtrace_limit,
++    tl_pcre_globals->m_preg_recursion_limit,
+     arg1, arg2, arg3, arg4);
+   free((void *)escapedPattern);
+   free((void *)escapedSubject);
+@@ -477,19 +563,19 @@ static void pcre_handle_exec_error(int pcre_code) {
+     preg_code = PHP_PCRE_INTERNAL_ERROR;
+     break;
+   }
+-  t_last_error_code = preg_code;
++  tl_last_error_code = preg_code;
+ }
+ 
+ ///////////////////////////////////////////////////////////////////////////////
+ 
+ Variant preg_grep(const String& pattern, const Array& input, int flags /* = 0 */) {
+-  const pcre_cache_entry* pce = pcre_get_compiled_regex_cache(pattern);
+-  if (pce == nullptr) {
++  const pcre_cache_entry_ptr pce = pcre_get_compiled_regex_cache(pattern);
++  if (pce.get() == nullptr) {
+     return false;
+   }
+ 
+   int size_offsets = 0;
+-  int *offsets = create_offset_array(pce, size_offsets);
++  int *offsets = create_offset_array(pce.get(), size_offsets);
+   if (offsets == nullptr) {
+     return false;
+   }
+@@ -497,7 +583,7 @@ Variant preg_grep(const String& pattern, const Array& input, int flags /* = 0 */
+ 
+   /* Initialize return array */
+   Array ret = Array::Create();
+-  t_last_error_code = PHP_PCRE_NO_ERROR;
++  tl_last_error_code = PHP_PCRE_NO_ERROR;
+ 
+   /* Go through the input array */
+   bool invert = (flags & PREG_GREP_INVERT);
+@@ -544,8 +630,8 @@ Variant preg_grep(const String& pattern, const Array& input, int flags /* = 0 */
+ static Variant preg_match_impl(const String& pattern, const String& subject,
+                                Variant *subpats, int flags, int start_offset,
+                                bool global) {
+-  const pcre_cache_entry* pce = pcre_get_compiled_regex_cache(pattern);
+-  if (pce == nullptr) {
++  const pcre_cache_entry_ptr pce = pcre_get_compiled_regex_cache(pattern);
++  if (pce.get() == nullptr) {
+     return false;
+   }
+ 
+@@ -585,20 +671,14 @@ static Variant preg_match_impl(const String& pattern, const String& subject,
+   }
+ 
+   int size_offsets = 0;
+-  int *offsets = create_offset_array(pce, size_offsets);
++  int *offsets = create_offset_array(pce.get(), size_offsets);
+   SmartFreeHelper offsetsFreer(offsets);
+   int num_subpats = size_offsets / 3;
+   if (offsets == nullptr) {
+     return false;
+   }
+ 
+-  /*
+-   * Build a mapping from subpattern numbers to their names. We will always
+-   * allocate the table, even though there may be no named subpatterns. This
+-   * avoids somewhat more complicated logic in the inner loops.
+-   */
+-  char** subpat_names = make_subpats_table(num_subpats, pce);
+-  SmartFreeHelper subpatFreer(subpat_names);
++  const char* const* subpat_names = get_subpat_names(pce.get());
+   if (subpat_names == nullptr) {
+     return false;
+   }
+@@ -613,7 +693,7 @@ static Variant preg_match_impl(const String& pattern, const String& subject,
+   }
+ 
+   int matched = 0;
+-  t_last_error_code = PHP_PCRE_NO_ERROR;
++  tl_last_error_code = PHP_PCRE_NO_ERROR;
+ 
+   int g_notempty = 0; // If the match should not be empty
+   const char **stringlist; // Holds list of subpatterns
+@@ -789,7 +869,7 @@ Variant preg_match_all(const String& pattern, const String& subject,
+ ///////////////////////////////////////////////////////////////////////////////
+ 
+ static String preg_do_repl_func(const Variant& function, const String& subject,
+-                                int* offsets, char** subpat_names, int count) {
++                                int* offsets, const char* const* subpat_names, int count) {
+   Array subpats = Array::Create();
+   for (int i = 0; i < count; i++) {
+     auto off1 = offsets[i<<1];
+@@ -847,8 +927,8 @@ static bool preg_get_backref(const char **str, int *backref) {
+ static Variant php_pcre_replace(const String& pattern, const String& subject,
+                                 const Variant& replace_var, bool callable,
+                                 int limit, int *replace_count) {
+-  const pcre_cache_entry* pce = pcre_get_compiled_regex_cache(pattern);
+-  if (pce == nullptr) {
++  const pcre_cache_entry_ptr pce = pcre_get_compiled_regex_cache(pattern);
++  if (pce.get() == nullptr) {
+     return false;
+   }
+   bool eval = pce->preg_options & PREG_REPLACE_EVAL;
+@@ -872,15 +952,13 @@ static Variant php_pcre_replace(const String& pattern, const String& subject,
+   }
+ 
+   int size_offsets;
+-  int *offsets = create_offset_array(pce, size_offsets);
++  int *offsets = create_offset_array(pce.get(), size_offsets);
+   SmartFreeHelper offsetsFreer(offsets);
+   if (offsets == nullptr) {
+     return false;
+   }
+ 
+-  int num_subpats = size_offsets / 3;
+-  char** subpat_names = make_subpats_table(num_subpats, pce);
+-  SmartFreeHelper subpatNamesFreer(subpat_names);
++  const char* const* subpat_names = get_subpat_names(pce.get());
+   if (subpat_names == nullptr) {
+     return false;
+   }
+@@ -904,7 +982,7 @@ static Variant php_pcre_replace(const String& pattern, const String& subject,
+     /* Initialize */
+     const char *match = nullptr;
+     int start_offset = 0;
+-    t_last_error_code = PHP_PCRE_NO_ERROR;
++    tl_last_error_code = PHP_PCRE_NO_ERROR;
+     pcre_extra *extra = pce->extra;
+     set_extra_limits(extra);
+ 
+@@ -1261,8 +1339,8 @@ int preg_filter(Variant &result, const Variant& pattern, const Variant& replacem
+ 
+ Variant preg_split(const String& pattern, const String& subject,
+                    int limit /* = -1 */, int flags /* = 0 */) {
+-  const pcre_cache_entry* pce = pcre_get_compiled_regex_cache(pattern);
+-  if (pce == nullptr) {
++  const pcre_cache_entry_ptr pce = pcre_get_compiled_regex_cache(pattern);
++  if (pce.get() == nullptr) {
+     return false;
+   }
+ 
+@@ -1275,7 +1353,7 @@ Variant preg_split(const String& pattern, const String& subject,
+   }
+ 
+   int size_offsets = 0;
+-  int *offsets = create_offset_array(pce, size_offsets);
++  int *offsets = create_offset_array(pce.get(), size_offsets);
+   SmartFreeHelper offsetsFreer(offsets);
+   if (offsets == nullptr) {
+     return false;
+@@ -1285,7 +1363,7 @@ Variant preg_split(const String& pattern, const String& subject,
+   int start_offset = 0;
+   int next_offset = 0;
+   const char *last_match = subject.data();
+-  t_last_error_code = PHP_PCRE_NO_ERROR;
++  tl_last_error_code = PHP_PCRE_NO_ERROR;
+   pcre_extra *extra = pce->extra;
+   set_extra_limits(extra);
+ 
+@@ -1293,7 +1371,7 @@ Variant preg_split(const String& pattern, const String& subject,
+   Array return_value = Array::Create();
+   int g_notempty = 0;   /* If the match should not be empty */
+   int utf8_check = 0;
+-  const pcre_cache_entry* bump_pce = nullptr; /* instance for empty matches */
++  pcre_cache_entry_ptr bump_pce; /* instance for empty matches */
+   while ((limit == -1 || limit > 1)) {
+     int count = pcre_exec(pce->re, extra, subject.data(), subject.size(),
+                           start_offset, g_notempty | utf8_check,
+@@ -1361,9 +1439,9 @@ Variant preg_split(const String& pattern, const String& subject,
+          to achieve this, unless we're already at the end of the string. */
+       if (g_notempty != 0 && start_offset < subject.size()) {
+         if (pce->compile_options & PCRE_UTF8) {
+-          if (bump_pce == nullptr) {
+-            bump_pce = pcre_get_compiled_regex_cache("/./us");
+-            if (bump_pce == nullptr) {
++          if (bump_pce.get() == nullptr) {
++            bump_pce = pcre_get_compiled_regex_cache(s_bump_re_text);
++            if (bump_pce.get() == nullptr) {
+               return false;
+             }
+           }
+@@ -1490,11 +1568,11 @@ String preg_quote(const String& str,
+ }
+ 
+ int preg_last_error() {
+-  return t_last_error_code;
++  return tl_last_error_code;
+ }
+ 
+ size_t preg_pcre_cache_size() {
+-  return (size_t)s_pcreCacheMap->size();
++  return (size_t)s_pcreCacheMap.load(std::memory_order_acquire)->size();
+ }
+ 
+ ///////////////////////////////////////////////////////////////////////////////
+--- a/hphp/runtime/base/preg.h
++++ b/hphp/runtime/base/preg.h
+@@ -19,6 +19,7 @@
+ 
+ #include "hphp/runtime/base/smart-containers.h"
+ #include "hphp/runtime/base/type-string.h"
++#include "folly/EvictingCacheMap.h"
+ 
+ #include <cstdint>
+ #include <cstddef>
+@@ -48,6 +49,10 @@ enum {
+ namespace HPHP {
+ ///////////////////////////////////////////////////////////////////////////////
+ 
++namespace {
++  constexpr int kLocalCacheSize = 1024;
++}
++
+ class Array;
+ struct Variant;
+ 
+@@ -56,28 +61,74 @@ class pcre_cache_entry {
+   pcre_cache_entry& operator=(const pcre_cache_entry&);
+ 
+ public:
+-  pcre_cache_entry() {}
++  pcre_cache_entry()
++    : re(nullptr), extra(nullptr), preg_options(0), compile_options(0),
++      num_subpats(0), subpat_names(nullptr), ref_count(0)
++  {}
++
+   ~pcre_cache_entry();
+ 
++  void setStatic() {
++    ref_count = StaticValue;
++  }
++
++  void incRefCount() {
++    if (ref_count != StaticValue) {
++      ++ref_count;
++    }
++  }
++
++  bool decRefAndRelease() {
++    if (ref_count != StaticValue) {
++      if (--ref_count == 0) {
++        delete this;
++        return true;
++      }
++    }
++    return false;
++  }
++
+   pcre *re;
+   pcre_extra *extra; // Holds results of studying
+-  int preg_options;
+-  int compile_options;
++  int preg_options:1;
++  int compile_options:31;
++  int num_subpats;
++  mutable std::atomic<char**> subpat_names;
++  int ref_count;
+ };
+ 
++typedef SmartPtr<pcre_cache_entry> pcre_cache_entry_ptr;
++
+ class PCREglobals {
+ public:
+-  PCREglobals() { }
+-  ~PCREglobals();
+-  void cleanupOnRequestEnd(const pcre_cache_entry* ent);
+-  void onSessionExit();
++  PCREglobals() : m_local_cache(kLocalCacheSize) { }
+   // pcre ini_settings
+   int64_t m_preg_backtrace_limit;
+   int64_t m_preg_recursion_limit;
+-private:
+-  smart::vector<const pcre_cache_entry*> m_overflow;
++  folly::EvictingCacheMap<std::string, pcre_cache_entry_ptr> m_local_cache;
+ };
+ 
++///////////////////////////////////////////////////////////////////////////////
++// Cache management
++
++/*
++ * Initialize PCRE cache.
++ */
++void pcre_init();
++
++/*
++ * Clear PCRE cache.  Not thread safe - call only after parsing options.
++ */
++void pcre_reinit();
++
++/*
++ * Dump the contents of the PCRE cache to filename.
++ */
++void pcre_dump_cache(const std::string& filename);
++
++///////////////////////////////////////////////////////////////////////////////
++// PHP API
++
+ Variant preg_grep(const String& pattern, const Array& input, int flags = 0);
+ 
+ Variant preg_match(const String& pattern, const String& subject,
+--- a/hphp/runtime/base/program-functions.cpp
++++ b/hphp/runtime/base/program-functions.cpp
+@@ -114,6 +114,10 @@ void initialize_repo();
+  */
+ void (*g_vmProcessInit)();
+ 
++void pcre_init();
++void pcre_reinit();
++void pcre_session_exit();
++
+ ///////////////////////////////////////////////////////////////////////////////
+ // helpers
+ 
+@@ -1856,9 +1860,6 @@ void hphp_session_exit() {
+     // reinitialize g_context here.
+     g_context.getCheck();
+ 
+-    // Clean up pcre state at the end of the request.
+-    pcre_session_exit();
+-
+     mm.sweep();
+ 
+     // Destroy g_context again because ExecutionContext has
+--- a/hphp/runtime/base/program-functions.h
++++ b/hphp/runtime/base/program-functions.h
+@@ -81,9 +81,6 @@ time_t start_time();
+ 
+ class ExecutionContext;
+ 
+-void pcre_init();
+-void pcre_reinit();
+-void pcre_session_exit();
+ void hphp_process_init();
+ void hphp_session_init();
+ 
+--- a/hphp/runtime/base/runtime-option.h
++++ b/hphp/runtime/base/runtime-option.h
+@@ -495,6 +495,7 @@ public:
+   F(uint32_t, InitialStaticStringTableSize,                             \
+                         kDefaultInitialStaticStringTableSize)           \
+   F(uint32_t, PCRETableSize, kPCREInitialTableSize)                     \
++  F(uint64_t, PCREExpireInterval, 2 * 60 * 60)                          \
+   F(bool, EnableNuma, ServerExecutionMode())                            \
+   F(bool, EnableNumaLocal, ServerExecutionMode())                       \
+   /* */
+--- a/hphp/runtime/ext/pcre/ext_pcre.cpp
++++ b/hphp/runtime/ext/pcre/ext_pcre.cpp
+@@ -170,7 +170,7 @@ String HHVM_FUNCTION(sql_regcase, const String& str) {
+ 
+ const StaticString s_PCRE_VERSION("PCRE_VERSION");
+ 
+-extern IMPLEMENT_THREAD_LOCAL(PCREglobals, s_pcre_globals);
++extern IMPLEMENT_THREAD_LOCAL(PCREglobals, tl_pcre_globals);
+ 
+ class PcreExtension : public Extension {
+ public:
+@@ -227,11 +227,11 @@ public:
+     IniSetting::Bind(this, IniSetting::PHP_INI_ALL,
+                      "pcre.backtrack_limit",
+                      std::to_string(RuntimeOption::PregBacktraceLimit).c_str(),
+-                     &s_pcre_globals->m_preg_backtrace_limit);
++                     &tl_pcre_globals->m_preg_backtrace_limit);
+     IniSetting::Bind(this, IniSetting::PHP_INI_ALL,
+                      "pcre.recursion_limit",
+                      std::to_string(RuntimeOption::PregRecursionLimit).c_str(),
+-                     &s_pcre_globals->m_preg_recursion_limit);
++                     &tl_pcre_globals->m_preg_recursion_limit);
+   }
+ 
+ } s_pcre_extension;
