@@ -8,10 +8,5 @@ link_libiconv_hook.patch
 #fix_ldflags.patch
 pass-DNDEBUG-to-RelWithDebInfo.patch
 add_additional_includes_imagemagick.patch
-set-default-config-file-in-etc-hhvm.patch
-ezc-clear-exception.patch
-ezc-fix-count-and-conversion-to-boolean.patch
-memcached-increment-ascii.patch
-support-custom-stream-wrappers-in-xmlreader.patch
 support-more-sql-stats.patch
-getrusage-report-RUSAGE_THREAD.patch
+
