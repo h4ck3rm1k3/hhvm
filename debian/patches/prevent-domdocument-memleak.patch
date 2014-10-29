@@ -1,0 +1,27 @@
+Subject: Fix for the DOMDocument::loadHTML memory leak
+Author: Brett Simmers <bsimmers@facebook.com>
+Bug: https://phabricator.wikimedia.org/T820
+
+--- a/hphp/runtime/ext/ext_domdocument.cpp
++++ b/hphp/runtime/ext/ext_domdocument.cpp
+@@ -2296,6 +2296,7 @@
+   while (children) {
+     if (children == child) {
+       xmlUnlinkNode(child);
++      appendOrphan(*doc()->m_orphans, child);
+       return create_node_object(child, doc(), true);
+     }
+     children = children->next;
+@@ -2357,7 +2358,11 @@
+       xmlReplaceNode(oldchild, newchild);
+       dom_reconcile_ns(nodep->doc, newchild);
+     }
+-    return create_node_object(oldchild, doc(), false);
++    if (domnewchildnode->doc().get()) {
++      removeOrphanIfNeeded(*domnewchildnode->doc()->m_orphans, domnewchildnode->m_node);
++    }
++    return create_node_object(oldchild, doc(),
++                              oldchild->parent == nullptr);
+   }
+
+   php_dom_throw_error(NOT_FOUND_ERR, doc()->m_stricterror);
