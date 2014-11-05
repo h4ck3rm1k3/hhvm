@@ -17,5 +17,7 @@ fix_leak_bitwise_string_operations.patch
 pcre-cache-refactor.patch
 only-initialize-sweepables-on-new-threads.patch
 prevent-domdocument-memleak.patch
+add-adminserver-httpport.patch
+
 
 
