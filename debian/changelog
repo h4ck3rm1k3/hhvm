@@ -1,10 +1,16 @@
+hhvm (3.3.0+dfsg1-1+wm3.1) UNRELEASED; urgency=medium
+
+  * Rebuild with RelWithDebInfo 
+
+ -- Giuseppe Lavagetto <glavagetto@wikimedia.org>  Fri, 07 Nov 2014 06:28:27 +0100
+
 hhvm (3.3.0+dfsg1-1+wm3) trusty-wikimedia; urgency=medium
   [Wikimedia specific]
   * debian/patches:
     - Added a patch to fix the memleaks and the segfaults with domDocument
     - Added patch to fix the restart behaviour of HHVM 
 
- -- Giuseppe Lavagetto <glavagetto@wikimedia.org> Thu, 06 Nov 2014 09:57:59 +0100
+ -- Giuseppe Lavagetto <glavagetto@wikimedia.org>  Thu, 06 Nov 2014 09:57:59 +0100
 
 hhvm (3.3.0+dfsg1-1+wm1) trusty-wikimedia; urgency=medium
   [ Giuseppe Lavagetto ]
