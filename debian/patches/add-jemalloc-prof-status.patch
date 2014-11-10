@@ -1,0 +1,36 @@
+--- a/hphp/runtime/server/admin-request-handler.cpp
++++ b/hphp/runtime/server/admin-request-handler.cpp
+@@ -231,6 +231,8 @@
+               "                  activate heap profiling\n"
+               "/jemalloc-prof-deactivate:\n"
+               "                  deactivate heap profiling\n"
++              "/jemalloc-prof-status:\n"
++              "                  report heap profiling status\n"
+               "/jemalloc-prof-dump:\n"
+               "                  dump heap profile\n"
+               "    file          optional, filesystem path\n"
+@@ -497,6 +499,24 @@
+         }
+         break;
+       }
++      if (cmd == "jemalloc-prof-status") {
++        bool active = false;
++        size_t activeSize = sizeof(active);
++        int err = 0;
++        err = mallctl("opt.prof", &active, &activeSize, nullptr, 0);
++        if (active && err == 0) {
++            err = mallctl("prof.active", &active, &activeSize, nullptr, 0);
++        }
++        if (err) {
++          std::ostringstream estr;
++          estr << "Error " << err << " in mallctl(...)"
++            << endl;
++          transport->sendString(estr.str());
++        } else {
++          transport->sendString(active ? "ACTIVE\n" : "DISABLED\n");
++        }
++        break;
++      }
+       if (cmd == "jemalloc-prof-deactivate") {
+         int err = jemalloc_pprof_disable();
+         if (err) {

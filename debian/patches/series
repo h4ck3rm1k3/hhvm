@@ -18,6 +18,7 @@ pcre-cache-refactor.patch
 only-initialize-sweepables-on-new-threads.patch
 prevent-domdocument-memleak.patch
 add-adminserver-httpport.patch
+add-jemalloc-prof-status.patch
 
 
 
