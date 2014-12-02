@@ -1,4 +1,16 @@
-hhvm (3.3.0+dfsg1-1+wm3.1) UNRELEASED; urgency=medium
+hhvm (3.3.0+dfsg1-1+wm5) UNRELEASED; urgency=medium
+
+  * Add EZC fixes from https://github.com/facebook/hhvm/pull/4330  
+
+ -- Giuseppe Lavagetto <glavagetto@wikimedia.org>  Tue, 02 Dec 2014 13:26:32 +0100
+
+hhvm (3.3.0+dfsg1-1+wm4) trusty-wikimedia; urgency=medium
+
+  * Add the /jemalloc-status endpoint to the admin server 
+
+ -- Giuseppe Lavagetto <glavagetto@wikimedia.org>  Mon, 10 Nov 2014 13:25:11 +0100
+
+hhvm (3.3.0+dfsg1-1+wm3.1) trusty-wikimedia; urgency=medium
 
   * Rebuild with RelWithDebInfo 
 
