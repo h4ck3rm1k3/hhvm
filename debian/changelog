@@ -1,4 +1,14 @@
-hhvm (3.3.0+dfsg1-1+wm5) UNRELEASED; urgency=medium
+hhvm (3.3.1+dfsg1-1+wm1) UNRELEASED; urgency=medium
+
+  * Upgrade to 3.3.1
+  * Add a fix for a libbost memleak on trusty
+  * Add a fix for wddx serialization
+  * Make HHVM use the system tzinfo
+  * remove build-dep alternative for libjpeg62-dev which was confusing trusty
+
+ -- Giuseppe Lavagetto <glavagetto@wikimedia.org>  Wed, 17 Dec 2014 10:46:22 +0100
+
+hhvm (3.3.0+dfsg1-1+wm5) trusty-wikimedia; urgency=medium
 
   * Add EZC fixes from https://github.com/facebook/hhvm/pull/4330  
 
