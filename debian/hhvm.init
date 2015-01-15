@@ -28,8 +28,7 @@ SCRIPTNAME=/etc/init.d/$NAME
 [ -x "$DAEMON" ] || exit 0
 
 # Default values. This values can be overwritten in '/etc/default/hhvm'
-CONFIG_FILE="/etc/hhvm/server.ini"
-SYSTEM_CONFIG_FILE="/etc/hhvm/php.ini"
+CONFIG_FILE="/etc/hhvm/fcgi/php.ini"
 RUN_AS_USER="www-data"
 RUN_AS_GROUP="www-data"
 ADDITIONAL_ARGS=""
@@ -37,12 +36,7 @@ ADDITIONAL_ARGS=""
 # Read configuration variable file if it is present
 [ -r /etc/default/$NAME ] && . /etc/default/$NAME
 
-DAEMON_ARGS="--config ${SYSTEM_CONFIG_FILE} \
---config ${CONFIG_FILE} \
---user ${RUN_AS_USER} \
---mode daemon \
--vPidFile=${PIDFILE} \
-${ADDITIONAL_ARGS}"
+DAEMON_ARGS="--config ${CONFIG_FILE} --mode server ${ADDITIONAL_ARGS}"
 
 # Load the VERBOSE setting and other rcS variables
 . /lib/init/vars.sh
@@ -73,7 +67,9 @@ do_start()
         #   2 if daemon could not be started
         touch $PIDFILE
         chown $RUN_AS_USER:$RUN_AS_GROUP $PIDFILE
-	install -d -m0700 -o ${RUN_AS_USER} -g ${RUN_AS_GROUP} /var/cache/hhvm
+
+	    install -d -m0700 -o ${RUN_AS_USER} -g ${RUN_AS_GROUP} /var/cache/hhvm
+        install -d -m0755 -o ${RUN_AS_USER} -g ${RUN_AS_GROUP} /var/log/hhvm
         start-stop-daemon --start --quiet --pidfile $PIDFILE --exec $DAEMON --test > /dev/null \
                 || return 1
         start-stop-daemon --start --quiet --pidfile $PIDFILE --exec $DAEMON -- \
@@ -119,7 +115,8 @@ do_reload() {
         # restarting (for example, when it is sent a SIGHUP),
         # then implement that here.
         #
-        start-stop-daemon --stop --signal 1 --quiet --pidfile $PIDFILE --name $NAME
+        do_stop
+        do_start
         return 0
 }
 

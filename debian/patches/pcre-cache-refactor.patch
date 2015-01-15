@@ -1,103 +1,189 @@
-Description: Refactor the pcre cache
- We backport a few fixes to the pcre cache behaviour from upstream,
- namely: 
- * In the AHM for pcre cache, optimistically check for StringData
-   pointer equality before doing a full comparison.
- * Steady growth of the PCRE cache can cause HHVM to start swapping
-   after sufficient uptime.  This diff adds a configurable expiration
-   interval for the cache, which simply clears the whole thing every N
-   seconds.
- * pcre_fullinfo can be precomputed for a given compiled regular
-   expression. 
- * It seemed out of place for pcre_ functions to be declared in
-   program-functions.h.  Moved them to preg.h for documentation, and
-   forward declared them where necessary to keep dependencies
-   minimal.
- * Introduce a thread-local PCRE cache with LRU eviction, used alongside
-  the existing cache.
- * Do not place an entry in the shared cache unless the input text is a
-   static string. This prevents pollution of the shared cache with
-   regexes derived from user input.
- * If the shared cache is full, or if the regex text is non-static, store
-   the pcre object in the local cache.
- * Use reference counting for local cache entries so that recursive code
-   which requires more than 1024 regexes to be active at a given time
-   will not crash. But for entries in the shared cache, do not update the
-   reference count, to avoid degrading performance due bus activity.
- * Retain the thread-local cache beyond the end of the request. This is
-   basically the same as the way Zend manages its PCRE cache, and should
-   reduce startup overhead.
- * Additional code cleanups
-Origin: commit: https://github.com/atdt/hhvm/compare/facebook:HHVM-3.3...pcre-fix
-Author: aravind <aravind@fb.com>
+Description: Thread-safe LRU PCRE cache
+ Thread-safe LRU container for the PCRE cache, and a general refactor
+ of the PCRE cache code.
+
 Author: Bert Maher <bertrand@fb.com>
 Author: Tim Starling <tstarling@wikimedia.org>
-Last-updated: 2014-10-28
---- a/hphp/compiler/compiler.cpp
-+++ b/hphp/compiler/compiler.cpp
-@@ -147,6 +147,7 @@ int hhbcTarget(const CompilerOptions &po, AnalysisResultPtr ar,
- int runTargetCheck(const CompilerOptions &po, AnalysisResultPtr ar,
-                    AsyncFileCacheSaver &fcThread);
- int runTarget(const CompilerOptions &po);
-+void pcre_init();
+Last-updated: 2015-01-15
+Origin: https://github.com/tstarling/hiphop-php/commits/pcre-synchronized-cache-3.3.1
+
+--- a/hphp/doc/options.compiled
++++ b/hphp/doc/options.compiled
+@@ -778,6 +778,27 @@
+    RecursionLimit = 100000
+   }
  
- ///////////////////////////////////////////////////////////////////////////////
++- Eval.PCRETableSize
++
++The number of patterns which can be stored in the PCRE cache.
++
++- Eval.PCRECacheType
++
++May be "static", for a very fast cache which leaks memory when full and never
++evicts, "lru", for an cache which evicts the least-recently used item when
++full, or "scalable" for a cache which is slightly slower than "lru" at low
++concurrency but much faster for a high-concurrency tight-loop workload.
++
++Default: scalable.
++
++- Eval.PCREExpireInterval
++
++If Eval.PCRECacheType is set to "static", then setting this to an integer
++number of seconds will cause the cache to be regularly cleared after the
++specified number of seconds.
++
++For "lru" and "scalable" type caches, this is not necessary and not supported.
++
+ =  Tier overwrites
  
+   Tiers {
 --- a/hphp/runtime/base/preg.cpp
 +++ b/hphp/runtime/base/preg.cpp
-@@ -16,25 +16,30 @@
- 
- #include "hphp/runtime/base/preg.h"
- 
--#include "hphp/runtime/base/string-util.h"
--#include "hphp/runtime/base/request-local.h"
--#include "hphp/util/lock.h"
--#include "hphp/util/logger.h"
-+#include <atomic>
+@@ -35,6 +35,8 @@
+ #include "hphp/runtime/base/container-functions.h"
+ #include <tbb/concurrent_hash_map.h>
+ #include <utility>
++#include "hphp/util/thread-safe-scalable-cache.h"
 +#include <fstream>
-+#include <mutex>
- #include <pcre.h>
- #include <onigposix.h>
--#include "hphp/runtime/base/runtime-option.h"
--#include "hphp/runtime/base/builtin-functions.h"
--#include "hphp/runtime/base/zend-functions.h"
-+#include <utility>
-+
-+#include <folly/AtomicHashArray.h>
-+
- #include "hphp/runtime/base/array-iterator.h"
-+#include "hphp/runtime/base/builtin-functions.h"
-+#include "hphp/runtime/base/container-functions.h"
-+#include "hphp/runtime/base/execution-context.h"
- #include "hphp/runtime/base/ini-setting.h"
-+#include "hphp/runtime/base/request-local.h"
-+#include "hphp/runtime/base/runtime-option.h"
-+#include "hphp/runtime/base/string-util.h"
- #include "hphp/runtime/base/thread-init-fini.h"
--#include "hphp/runtime/base/execution-context.h"
--#include "hphp/runtime/vm/jit/translator-inline.h"
-+#include "hphp/runtime/base/zend-functions.h"
- #include "hphp/runtime/ext/ext_function.h"
- #include "hphp/runtime/ext/ext_string.h"
--#include "hphp/runtime/base/container-functions.h"
--#include <tbb/concurrent_hash_map.h>
--#include <utility>
-+#include "hphp/runtime/vm/treadmill.h"
-+#include "hphp/runtime/vm/vm-regs.h"
-+#include "hphp/util/logger.h"
  
  /* Only defined in pcre >= 8.32 */
  #ifndef PCRE_STUDY_JIT_COMPILE
-@@ -45,7 +50,7 @@ namespace HPHP {
+@@ -42,10 +44,132 @@
+ #endif
+ 
+ namespace HPHP {
++
  ///////////////////////////////////////////////////////////////////////////////
- // regex cache and helpers
+-// regex cache and helpers
++// PCRECache definition
++
++class PCRECache {
++  public:
++    typedef std::shared_ptr<const pcre_cache_entry> EntryPtr;
++    typedef std::unique_ptr<LRUCacheKey> TempKeyCache;
++
++    enum CacheKind {
++      StaticKind,
++      LruKind,
++      ScalableKind
++    };
++
++  private:
++    struct ahm_string_data_same {
++      bool operator()(const StringData* s1, const StringData* s2) {
++        // ahm uses -1, -2, -3 as magic values
++        return int64_t(s1) > 0 && (s1 == s2 || s1->same(s2));
++      }
++    };
++
++    typedef folly::AtomicHashArray<const StringData*, const pcre_cache_entry*,
++            string_data_hash, ahm_string_data_same> StaticCache;
++    typedef ThreadSafeLRUCache<LRUCacheKey, EntryPtr,
++            LRUCacheKey::HashCompare> LRUCache;
++    typedef ThreadSafeScalableCache<LRUCacheKey, EntryPtr,
++            LRUCacheKey::HashCompare> ScalableCache;
++    typedef std::pair<const StringData*, const pcre_cache_entry*>
++            StaticCachePair;
++
++  public:
++    class Accessor {
++      public:
++        Accessor()
++          : m_kind(PtrKind), m_ptr((pcre_cache_entry*)nullptr)
++        {}
++
++        // No assignment from LRUCache::ConstAccessor since it is non-copyable
++        // Use resetToLRU instead
++
++        Accessor & operator=(const pcre_cache_entry* ptr) {
++          m_kind = PtrKind;
++          m_ptr = ptr;
++          return *this;
++        }
++
++        Accessor & operator=(const EntryPtr & ep) {
++          m_kind = SmartPtrKind;
++          m_smart_ptr = ep;
++          return *this;
++        }
++
++        LRUCache::ConstAccessor & resetToLRU() {
++          m_kind = AccessorKind;
++          return m_accessor;
++        }
++
++        const pcre_cache_entry * get() {
++          switch (m_kind) {
++            case PtrKind:
++              return m_ptr;
++            case SmartPtrKind:
++              return m_smart_ptr.get();
++            case AccessorKind:
++              return m_accessor.get()->get();
++            default:
++              not_reached();
++              return nullptr;
++          }
++        }
++      private:
++        enum {
++          PtrKind,
++          SmartPtrKind,
++          AccessorKind
++        } m_kind;
++        const pcre_cache_entry* m_ptr;
++        EntryPtr m_smart_ptr;
++        LRUCache::ConstAccessor m_accessor;
++    };
++
++    PCRECache()
++      : m_kind(StaticKind), m_staticCache(nullptr)
++    {
++      reinit(StaticKind);
++    }
++
++    ~PCRECache() {
++      if (m_kind == StaticKind && m_staticCache) {
++        DestroyStatic(m_staticCache);
++      }
++    }
++
++    void reinit(CacheKind kind);
++    bool find(Accessor & accessor, const String & key,
++        TempKeyCache & keyCache);
++    void insert(Accessor & accessor, const String& regex,
++        TempKeyCache & keyCache, const pcre_cache_entry * ent);
++    void dump(const std::string& filename);
++    size_t size() const;
++
++  private:
++    CacheKind m_kind;
++    std::atomic<StaticCache*> m_staticCache;
++    std::unique_ptr<LRUCache> m_lruCache;
++    std::unique_ptr<ScalableCache> m_scalableCache;
++    std::mutex m_clearMutex;
++
++    static void DestroyStatic(StaticCache* cache);
++    StaticCache* CreateStatic();
++};
++
++///////////////////////////////////////////////////////////////////////////////
++// Data
++
++IMPLEMENT_THREAD_LOCAL(PCREglobals, tl_pcre_globals);
++
++static PCRECache s_pcreCache;
  
 -IMPLEMENT_THREAD_LOCAL(PCREglobals, s_pcre_globals);
-+IMPLEMENT_THREAD_LOCAL(PCREglobals, tl_pcre_globals);
++// The last pcre error code is available for the whole thread.
++static __thread int tl_last_error_code;
++
++///////////////////////////////////////////////////////////////////////////////
++// pcre_cache_entry implementation
  
  pcre_cache_entry::~pcre_cache_entry() {
    if (extra) {
-@@ -55,89 +60,130 @@ pcre_cache_entry::~pcre_cache_entry() {
+@@ -55,105 +179,168 @@
      pcre_free_study(extra);
  #endif
    }
@@ -110,37 +196,142 @@ Last-updated: 2014-10-28
 -    delete entry;
 -  }
 -  smart::vector<const pcre_cache_entry*>().swap(m_overflow);
--}
--
++///////////////////////////////////////////////////////////////////////////////
++// PCRECache implementation
++
++PCRECache::StaticCache*
++PCRECache::CreateStatic() {
++  StaticCache::Config config;
++  config.maxLoadFactor = 0.5;
++  return StaticCache::create(
++      RuntimeOption::EvalPCRETableSize, config).release();
+ }
+ 
 -PCREglobals::~PCREglobals() {
 -  onSessionExit();
--}
--
++void PCRECache::DestroyStatic(StaticCache* cache) {
++  for (auto& it : *cache) {
++    delete it.second;
++  }
++  StaticCache::destroy(cache);
+ }
+ 
 -void pcre_session_exit() {
 -  s_pcre_globals->onSessionExit();
--}
--
++void PCRECache::reinit(CacheKind kind) {
++  if (m_kind == StaticKind) {
++    if (m_staticCache) {
++      DestroyStatic(m_staticCache);
++      m_staticCache = nullptr;
++    }
++  } else if (m_kind == LruKind) {
++    m_lruCache.reset();
++  } else {
++    m_scalableCache.reset();
++  }
++  m_kind = kind;
++
++  if (kind == StaticKind) {
++    m_staticCache = CreateStatic();
++  } else if (kind == LruKind) {
++    m_lruCache.reset(new LRUCache(RuntimeOption::EvalPCRETableSize));
++  } else if (kind == ScalableKind) {
++    m_scalableCache.reset(new ScalableCache(RuntimeOption::EvalPCRETableSize));
++  } else {
++    not_reached();
++  }
+ }
+ 
 -void PCREglobals::cleanupOnRequestEnd(const pcre_cache_entry* ent) {
 -  m_overflow.push_back(ent);
--}
--
- struct ahm_string_data_same {
-   bool operator()(const StringData* s1, const StringData* s2) {
-     // ahm uses -1, -2, -3 as magic values
++bool PCRECache::find(Accessor & accessor,
++    const String& regex, TempKeyCache & keyCache)
++{
++  if (m_kind == StaticKind) {
++    assert(m_staticCache);
++    StaticCache::iterator it;
++    auto cache = m_staticCache.load(std::memory_order_acquire);
++    if ((it = cache->find(regex.get())) != cache->end()) {
++      accessor = it->second;
++      return true;
++    }
++    return false;
++  } else {
++    if (!keyCache) {
++      keyCache.reset(new LRUCacheKey(regex.c_str(), regex.size()));
++    }
++    bool found;
++    if (m_kind == LruKind) {
++      found = m_lruCache->find(accessor.resetToLRU(), *keyCache);
++    } else {
++      found = m_scalableCache->find(accessor.resetToLRU(), *keyCache);
++    }
++    return found;
++  }
+ }
+ 
+-struct ahm_string_data_same {
+-  bool operator()(const StringData* s1, const StringData* s2) {
+-    // ahm uses -1, -2, -3 as magic values
 -    return int64_t(s1) > 0 && s1->same(s2);
-+    return int64_t(s1) > 0 && (s1 == s2 || s1->same(s2));
++void PCRECache::insert(Accessor & accessor,
++    const String& regex,
++    TempKeyCache & keyCache,
++    const pcre_cache_entry * ent)
++{
++  if (m_kind == StaticKind) {
++    assert(m_staticCache);
++    auto cache = m_staticCache.load(std::memory_order_acquire);
++    auto pair = cache->insert(
++        StaticCachePair(makeStaticString(regex.get()), ent));
++    if (pair.second) {
++      // Inserted, container owns the pointer
++      accessor = ent;
++    } else {
++      // Not inserted, caller needs to own the pointer
++      accessor = EntryPtr(ent);
++    }
++  } else {
++    if (!keyCache) {
++      keyCache.reset(new LRUCacheKey(regex.c_str(), regex.size()));
++    }
++    // Pointer ownership is shared between container and caller
++    EntryPtr ptr(ent);
++    accessor = ptr;
++    if (m_kind == LruKind) {
++      m_lruCache->insert(*keyCache, ptr);
++    } else {
++      m_scalableCache->insert(*keyCache, ptr);
++    }
    }
- };
+-};
 -typedef folly::AtomicHashArray<const StringData*, const pcre_cache_entry*,
-+typedef folly::AtomicHashArray<const StringData*, pcre_cache_entry_ptr,
-                          string_data_hash, ahm_string_data_same> PCREStringMap;
+-                         string_data_hash, ahm_string_data_same> PCREStringMap;
 -typedef std::pair<const StringData*, const pcre_cache_entry*> PCREEntry;
-+typedef std::pair<const StringData*, pcre_cache_entry_ptr> PCREEntry;
++}
  
 -static PCREStringMap* s_pcreCacheMap;
-+static std::atomic<PCREStringMap*> s_pcreCacheMap;
-+static std::atomic<time_t> s_pcreCacheExpire;
-+static std::mutex s_clearMutex;
++void PCRECache::dump(const std::string& filename) {
++  std::ofstream out(filename.c_str());
++  if (m_kind == StaticKind) {
++    for (auto& it : *m_staticCache) {
++      out << it.first->data() << "\n";
++    }
++  } else {
++    std::vector<LRUCacheKey> keys;
++    if (m_kind == LruKind) {
++      m_lruCache->snapshotKeys(keys);
++    } else if (m_kind == ScalableKind) {
++      m_scalableCache->snapshotKeys(keys);
++    } else {
++      not_reached();
++    }
++    for (auto& key: keys) {
++      out << key.c_str() << "\n";
++    }
++  }
++  out.close();
++}
  
 -void pcre_init() {
 -  if (!s_pcreCacheMap) {
@@ -148,34 +339,27 @@ Last-updated: 2014-10-28
 -    config.maxLoadFactor = 0.5;
 -    s_pcreCacheMap = PCREStringMap::create(
 -                       RuntimeOption::EvalPCRETableSize, config).release();
-+static StaticString s_bump_re_text("/./us");
-+
-+static PCREStringMap* pcre_cache_create() {
-+  PCREStringMap::Config config;
-+  config.maxLoadFactor = 0.5;
-+  return PCREStringMap::create(
-+    RuntimeOption::EvalPCRETableSize, config).release();
-+}
-+
-+static void pcre_cache_destroy(PCREStringMap* cache) {
-+  for (auto& it : *cache) {
-+    it.second.reset();
++size_t PCRECache::size() const {
++  if (m_kind == StaticKind) {
++    return (size_t)m_staticCache.load(std::memory_order_acquire)->size();
++  } else if (m_kind == LruKind) {
++    return m_lruCache->size();
++  } else if (m_kind == ScalableKind) {
++    return m_scalableCache->size();
++  } else {
++    not_reached();
    }
-+  PCREStringMap::destroy(cache);
-+}
-+
-+void pcre_init() {
-+  assert(!s_pcreCacheMap);
-+  s_pcreCacheMap = pcre_cache_create();
-+  s_pcreCacheExpire = time(nullptr) + RuntimeOption::EvalPCREExpireInterval;
  }
  
++///////////////////////////////////////////////////////////////////////////////
++// Public interface and helper functions
++
  void pcre_reinit() {
 -  PCREStringMap::Config config;
 -  config.maxLoadFactor = 0.5;
 -  PCREStringMap* newMap = PCREStringMap::create(
 -                     RuntimeOption::EvalPCRETableSize, config).release();
-   if (s_pcreCacheMap) {
+-  if (s_pcreCacheMap) {
 -    PCREStringMap::iterator it;
 -    for (it = s_pcreCacheMap->begin(); it != s_pcreCacheMap->end(); it++) {
 -      // there should not be a lot of entries created before runtime
@@ -183,78 +367,22 @@ Last-updated: 2014-10-28
 -      delete(it->second);
 -    }
 -    PCREStringMap::destroy(s_pcreCacheMap);
-+    // there should not be a lot of entries created before runtime
-+    // options were parsed.
-+    pcre_cache_destroy(s_pcreCacheMap);
-+  }
-+  s_pcreCacheMap = pcre_cache_create();
-+  s_pcreCacheExpire = time(nullptr) + RuntimeOption::EvalPCREExpireInterval;
-+}
-+
-+void pcre_dump_cache(const std::string& filename) {
-+  std::ofstream out(filename.c_str());
-+  for (auto& it : *s_pcreCacheMap) {
-+    out << it.first->data() << "\n";
-   }
+-  }
 -  s_pcreCacheMap = newMap;
-+  out.close();
- }
- 
+-}
+-
 -static const pcre_cache_entry* lookup_cached_pcre(const String& regex) {
-+#if 0
-+void pcre_dump_local_cache() {
-+  for (auto& it : tl_pcre_globals->m_local_cache) {
-+    std::cout << it.first << "\n";
-+  }
-+}
-+#endif
-+
-+static const pcre_cache_entry_ptr pcre_lookup_static_cache(const String& regex) {
-   assert(s_pcreCacheMap);
-   PCREStringMap::iterator it;
+-  assert(s_pcreCacheMap);
+-  PCREStringMap::iterator it;
 -  if ((it = s_pcreCacheMap->find(regex.get())) != s_pcreCacheMap->end()) {
-+  auto cache = s_pcreCacheMap.load(std::memory_order_acquire);
-+  if ((it = cache->find(regex.get())) != cache->end()) {
-     return it->second;
-   }
+-    return it->second;
+-  }
 -  return 0;
-+  return pcre_cache_entry_ptr(nullptr);
-+}
-+
-+static const pcre_cache_entry_ptr pcre_lookup_local_cache(const String& regex) {
-+  auto it = tl_pcre_globals->m_local_cache.find(regex.toCppString());
-+  if (it != tl_pcre_globals->m_local_cache.end()) {
-+    return it->second;
-+  }
-+  return pcre_cache_entry_ptr(nullptr);
-+}
-+
-+static void pcre_clear_cache() {
-+  std::unique_lock<std::mutex> lock(s_clearMutex, std::try_to_lock);
-+  if (!lock) return;
-+
-+  auto newExpire = time(nullptr) + RuntimeOption::EvalPCREExpireInterval;
-+  s_pcreCacheExpire.store(newExpire, std::memory_order_relaxed);
-+
-+  auto tmpMap = pcre_cache_create();
-+  tmpMap = s_pcreCacheMap.exchange(tmpMap, std::memory_order_acq_rel);
-+
-+  Treadmill::enqueue([tmpMap]() {
-+      pcre_cache_destroy(tmpMap);
-+   });
-+}
-+
-+static const pcre_cache_entry_ptr
-+pcre_insert_local_cache(const String& regex, const pcre_cache_entry_ptr ent) {
-+  tl_pcre_globals->m_local_cache.set(regex.toCppString(), ent);
-+  return ent;
- }
- 
+-}
+-
 -static const pcre_cache_entry*
 -insert_cached_pcre(const String& regex, const pcre_cache_entry* ent) {
-+static const pcre_cache_entry_ptr
-+pcre_insert_static_cache(const String& regex, const pcre_cache_entry_ptr ent) {
-   assert(s_pcreCacheMap);
+-  assert(s_pcreCacheMap);
 -  auto pair = s_pcreCacheMap->insert(
 -    PCREEntry(makeStaticString(regex.get()), ent));
 -  if (!pair.second) {
@@ -262,57 +390,67 @@ Last-updated: 2014-10-28
 -      // Global Cache is full
 -      // still return the entry and free it at the end of the request
 -      s_pcre_globals->cleanupOnRequestEnd(ent);
-+  assert(regex.get()->isStatic());
-+  // Clear the cache if we haven't refreshed it in a while
-+  if (time(nullptr) > s_pcreCacheExpire) {
-+    pcre_clear_cache();
-+  }
-+  auto cache = s_pcreCacheMap.load(std::memory_order_acquire);
-+  auto pair = cache->insert(PCREEntry(regex.get(), pcre_cache_entry_ptr(ent)));
-+  if (pair.second) {
-+    pair.first->second->setStatic();
-+  } else {
-+    if (pair.first == cache->end()) {
-+      // Global Cache is full, insert into the local cache instead
-+      pcre_insert_local_cache(regex, ent);
-       return ent;
-     }
+-      return ent;
+-    }
 -    // collision, delete the new one
 -    delete ent;
-+    // collision, return the old one, the new one will go out of scope
-     return pair.first->second;
-   }
-   return ent;
-@@ -150,10 +196,10 @@ insert_cached_pcre(const String& regex, const pcre_cache_entry* ent) {
-  * FIXME: It's unclear why this needs to be thread-local data instead
-  * of just existing on the stack during the calls to preg_ functions.
-  */
+-    return pair.first->second;
+-  }
+-  return ent;
+-}
+-
+-/*
+- * When a cached compiled pcre doesn't have pcre_extra, we use this
+- * one.
+- *
+- * FIXME: It's unclear why this needs to be thread-local data instead
+- * of just existing on the stack during the calls to preg_ functions.
+- */
 -static __thread pcre_extra t_extra_data;
-+static __thread pcre_extra tl_extra_data;
++  PCRECache::CacheKind kind;
++  if (RuntimeOption::EvalPCRECacheType == "static") {
++    kind = PCRECache::StaticKind;
++  } else if (RuntimeOption::EvalPCRECacheType == "lru") {
++    kind = PCRECache::LruKind;
++  } else if (RuntimeOption::EvalPCRECacheType == "scalable") {
++    kind = PCRECache::ScalableKind;
++  } else {
++    Logger::Warning("Eval.PCRECacheType should be either static, lru or scalable");
++    kind = PCRECache::ScalableKind;
++  }
++  s_pcreCache.reinit(kind);
++}
  
- // The last pcre error code is available for the whole thread.
+-// The last pcre error code is available for the whole thread.
 -static __thread int t_last_error_code;
-+static __thread int tl_last_error_code;
++void pcre_init() {
++}
++
++void pcre_dump_cache(const std::string& filename) {
++  s_pcreCache.dump(filename);
++}
  
  namespace {
  
-@@ -171,12 +217,103 @@ private:
+@@ -171,12 +358,101 @@
  typedef FreeHelperImpl<true> SmartFreeHelper;
  }
  
 -static const pcre_cache_entry*
-+static void set_extra_limits(pcre_extra*& extra) {
-+  if (extra == nullptr) {
-+    pcre_extra& extra_data = tl_extra_data;
-+    extra_data.flags = PCRE_EXTRA_MATCH_LIMIT |
-+      PCRE_EXTRA_MATCH_LIMIT_RECURSION;
-+    extra = &extra_data;
+-pcre_get_compiled_regex_cache(const String& regex) {
++static void init_local_extra(pcre_extra* local, pcre_extra* shared) {
++  if (shared) {
++    memcpy(local, shared, sizeof(pcre_extra));
++  } else {
++    memset(local, 0, sizeof(pcre_extra));
++    local->flags = PCRE_EXTRA_MATCH_LIMIT | PCRE_EXTRA_MATCH_LIMIT_RECURSION;
 +  }
-+  extra->match_limit = tl_pcre_globals->m_preg_backtrace_limit;
-+  extra->match_limit_recursion = tl_pcre_globals->m_preg_recursion_limit;
++  local->match_limit = tl_pcre_globals->m_preg_backtrace_limit;
++  local->match_limit_recursion = tl_pcre_globals->m_preg_recursion_limit;
 +}
 +
-+static const char* const * get_subpat_names(const pcre_cache_entry* pce) {
++static const char* const*
++get_subpat_names(const pcre_cache_entry* pce) {
 +  char **subpat_names = pce->subpat_names.load(std::memory_order_relaxed);
 +  if (subpat_names) {
 +    return subpat_names;
@@ -323,12 +461,13 @@ Last-updated: 2014-10-28
 +  * allocate the table, even though there may be no named subpatterns. This
 +  * avoids somewhat more complicated logic in the inner loops.
 +  */
-+  pcre_extra *extra = pce->extra;
-+  set_extra_limits(extra);
++  pcre_extra extra;
++  init_local_extra(&extra, pce->extra);
 +
 +  int name_count;
++
 +  subpat_names = (char **)calloc(pce->num_subpats, sizeof(char *));
-+  int rc = pcre_fullinfo(pce->re, extra, PCRE_INFO_NAMECOUNT, &name_count);
++  int rc = pcre_fullinfo(pce->re, &extra, PCRE_INFO_NAMECOUNT, &name_count);
 +  if (rc < 0) {
 +    raise_warning("Internal pcre_fullinfo() error %d", rc);
 +    return nullptr;
@@ -339,8 +478,8 @@ Last-updated: 2014-10-28
 +    char* name_table;
 +    int rc1, rc2;
 +
-+    rc1 = pcre_fullinfo(pce->re, extra, PCRE_INFO_NAMETABLE, &name_table);
-+    rc2 = pcre_fullinfo(pce->re, extra, PCRE_INFO_NAMEENTRYSIZE, &name_size);
++    rc1 = pcre_fullinfo(pce->re, &extra, PCRE_INFO_NAMETABLE, &name_table);
++    rc2 = pcre_fullinfo(pce->re, &extra, PCRE_INFO_NAMEENTRYSIZE, &name_size);
 +    rc = rc2 ? rc2 : rc1;
 +    if (rc < 0) {
 +      raise_warning("Internal pcre_fullinfo() error %d", rc);
@@ -372,11 +511,11 @@ Last-updated: 2014-10-28
 +}
 +
 +static bool get_pcre_fullinfo(pcre_cache_entry* pce) {
-+  pcre_extra *extra = pce->extra;
-+  set_extra_limits(extra);
++  pcre_extra extra;
++  init_local_extra(&extra, pce->extra);
 +
 +  /* Calculate the size of the offsets array*/
-+  int rc = pcre_fullinfo(pce->re, extra, PCRE_INFO_CAPTURECOUNT,
++  int rc = pcre_fullinfo(pce->re, &extra, PCRE_INFO_CAPTURECOUNT,
 +                         &pce->num_subpats);
 +  if (rc < 0) {
 +    raise_warning("Internal pcre_fullinfo() error %d", rc);
@@ -386,91 +525,89 @@ Last-updated: 2014-10-28
 +  return true;
 +}
 +
-+static const pcre_cache_entry_ptr
- pcre_get_compiled_regex_cache(const String& regex) {
-+  pcre_cache_entry_ptr entry;
++static bool
++pcre_get_compiled_regex_cache(PCRECache::Accessor& accessor, const String& regex) {
++  PCRECache::TempKeyCache tkc;
++
    /* Try to lookup the cached regex entry, and if successful, just pass
       back the compiled pattern, otherwise go on and compile it. */
 -  if (const pcre_cache_entry* pce = lookup_cached_pcre(regex)) {
 -    return pce;
-+  entry = pcre_lookup_static_cache(regex);
-+  if (entry.get() != nullptr) {
-+    return entry;
-+  }
-+  entry = pcre_lookup_local_cache(regex);
-+  if (entry.get() != nullptr) {
-+    return entry;
++  if (s_pcreCache.find(accessor, regex, tkc)) {
++    return true;
    }
  
    /* Parse through the leading whitespace, and display a warning if we
-@@ -185,7 +322,7 @@ pcre_get_compiled_regex_cache(const String& regex) {
+@@ -185,7 +461,7 @@
    while (isspace((int)*(unsigned char *)p)) p++;
    if (*p == 0) {
      raise_warning("Empty regular expression");
 -    return nullptr;
-+    return pcre_cache_entry_ptr(nullptr);
++    return false;
    }
  
    /* Get the delimiter and display a warning if it is alphanumeric
-@@ -193,7 +330,7 @@ pcre_get_compiled_regex_cache(const String& regex) {
+@@ -193,7 +469,7 @@
    char delimiter = *p++;
    if (isalnum((int)*(unsigned char *)&delimiter) || delimiter == '\\') {
      raise_warning("Delimiter must not be alphanumeric or backslash");
 -    return nullptr;
-+    return pcre_cache_entry_ptr(nullptr);
++    return false;
    }
  
    char start_delimiter = delimiter;
-@@ -217,7 +354,7 @@ pcre_get_compiled_regex_cache(const String& regex) {
+@@ -217,7 +493,7 @@
      if (*pp == 0) {
        raise_warning("No ending delimiter '%c' found: [%s]", delimiter,
                        regex.data());
 -      return nullptr;
-+      return pcre_cache_entry_ptr(nullptr);
++      return false;
      }
    } else {
      /* We iterate through the pattern, searching for the matching ending
-@@ -238,7 +375,7 @@ pcre_get_compiled_regex_cache(const String& regex) {
+@@ -238,7 +514,7 @@
      if (*pp == 0) {
        raise_warning("No ending matching delimiter '%c' found: [%s]",
                        end_delimiter, regex.data());
 -      return nullptr;
-+      return pcre_cache_entry_ptr(nullptr);
++      return false;
      }
    }
  
-@@ -286,7 +423,7 @@ pcre_get_compiled_regex_cache(const String& regex) {
+@@ -286,7 +562,7 @@
  
      default:
        raise_warning("Unknown modifier '%c': [%s]", pp[-1], regex.data());
 -      return nullptr;
-+      return pcre_cache_entry_ptr(nullptr);
++      return false;
      }
    }
  
-@@ -302,7 +439,7 @@ pcre_get_compiled_regex_cache(const String& regex) {
+@@ -302,7 +578,7 @@
    pcre *re = pcre_compile(pattern, coptions, &error, &erroffset, 0);
    if (re == nullptr) {
      raise_warning("Compilation failed: %s at offset %d", error, erroffset);
 -    return nullptr;
-+    return pcre_cache_entry_ptr(nullptr);
++    return false;
    }
    // Careful: from here 're' needs to be freed if something throws.
  
-@@ -327,86 +464,35 @@ pcre_get_compiled_regex_cache(const String& regex) {
+@@ -327,87 +603,33 @@
    }
  
    /* Store the compiled pattern and extra info in the cache. */
 -  pcre_cache_entry *new_entry = new pcre_cache_entry();
--  new_entry->re = re;
--  new_entry->extra = extra;
--  new_entry->preg_options = poptions;
--  new_entry->compile_options = coptions;
++  pcre_cache_entry * new_entry = new pcre_cache_entry();
+   new_entry->re = re;
+   new_entry->extra = extra;
++
++  assert((poptions & ~0x1) == 0);
+   new_entry->preg_options = poptions;
++
++  assert((coptions & 0x80000000) == 0);
+   new_entry->compile_options = coptions;
 -  return insert_cached_pcre(regex, new_entry);
 -}
-+  entry = new pcre_cache_entry();
-+  entry->re = re;
-+  entry->extra = extra;
  
 -static void set_extra_limits(pcre_extra*& extra) {
 -  if (extra == nullptr) {
@@ -478,35 +615,37 @@ Last-updated: 2014-10-28
 -    extra_data.flags = PCRE_EXTRA_MATCH_LIMIT |
 -      PCRE_EXTRA_MATCH_LIMIT_RECURSION;
 -    extra = &extra_data;
--  }
++  /* Get pcre full info */
++  if (!get_pcre_fullinfo(new_entry)) {
++    delete new_entry;
++    return false;
+   }
 -  extra->match_limit = s_pcre_globals->m_preg_backtrace_limit;
 -  extra->match_limit_recursion = s_pcre_globals->m_preg_recursion_limit;
--}
-+  assert((poptions & ~0x1) == 0);
-+  entry->preg_options = poptions;
++
++  s_pcreCache.insert(accessor, regex, tkc, new_entry);
++  return true;
+ }
  
--static int *create_offset_array(const pcre_cache_entry *pce,
--                                int &size_offsets) {
+ static int *create_offset_array(const pcre_cache_entry *pce,
+                                 int &size_offsets) {
 -  pcre_extra *extra = pce->extra;
 -  set_extra_limits(extra);
-+  assert((coptions & 0x80000000) == 0);
-+  entry->compile_options = coptions;
- 
+-
 -  /* Calculate the size of the offsets array, and allocate memory for it. */
 -  int num_subpats; // Number of captured subpatterns
 -  int rc = pcre_fullinfo(pce->re, extra, PCRE_INFO_CAPTURECOUNT, &num_subpats);
 -  if (rc < 0) {
 -    raise_warning("Internal pcre_fullinfo() error %d", rc);
 -    return nullptr;
-+  /* Get pcre full info */
-+  if (!get_pcre_fullinfo(entry.get())) {
-+    return pcre_cache_entry_ptr(nullptr);
-   }
+-  }
 -  num_subpats++;
 -  size_offsets = num_subpats * 3;
--  return (int *)smart_malloc(size_offsets * sizeof(int));
--}
--
++  /* Allocate memory for the offsets array */
++  size_offsets = pce->num_subpats * 3;
+   return (int *)smart_malloc(size_offsets * sizeof(int));
+ }
+ 
 -/*
 - * Build a mapping from subpattern numbers to their names. We will always
 - * allocate the table, even though there may be no named subpatterns. This
@@ -519,7 +658,7 @@ Last-updated: 2014-10-28
 -  int name_cnt = 0, name_size, ni = 0;
 -  char *name_table;
 -  unsigned short name_idx;
- 
+-
 -  int rc = pcre_fullinfo(pce->re, extra, PCRE_INFO_NAMECOUNT, &name_cnt);
 -  if (rc < 0) {
 -    raise_warning("Internal pcre_fullinfo() error %d", rc);
@@ -547,25 +686,15 @@ Last-updated: 2014-10-28
 -      }
 -      name_table += name_size;
 -    }
-+  if (regex.get()->isStatic()) {
-+    entry = pcre_insert_static_cache(regex, entry);
-+  } else {
-+    entry = pcre_insert_local_cache(regex, entry);
-   }
+-  }
 -  return subpat_names;
-+  return entry;
- }
- 
-+static int *create_offset_array(const pcre_cache_entry *pce,
-+                                int &size_offsets) {
-+  /* Allocate memory for the offsets array */
-+  size_offsets = pce->num_subpats * 3;
-+  return (int *)smart_malloc(size_offsets * sizeof(int));
-+}
- 
+-}
+-
+-
  static inline void add_offset_pair(Array& result,
                                     const String& str,
-@@ -450,8 +536,8 @@ static void pcre_log_error(const char *func, int line, int pcre_code,
+                                    int offset,
+@@ -450,8 +672,8 @@
      "limits=(%" PRId64 ", %" PRId64 "), extra=(%d, %d, %d, %d)",
      func, line, pcre_code, errString,
      escapedPattern, escapedSubject, escapedRepl,
@@ -576,7 +705,7 @@ Last-updated: 2014-10-28
      arg1, arg2, arg3, arg4);
    free((void *)escapedPattern);
    free((void *)escapedSubject);
-@@ -477,19 +563,19 @@ static void pcre_handle_exec_error(int pcre_code) {
+@@ -477,16 +699,17 @@
      preg_code = PHP_PCRE_INTERNAL_ERROR;
      break;
    }
@@ -589,18 +718,15 @@ Last-updated: 2014-10-28
  Variant preg_grep(const String& pattern, const Array& input, int flags /* = 0 */) {
 -  const pcre_cache_entry* pce = pcre_get_compiled_regex_cache(pattern);
 -  if (pce == nullptr) {
-+  const pcre_cache_entry_ptr pce = pcre_get_compiled_regex_cache(pattern);
-+  if (pce.get() == nullptr) {
++  PCRECache::Accessor accessor;
++  if (!pcre_get_compiled_regex_cache(accessor, pattern)) {
      return false;
    }
++  const pcre_cache_entry * pce = accessor.get();
  
    int size_offsets = 0;
--  int *offsets = create_offset_array(pce, size_offsets);
-+  int *offsets = create_offset_array(pce.get(), size_offsets);
-   if (offsets == nullptr) {
-     return false;
-   }
-@@ -497,7 +583,7 @@ Variant preg_grep(const String& pattern, const Array& input, int flags /* = 0 */
+   int *offsets = create_offset_array(pce, size_offsets);
+@@ -497,18 +720,18 @@
  
    /* Initialize return array */
    Array ret = Array::Create();
@@ -609,26 +735,40 @@ Last-updated: 2014-10-28
  
    /* Go through the input array */
    bool invert = (flags & PREG_GREP_INVERT);
-@@ -544,8 +630,8 @@ Variant preg_grep(const String& pattern, const Array& input, int flags /* = 0 */
+-  pcre_extra *extra = pce->extra;
+-  set_extra_limits(extra);
++  pcre_extra extra;
++  init_local_extra(&extra, pce->extra);
+ 
+   for (ArrayIter iter(input); iter; ++iter) {
+     String entry = iter.second().toString();
+ 
+     /* Perform the match */
+-    int count = pcre_exec(pce->re, extra, entry.data(), entry.size(),
++    int count = pcre_exec(pce->re, &extra, entry.data(), entry.size(),
+                           0, 0, offsets, size_offsets);
+ 
+     /* Check for too many substrings condition. */
+@@ -544,13 +767,14 @@
  static Variant preg_match_impl(const String& pattern, const String& subject,
                                 Variant *subpats, int flags, int start_offset,
                                 bool global) {
 -  const pcre_cache_entry* pce = pcre_get_compiled_regex_cache(pattern);
 -  if (pce == nullptr) {
-+  const pcre_cache_entry_ptr pce = pcre_get_compiled_regex_cache(pattern);
-+  if (pce.get() == nullptr) {
++  PCRECache::Accessor accessor;
++  if (!pcre_get_compiled_regex_cache(accessor, pattern)) {
      return false;
    }
++  const pcre_cache_entry * pce = accessor.get();
  
-@@ -585,20 +671,14 @@ static Variant preg_match_impl(const String& pattern, const String& subject,
+-  pcre_extra *extra = pce->extra;
+-  set_extra_limits(extra);
++  pcre_extra extra;
++  init_local_extra(&extra, pce->extra);
+   if (subpats) {
+     *subpats = Array::Create();
    }
- 
-   int size_offsets = 0;
--  int *offsets = create_offset_array(pce, size_offsets);
-+  int *offsets = create_offset_array(pce.get(), size_offsets);
-   SmartFreeHelper offsetsFreer(offsets);
-   int num_subpats = size_offsets / 3;
-   if (offsets == nullptr) {
+@@ -592,13 +816,7 @@
      return false;
    }
  
@@ -639,11 +779,11 @@ Last-updated: 2014-10-28
 -   */
 -  char** subpat_names = make_subpats_table(num_subpats, pce);
 -  SmartFreeHelper subpatFreer(subpat_names);
-+  const char* const* subpat_names = get_subpat_names(pce.get());
++  const char* const* subpat_names = get_subpat_names(pce);
    if (subpat_names == nullptr) {
      return false;
    }
-@@ -613,7 +693,7 @@ static Variant preg_match_impl(const String& pattern, const String& subject,
+@@ -613,14 +831,14 @@
    }
  
    int matched = 0;
@@ -652,105 +792,129 @@ Last-updated: 2014-10-28
  
    int g_notempty = 0; // If the match should not be empty
    const char **stringlist; // Holds list of subpatterns
-@@ -789,7 +869,7 @@ Variant preg_match_all(const String& pattern, const String& subject,
+   int i;
+   do {
+     /* Execute the regular expression. */
+-    int count = pcre_exec(pce->re, extra, subject.data(), subject.size(),
++    int count = pcre_exec(pce->re, &extra, subject.data(), subject.size(),
+                           start_offset,
+                           exec_options | g_notempty,
+                           offsets, size_offsets);
+@@ -789,7 +1007,8 @@
  ///////////////////////////////////////////////////////////////////////////////
  
  static String preg_do_repl_func(const Variant& function, const String& subject,
 -                                int* offsets, char** subpat_names, int count) {
-+                                int* offsets, const char* const* subpat_names, int count) {
++                                int* offsets, const char* const* subpat_names,
++                                int count) {
    Array subpats = Array::Create();
    for (int i = 0; i < count; i++) {
      auto off1 = offsets[i<<1];
-@@ -847,8 +927,8 @@ static bool preg_get_backref(const char **str, int *backref) {
+@@ -847,10 +1066,11 @@
  static Variant php_pcre_replace(const String& pattern, const String& subject,
                                  const Variant& replace_var, bool callable,
                                  int limit, int *replace_count) {
 -  const pcre_cache_entry* pce = pcre_get_compiled_regex_cache(pattern);
 -  if (pce == nullptr) {
-+  const pcre_cache_entry_ptr pce = pcre_get_compiled_regex_cache(pattern);
-+  if (pce.get() == nullptr) {
++  PCRECache::Accessor accessor;
++  if (!pcre_get_compiled_regex_cache(accessor, pattern)) {
      return false;
    }
++  const pcre_cache_entry * pce = accessor.get();
    bool eval = pce->preg_options & PREG_REPLACE_EVAL;
-@@ -872,15 +952,13 @@ static Variant php_pcre_replace(const String& pattern, const String& subject,
-   }
- 
-   int size_offsets;
--  int *offsets = create_offset_array(pce, size_offsets);
-+  int *offsets = create_offset_array(pce.get(), size_offsets);
-   SmartFreeHelper offsetsFreer(offsets);
-   if (offsets == nullptr) {
+   if (eval) {
+     if (RuntimeOption::EvalAuthoritativeMode) {
+@@ -878,9 +1098,7 @@
      return false;
    }
  
 -  int num_subpats = size_offsets / 3;
 -  char** subpat_names = make_subpats_table(num_subpats, pce);
 -  SmartFreeHelper subpatNamesFreer(subpat_names);
-+  const char* const* subpat_names = get_subpat_names(pce.get());
++  const char* const* subpat_names = get_subpat_names(pce);
    if (subpat_names == nullptr) {
      return false;
    }
-@@ -904,7 +982,7 @@ static Variant php_pcre_replace(const String& pattern, const String& subject,
+@@ -904,9 +1122,9 @@
      /* Initialize */
      const char *match = nullptr;
      int start_offset = 0;
 -    t_last_error_code = PHP_PCRE_NO_ERROR;
+-    pcre_extra *extra = pce->extra;
+-    set_extra_limits(extra);
 +    tl_last_error_code = PHP_PCRE_NO_ERROR;
-     pcre_extra *extra = pce->extra;
-     set_extra_limits(extra);
++    pcre_extra extra;
++    init_local_extra(&extra, pce->extra);
  
-@@ -1261,8 +1339,8 @@ int preg_filter(Variant &result, const Variant& pattern, const Variant& replacem
+     const char *walk;     // Used to walk the replacement string
+     char walk_last;       // Last walked character
+@@ -916,7 +1134,7 @@
+     int exec_options = 0; // Options passed to pcre_exec
+     while (1) {
+       /* Execute the regular expression. */
+-      int count = pcre_exec(pce->re, extra, subject.data(), subject.size(),
++      int count = pcre_exec(pce->re, &extra, subject.data(), subject.size(),
+                             start_offset,
+                             exec_options | g_notempty,
+                             offsets, size_offsets);
+@@ -1261,10 +1479,11 @@
  
  Variant preg_split(const String& pattern, const String& subject,
                     int limit /* = -1 */, int flags /* = 0 */) {
 -  const pcre_cache_entry* pce = pcre_get_compiled_regex_cache(pattern);
 -  if (pce == nullptr) {
-+  const pcre_cache_entry_ptr pce = pcre_get_compiled_regex_cache(pattern);
-+  if (pce.get() == nullptr) {
++  PCRECache::Accessor accessor;
++  if (!pcre_get_compiled_regex_cache(accessor, pattern)) {
      return false;
    }
++  const pcre_cache_entry * pce = accessor.get();
  
-@@ -1275,7 +1353,7 @@ Variant preg_split(const String& pattern, const String& subject,
-   }
- 
-   int size_offsets = 0;
--  int *offsets = create_offset_array(pce, size_offsets);
-+  int *offsets = create_offset_array(pce.get(), size_offsets);
-   SmartFreeHelper offsetsFreer(offsets);
-   if (offsets == nullptr) {
-     return false;
-@@ -1285,7 +1363,7 @@ Variant preg_split(const String& pattern, const String& subject,
+   int no_empty = flags & PREG_SPLIT_NO_EMPTY;
+   bool delim_capture = flags & PREG_SPLIT_DELIM_CAPTURE;
+@@ -1285,17 +1504,18 @@
    int start_offset = 0;
    int next_offset = 0;
    const char *last_match = subject.data();
 -  t_last_error_code = PHP_PCRE_NO_ERROR;
+-  pcre_extra *extra = pce->extra;
+-  set_extra_limits(extra);
 +  tl_last_error_code = PHP_PCRE_NO_ERROR;
-   pcre_extra *extra = pce->extra;
-   set_extra_limits(extra);
++  pcre_extra extra;
++  init_local_extra(&extra, pce->extra);
  
-@@ -1293,7 +1371,7 @@ Variant preg_split(const String& pattern, const String& subject,
+   // Get next piece if no limit or limit not yet reached and something matched
    Array return_value = Array::Create();
    int g_notempty = 0;   /* If the match should not be empty */
    int utf8_check = 0;
--  const pcre_cache_entry* bump_pce = nullptr; /* instance for empty matches */
-+  pcre_cache_entry_ptr bump_pce; /* instance for empty matches */
++  PCRECache::Accessor bump_accessor;
+   const pcre_cache_entry* bump_pce = nullptr; /* instance for empty matches */
    while ((limit == -1 || limit > 1)) {
-     int count = pcre_exec(pce->re, extra, subject.data(), subject.size(),
+-    int count = pcre_exec(pce->re, extra, subject.data(), subject.size(),
++    int count = pcre_exec(pce->re, &extra, subject.data(), subject.size(),
                            start_offset, g_notempty | utf8_check,
-@@ -1361,9 +1439,9 @@ Variant preg_split(const String& pattern, const String& subject,
-          to achieve this, unless we're already at the end of the string. */
+                           offsets, size_offsets);
+ 
+@@ -1362,14 +1582,14 @@
        if (g_notempty != 0 && start_offset < subject.size()) {
          if (pce->compile_options & PCRE_UTF8) {
--          if (bump_pce == nullptr) {
+           if (bump_pce == nullptr) {
 -            bump_pce = pcre_get_compiled_regex_cache("/./us");
 -            if (bump_pce == nullptr) {
-+          if (bump_pce.get() == nullptr) {
-+            bump_pce = pcre_get_compiled_regex_cache(s_bump_re_text);
-+            if (bump_pce.get() == nullptr) {
++            if (!pcre_get_compiled_regex_cache(bump_accessor, "/./us")) {
                return false;
              }
++            bump_pce = bump_accessor.get();
            }
-@@ -1490,11 +1568,11 @@ String preg_quote(const String& str,
+-          pcre_extra *extra = bump_pce->extra;
+-          set_extra_limits(extra);
+-          count = pcre_exec(bump_pce->re, extra, subject.data(),
++          pcre_extra bump_extra;
++          init_local_extra(&bump_extra, bump_pce->extra);
++          count = pcre_exec(bump_pce->re, &bump_extra, subject.data(),
+                             subject.size(), start_offset,
+                             0, offsets, size_offsets);
+           if (count < 1) {
+@@ -1490,11 +1710,11 @@
  }
  
  int preg_last_error() {
@@ -760,63 +924,20 @@ Last-updated: 2014-10-28
  
  size_t preg_pcre_cache_size() {
 -  return (size_t)s_pcreCacheMap->size();
-+  return (size_t)s_pcreCacheMap.load(std::memory_order_acquire)->size();
++  return s_pcreCache.size();
  }
  
  ///////////////////////////////////////////////////////////////////////////////
 --- a/hphp/runtime/base/preg.h
 +++ b/hphp/runtime/base/preg.h
-@@ -19,6 +19,7 @@
- 
- #include "hphp/runtime/base/smart-containers.h"
- #include "hphp/runtime/base/type-string.h"
-+#include "folly/EvictingCacheMap.h"
- 
- #include <cstdint>
- #include <cstddef>
-@@ -48,6 +49,10 @@ enum {
- namespace HPHP {
- ///////////////////////////////////////////////////////////////////////////////
- 
-+namespace {
-+  constexpr int kLocalCacheSize = 1024;
-+}
-+
- class Array;
- struct Variant;
- 
-@@ -56,28 +61,74 @@ class pcre_cache_entry {
+@@ -56,26 +56,22 @@
    pcre_cache_entry& operator=(const pcre_cache_entry&);
  
  public:
 -  pcre_cache_entry() {}
-+  pcre_cache_entry()
-+    : re(nullptr), extra(nullptr), preg_options(0), compile_options(0),
-+      num_subpats(0), subpat_names(nullptr), ref_count(0)
-+  {}
-+
++  pcre_cache_entry() : subpat_names(nullptr) {}
    ~pcre_cache_entry();
  
-+  void setStatic() {
-+    ref_count = StaticValue;
-+  }
-+
-+  void incRefCount() {
-+    if (ref_count != StaticValue) {
-+      ++ref_count;
-+    }
-+  }
-+
-+  bool decRefAndRelease() {
-+    if (ref_count != StaticValue) {
-+      if (--ref_count == 0) {
-+        delete this;
-+        return true;
-+      }
-+    }
-+    return false;
-+  }
-+
    pcre *re;
    pcre_extra *extra; // Holds results of studying
 -  int preg_options;
@@ -825,64 +946,25 @@ Last-updated: 2014-10-28
 +  int compile_options:31;
 +  int num_subpats;
 +  mutable std::atomic<char**> subpat_names;
-+  int ref_count;
  };
  
-+typedef SmartPtr<pcre_cache_entry> pcre_cache_entry_ptr;
-+
  class PCREglobals {
  public:
 -  PCREglobals() { }
 -  ~PCREglobals();
 -  void cleanupOnRequestEnd(const pcre_cache_entry* ent);
 -  void onSessionExit();
-+  PCREglobals() : m_local_cache(kLocalCacheSize) { }
    // pcre ini_settings
    int64_t m_preg_backtrace_limit;
    int64_t m_preg_recursion_limit;
 -private:
 -  smart::vector<const pcre_cache_entry*> m_overflow;
-+  folly::EvictingCacheMap<std::string, pcre_cache_entry_ptr> m_local_cache;
  };
  
-+///////////////////////////////////////////////////////////////////////////////
-+// Cache management
-+
-+/*
-+ * Initialize PCRE cache.
-+ */
-+void pcre_init();
-+
-+/*
-+ * Clear PCRE cache.  Not thread safe - call only after parsing options.
-+ */
-+void pcre_reinit();
-+
-+/*
-+ * Dump the contents of the PCRE cache to filename.
-+ */
-+void pcre_dump_cache(const std::string& filename);
-+
-+///////////////////////////////////////////////////////////////////////////////
-+// PHP API
-+
  Variant preg_grep(const String& pattern, const Array& input, int flags = 0);
- 
- Variant preg_match(const String& pattern, const String& subject,
 --- a/hphp/runtime/base/program-functions.cpp
 +++ b/hphp/runtime/base/program-functions.cpp
-@@ -114,6 +114,10 @@ void initialize_repo();
-  */
- void (*g_vmProcessInit)();
- 
-+void pcre_init();
-+void pcre_reinit();
-+void pcre_session_exit();
-+
- ///////////////////////////////////////////////////////////////////////////////
- // helpers
- 
-@@ -1856,9 +1860,6 @@ void hphp_session_exit() {
+@@ -1856,9 +1856,6 @@
      // reinitialize g_context here.
      g_context.getCheck();
  
@@ -892,31 +974,27 @@ Last-updated: 2014-10-28
      mm.sweep();
  
      // Destroy g_context again because ExecutionContext has
---- a/hphp/runtime/base/program-functions.h
-+++ b/hphp/runtime/base/program-functions.h
-@@ -81,9 +81,6 @@ time_t start_time();
+@@ -1874,6 +1871,7 @@
+     g_context.getCheck();
+   }
  
- class ExecutionContext;
- 
--void pcre_init();
--void pcre_reinit();
--void pcre_session_exit();
- void hphp_process_init();
- void hphp_session_init();
- 
++
+   ThreadInfo::s_threadInfo->onSessionExit();
+   assert(mm.empty());
+ }
 --- a/hphp/runtime/base/runtime-option.h
 +++ b/hphp/runtime/base/runtime-option.h
-@@ -495,6 +495,7 @@ public:
+@@ -495,6 +495,7 @@
    F(uint32_t, InitialStaticStringTableSize,                             \
                          kDefaultInitialStaticStringTableSize)           \
    F(uint32_t, PCRETableSize, kPCREInitialTableSize)                     \
-+  F(uint64_t, PCREExpireInterval, 2 * 60 * 60)                          \
++  F(string, PCRECacheType, std::string("scalable"))                     \
    F(bool, EnableNuma, ServerExecutionMode())                            \
    F(bool, EnableNumaLocal, ServerExecutionMode())                       \
    /* */
 --- a/hphp/runtime/ext/pcre/ext_pcre.cpp
 +++ b/hphp/runtime/ext/pcre/ext_pcre.cpp
-@@ -170,7 +170,7 @@ String HHVM_FUNCTION(sql_regcase, const String& str) {
+@@ -170,7 +170,7 @@
  
  const StaticString s_PCRE_VERSION("PCRE_VERSION");
  
@@ -925,7 +1003,7 @@ Last-updated: 2014-10-28
  
  class PcreExtension : public Extension {
  public:
-@@ -227,11 +227,11 @@ public:
+@@ -227,11 +227,11 @@
      IniSetting::Bind(this, IniSetting::PHP_INI_ALL,
                       "pcre.backtrack_limit",
                       std::to_string(RuntimeOption::PregBacktraceLimit).c_str(),
@@ -939,3 +1017,711 @@ Last-updated: 2014-10-28
    }
  
  } s_pcre_extension;
+--- /dev/null
++++ b/hphp/util/lru-cache-key.h
+@@ -0,0 +1,106 @@
++/*
++ * Copyright © 2014 Tim Starling
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *   http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++#ifndef incl_HPHP_STRING_KEY_H
++#define incl_HPHP_STRING_KEY_H
++
++#include <atomic>
++#include <cstring>
++#include <limits>
++#include <memory>
++
++#include "hphp/util/hash.h"
++
++namespace HPHP {
++
++class LRUCacheKey {
++  public:
++    LRUCacheKey(const char* data, size_t size)
++      : m_storage(new Storage(data, size))
++    {}
++
++    LRUCacheKey() {}
++
++    uint64_t hash() const {
++      return m_storage->hash();
++    }
++
++    size_t size() const {
++      return m_storage->m_size;
++    }
++
++    const char * data() const {
++      return m_storage->m_data;
++    }
++
++    const char * c_str() const {
++      return data();
++    }
++
++    bool operator==(const LRUCacheKey & other) const {
++      size_t s = size();
++      return s == other.size() && 0 == std::memcmp(data(), other.data(), s);
++    }
++
++    struct HashCompare {
++      bool equal(const LRUCacheKey& j, const LRUCacheKey& k) const {
++        return j == k;
++      }
++
++      size_t hash(const LRUCacheKey& k) const {
++        return (size_t)k.hash();
++      }
++    };
++
++  private:
++    struct Storage {
++      Storage(const char* data, size_t size) 
++        : m_size(size), m_hash(0)
++      {
++        m_data = new char[size + 1];
++        memcpy(m_data, data, size);
++        m_data[size] = '\0';
++      }
++
++      ~Storage() {
++        delete[] m_data;
++      }
++
++      char * m_data;
++      size_t m_size;
++      mutable std::atomic<size_t> m_hash;
++
++      size_t hash() const {
++        size_t h = m_hash.load(std::memory_order_relaxed);
++        if (h == 0) {
++          uint64_t h128[2];
++          MurmurHash3::hash128<false>(m_data, m_size, 0, h128);
++          h = (size_t)h128[0];
++          if (h == 0) {
++            h = 1;
++          }
++          m_hash.store(h, std::memory_order_relaxed);
++        }
++        return h;
++      }
++    };
++
++    std::shared_ptr<Storage> m_storage;
++};
++
++} // namespace HPHP
++
++#endif
+--- /dev/null
++++ b/hphp/util/thread-safe-lru-cache.h
+@@ -0,0 +1,397 @@
++/*
++ * Copyright © 2014 Tim Starling
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *   http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++#ifndef incl_HPHP_LRU_CACHE_H
++#define incl_HPHP_LRU_CACHE_H
++
++#include <atomic>
++#include <mutex>
++#include <new>
++#include <thread>
++#include <vector>
++#include <tbb/concurrent_hash_map.h>
++
++namespace HPHP {
++
++/**
++ * ThreadSafeLRUCache is a thread-safe hashtable with a limited size. When
++ * it is full, insert() evicts the least recently used item from the cache.
++ *
++ * The find() operation fills a ConstAccessor object, which is a smart pointer
++ * similar to TBB's const_accessor. After eviction, destruction of the value is
++ * deferred until all ConstAccessor objects are destroyed.
++ *
++ * The implementation is generally conservative, relying on the documented
++ * behaviour of tbb::concurrent_hash_map. LRU list transactions are protected
++ * with a single mutex. Having our own doubly-linked list implementation helps
++ * to ensure that list transactions are sufficiently brief, consisting of only
++ * a few loads and stores. User code is not executed while the lock is held.
++ *
++ * The acquisition of the list mutex during find() is non-blocking (try_lock),
++ * so under heavy lookup load, the container will not stall, instead some LRU
++ * update operations will be omitted.
++ *
++ * Insert performance was observed to degrade rapidly when there is a heavy
++ * concurrent insert/evict load, mostly due to locks in the underlying
++ * TBB::CHM. So if that is a possibility for your workload,
++ * ThreadSafeScalableCache is recommended instead.
++ */
++template <class TKey, class TValue, class THash = tbb::tbb_hash_compare<TKey> >
++class ThreadSafeLRUCache {
++  private:
++    /**
++     * The LRU list node.
++     *
++     * We make a copy of the key in the list node, allowing us to find the
++     * TBB::CHM element from the list node. TBB::CHM invalidates iterators
++     * on most operations, even find(), ruling out more efficient
++     * implementations.
++     */
++    struct ListNode {
++      ListNode()
++        : m_prev(OutOfListMarker), m_next(nullptr)
++      {}
++
++      ListNode(const TKey& key)
++        : m_key(key), m_prev(OutOfListMarker), m_next(nullptr)
++      {}
++
++      TKey m_key;
++      std::atomic<ListNode*> m_prev;
++      std::atomic<ListNode*> m_next;
++
++      bool isInList() {
++        return m_prev != OutOfListMarker;
++      }
++    };
++
++    static ListNode * const OutOfListMarker;
++
++    /**
++     * The value that we store in the hashtable. The list node is allocated from
++     * an internal object_pool. The ListNode* is owned by the list.
++     */
++    struct HashMapValue {
++      HashMapValue()
++        : m_listNode(nullptr)
++      {}
++      
++      HashMapValue(const TValue & value, ListNode * node)
++        : m_value(value), m_listNode(node)
++      {}
++
++      TValue m_value;
++      ListNode * m_listNode;
++    };
++
++    typedef tbb::concurrent_hash_map<TKey, HashMapValue, THash> HashMap;
++    typedef typename HashMap::const_accessor HashMapConstAccessor;
++    typedef typename HashMap::accessor HashMapAccessor;
++    typedef typename HashMap::value_type HashMapValuePair;
++    typedef std::pair<const TKey, TValue> SnapshotValue;
++
++  public:
++    /**
++     * The proxy object for TBB::CHM::const_accessor. Provides direct access to
++     * the user's value by dereferencing, thus hiding our implementation
++     * details.
++     */
++    class ConstAccessor {
++      public:
++        ConstAccessor() {}
++
++        const TValue& operator*() const {
++          return *get();
++        }
++
++        const TValue* operator->() const {
++          return get();
++        }
++
++        const TValue * get() const {
++          return &m_hashAccessor->second.m_value;
++        }
++
++        bool empty() const {
++          return m_hashAccessor.empty();
++        }
++
++      private:
++        friend class ThreadSafeLRUCache;
++        HashMapConstAccessor m_hashAccessor;
++    };
++
++    /**
++     * Create a container with a given maximum size
++     */
++    explicit ThreadSafeLRUCache(size_t maxSize);
++
++    ThreadSafeLRUCache(const ThreadSafeLRUCache & other) = delete;
++
++    ~ThreadSafeLRUCache() {
++      clear();
++    }
++
++    /**
++     * Find a value by key, and return it by filling the ConstAccessor, which
++     * can be default-constructed. Returns true if the element was found, false
++     * otherwise. Updates the eviction list, making the element the
++     * most-recently used.
++     */
++    bool find(ConstAccessor & ac, const TKey& key);
++
++    /**
++     * Insert a value into the container. Both the key and value will be copied.
++     * The new element will put into the eviction list as the most-recently
++     * used.
++     *
++     * If there was already an element in the container with the same key, it
++     * will not be updated, and false will be returned. Otherwise, true will be
++     * returned.
++     */
++    bool insert(const TKey& key, const TValue& value);
++
++    /**
++     * Clear the container. NOT THREAD SAFE -- do not use while other threads
++     * are accessing the container.
++     */
++    void clear();
++
++    /**
++     * Get a snapshot of the keys in the container by copying them into the
++     * supplied vector. This will block inserts and prevent LRU updates while it
++     * completes. The keys will be inserted in order from most-recently used to
++     * least-recently used.
++     */
++    void snapshotKeys(std::vector<TKey> & keys);
++
++    /**
++     * Get the approximate size of the container. May be slightly too low when
++     * insertion is in progress.
++     */
++    size_t size() {
++      return m_size.load();
++    }
++
++  private:
++    /**
++     * Unlink a node from the list. The caller must lock the list mutex while
++     * this is called.
++     */
++    inline void delink(ListNode* node);
++
++    /**
++     * Add a new node to the list in the most-recently used position. The caller
++     * must lock the list mutex while this is called.
++     */
++    inline void pushFront(ListNode* node);
++
++    /**
++     * Evict the least-recently used item from the container. This function does
++     * its own locking.
++     */
++    void evict();
++
++    /**
++     * The maximum number of elements in the container.
++     */
++    size_t m_maxSize;
++
++    /**
++     * This atomic variable is used to signal to all threads whether or not
++     * eviction should be done on insert. It is approximately equal to the
++     * number of elements in the container.
++     */
++    std::atomic<size_t> m_size;
++
++    /** 
++     * The underlying TBB hash map.
++     */
++    HashMap m_map;
++
++    /**
++     * The linked list. The "head" is the most-recently used node, and the
++     * "tail" is the least-recently used node. The list mutex must be held
++     * during both read and write.
++     */
++    ListNode m_head;
++    ListNode m_tail;
++    typedef std::mutex ListMutex;
++    ListMutex m_listMutex;
++};
++
++template <class TKey, class TValue, class THash>
++typename ThreadSafeLRUCache<TKey, TValue, THash>::ListNode * const
++ThreadSafeLRUCache<TKey, TValue, THash>::OutOfListMarker = (ListNode*)-1;
++
++template <class TKey, class TValue, class THash>
++ThreadSafeLRUCache<TKey, TValue, THash>::
++ThreadSafeLRUCache(size_t maxSize)
++  : m_maxSize(maxSize), m_size(0),
++  m_map(std::thread::hardware_concurrency() * 4) // it will automatically grow
++{
++  m_head.m_prev = nullptr;
++  m_head.m_next = &m_tail;
++  m_tail.m_prev = &m_head;
++}
++
++template <class TKey, class TValue, class THash>
++bool ThreadSafeLRUCache<TKey, TValue, THash>::
++find(ConstAccessor& ac, const TKey& key) {
++  HashMapConstAccessor & hashAccessor = ac.m_hashAccessor;
++  if (!m_map.find(hashAccessor, key)) {
++    return false;
++  }
++
++  // Acquire the lock, but don't block if it is already held
++  std::unique_lock<ListMutex> lock(m_listMutex, std::try_to_lock);
++  if (lock) {
++    ListNode * node = hashAccessor->second.m_listNode;
++    // The list node may be out of the list if it is in the process of being
++    // inserted or evicted. Doing this check allows us to lock the list for
++    // shorter periods of time.
++    if (node->isInList()) {
++      delink(node);
++      pushFront(node);
++    }
++    atomic_thread_fence(std::memory_order_seq_cst);
++    lock.unlock();
++  }
++  return true;
++}
++
++template <class TKey, class TValue, class THash>
++bool ThreadSafeLRUCache<TKey, TValue, THash>::
++insert(const TKey& key, const TValue& value) {
++  // Insert into the CHM
++  ListNode * node = new ListNode(key);
++  HashMapAccessor hashAccessor;
++  HashMapValuePair hashMapValue(key, HashMapValue(value, node));
++  if (!m_map.insert(hashAccessor, hashMapValue)) {
++    delete node;
++    return false;
++  }
++
++  // Evict if necessary, now that we know the hashmap insertion was successful.
++  size_t size = m_size.load();
++  bool evictionDone = false;
++  if (size >= m_maxSize) {
++    // The container is at (or over) capacity, so eviction needs to be done.
++    // Do not decrement m_size, since that would cause other threads to
++    // inappropriately omit eviction during their own inserts.
++    evict();
++    evictionDone = true;
++  }
++
++  // Note that we have to update the LRU list before we increment m_size, so
++  // that other threads don't attempt to evict list items before they even
++  // exist.
++  std::unique_lock<ListMutex> lock(m_listMutex);
++  pushFront(node);
++  atomic_thread_fence(std::memory_order_seq_cst);
++  lock.unlock();
++  if (!evictionDone) {
++    size = m_size++;
++  }
++  if (size > m_maxSize) {
++    // It is possible for the size to temporarily exceed the maximum if there is
++    // a heavy insert() load, once only as the cache fills. In this situation,
++    // we have to be careful not to have every thread simultaneously attempt to
++    // evict the extra entries, since we could end up underfilled. Instead we do
++    // a compare-and-exchange to acquire an exclusive right to reduce the size
++    // to a particular value.
++    //
++    // We could continue to evict in a loop, but if there are a lot of threads
++    // here at the same time, that could lead to spinning. So we will just evict
++    // one extra element per insert() until the overfill is rectified.
++    if (m_size.compare_exchange_strong(size, size - 1)) {
++      evict();
++    }
++  }
++  return true;
++}
++
++template <class TKey, class TValue, class THash>
++void ThreadSafeLRUCache<TKey, TValue, THash>::
++clear() {
++  m_map.clear();
++  ListNode *node = m_head.m_next;
++  ListNode *next;
++  while (node != &m_tail) {
++    next = node->m_next;
++    delete node;
++    node = next;
++  }
++  m_head.m_next = &m_tail;
++  m_tail.m_prev = &m_head;
++  m_size = 0;
++}
++
++template <class TKey, class TValue, class THash>
++void ThreadSafeLRUCache<TKey, TValue, THash>::
++snapshotKeys(std::vector<TKey> & keys) {
++  keys.reserve(keys.size() + m_size.load());
++  std::lock_guard<ListMutex> lock(m_listMutex);
++  for (ListNode * node = m_head.m_next; node != &m_tail; node = node->m_next) {
++    keys.push_back(node->m_key);
++  }
++}
++
++template <class TKey, class TValue, class THash>
++void ThreadSafeLRUCache<TKey, TValue, THash>::
++delink(ListNode* node) {
++  ListNode *prev = node->m_prev;
++  ListNode *next = node->m_next;
++  prev->m_next.store(next, std::memory_order_relaxed);
++  next->m_prev.store(prev, std::memory_order_relaxed);
++  node->m_prev.store(OutOfListMarker, std::memory_order_relaxed);
++}
++
++template <class TKey, class TValue, class THash>
++void ThreadSafeLRUCache<TKey, TValue, THash>::
++pushFront(ListNode* node) {
++  ListNode * oldRealHead = m_head.m_next.load();
++  node->m_prev.store(&m_head, std::memory_order_relaxed);
++  node->m_next.store(oldRealHead, std::memory_order_relaxed);
++  oldRealHead->m_prev.store(node, std::memory_order_relaxed);
++  m_head.m_next.store(node, std::memory_order_relaxed);
++}
++
++template <class TKey, class TValue, class THash>
++void ThreadSafeLRUCache<TKey, TValue, THash>::
++evict() {
++  std::unique_lock<ListMutex> lock(m_listMutex);
++  ListNode *moribund = m_tail.m_prev;
++  if (moribund == &m_head) {
++    // List is empty, can't evict
++    return;
++  }
++  delink(moribund);
++  atomic_thread_fence(std::memory_order_seq_cst);
++  lock.unlock();
++
++  HashMapAccessor hashAccessor;
++  if (!m_map.find(hashAccessor, moribund->m_key)) {
++    // Presumably unreachable
++    return;
++  }
++  m_map.erase(hashAccessor);
++  delete moribund;
++}
++
++} // namespace HPHP
++
++#endif
+--- /dev/null
++++ b/hphp/util/thread-safe-scalable-cache.h
+@@ -0,0 +1,196 @@
++/*
++ * Copyright © 2014 Tim Starling
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *   http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++#ifndef incl_HPHP_SCALABLE_CACHE_H
++#define incl_HPHP_SCALABLE_CACHE_H
++
++#include "hphp/util/thread-safe-lru-cache.h"
++#include "hphp/util/lru-cache-key.h"
++#include <limits>
++#include <memory>
++
++namespace HPHP {
++
++/**
++ * ThreadSafeScalableCache is a thread-safe distributed hashtable with limited
++ * size. When it is full, it evicts a rough approximation to the least recently
++ * used item.
++ *
++ * The find() operation fills a ConstAccessor object, which is a smart pointer
++ * similar to TBB's const_accessor. After eviction, destruction of the value is
++ * deferred until all ConstAccessor objects are destroyed.
++ * 
++ * Since the hash value of each key is requested multiple times, you should use
++ * a key with a memoized hash function. ThreadSafeStringCache is provided for
++ * this purpose.
++ */
++template <class TKey, class TValue, class THash = tbb::tbb_hash_compare<TKey> >
++class ThreadSafeScalableCache {
++  public:
++    typedef ThreadSafeLRUCache<TKey, TValue, THash> Shard;
++    typedef typename Shard::ConstAccessor ConstAccessor;
++
++    /**
++     * Constructor
++     *   - maxSize: the maximum number of items in the container
++     *   - numShards: the number of child containers. If this is zero, the
++     *     "hardware concurrency" will be used (typically the logical processor
++     *     count).
++     */
++    explicit ThreadSafeScalableCache(size_t maxSize, size_t numShards = 0);
++
++    /**
++     * Find a value by key, and return it by filling the ConstAccessor, which
++     * can be default-constructed. Returns true if the element was found, false
++     * otherwise. Updates the eviction list, making the element the
++     * most-recently used.
++     */
++    bool find(ConstAccessor & ac, const TKey& key);
++
++    /**
++     * Insert a value into the container. Both the key and value will be copied.
++     * The new element will put into the eviction list as the most-recently
++     * used.
++     *
++     * If there was already an element in the container with the same key, it
++     * will not be updated, and false will be returned. Otherwise, true will be
++     * returned.
++     */
++    bool insert(const TKey& key, const TValue& value);
++
++    /**
++     * Clear the container. NOT THREAD SAFE -- do not use while other threads
++     * are accessing the container.
++     */
++    void clear();
++
++    /**
++     * Get a snapshot of the keys in the container by copying them into the
++     * supplied vector. This will block inserts and prevent LRU updates while it
++     * completes. The keys will be inserted in a random order.
++     */
++    void snapshotKeys(std::vector<TKey> & keys);
++
++    /**
++     * Get the approximate size of the container. May be slightly too low when
++     * insertion is in progress.
++     */
++    size_t size();
++
++  private:
++    /**
++     * Get the child container for a given key
++     */
++    Shard & getShard(const TKey& key);
++
++    /**
++     * The maximum number of elements in the container.
++     */
++    size_t m_maxSize;
++
++    /**
++     * The child containers
++     */
++    size_t m_numShards;
++    typedef std::shared_ptr<Shard> ShardPtr;
++    std::vector<ShardPtr> m_shards;
++};
++
++/**
++ * A specialisation of ThreadSafeScalableCache providing a cache with efficient
++ * string keys.
++ */
++template <class TValue>
++class ThreadSafeStringCache
++  : public ThreadSafeScalableCache<
++    LRUCacheKey, TValue, LRUCacheKey::HashCompare>
++{
++  public:
++    explicit ThreadSafeStringCache(size_t maxSize, size_t numShards = 0)
++      : ThreadSafeScalableCache<
++        LRUCacheKey, TValue, LRUCacheKey::HashCompare
++        >(maxSize, numShards)
++    {}
++};
++
++template <class TKey, class TValue, class THash>
++ThreadSafeScalableCache<TKey, TValue, THash>::
++ThreadSafeScalableCache(size_t maxSize, size_t numShards)
++  : m_maxSize(maxSize), m_numShards(numShards)
++{
++  if (m_numShards == 0) {
++    m_numShards = std::thread::hardware_concurrency();
++  }
++  for (size_t i = 0; i < m_numShards; i++) {
++    size_t s = maxSize / m_numShards;
++    if (i == 0) {
++      s += maxSize % m_numShards;
++    }
++    m_shards.push_back(ShardPtr(new Shard(s)));
++  }
++}
++
++template <class TKey, class TValue, class THash>
++typename ThreadSafeScalableCache<TKey, TValue, THash>::Shard &
++ThreadSafeScalableCache<TKey, TValue, THash>::
++getShard(const TKey& key) {
++  THash hashObj;
++  constexpr int shift = std::numeric_limits<size_t>::digits - 16;
++  size_t h = (hashObj.hash(key) >> shift) % m_numShards;
++  return *m_shards.at(h);
++}
++
++template <class TKey, class TValue, class THash>
++bool ThreadSafeScalableCache<TKey, TValue, THash>::
++find(ConstAccessor& ac, const TKey& key) {
++  return getShard(key).find(ac, key);
++}
++
++template <class TKey, class TValue, class THash>
++bool ThreadSafeScalableCache<TKey, TValue, THash>::
++insert(const TKey& key, const TValue& value) {
++  return getShard(key).insert(key, value);
++}
++
++template <class TKey, class TValue, class THash>
++void ThreadSafeScalableCache<TKey, TValue, THash>::
++clear() {
++  for (size_t i = 0; i < m_numShards; i++) {
++    m_shards[i]->clear();
++  }
++}
++
++template <class TKey, class TValue, class THash>
++void ThreadSafeScalableCache<TKey, TValue, THash>::
++snapshotKeys(std::vector<TKey> & keys) {
++  for (size_t i = 0; i < m_numShards; i++) {
++    m_shards[i]->snapshotKeys(keys);
++  }
++}
++
++template <class TKey, class TValue, class THash>
++size_t ThreadSafeScalableCache<TKey, TValue, THash>::
++size() {
++  size_t size;
++  for (size_t i = 0; i < m_numShards; i++) {
++    size += m_shards[i]->size();
++  }
++  return size;
++}
++
++} // namespace HPHP
++
++#endif

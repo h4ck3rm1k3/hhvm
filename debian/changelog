@@ -1,4 +1,13 @@
-hhvm (3.3.1+dfsg1-1+wm1) UNRELEASED; urgency=medium
+hhvm (3.3.1+dfsg1-1+wm3-1) trusty-wikimedia; urgency=medium
+
+  * debian/patches:
+    - Added a patch to allow a new version of the LRU PCRE cache
+    - Added a patch to fix a memory leak for bitwise string operations
+  * Fixed the upstart/init scripts to use a single ini file
+
+ -- Giuseppe Lavagetto <glavagetto@wikimedia.org>  Thu, 15 Jan 2015 16:04:39 +0100
+
+hhvm (3.3.1+dfsg1-1+wm1) trusty-wikimedia; urgency=medium
 
   * Upgrade to 3.3.1
   * Add a fix for a libbost memleak on trusty
