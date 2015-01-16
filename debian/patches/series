@@ -9,4 +9,7 @@ link_libiconv_hook.patch
 pass-DNDEBUG-to-RelWithDebInfo.patch
 add_additional_includes_imagemagick.patch
 support-more-sql-stats.patch
+ezc-fix-z-type-in-zend_parse_parameters.patch
+use_system_TZinfo.patch
+fix_leak_bitwise_string_operations.patch
 

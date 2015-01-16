@@ -1,0 +1,64 @@
+Description: Fix leak on bitwise string operations
+ When operating on strings, the cellBit* functions return a string that
+ already has a reference for the caller. cellBitOpEq was adding another
+ reference, leaking any strings that came through that path.
+Reviewed-by: Giuseppe Lavagetto <glavagetto@wikimedia.org>
+Author: Brett Simmers <bsimmers@fb.com>
+Last-updated: 2015-01-15
+Origin: https://github.com/facebook/hhvm/issues/3740
+--- a/hphp/runtime/base/tv-arith.cpp
++++ b/hphp/runtime/base/tv-arith.cpp
+@@ -312,7 +312,10 @@
+ template<class Op>
+ void cellBitOpEq(Op op, Cell& c1, Cell c2) {
+   auto const result = op(c1, c2);
+-  cellSet(result, c1);
++  auto const type = c1.m_type;
++  auto const data = c1.m_data.num;
++  tvCopy(result, c1);
++  tvRefcountedDecRefHelper(type, data);
+ }
+ 
+ // Op must implement the interface described for cellIncDecOp.
+--- a/hphp/runtime/base/tv-arith.h
++++ b/hphp/runtime/base/tv-arith.h
+@@ -72,7 +72,8 @@
+  * PHP operators &, |, and ^.
+  *
+  * These operators return a KindOfInt64, unless both arguments are
+- * KindOfString, in which case they return a KindOfString.
++ * KindOfString, in which case they return a KindOfString that the caller owns
++ * a reference to.
+  */
+ Cell cellBitAnd(Cell, Cell);
+ Cell cellBitOr(Cell, Cell);
+--- /dev/null
++++ b/hphp/test/slow/memory/str-xor-leak.php
+@@ -0,0 +1,22 @@
++<?php
++
++function main($bits) {
++
++  for ($tries = 0; $tries < 5; ++$tries) {
++    $baseMemory = memory_get_usage();
++
++    for ($i = 0; $i < 500000; ++$i) {
++      $bits = $bits ^ $bits;
++      $bits ^= $bits;
++    }
++
++    if (memory_get_usage() == $baseMemory) {
++      echo "Usage is flat\n";
++      return;
++    }
++  }
++
++  echo "Usage didn't flatten out after 5 tries\n";
++}
++
++main('b613679a0814d9ec772f95d778c35fc5ff1697c493715653c6c712144292c5ad');
+--- /dev/null
++++ b/hphp/test/slow/memory/str-xor-leak.php.expect
+@@ -0,0 +1 @@
++Usage is flat
+\ No newline at end of file

@@ -1,0 +1,111 @@
+Subject: EZC - fix 'Z' type in zend_parse_parameters()
+ Fixes a bug causing segfaults in extensions using the Zend
+ compatibility layer.
+Reviewed-by: Giuseppe Lavagetto <glavagetto@wikimedia.org>
+Author: Tim Starling <tstarling@wikimedia.org>
+Last-Update: 2015-01-16
+Origin: https://github.com/facebook/hhvm/commit/bcd8309f6461efbc0cceccf14fe49892037f3554#diff-e5126c949ee93d121f4cf3e8f787ed21
+--- a/hphp/runtime/ext_zend_compat/hhvm/zend-execution-stack.cpp
++++ b/hphp/runtime/ext_zend_compat/hhvm/zend-execution-stack.cpp
+@@ -28,7 +28,7 @@
+   return *tl_stack.get();
+ }
+ 
+-zval* ZendExecutionStack::getArg(int i) {
++zval** ZendExecutionStack::getArg(int i) {
+   auto& stack = getStack();
+   auto& entry = stack.m_stack.back();
+   switch (entry.mode) {
+@@ -44,11 +44,15 @@
+         if (!stack.m_nullArg) {
+           stack.m_nullArg = RefData::Make(make_tv<KindOfNull>());
+         }
+-        return stack.m_nullArg;
++        return &stack.m_nullArg;
+       }
+ 
+       zBoxAndProxy(arg);
+-      return arg->m_data.pref;
++      // The 'Z' type specifier in zend_parse_parameters() demands a zval**
++      // which remains valid until the caller returns. We will give it a
++      // pointer to the pref member of the TypedValue which is stored on the
++      // HHVM stack.
++      return &arg->m_data.pref;
+     }
+ 
+     case ZendStackMode::SIDE_STACK: {
+@@ -56,10 +60,10 @@
+       int numargs = uintptr_t(entry.value);
+       assert(numargs < 4096);
+       assert(i < numargs);
+-      zval* zv =
+-        (zval*) stack.m_stack[stack.m_stack.size() - 1 - numargs + i].value;
+-      zv->assertValid();
+-      return zv;
++      zval** zvpp =
++        (zval**) &stack.m_stack[stack.m_stack.size() - 1 - numargs + i].value;
++      (*zvpp)->assertValid();
++      return zvpp;
+     }
+   }
+   not_reached();
+--- a/hphp/runtime/ext_zend_compat/hhvm/zend-execution-stack.h
++++ b/hphp/runtime/ext_zend_compat/hhvm/zend-execution-stack.h
+@@ -35,7 +35,7 @@
+ };
+ 
+ struct ZendExecutionStack final : RequestEventHandler {
+-  static zval* getArg(int i);
++  static zval** getArg(int i);
+   static int numArgs();
+ 
+   static void push(void* z);
+--- a/hphp/runtime/ext_zend_compat/php-src/Zend/zend_API.cpp
++++ b/hphp/runtime/ext_zend_compat/php-src/Zend/zend_API.cpp
+@@ -418,7 +418,7 @@
+         if (check_null && Z_TYPE_PP(arg) == IS_NULL) {
+           *p = NULL;
+         } else {
+-          not_implemented();
++          *p = arg;
+         }
+       }
+       break;
+@@ -575,22 +575,14 @@
+ 
+         *n_varargs = num_varargs;
+ 
+-        /* Allocate space for the args. Zend already has single pointers
+-         * persistently stored, and only needs to allocate space for the double
+-         * pointers, but we need to allocate space for both.
+-         *
+-         * We need to allocate it in such a way that a single efree(varargs)
+-         * in the caller will free all relevant memory. So we allocate a single
+-         * block and then split it.
++        /* Allocate space for the args. We need to allocate it in such a way
++         * that a single efree(varargs) in the caller will free all relevant
++         * memory.
+          */
+-        zval *** double_ptrs = (zval***)safe_emalloc(num_varargs * 2,
+-                                                     sizeof(void*), 0);
+-        *varargs = double_ptrs;
+-        zval ** single_ptrs = (zval**)(double_ptrs + num_varargs);
++        *varargs = (zval***)safe_emalloc(num_varargs, sizeof(void*), 0);
+ 
+         for (iv = 0; iv < num_varargs; iv++) {
+-          double_ptrs[iv] = &single_ptrs[iv];
+-          single_ptrs[iv] = HPHP::ZendExecutionStack::getArg(i + iv);
++          (*varargs)[iv] = HPHP::ZendExecutionStack::getArg(i + iv);
+         }
+ 
+         /* adjust how many args we have left and restart loop */
+@@ -603,8 +595,7 @@
+       }
+     }
+ 
+-    auto tmp = HPHP::ZendExecutionStack::getArg(i);
+-    arg = &tmp;
++    arg = HPHP::ZendExecutionStack::getArg(i);
+ 
+     if (zend_parse_arg(i+1, arg, va, &type_spec, quiet TSRMLS_CC) == FAILURE) {
+       /* clean up varargs array if it was used */
