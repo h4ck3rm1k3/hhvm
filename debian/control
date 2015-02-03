@@ -4,6 +4,7 @@ Priority: optional
 Maintainer: Debian HHVM packaging team <pkg-hhvm-team@lists.alioth.debian.org>
 Uploaders: David Martínez Moreno <ender@debian.org>, Faidon Liambotis <paravoid@debian.org>
 Build-Depends: debhelper (>= 9.0.0),
+  dh-exec,
   autotools-dev,
   binutils-dev,
   bison,

@@ -1,5 +1,6 @@
+#!/usr/bin/dh-exec
 usr/bin/hhvm
 hphp/hack/bin/hh_client /usr/bin
 hphp/hack/bin/hh_server /usr/bin
 debian/php.ini /etc/hhvm
-debian/php.ini.fcgi /etc/hhvm/fcgi
+debian/php.ini.fcgi => /etc/hhvm/fcgi/php.ini
