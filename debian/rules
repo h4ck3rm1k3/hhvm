@@ -22,7 +22,7 @@ override_dh_auto_configure:
 	dh_auto_configure -- \
 		-DUSE_JSONC=ON \
 		-DFREETYPE_INCLUDE_DIRS=/usr/include/freetype2/ \
-		-DHOTPROFILER=ON \
+		-DENABLE_MCROUTER=OFF \
 		-DCMAKE_INSTALL_PREFIX=/usr \
 		-DCMAKE_BUILD_TYPE=RelWithDebInfo
 
