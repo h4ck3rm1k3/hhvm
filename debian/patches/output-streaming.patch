@@ -1,0 +1,336 @@
+--- a/hphp/runtime/base/execution-context.cpp
++++ b/hphp/runtime/base/execution-context.cpp
+@@ -214,6 +214,7 @@
+ }
+ 
+ void ExecutionContext::writeStdout(const char *s, int len) {
++  fflush(stdout);
+   if (m_stdout == nullptr) {
+     if (s_stdout_color) {
+       safe_stdout(s_stdout_color, strlen(s_stdout_color));
+@@ -228,6 +229,14 @@
+   }
+ }
+ 
++void ExecutionContext::writeTransport(const char *s, int len) {
++  if (m_transport) {
++    m_transport->sendRaw((void*)s, len, 200, false, true);
++  } else {
++    writeStdout(s, len);
++  }
++}
++
+ size_t ExecutionContext::getStdoutBytesWritten() const {
+   return m_stdoutBytesWritten;
+ }
+@@ -240,10 +249,10 @@
+         obFlush();
+       }
+     }
++    if (m_implicitFlush) flush();
+   } else {
+-    writeStdout(s, len);
++    writeTransport(s, len);
+   }
+-  if (m_implicitFlush) flush();
+ }
+ 
+ ///////////////////////////////////////////////////////////////////////////////
+@@ -306,10 +315,6 @@
+ bool ExecutionContext::obFlush() {
+   assert(m_protectedLevel >= 0);
+ 
+-  if ((int)m_buffers.size() <= m_protectedLevel) {
+-    return false;
+-  }
+-
+   auto iter = m_buffers.end();
+   OutputBuffer& last = *(--iter);
+ 
+@@ -352,17 +357,19 @@
+       }
+       str = tout.toString();
+     } catch (...) {
+-      writeStdout(str.data(), str.size());
++      writeTransport(str.data(), str.size());
+       throw;
+     }
+   }
+ 
+-  writeStdout(str.data(), str.size());
++  writeTransport(str.data(), str.size());
+   return true;
+ }
+ 
+ void ExecutionContext::obFlushAll() {
+-  while (obFlush()) { obEnd();}
++  do {
++    obFlush();
++  } while (obEnd());
+ }
+ 
+ bool ExecutionContext::obEnd() {
+@@ -431,20 +438,16 @@
+ }
+ 
+ void ExecutionContext::flush() {
+-  if (m_buffers.empty()) {
+-    fflush(stdout);
+-  } else if (RuntimeOption::EnableEarlyFlush && m_protectedLevel &&
+-             (m_transport == nullptr ||
+-              (m_transport->getHTTPVersion() == "1.1" &&
+-               m_transport->getMethod() != Transport::Method::HEAD))) {
++  // No need to do anything if m_buffers is empty, since we already did an
++  // unbuffered write to the FD or transport
++  if (!m_buffers.empty() &&
++      RuntimeOption::EnableEarlyFlush && m_protectedLevel &&
++      (m_transport == nullptr ||
++       (m_transport->getHTTPVersion() == "1.1" &&
++        m_transport->getMethod() != Transport::Method::HEAD))) {
+     StringBuffer &oss = m_buffers.front().oss;
+     if (!oss.empty()) {
+-      if (m_transport) {
+-        m_transport->sendRaw((void*)oss.data(), oss.size(), 200, false, true);
+-      } else {
+-        writeStdout(oss.data(), oss.size());
+-        fflush(stdout);
+-      }
++      writeTransport(oss.data(), oss.size());
+       oss.clear();
+     }
+   }
+--- a/hphp/runtime/base/execution-context.h
++++ b/hphp/runtime/base/execution-context.h
+@@ -169,6 +169,11 @@
+   void writeStdout(const char* s, int len);
+   size_t getStdoutBytesWritten() const;
+ 
++  /**
++   * Write to the transport, or to stdout if there is no transport.
++   */
++  void writeTransport(const char* s, int len);
++
+   using PFUNC_STDOUT = void (*)(const char* s, int len, void* data);
+   void setStdout(PFUNC_STDOUT func, void* data);
+ 
+--- a/hphp/runtime/base/program-functions.cpp
++++ b/hphp/runtime/base/program-functions.cpp
+@@ -1875,7 +1875,7 @@
+ 
+ ExecutionContext *hphp_context_init() {
+   ExecutionContext *context = g_context.getNoCheck();
+-  context->obStart();
++  context->obStart(uninit_null(), RuntimeOption::ServerChunkSize);
+   context->obProtect(true);
+   return context;
+ }
+--- a/hphp/runtime/base/runtime-option.cpp
++++ b/hphp/runtime/base/runtime-option.cpp
+@@ -178,6 +178,7 @@
+ std::string RuntimeOption::ForceCompressionURL;
+ std::string RuntimeOption::ForceCompressionCookie;
+ std::string RuntimeOption::ForceCompressionParam;
++int64_t RuntimeOption::ServerChunkSize = 64000;
+ bool RuntimeOption::EnableKeepAlive = true;
+ bool RuntimeOption::ExposeHPHP = true;
+ bool RuntimeOption::ExposeXFBServer = false;
+@@ -1126,6 +1127,8 @@
+     Config::Bind(ForceCompressionParam, ini,
+                  server["ForceCompression"]["Param"]);
+ 
++    Config::Bind(ServerChunkSize, ini, server["ChunkSize"], 64000);
++
+     Config::Bind(EnableKeepAlive, ini, server["EnableKeepAlive"], true);
+     Config::Bind(ExposeHPHP, ini, server["ExposeHPHP"], true);
+     Config::Bind(ExposeXFBServer, ini, server["ExposeXFBServer"], false);
+--- a/hphp/runtime/base/runtime-option.h
++++ b/hphp/runtime/base/runtime-option.h
+@@ -129,6 +129,7 @@
+   static std::vector<std::string> ServerWarmupRequests;
+   static boost::container::flat_set<std::string> ServerHighPriorityEndPoints;
+   static bool ServerExitOnBindFail;
++  static int64_t ServerChunkSize;
+   static int PageletServerThreadCount;
+   static bool PageletServerThreadRoundRobin;
+   static int PageletServerThreadDropCacheTimeoutSeconds;
+--- a/hphp/runtime/server/fastcgi/fastcgi-session.cpp
++++ b/hphp/runtime/server/fastcgi/fastcgi-session.cpp
+@@ -323,12 +323,25 @@
+   ioStop();
+ }
+ 
+-void FastCGISession::writeErr(size_t,
+-    const folly::AsyncSocketException&) noexcept {
++void FastCGISession::WriteCallback::writeErr(size_t bytesWritten,
++    const folly::AsyncSocketException& ex) noexcept {
++  m_session->writeErr(m_bufferSize, bytesWritten, ex);
++  delete this;
++}
++
++void FastCGISession::WriteCallback::writeSuccess() noexcept {
++  m_session->writeSuccess(m_bufferSize);
++  delete this;
++}
++
++void FastCGISession::writeErr(size_t bufferSize, size_t,
++                              const folly::AsyncSocketException&) noexcept {
++  discardWriteBuffer(bufferSize);
+   ioStop();
+ }
+ 
+-void FastCGISession::writeSuccess() noexcept {
++void FastCGISession::writeSuccess(size_t bufferSize) noexcept {
++  discardWriteBuffer(bufferSize);
+   if (--m_eventCount == 0 && m_shutdown) {
+     // If we were terminating and this was the last pending event then trigger
+     // the delete.
+@@ -336,14 +349,43 @@
+   }
+ }
+ 
++void FastCGISession::addWriteBuffer(size_t bufferSize) noexcept {
++  Lock lock(&m_writeSync);
++  m_writeQueueSize += bufferSize;
++}
++
++void FastCGISession::discardWriteBuffer(size_t bufferSize) noexcept {
++  Lock lock(&m_writeSync);
++  size_t oldSize = m_writeQueueSize;
++  m_writeQueueSize -= bufferSize;
++  if (oldSize >= m_maxWriteQueueSize &&
++      m_writeQueueSize < m_maxWriteQueueSize) {
++    m_writeSync.notify();
++  }
++}
++
+ ////////////////////////////////////////////////////////////////////////////////
+ 
+-void FastCGISession::onStdOut(std::unique_ptr<IOBuf> chain) {
++void FastCGISession::blockingWriteStdOut(std::unique_ptr<IOBuf> chain) {
++  long maxWait = RuntimeOption::ConnectionTimeoutSeconds;
++  if (maxWait <= 0) {
++    maxWait = 50; // this was the default read timeout in LibEventServer
++  }
++
++  {
++    Lock lock(&m_writeSync);
++    while (m_writeQueueSize >= m_maxWriteQueueSize) {
++      m_writeSync.wait(maxWait);
++    }
++  }
++
+   // FastCGITransport doesn't run in the same event base. Calling into internal
+   // functions here is unsafe from other threads so we enqueue the work for the
+-  // event base.
++  // event base. We have to wait for the work to be done, otherwise the event
++  // queue can grow without bound, if the VM writes fast enough.
++
+   folly::MoveWrapper<std::unique_ptr<IOBuf>> chain_wrapper(std::move(chain));
+-  m_eventBase->runInEventBaseThread([this, chain_wrapper]() mutable {
++  m_eventBase->runInEventBaseThreadAndWait([this, chain_wrapper]() mutable {
+     writeStream(fcgi::STDOUT, std::move(*chain_wrapper));
+   });
+ }
+@@ -432,7 +474,16 @@
+     return;
+   }
+   ++m_eventCount;
+-  m_sock->writeChain(this, std::move(chain));
++
++  uint64_t length = chain->computeChainDataLength();
++  addWriteBuffer(length);
++
++  // Create a callback object to track the chain length, so that we can
++  // account for it when the chain is destroyed. AsyncSocket::destroy() will
++  // call all the pending callbacks before it deletes itself, so the session
++  // pointer should remain valid until the callback is called.
++  WriteCallback * callback = new WriteCallback(this, length);
++  m_sock->writeChain(callback, std::move(chain));
+ }
+ 
+ ////////////////////////////////////////////////////////////////////////////////
+--- a/hphp/runtime/server/fastcgi/fastcgi-session.h
++++ b/hphp/runtime/server/fastcgi/fastcgi-session.h
+@@ -178,7 +178,6 @@
+ struct FastCGISession
+   : public  folly::wangle::ManagedConnection
+   , private folly::AsyncSocket::ReadCallback
+-  , private folly::AsyncSocket::WriteCallback
+ {
+   FastCGISession(
+     folly::EventBase* evBase,
+@@ -211,8 +210,29 @@
+   void readErr(const folly::AsyncSocketException&) noexcept override;
+ 
+   // Async write callbacks
+-  void writeErr(size_t, const folly::AsyncSocketException&) noexcept override;
+-  void writeSuccess() noexcept override;
++  void writeErr(size_t bufferSize, size_t bytesWritten,
++                const folly::AsyncSocketException& ex) noexcept;
++  void writeSuccess(size_t bufferSize) noexcept;
++
++  struct WriteCallback : folly::AsyncSocket::WriteCallback {
++    WriteCallback(FastCGISession* session,
++                  size_t bufferSize)
++      : m_session(session), m_bufferSize(bufferSize)
++    {}
++
++    void writeErr(size_t bytesWritten,
++                  const folly::AsyncSocketException& ex) noexcept override;
++    void writeSuccess() noexcept override;
++
++    FastCGISession* m_session;
++    size_t m_bufferSize;
++  };
++
++  // Add a buffer to m_writeQueueSize.
++  void addWriteBuffer(size_t bufferSize) noexcept;
++
++  // Remove a buffer from m_writeQueueSize and wake up any blocked writers.
++  void discardWriteBuffer(size_t bufferSize) noexcept;
+ 
+ public:
+   // Callbacks to send data back to webserver for FastCGITransport. Ideally
+@@ -220,7 +240,7 @@
+   //
+   // NB: FastCGITransport runs in its own thread and these callbacks need to
+   //     explicitly place their work onto the event base thread!
+-  void onStdOut(std::unique_ptr<folly::IOBuf> chain);
++  void blockingWriteStdOut(std::unique_ptr<folly::IOBuf> chain);
+   void onComplete();
+ 
+ private:
+@@ -295,7 +315,7 @@
+   //
+   // writeEndRequest and writeUnknownType send discrete records
+   //
+-  // writeStream will write either FCGI_STDIN or FCGI_STDOUT streams
++  // writeStream will write either FCGI_STDERR or FCGI_STDOUT streams
+ 
+   // Respond to the webserver with a requested capability
+   void writeCapability(const std::string& key); // Send FCGI_GET_VALUES_RESULT
+@@ -376,6 +396,13 @@
+   // transport may try to call us to write data until it completes.
+   size_t m_eventCount{0};
+ 
++  // The size of the write queue currently active inside m_session->m_sock
++  size_t m_writeQueueSize{0};
++  size_t m_maxWriteQueueSize{131072};
++
++  // A condition variable to support blocking write emulation
++  Synchronizable m_writeSync;
++
+   //////////////////////////////////////////////////////////////////////////////
+   // Request data- transport and flags
+   //
+--- a/hphp/runtime/server/fastcgi/fastcgi-transport.cpp
++++ b/hphp/runtime/server/fastcgi/fastcgi-transport.cpp
+@@ -173,7 +173,7 @@
+   }
+ 
+   m_txBuf.append(data, size);
+-  m_session->onStdOut(m_txBuf.move()); // session will handle locking
++  m_session->blockingWriteStdOut(m_txBuf.move());
+ 
+   if (eom) {
+     onSendEndImpl();

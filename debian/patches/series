@@ -5,3 +5,4 @@ use_system_TZinfo.patch
 
 # WMF specific patches go here
 add-jemalloc-prof-status.patch
+output-streaming.patch
