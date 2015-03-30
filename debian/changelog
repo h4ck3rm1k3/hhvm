@@ -3,7 +3,7 @@ hhvm (3.6.1+dfsg1-1+wm1) trusty-wikimedia; urgency=medium
   * New upstream release
   * Added WMF patch to support streaming output in FastCGI 
 
- -- Giuseppe Lavagetto <glavagetto@wikimedia.org>  Fri, 20 Mar 2015 09:38:35 +0100
+ -- Giuseppe Lavagetto <glavagetto@wikimedia.org>  Fri, 30 Mar 2015 09:38:35 +0100
 
 hhvm (3.3.1+dfsg1-1+wm3-1) trusty-wikimedia; urgency=medium
 
