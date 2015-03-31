@@ -1,8 +1,12 @@
-hhvm (3.6.1+dfsg1-1+wm1) UNRELEASED; urgency=medium
+hhvm (3.6.1+dfsg1-1+wm1) trusty-wikimedia; urgency=medium
 
+  [ Giuseppe Lavagetto ]
   * New upstream release (3.6.1)
   * Added WMF patch to support streaming output in FastCGI 
   * Added patches to build correctly
+
+  [ Alexandros Kosiaris ]
+  * Rebuild with hhvm-dev Depends field populated better
 
  -- Giuseppe Lavagetto <glavagetto@wikimedia.org>  Thu, 16 Apr 2015 12:09:55 +0200
 
