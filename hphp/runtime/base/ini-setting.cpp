@@ -16,8 +16,9 @@
 
 #include "hphp/runtime/base/ini-setting.h"
 
+#include "hphp/runtime/base/array-init.h"
 #include "hphp/runtime/base/builtin-functions.h"
-#include "hphp/runtime/base/hphp-system.h"
+#include "hphp/runtime/base/execution-context.h"
 #include "hphp/runtime/base/runtime-option.h"
 #include "hphp/runtime/base/type-conversions.h"
 #include "hphp/runtime/base/zend-strtod.h"
@@ -40,6 +41,9 @@ namespace HPHP {
 const Extension* IniSetting::CORE = (Extension*)(-1);
 
 bool IniSetting::s_pretendExtensionsHaveNotBeenLoaded = false;
+
+bool IniSetting::s_config_is_a_constant = false;
+std::set<std::string> IniSetting::config_names_that_use_constants;
 
 const StaticString
   s_global_value("global_value"),
@@ -109,7 +113,6 @@ static folly::dynamic variant_to_dynamic(const Variant& v) {
   switch (v.getType()) {
     case KindOfUninit:
     case KindOfNull:
-    default:
       return nullptr;
     case KindOfBoolean:
       return v.toBoolean();
@@ -122,13 +125,17 @@ static folly::dynamic variant_to_dynamic(const Variant& v) {
       return v.toString().data();
     case KindOfArray:
     case KindOfObject:
-    case KindOfResource:
+    case KindOfResource: {
       folly::dynamic ret = folly::dynamic::object;
       for (ArrayIter iter(v.toArray()); iter; ++iter) {
         ret.insert(variant_to_dynamic(iter.first()),
                    variant_to_dynamic(iter.second()));
       }
       return ret;
+    }
+    case KindOfRef:
+    case KindOfClass:
+      break;
   }
   not_reached();
 }
@@ -268,10 +275,20 @@ bool ini_on_update(const folly::dynamic& value, std::set<std::string>& p) {
   return true;
 }
 
+
 bool ini_on_update(const folly::dynamic& value, std::vector<std::string>& p) {
   INI_ASSERT_ARR(value);
   for (auto& v : value.values()) {
     p.push_back(v.data());
+  }
+  return true;
+}
+
+bool ini_on_update(const folly::dynamic& value,
+                   std::map<std::string, std::string>& p) {
+  INI_ASSERT_ARR(value);
+  for (auto& pair : value.items()) {
+    p[pair.first.data()] = pair.second.data();
   }
   return true;
 }
@@ -322,6 +339,14 @@ folly::dynamic ini_get(std::string& p) {
 
 folly::dynamic ini_get(String& p) {
   return p.data();
+}
+
+folly::dynamic ini_get(std::map<std::string, std::string>& p) {
+  folly::dynamic ret = folly::dynamic::object;
+  for (auto& pair : p) {
+    ret.insert(pair.first, pair.second);
+  }
+  return ret;
 }
 
 folly::dynamic ini_get(Array& p) {
@@ -386,7 +411,7 @@ void IniSetting::ParserCallback::makeArray(Variant& hash,
                                            const std::string& offset,
                                            const std::string& value) {
   assert(!offset.empty());
-  Variant val(hash, Variant::StrongBind{});
+  Variant val(Variant::StrongBind{}, hash);
   auto start = offset.c_str();
   auto p = start;
   bool last = false;
@@ -496,6 +521,12 @@ void IniSetting::SystemParserCallback::onLabel(const std::string &name,
 void IniSetting::SystemParserCallback::onEntry(
     const std::string &key, const std::string &value, void *arg) {
   assert(!key.empty());
+  // onConstant will always be called before onEntry, so we can check
+  // here
+  if (IniSetting::s_config_is_a_constant) {
+    IniSetting::config_names_that_use_constants.insert(key);
+    IniSetting::s_config_is_a_constant = false;
+  }
   auto& arr = *(IniSetting::Map*)arg;
   arr[key] = value;
 }
@@ -505,6 +536,10 @@ void IniSetting::SystemParserCallback::onPopEntry(const std::string& key,
                                                   const std::string& offset,
                                                   void* arg) {
   assert(!key.empty());
+  if (IniSetting::s_config_is_a_constant) {
+    IniSetting::config_names_that_use_constants.insert(key);
+    IniSetting::s_config_is_a_constant = false;
+  }
   auto& arr = *(IniSetting::Map*)arg;
   auto* ptr = arr.get_ptr(key);
   if (!ptr || !ptr->isObject()) {
@@ -550,6 +585,7 @@ void IniSetting::SystemParserCallback::makeArray(Map &hash,
 }
 void IniSetting::SystemParserCallback::onConstant(std::string &result,
                                                   const std::string &name) {
+  IniSetting::s_config_is_a_constant = true;
   if (MemoryManager::TlsWrapper::isNull()) {
     // We can't load constants before the memory manger is up, so lets just
     // pretend they are strings I guess
@@ -570,6 +606,8 @@ static Mutex s_mutex;
 Variant IniSetting::FromString(const String& ini, const String& filename,
                                bool process_sections, int scanner_mode) {
   Lock lock(s_mutex); // ini parser is not thread-safe
+  // We are parsing something new, so reset this flag
+  s_config_is_a_constant = false;
   auto ini_cpp = ini.toCppString();
   auto filename_cpp = filename.toCppString();
   if (process_sections) {
@@ -593,23 +631,54 @@ Variant IniSetting::FromString(const String& ini, const String& filename,
 IniSetting::Map IniSetting::FromStringAsMap(const std::string& ini,
                                             const std::string& filename) {
   Lock lock(s_mutex); // ini parser is not thread-safe
+  // We are parsing something new, so reset this flag
+  s_config_is_a_constant = false;
   SystemParserCallback cb;
   Map ret = IniSetting::Map::object;
   zend_parse_ini_string(ini, filename, NormalScanner, cb, &ret);
   return ret;
 }
 
-struct IniCallbackData {
+class IniCallbackData {
+public:
+  IniCallbackData() {
+    extension = nullptr;
+    mode = IniSetting::PHP_INI_NONE;
+    iniData = nullptr;
+    updateCallback = nullptr;
+    getCallback = nullptr;
+  }
+  virtual ~IniCallbackData() {
+    delete iniData;
+    iniData = nullptr;
+  }
+public:
   const Extension* extension;
   IniSetting::Mode mode;
+  UserIniData *iniData;
   std::function<bool(const folly::dynamic& value)> updateCallback;
   std::function<folly::dynamic()> getCallback;
 };
 
 typedef std::map<std::string, IniCallbackData> CallbackMap;
-// Only settable at startup
+
+//
+// These are for settings/callbacks only settable at startup.
+//
+// Empirically and surprisingly (20Jan2015):
+//   * server mode: the contents of system map are     destructed on SIGTERM
+//   * CLI    mode: the contents of system map are NOT destructed on SIGTERM
+//
 static CallbackMap s_system_ini_callbacks;
-// The script can change these during the request
+
+//
+// These are for settings/callbacks that the script
+// can change during the request.
+//
+// Empirically and surprisingly (20Jan2015), when there are N threads:
+//   * server mode: the contents of user map are     destructed N-1 times
+//   * CLI    mode: the contents of user map are NOT destructed on SIGTERM
+//
 static IMPLEMENT_THREAD_LOCAL(CallbackMap, s_user_callbacks);
 
 typedef std::map<std::string, folly::dynamic> SettingMap;
@@ -618,11 +687,11 @@ static SettingMap s_system_settings;
 // Changed during the course of the request
 static IMPLEMENT_THREAD_LOCAL(SettingMap, s_saved_defaults);
 
-class IniSettingExtension : public Extension {
+class IniSettingExtension final : public Extension {
 public:
   IniSettingExtension() : Extension("hhvm.ini", NO_EXTENSION_VERSION_YET) {}
 
-  void requestShutdown() {
+  void requestShutdown() override {
     // Put all the defaults back to the way they were before any ini_set()
     for (auto &item : *s_saved_defaults) {
       IniSetting::SetUser(item.first, item.second, IniSetting::FollyDynamic());
@@ -632,30 +701,81 @@ public:
 
 } s_ini_extension;
 
-void IniSetting::Bind(const Extension* extension, const Mode mode,
-                      const std::string& name,
-                      std::function<bool(const folly::dynamic& value)>
-                        updateCallback,
-                      std::function<folly::dynamic()> getCallback) {
+void IniSetting::Bind(
+  const Extension* extension,
+  const Mode mode,
+  const std::string& name,
+  std::function<bool(const folly::dynamic&)> updateCallback,
+  std::function<folly::dynamic()> getCallback,
+  std::function<class UserIniData *(void)> userDataCallback
+) {
   assert(!name.empty());
 
-  bool is_thread_local = (mode == PHP_INI_USER || mode == PHP_INI_ALL);
-  // For now, we require the extensions to use their own thread local memory for
-  // user-changeable settings. This means you need to use the default field to
-  // Bind and can't statically initialize them. We could conceivably let you
-  // use static memory and have our own thread local here that users can change
-  // and then reset it back to the default, but we haven't built that yet.
-  auto &data = is_thread_local ? (*s_user_callbacks)[name]
-                               : s_system_ini_callbacks[name];
-  // I would love if I could verify p is thread local or not instead of
-  // this dumb hack
-  assert(is_thread_local || !Extension::ModulesInitialised() ||
-         s_pretendExtensionsHaveNotBeenLoaded);
+  /*
+   * WATCH OUT: unlike php5, a Mode is not necessarily a bit mask.
+   * PHP_INI_ALL is NOT encoded as the union:
+   *   PHP_INI_USER|PHP_INI_PERDIR|PHP_INI_SYSTEM
+   *
+   * Note that Mode value PHP_INI_SET_USER and PHP_INI_SET_EVERY are bit
+   * sets; "SET" in this use means "bitset", and not "assignment".
+   */
+  bool is_thread_local = (
+    (mode == PHP_INI_USER) ||
+    (mode == PHP_INI_PERDIR) ||
+    (mode == PHP_INI_ALL) ||  /* See note above */
+    (mode &  PHP_INI_USER) ||
+    (mode &  PHP_INI_PERDIR) ||
+    (mode &  PHP_INI_ALL)
+    );
+
+  //
+  // When the debugger is loading its configuration, there will be some
+  // cases where Extension::ModulesInitialised(), but the name appears
+  // in neither s_user_callbacks nor s_system_ini_callbacks. The bottom
+  // line is that we can't really use ModulesInitialised() to help steer
+  // the choices here.
+  //
+
+  bool use_user = is_thread_local;
+  if (!use_user) {
+    //
+    // If it is already in the user callbacks, continue to use it from
+    // there. We don't expect it to be already there, but it has been
+    // observed during development.
+    //
+    bool in_user_callbacks =
+      (s_user_callbacks->find(name) != s_user_callbacks->end());
+    assert (!in_user_callbacks);  // See note above
+    use_user = in_user_callbacks;
+  }
+
+  //
+  // For now, we require the extensions to use their own thread local
+  // memory for user-changeable settings. This means you need to use
+  // the default field to Bind and can't statically initialize them.
+  // The main reasoning to do that is so that the extensions have the
+  // values already parsed into their types. If you are setting an int,
+  // it does the string parsing once and then when you read it, it is
+  // already an int. If we did some shared thing, we would just hand you
+  // back the strings and you'd have to parse them on every request or
+  // build some convoluted caching mechanism which is slower than just
+  // the int access.
+  //
+  // We could conceivably let you use static memory and have our own
+  // thread local here that users can change and then reset it back to
+  // the default, but we haven't built that yet.
+  //
+
+  IniCallbackData &data =
+    use_user ? (*s_user_callbacks)[name] : s_system_ini_callbacks[name];
 
   data.extension = extension;
   data.mode = mode;
   data.updateCallback = updateCallback;
   data.getCallback = getCallback;
+  if (data.iniData == nullptr && userDataCallback != nullptr) {
+    data.iniData = userDataCallback();
+  }
 }
 
 void IniSetting::Unbind(const std::string& name) {
@@ -719,9 +839,32 @@ static bool ini_set(const std::string& name, const folly::dynamic& value,
   return cb->updateCallback(value);
 }
 
+bool IniSetting::FillInConstant(const std::string& name,
+                                const folly::dynamic& value,
+                                FollyDynamic) {
+
+  if (config_names_that_use_constants.find(name) ==
+      config_names_that_use_constants.end()) {
+    return false;
+  }
+  return IniSetting::Set(name, value, FollyDynamic());
+}
+
 bool IniSetting::Set(const std::string& name, const folly::dynamic& value,
                      FollyDynamic) {
-  s_system_settings.insert(make_pair(name, value));
+  // Need to make sure to update the value if the pair exists already
+  // A general insert(make_pair) won't actually update new values.
+  bool found = false;
+  for (auto& pair : s_system_settings) {
+    if (pair.first == name) {
+      pair.second = value;
+      found = true;
+      break;
+    }
+  }
+  if (!found) {
+    s_system_settings.insert(make_pair(name, value));
+  }
   return ini_set(name, value, PHP_INI_SET_EVERY);
 }
 

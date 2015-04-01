@@ -17,6 +17,9 @@
 #ifndef incl_HPHP_SWEEPABLE_H_
 #define incl_HPHP_SWEEPABLE_H_
 
+#include "hphp/util/portability.h"
+#include "hphp/runtime/base/memory-manager.h"
+
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -41,11 +44,9 @@ public:
     void delist();
     void init();
   };
-  static void SweepAll();
-  static void InitSweepableList();
-
-public:
-  Sweepable();
+  static unsigned SweepAll();
+  static void InitList();
+  static void FlushList();
 
   /*
    * There is no default behavior. Make sure this function frees all
@@ -54,27 +55,37 @@ public:
   virtual void sweep() = 0;
 
   /*
-   * Note: "Persistent" here means that the object will stay alive
-   * across requests, but *as a thread local*.  It can be reused once
-   * the same server thread gets around to handling a new request.  If
-   * you need this you probably should be using it via PersistentResourceStore.
-   */
-  void incPersistent() { ++m_persistentCount; }
-  void decPersistent() { --m_persistentCount; }
-  bool isPersistent() { return m_persistentCount > 0; }
-
-  /*
    * Remove this object from the sweepable list, so it won't have
    * sweep() called at the next SweepAll.
    */
   void unregister();
 
 protected:
+  Sweepable();
   ~Sweepable();
 
 private:
   Node m_sweepNode;
-  unsigned int m_persistentCount;
+};
+
+using Sweeper = void (*)(ObjectData*);
+void registerSweepableObj(ObjectData* obj, Sweeper);
+void unregisterSweepableObj(ObjectData* obj);
+
+/*
+ * Nonvirtual sweepable mixin for use with ObjectData. State is managed
+ * completely in a thread-local hashtable.
+ */
+template<class Base> struct SweepableObj: Base {
+protected:
+  template<class... Args>
+  explicit SweepableObj(Sweeper f, Args&&... args)
+    : Base(std::forward<Args>(args)...) {
+    registerSweepableObj(this, f);
+    static_assert(sizeof(*this) == sizeof(Base), "");
+  }
+  ~SweepableObj() { unregister(); }
+  void unregister() { unregisterSweepableObj(this); }
 };
 
 ///////////////////////////////////////////////////////////////////////////////

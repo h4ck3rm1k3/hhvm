@@ -15,7 +15,6 @@
 */
 #include "hphp/runtime/base/exceptions.h"
 
-#include "hphp/runtime/base/complex-types.h"
 #include "hphp/runtime/base/execution-context.h"
 #include "hphp/runtime/base/backtrace.h"
 
@@ -74,19 +73,14 @@ void ExtendedException::computeBacktrace(bool skipFrame /* = false */) {
 
 //////////////////////////////////////////////////////////////////////
 
-ParseTimeFatalException::ParseTimeFatalException(const char* file, int line,
-                                                 const char* msg, ...)
-  : m_file(file), m_line(line) {
-  va_list ap; va_start(ap, msg); format(msg, ap); va_end(ap);
-}
-
 FatalErrorException::FatalErrorException(int, const char *msg, ...) {
   va_list ap; va_start(ap, msg); format(msg, ap); va_end(ap);
 }
 
 FatalErrorException::FatalErrorException(const std::string& msg,
-                                         const Array& backtrace)
-  : ExtendedException(msg, backtrace.get())
+                                         const Array& backtrace,
+                                         bool isRecoverable /* = false */)
+  : ExtendedException(msg, backtrace.get()), m_recoverable(isRecoverable)
 {}
 
 //////////////////////////////////////////////////////////////////////
@@ -105,14 +99,6 @@ void throw_not_implemented(const char* feature) {
 
 void throw_not_supported(const char* feature, const char* reason) {
   throw ExtendedException("%s is not supported: %s", feature, reason);
-}
-
-void intrusive_ptr_add_ref(ArrayData* a) {
-  a->incRefCount();
-}
-
-void intrusive_ptr_release(ArrayData* a) {
-  decRefArr(a);
 }
 
 ///////////////////////////////////////////////////////////////////////////////

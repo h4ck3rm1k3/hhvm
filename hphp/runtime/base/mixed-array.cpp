@@ -20,11 +20,12 @@
 #include "hphp/runtime/base/array-init.h"
 #include "hphp/runtime/base/array-iterator.h"
 #include "hphp/runtime/base/empty-array.h"
-#include "hphp/runtime/base/complex-types.h"
 #include "hphp/runtime/base/execution-context.h"
 #include "hphp/runtime/base/runtime-option.h"
 #include "hphp/runtime/base/runtime-error.h"
+#include "hphp/runtime/base/shape.h"
 #include "hphp/runtime/base/stats.h"
+#include "hphp/runtime/base/struct-array.h"
 #include "hphp/runtime/base/variable-serializer.h"
 
 #include "hphp/runtime/vm/member-operations.h"
@@ -53,11 +54,11 @@ ArrayData* MixedArray::MakeReserveMixed(uint32_t capacity) {
   auto const mask  = cmret.second;
   auto const ad    = smartAllocArray(cap, mask);
 
-  ad->m_kindAndSize = kMixedKind << 24; // zero's size
-  ad->m_posAndCount = uint64_t{1} << 32; // zero's pos
-  ad->m_capAndUsed  = cap;
-  ad->m_tableMask   = mask;
-  ad->m_nextKI      = 0;
+  ad->m_sizeAndPos   = 0; // size=0, pos=0
+  ad->m_kindAndCount = kMixedKind << 24 | uint64_t{1} << 32; // count=1
+  ad->m_capAndUsed   = cap;
+  ad->m_tableMask    = mask;
+  ad->m_nextKI       = 0;
 
   auto const data = mixedData(ad);
   auto const hash = reinterpret_cast<int32_t*>(data + cap);
@@ -86,80 +87,27 @@ ArrayData* MixedArray::MakeReserveLike(const ArrayData* other,
   }
 }
 
-ArrayData* MixedArray::MakeReserveIntMap(uint32_t capacity) {
-  auto const cmret = computeCapAndMask(capacity);
-  auto const cap   = cmret.first;
-  auto const mask  = cmret.second;
-  auto const ad    = smartAllocArray(cap, mask);
-
-  ad->m_kindAndSize = kIntMapKind << 24; // zero's size
-  ad->m_posAndCount = uint64_t{1} << 32; // zero's pos
-  ad->m_capAndUsed  = cap;
-  ad->m_tableMask   = mask;
-  ad->m_nextKI      = 0;
-
-  auto const data = reinterpret_cast<Elm*>(ad + 1);
-  auto const hash = reinterpret_cast<int32_t*>(data + cap);
-  wordfill(hash, Empty, mask + 1);
-
-  assert(ad->m_kind == kIntMapKind);
-  assert(ad->m_size == 0);
-  assert(ad->m_pos == 0);
-  assert(ad->m_count == 1);
-  assert(ad->m_cap == cap);
-  assert(ad->m_used == 0);
-  assert(ad->m_nextKI == 0);
-  assert(ad->m_tableMask == mask);
-  assert(ad->checkInvariants());
-  return ad;
-}
-
-ArrayData* MixedArray::MakeReserveStrMap(uint32_t capacity) {
-  auto const cmret = computeCapAndMask(capacity);
-  auto const cap   = cmret.first;
-  auto const mask  = cmret.second;
-  auto const ad    = smartAllocArray(cap, mask);
-
-  ad->m_kindAndSize = kStrMapKind << 24; // zero's size
-  ad->m_posAndCount = uint64_t{1} << 32; // zero's pos
-  ad->m_capAndUsed  = cap;
-  ad->m_tableMask   = mask;
-  ad->m_nextKI      = 0;
-
-  auto const data = reinterpret_cast<Elm*>(ad + 1);
-  auto const hash = reinterpret_cast<int32_t*>(data + cap);
-  wordfill(hash, Empty, mask + 1);
-
-  assert(ad->m_kind == kStrMapKind);
-  assert(ad->m_size == 0);
-  assert(ad->m_pos == 0);
-  assert(ad->m_count == 1);
-  assert(ad->m_cap == cap);
-  assert(ad->m_used == 0);
-  assert(ad->m_nextKI == 0);
-  assert(ad->m_tableMask == mask);
-  assert(ad->checkInvariants());
-  return ad;
-}
-
 ArrayData* MixedArray::MakePacked(uint32_t size, const TypedValue* values) {
   assert(size > 0);
   ArrayData* ad;
   if (LIKELY(size <= kPackedCapCodeThreshold)) {
-    auto const cap = size;
+    auto cap = size;
+    if (auto const newCap = PackedArray::getMaxCapInPlaceFast(cap)) {
+      cap = newCap;
+    }
+    assert(cap > 0);
     ad = static_cast<ArrayData*>(
       MM().objMallocLogged(sizeof(ArrayData) + sizeof(TypedValue) * cap)
     );
     assert(cap == packedCodeToCap(cap));
-    ad->m_kindAndSize = uint64_t{size} << 32 | cap;  // sets kPackedKind
+    ad->m_sizeAndPos = size; // pos=0
+    ad->m_kindAndCount = cap | uint64_t{1} << 32; // kind=0, count=1
     assert(ad->m_kind == kPackedKind);
     assert(ad->m_size == size);
     assert(packedCodeToCap(ad->m_packedCapCode) == cap);
   } else {
     ad = MakePackedHelper(size, values);
   }
-
-  ad->m_posAndCount = uint64_t{1} << 32; // zero's pos
 
   // Append values by moving -- Caller assumes we update refcount.
   // Values are in reverse order since they come from the stack, which
@@ -178,18 +126,33 @@ ArrayData* MixedArray::MakePacked(uint32_t size, const TypedValue* values) {
   return ad;
 }
 
-NEVER_INLINE
-ArrayData*
+NEVER_INLINE ArrayData*
 MixedArray::MakePackedHelper(uint32_t size, const TypedValue* values) {
-  auto const cap = roundUpPackedCap(size);
-  auto const ad = static_cast<ArrayData*>(
+  auto const ad = MakeReserveSlow(size); // size=pos=count=kind=0
+  ad->m_count = 1;
+  assert(ad->m_kind == kPackedKind);
+  assert(ad->m_size == size);
+  assert(packedCodeToCap(ad->m_packedCapCode) >= size);
+  return ad;
+}
+
+ArrayData* MixedArray::MakePackedUninitialized(uint32_t size) {
+  assert(size > 0);
+  ArrayData* ad;
+  assert(size <= kPackedCapCodeThreshold);
+  auto const cap = size;
+  ad = static_cast<ArrayData*>(
     MM().objMallocLogged(sizeof(ArrayData) + sizeof(TypedValue) * cap)
   );
-  auto const capCode = packedCapToCode(cap);
-  ad->m_kindAndSize = uint64_t{size} << 32 | capCode;  // sets kPackedKind
+  assert(cap == packedCodeToCap(cap));
+  ad->m_sizeAndPos = size; // pos=0
+  ad->m_kindAndCount = cap | uint64_t{1} << 32; // kind=0, count=1
   assert(ad->m_kind == kPackedKind);
   assert(ad->m_size == size);
   assert(packedCodeToCap(ad->m_packedCapCode) == cap);
+  assert(ad->m_pos == 0);
+  assert(ad->m_count == 1);
+  assert(PackedArray::checkInvariants(ad));
   return ad;
 }
 
@@ -202,10 +165,9 @@ MixedArray* MixedArray::MakeStruct(uint32_t size, StringData** keys,
   auto const mask  = cmret.second;
   auto const ad    = smartAllocArray(cap, mask);
 
-  auto const shiftedSize = uint64_t{size} << 32;
-  ad->m_kindAndSize      = shiftedSize | kMixedKind << 24;
-  ad->m_posAndCount      = uint64_t{1} << 32; // zero's pos
-  ad->m_capAndUsed       = shiftedSize | cap;
+  ad->m_sizeAndPos       = size; // pos=0
+  ad->m_kindAndCount     = kMixedKind << 24 | uint64_t{1} << 32; // count=1
+  ad->m_capAndUsed       = uint64_t{size} << 32 | cap; // used=size
   ad->m_tableMask        = mask;
   ad->m_nextKI           = 0;
 
@@ -239,6 +201,21 @@ MixedArray* MixedArray::MakeStruct(uint32_t size, StringData** keys,
   return ad;
 }
 
+StructArray* MixedArray::MakeStructArray(
+  uint32_t size,
+  const TypedValue* values,
+  Shape* shape
+) {
+  assert(size > 0);
+  assert(size <= kPackedCapCodeThreshold);
+  assert(shape);
+
+  // Append values by moving -- Caller assumes we update refcount.
+  // Values are in reverse order since they come from the stack, which
+  // grows down.
+  return StructArray::createReversedValues(shape, values, size);
+}
+
 // for internal use by nonSmartCopy() and copyMixed()
 template<class CopyKeyValue>
 ALWAYS_INLINE
@@ -252,10 +229,9 @@ MixedArray* MixedArray::CopyMixed(const MixedArray& other,
   auto const ad = mode == AllocMode::Smart
     ? smartAllocArray(cap, mask)
     : mallocArray(cap, mask);
-  auto const otherKind = other.m_kind;
 
-  ad->m_kindAndSize     = uint64_t{other.m_size} << 32 | otherKind << 24;
-  ad->m_posAndCount     = static_cast<uint32_t>(other.m_pos); // zero's count
+  ad->m_sizeAndPos      = other.m_sizeAndPos;
+  ad->m_kindAndCount    = other.m_packedCapCode; // copy kind; count=0
   ad->m_capAndUsed      = uint64_t{other.m_used} << 32 | cap;
   ad->m_tableMask       = mask;
   ad->m_nextKI          = other.m_nextKI;
@@ -274,7 +250,7 @@ MixedArray* MixedArray::CopyMixed(const MixedArray& other,
       copyKeyValue(e, te, &other);
     } else {
       // Tombstone.
-      te.data.m_type = KindOfInvalid;
+      te.data.m_type = kInvalidDataType;
     }
   }
 
@@ -346,20 +322,28 @@ MixedArray* MixedArray::copyMixedAndResizeIfNeededSlow() const {
   return ret;
 }
 
-namespace {
+//////////////////////////////////////////////////////////////////////
 
-Variant CreateVarForUncountedArray(const Variant& source) {
+size_t MixedArray::computeAllocBytesFromMaxElms(uint32_t maxElms) {
+  auto const cam = computeCapAndMask(maxElms);
+  return computeAllocBytes(cam.first, cam.second);
+}
+
+//////////////////////////////////////////////////////////////////////
+
+Variant MixedArray::CreateVarForUncountedArray(const Variant& source) {
   auto type = source.getType(); // this gets rid of the ref, if it was one
   switch (type) {
+    case KindOfUninit:
+    case KindOfNull:
+      return init_null();
+
     case KindOfBoolean:
       return source.getBoolean();
     case KindOfInt64:
       return source.getInt64();
     case KindOfDouble:
       return source.getDouble();
-    case KindOfUninit:
-    case KindOfNull:
-      return init_null();
     case KindOfStaticString:
       return source.getStringData();
 
@@ -371,17 +355,19 @@ Variant CreateVarForUncountedArray(const Variant& source) {
 
     case KindOfArray: {
       auto const ad = source.getArrayData();
-      return ad == staticEmptyArray() ? ad :
-             ad->isPacked() ? MixedArray::MakeUncountedPacked(ad) :
-             MixedArray::MakeUncounted(ad);
+      if (ad == staticEmptyArray()) return ad;
+      if (ad->isPacked()) return MixedArray::MakeUncountedPacked(ad);
+      if (ad->isStruct()) return StructArray::MakeUncounted(ad);
+      return MixedArray::MakeUncounted(ad);
     }
 
-    default:
-      assert(false); // type not allowed
+    case KindOfObject:
+    case KindOfResource:
+    case KindOfRef:
+    case KindOfClass:
+      break;
   }
-  return init_null();
-}
-
+  not_reached();
 }
 
 ArrayData* MixedArray::MakeUncounted(ArrayData* array) {
@@ -421,16 +407,14 @@ ArrayData* MixedArray::MakeUncountedPacked(ArrayData* array) {
       std::malloc(sizeof(ArrayData) + cap * sizeof(TypedValue))
     );
     assert(cap == packedCodeToCap(cap));
-    ad->m_kindAndSize = uint64_t{size} << 32 | cap; // zero kind
+    ad->m_sizeAndPos = array->m_sizeAndPos;
+    ad->m_kindAndCount = cap | int64_t{UncountedValue} << 32; // kind=0
     assert(ad->m_kind == ArrayData::kPackedKind);
     assert(packedCodeToCap(ad->m_packedCapCode) == cap);
     assert(ad->m_size == size);
   } else {
     ad = MakeUncountedPackedHelper(array);
   }
-
-  ad->m_posAndCount = static_cast<uint64_t>(UncountedValue) << 32 |
-                        static_cast<uint32_t>(array->m_pos);
   auto const srcData = packedData(array);
   auto const stop    = srcData + size;
   auto targetData    = reinterpret_cast<TypedValue*>(ad + 1);
@@ -452,11 +436,12 @@ ArrayData* MixedArray::MakeUncountedPackedHelper(ArrayData* array) {
     std::malloc(sizeof(ArrayData) + cap * sizeof(TypedValue))
   );
   auto const capCode = packedCapToCode(cap);
-  auto const size = array->m_size;
-  ad->m_kindAndSize = uint64_t{size} << 32 | capCode; // zero kind
+  ad->m_sizeAndPos = array->m_sizeAndPos;
+  ad->m_kindAndCount = capCode | int64_t{UncountedValue} << 32;
   assert(ad->m_kind == ArrayData::kPackedKind);
   assert(packedCodeToCap(ad->m_packedCapCode) == cap);
-  assert(ad->m_size == size);
+  assert(ad->m_size == array->m_size);
+  assert(ad->m_pos == array->m_pos);
   return ad;
 }
 
@@ -482,13 +467,10 @@ void MixedArray::Release(ArrayData* in) {
       free_strong_iterators(ad);
     }
   }
-
-  auto const cap  = ad->m_cap;
-  auto const mask = ad->m_tableMask;
-  MM().objFreeLogged(ad, computeAllocBytes(cap, mask));
+  MM().objFreeLogged(ad, ad->heapSize());
 }
 
-static void release_unk_tv(TypedValue& tv) {
+void MixedArray::ReleaseUncountedTypedValue(TypedValue& tv) {
   if (tv.m_type == KindOfString) {
     assert(!tv.m_data.pstr->isRefCounted());
     if (tv.m_data.pstr->isUncounted()) {
@@ -502,6 +484,8 @@ static void release_unk_tv(TypedValue& tv) {
     if (!tv.m_data.parr->isStatic()) {
       if (tv.m_data.parr->isPacked()) {
         MixedArray::ReleaseUncountedPacked(tv.m_data.parr);
+      } else if (tv.m_data.parr->isStruct()) {
+        StructArray::ReleaseUncounted(tv.m_data.parr);
       } else {
         MixedArray::ReleaseUncounted(tv.m_data.parr);
       }
@@ -530,7 +514,7 @@ void MixedArray::ReleaseUncounted(ArrayData* in) {
         }
       }
 
-      release_unk_tv(ptr->data);
+      ReleaseUncountedTypedValue(ptr->data);
     }
 
     // We better not have strong iterators associated with uncounted
@@ -552,7 +536,7 @@ void MixedArray::ReleaseUncountedPacked(ArrayData* ad) {
   auto const data = packedData(ad);
   auto const stop = data + ad->m_size;
   for (auto ptr = data; ptr != stop; ++ptr) {
-    release_unk_tv(*ptr);
+    ReleaseUncountedTypedValue(*ptr);
   }
 
   // We better not have strong iterators associated with uncounted
@@ -594,7 +578,7 @@ void MixedArray::ReleaseUncountedPacked(ArrayData* ad) {
  *
  * kMixedKind:
  *   m_nextKI >= highest actual int key
- *   Elm.data.m_type maybe KindOfInvalid (tombstone)
+ *   Elm.data.m_type maybe kInvalidDataType (tombstone)
  *   hash[] maybe Tombstone
  *
  * kPackedKind:
@@ -602,7 +586,7 @@ void MixedArray::ReleaseUncountedPacked(ArrayData* ad) {
  *   m_nextKI = uninitialized
  *   Elm.skey uninitialized
  *   Elm.hash uninitialized
- *   no KindOfInvalid tombstones
+ *   no kInvalidDataType tombstones
  */
 bool MixedArray::checkInvariants() const {
   static_assert(ssize_t(Empty) == ssize_t(-1), "");
@@ -902,8 +886,9 @@ ssize_t MixedArray::findForRemove(int64_t ki, bool updateNext) {
         // Hacky: don't removed the unsigned cast, else g++ can optimize away
         // the check for == 0x7fff..., since there is no signed int k
         // for which k-1 == 0x7fff...
-        if ((uint64_t)ki == (uint64_t)m_nextKI-1
-              && (ki == 0x7fffffffffffffffLL || updateNext)) {
+        if (((uint64_t)ki == (uint64_t)m_nextKI-1) &&
+            (ki >= 0) &&
+            (ki == 0x7fffffffffffffffLL || updateNext)) {
           --m_nextKI;
         }
       }
@@ -927,39 +912,14 @@ MixedArray::findForRemove(const StringData* s, strhash_t prehash) {
 }
 
 bool MixedArray::ExistsInt(const ArrayData* ad, int64_t k) {
-  return ExistsIntImpl<kMixedKind>(ad, k);
-}
-
-template <ArrayData::ArrayKind aKind>
-ALWAYS_INLINE
-bool MixedArray::ExistsIntImpl(const ArrayData* ad, int64_t k) {
-  if (aKind == kStrMapKind) {
-    MixedArray::warnUsage(Reason::kExistsInt, kStrMapKind);
-  }
   auto a = asMixed(ad);
   return validPos(a->find(k));
 }
 
-template bool
-MixedArray::ExistsIntImpl<ArrayData::kStrMapKind>(const ArrayData*, int64_t);
-
 bool MixedArray::ExistsStr(const ArrayData* ad, const StringData* k) {
-  return MixedArray::ExistsStrImpl<kMixedKind>(ad, k);
-}
-
-template <ArrayData::ArrayKind aKind>
-ALWAYS_INLINE
-bool MixedArray::ExistsStrImpl(const ArrayData* ad, const StringData* k) {
-  if (aKind == kIntMapKind) {
-    MixedArray::warnUsage(Reason::kExistsStr, kIntMapKind);
-  }
   auto a = asMixed(ad);
   return validPos(a->find(k, k->hash()));
 }
-
-template bool
-MixedArray::ExistsStrImpl<ArrayData::kIntMapKind>(const ArrayData* ad,
-                                                  const StringData* k);
 
 //=============================================================================
 // Append/insert/update.
@@ -1011,12 +971,12 @@ MixedArray* MixedArray::initWithRef(TypedValue& tv, const Variant& v) {
 ALWAYS_INLINE
 MixedArray* MixedArray::setVal(TypedValue& tv, Cell src) {
   auto const dst = tvToCell(&tv);
-  cellSet(src, *dst);
   // TODO(#3888164): we should restructure things so we don't have to
   // check KindOfUninit here.
   if (UNLIKELY(src.m_type == KindOfUninit)) {
-    dst->m_type = KindOfNull;
+    src = make_tv<KindOfNull>();
   }
+  cellSet(src, *dst);
   return this;
 }
 
@@ -1036,7 +996,7 @@ ArrayData* MixedArray::zSetVal(TypedValue& tv, RefData* v) {
  */
 ALWAYS_INLINE
 MixedArray* MixedArray::moveVal(TypedValue& tv, TypedValue v) {
-  tv.m_type = typeInitNull(v.m_type);
+  tv.m_type = v.m_type == KindOfUninit ? KindOfNull : v.m_type;
   tv.m_data.num = v.m_data.num;
   return this;
 }
@@ -1058,87 +1018,6 @@ NEVER_INLINE MixedArray* MixedArray::resize() {
   }
   compact(false);
   return this;
-}
-
-void MixedArray::downgradeAndWarn(ArrayData* ad, const Reason r) {
-  assert(ad->isStrMapArrayOrIntMapArray());
-  MixedArray::warnUsage(r, ad->m_kind);
-  ad->m_kind = kMixedKind;
-}
-
-void MixedArray::warnUsage(const Reason r, const ArrayKind kind) {
-  assert(kind == kIntMapKind || kind == kStrMapKind);
-  if (!RuntimeOption::EvalHackArrayWarnFrequency) {
-    return;
-  }
-  static __thread uint32_t numWarnings = 0;
-  numWarnings++;
-  if (numWarnings % RuntimeOption::EvalHackArrayWarnFrequency != 0) {
-    return;
-  }
-  auto arrayName = kind == kIntMapKind ? "miarray" : "msarray";
-  switch (r) {
-  case Reason::kForeachByRef:
-    raise_warning("Foreach by reference over a %s, converting to array",
-                  arrayName);
-    break;
-  case Reason::kPrepend:
-    raise_warning("Using array_unshift on a %s, converting to array",
-                  arrayName);
-    break;
-  case Reason::kPop:
-    raise_warning("Using array_pop on a %s, converting to array", arrayName);
-    break;
-  case Reason::kSetRef:
-    raise_warning("Adding a reference to or taking an element by reference "
-                  "from a %s, converting to array", arrayName);
-    break;
-  case Reason::kAppendRef:
-    raise_warning("Appending a reference to a %s, converting to array",
-                  arrayName);
-    break;
-  case Reason::kAppend:
-    raise_warning("Appending to a %s, converting to array", arrayName);
-    break;
-  case Reason::kNvGetInt: // FALLTHROUGH
-  case Reason::kExistsInt:
-    raise_warning("Trying to read an int key from a msarray");
-    break;
-  case Reason::kNvGetStr: // FALLTHROUGH
-  case Reason::kExistsStr:
-    raise_warning("Trying to read a string key from a miarray");
-    break;
-  case Reason::kSetInt:
-    raise_warning("Adding an int key to a msarray, converting to array");
-    break;
-  case Reason::kSetStr:
-    raise_warning("Adding a string key to a miarray, converting to array");
-    break;
-  case Reason::kRemoveInt:
-    raise_warning("Trying to remove an int key from a msarray");
-    break;
-  case Reason::kRemoveStr:
-    raise_warning("Trying to remove a string key from a miarray");
-    break;
-  case Reason::kDequeue:
-    raise_warning("Using array_shift on a %s, converting to array", arrayName);
-    break;
-  case Reason::kSort:
-    raise_warning("Using sort on a %s, converting to array", arrayName);
-    break;
-  case Reason::kUsort:
-    raise_warning("Using usort on a %s, converting to array", arrayName);
-    break;
-  case Reason::kNumericString:
-    raise_warning("An integer-like string key used with a miarray");
-    break;
-  case Reason::kArraySplice:
-    raise_warning("Using array_splice on a %s, converting to array", arrayName);
-    break;
-  case Reason::kShuffle:
-    raise_warning("Using shuffle on a %s, converting to array", arrayName);
-    break;
-  }
 }
 
 void NEVER_INLINE
@@ -1165,19 +1044,13 @@ MixedArray::Grow(MixedArray* old, uint32_t newCap, uint32_t newMask) {
   assert(newMask == folly::nextPowTwo<uint64_t>(newCap) - 1);
   assert(newCap == computeMaxElms(newMask));
 
-  DEBUG_ONLY auto oldPos = old->m_pos;
-
   auto const mask       = newMask;
   auto const cap        = newCap;
   auto const ad         = smartAllocArray(cap, mask);
-  auto const oldKind    = old->m_kind;
+  auto const oldUsed    = old->m_used;
 
-  auto const oldSize        = old->m_size;
-  auto const oldPosUnsigned = static_cast<uint32_t>(old->m_pos);
-  auto const oldUsed        = old->m_used;
-
-  ad->m_kindAndSize     = uint64_t{oldSize} << 32 | oldKind << 24;
-  ad->m_posAndCount     = oldPosUnsigned; // zero's count
+  ad->m_sizeAndPos      = old->m_sizeAndPos;
+  ad->m_kindAndCount    = old->m_packedCapCode; // kind=old->kind, count=0
   ad->m_capAndUsed      = uint64_t{oldUsed} << 32 | cap;
   ad->m_tableMask       = mask;
   ad->m_nextKI          = old->m_nextKI;
@@ -1207,10 +1080,10 @@ MixedArray::Grow(MixedArray* old, uint32_t newCap, uint32_t newMask) {
   old->setZombie();
 
   assert(old->isZombie());
-  assert(ad->m_kind == oldKind);
-  assert(ad->m_size == oldSize);
+  assert(ad->m_kind == old->m_kind);
+  assert(ad->m_size == old->m_size);
   assert(ad->m_count == 0);
-  assert(ad->m_pos == oldPos);
+  assert(ad->m_pos == old->m_pos);
   assert(ad->m_used == oldUsed);
   assert(ad->m_tableMask == mask);
   assert(ad->checkInvariants());
@@ -1438,63 +1311,24 @@ ArrayData* MixedArray::zAppendImpl(RefData* data, int64_t* key_ptr) {
 
 ArrayData* MixedArray::LvalInt(ArrayData* ad, int64_t k, Variant*& ret,
                               bool copy) {
-  return LvalIntImpl<kMixedKind>(ad, k, ret, copy);
-}
-
-template <ArrayData::ArrayKind aKind>
-ALWAYS_INLINE
-ArrayData* MixedArray::LvalIntImpl(ArrayData* ad, int64_t k, Variant*& ret,
-                                   bool copy) {
   auto a = asMixed(ad);
   if (copy) {
     a = a->copyMixedAndResizeIfNeeded();
   } else {
     a = a->resizeIfNeeded();
   }
-  if (aKind == kStrMapKind) {
-    MixedArray::downgradeAndWarn(a, Reason::kSetInt);
-  }
   return a->addLvalImpl(k, ret);
 }
 
-template ArrayData*
-MixedArray::LvalIntImpl<ArrayData::kStrMapKind>(ArrayData* ad, int64_t k,
-                                                Variant*& ret, bool copy);
-
-ArrayData* MixedArray::LvalStr(ArrayData* ad,
-                              StringData* key,
-                              Variant*& ret,
-                              bool copy) {
-  return LvalStrImpl<kMixedKind>(ad, key, ret, copy);
-}
-
-
-template <ArrayData::ArrayKind aKind>
-ALWAYS_INLINE
-ArrayData* MixedArray::LvalStrImpl(ArrayData* ad,
-                                   StringData* key,
-                                   Variant*& ret,
-                                   bool copy) {
+ArrayData* MixedArray::LvalStr(ArrayData* ad, StringData* key, Variant*& ret,
+                               bool copy) {
   auto a = asMixed(ad);
   a = copy ? a->copyMixedAndResizeIfNeeded()
            : a->resizeIfNeeded();
-  if (aKind == kIntMapKind) {
-    MixedArray::downgradeAndWarn(a, Reason::kSetStr);
-  }
   return a->addLvalImpl(key, ret);
 }
 
-template ArrayData*
-MixedArray::LvalStrImpl<ArrayData::kIntMapKind>(ArrayData* ad, StringData* key,
-                                                Variant*& ret, bool copy);
-
 ArrayData* MixedArray::LvalNew(ArrayData* ad, Variant*& ret, bool copy) {
-  return LvalNewImpl<kMixedKind>(ad, ret, copy);
-}
-
-template <ArrayData::ArrayKind aKind>
-ALWAYS_INLINE
-ArrayData* MixedArray::LvalNewImpl(ArrayData* ad, Variant*& ret, bool copy) {
   auto a = asMixed(ad);
   if (UNLIKELY(a->m_nextKI < 0)) {
     raise_warning("Cannot add element to the array as the next element is "
@@ -1506,10 +1340,6 @@ ArrayData* MixedArray::LvalNewImpl(ArrayData* ad, Variant*& ret, bool copy) {
   a = copy ? a->copyMixedAndResizeIfNeeded()
            : a->resizeIfNeeded();
 
-  if (aKind != kMixedKind) {
-    MixedArray::downgradeAndWarn(a, Reason::kAppend);
-  }
-
   if (UNLIKELY(!a->nextInsert(uninit_null()))) {
     ret = &lvalBlackHole();
     return a;
@@ -1519,110 +1349,36 @@ ArrayData* MixedArray::LvalNewImpl(ArrayData* ad, Variant*& ret, bool copy) {
   return a;
 }
 
-template ArrayData*
-MixedArray::LvalNewImpl<ArrayData::kIntMapKind>(ArrayData* ad, Variant*& ret,
-                                                bool copy);
-
-template ArrayData*
-MixedArray::LvalNewImpl<ArrayData::kStrMapKind>(ArrayData* ad, Variant*& ret,
-                                                bool copy);
-
 ArrayData* MixedArray::SetInt(ArrayData* ad, int64_t k, Cell v, bool copy) {
-  return SetIntImpl<kMixedKind>(ad, k, v, copy);
-}
-
-template <ArrayData::ArrayKind aKind>
-ALWAYS_INLINE ArrayData*
-MixedArray::SetIntImpl(ArrayData* ad, int64_t k, Cell v, bool copy) {
   auto a = asMixed(ad);
   a = copy ? a->copyMixedAndResizeIfNeeded()
            : a->resizeIfNeeded();
-  if (aKind == kStrMapKind) {
-    MixedArray::downgradeAndWarn(a, Reason::kSetInt);
-  }
   return a->update(k, v);
-}
-
-template ArrayData*
-MixedArray::SetIntImpl<ArrayData::kStrMapKind>(ArrayData*, int64_t, Cell, bool);
-
-ArrayData* MixedArray::SetIntConverted(ArrayData* ad, int64_t k, Cell v,
-                                       bool copy) {
-  assert(ad->isIntMapArray());
-  MixedArray::warnUsage(Reason::kNumericString, kIntMapKind);
-  return MixedArray::SetInt(ad, k, v, copy);
 }
 
 ArrayData*
 MixedArray::SetStr(ArrayData* ad, StringData* k, Cell v, bool copy) {
-  return SetStrImpl<kMixedKind>(ad, k, v, copy);
-}
-
-template <ArrayData::ArrayKind aKind>
-ALWAYS_INLINE ArrayData*
-MixedArray::SetStrImpl(ArrayData* ad, StringData* k, Cell v, bool copy) {
   auto a = asMixed(ad);
   a = copy ? a->copyMixedAndResizeIfNeeded()
            : a->resizeIfNeeded();
-  if (aKind == kIntMapKind) {
-    MixedArray::downgradeAndWarn(a, Reason::kSetStr);
-  }
   return a->update(k, v);
 }
 
-template ArrayData*
-MixedArray::SetStrImpl<ArrayData::kIntMapKind>(ArrayData* ad, StringData* k,
-                                               Cell v, bool copy);
-
 ArrayData*
 MixedArray::SetRefInt(ArrayData* ad, int64_t k, Variant& v, bool copy) {
-  return SetRefIntImpl<kMixedKind>(ad, k, v, copy);
-}
-
-template <ArrayData::ArrayKind aKind>
-ALWAYS_INLINE ArrayData*
-MixedArray::SetRefIntImpl(ArrayData* ad, int64_t k, Variant& v, bool copy) {
   auto a = asMixed(ad);
   a = copy ? a->copyMixedAndResizeIfNeeded()
            : a->resizeIfNeeded();
-  if (aKind != kMixedKind) {
-    MixedArray::downgradeAndWarn(a, Reason::kSetRef);
-  }
   return a->updateRef(k, v);
 }
-
-template ArrayData*
-MixedArray::SetRefIntImpl<ArrayData::kIntMapKind>(ArrayData* ad, int64_t k,
-                                                  Variant& v, bool copy);
-
-template ArrayData*
-MixedArray::SetRefIntImpl<ArrayData::kStrMapKind>(ArrayData* ad, int64_t k,
-                                                  Variant& v, bool copy);
 
 ArrayData*
 MixedArray::SetRefStr(ArrayData* ad, StringData* k, Variant& v, bool copy) {
-  return SetRefStrImpl<kMixedKind>(ad, k, v, copy);
-}
-
-template <ArrayData::ArrayKind aKind>
-ALWAYS_INLINE ArrayData*
-MixedArray::SetRefStrImpl(ArrayData* ad, StringData* k, Variant& v, bool copy) {
   auto a = asMixed(ad);
   a = copy ? a->copyMixedAndResizeIfNeeded()
            : a->resizeIfNeeded();
-  if (aKind != kMixedKind) {
-    MixedArray::downgradeAndWarn(a, Reason::kSetRef);
-  }
   return a->updateRef(k, v);
 }
-
-template ArrayData*
-MixedArray::SetRefStrImpl<ArrayData::kIntMapKind>(ArrayData* ad, StringData* k,
-                                                  Variant& v, bool copy);
-
-template ArrayData*
-MixedArray::SetRefStrImpl<ArrayData::kStrMapKind>(ArrayData* ad, StringData* k,
-                                                  Variant& v, bool copy);
 
 ArrayData*
 MixedArray::AddInt(ArrayData* ad, int64_t k, Cell v, bool copy) {
@@ -1635,19 +1391,10 @@ MixedArray::AddInt(ArrayData* ad, int64_t k, Cell v, bool copy) {
 
 ArrayData*
 MixedArray::AddStr(ArrayData* ad, StringData* k, Cell v, bool copy) {
-  return AddStrImpl<kMixedKind>(ad, k, v, copy);
-}
-
-template <ArrayData::ArrayKind aKind>
-ALWAYS_INLINE ArrayData*
-MixedArray::AddStrImpl(ArrayData* ad, StringData* k, Cell v, bool copy) {
   assert(!ad->exists(k));
   auto a = asMixed(ad);
   a = copy ? a->copyMixedAndResizeIfNeeded()
            : a->resizeIfNeeded();
-  if (aKind == kIntMapKind) {
-    MixedArray::downgradeAndWarn(a, Reason::kSetStr);
-  }
   return a->addVal(k, v);
 }
 
@@ -1716,7 +1463,7 @@ void MixedArray::eraseNoCompact(ssize_t pos) {
   TypedValue* tv = &e.data;
   DataType oldType = tv->m_type;
   uint64_t oldDatum = tv->m_data.num;
-  tv->m_type = KindOfInvalid;
+  tv->m_type = kInvalidDataType;
   --m_size;
   // Mark the hash entry as "deleted".
   assert(m_used <= m_cap);
@@ -1726,48 +1473,21 @@ void MixedArray::eraseNoCompact(ssize_t pos) {
 }
 
 ArrayData* MixedArray::RemoveInt(ArrayData* ad, int64_t k, bool copy) {
-  return RemoveIntImpl<kMixedKind>(ad, k, copy);
-}
-
-template <ArrayData::ArrayKind aKind>
-ALWAYS_INLINE ArrayData*
-MixedArray::RemoveIntImpl(ArrayData* ad, int64_t k, bool copy) {
   auto a = asMixed(ad);
   if (copy) a = a->copyMixed();
-  if (aKind == kStrMapKind) {
-    MixedArray::warnUsage(Reason::kRemoveInt, kStrMapKind);
-  }
   auto pos = a->findForRemove(k, false);
   if (validPos(pos)) a->erase(pos);
   return a;
 }
 
-template ArrayData*
-MixedArray::RemoveIntImpl<ArrayData::kStrMapKind>(ArrayData* ad, int64_t k,
-                                                  bool copy);
-
 ArrayData*
 MixedArray::RemoveStr(ArrayData* ad, const StringData* key, bool copy) {
-  return RemoveStrImpl<kMixedKind>(ad, key, copy);
-}
-
-template <ArrayData::ArrayKind aKind>
-ALWAYS_INLINE ArrayData*
-MixedArray::RemoveStrImpl(ArrayData* ad, const StringData* key, bool copy) {
   auto a = asMixed(ad);
   if (copy) a = a->copyMixed();
-  if (aKind == kIntMapKind) {
-    MixedArray::warnUsage(Reason::kRemoveStr, kIntMapKind);
-  }
   auto pos = a->findForRemove(key, key->hash());
   if (validPos(pos)) a->erase(pos);
   return a;
 }
-
-template ArrayData*
-MixedArray::RemoveStrImpl<ArrayData::kIntMapKind>(ArrayData* ad,
-                                                  const StringData* key,
-                                                  bool copy);
 
 ArrayData* MixedArray::Copy(const ArrayData* ad) {
   return asMixed(ad)->copyMixed();
@@ -1786,42 +1506,13 @@ ArrayData* MixedArray::CopyWithStrongIterators(const ArrayData* ad) {
 // non-variant interface
 
 const TypedValue* MixedArray::NvGetInt(const ArrayData* ad, int64_t ki) {
-  return NvGetIntImpl<kMixedKind>(ad, ki);
-}
-
-template <ArrayData::ArrayKind aKind>
-ALWAYS_INLINE
-const TypedValue* MixedArray::NvGetIntImpl(const ArrayData* ad, int64_t ki) {
-  if (aKind == kStrMapKind) {
-    MixedArray::warnUsage(Reason::kNvGetInt, kStrMapKind);
-  }
   auto a = asMixed(ad);
   auto i = a->find(ki);
   return LIKELY(validPos(i)) ? &a->data()[i].data : nullptr;
 }
 
-template const TypedValue*
-MixedArray::NvGetIntImpl<ArrayData::kStrMapKind>(const ArrayData* ad,
-                                                 int64_t ki);
-
-const TypedValue* MixedArray::NvGetIntConverted(const ArrayData* ad,
-                                                int64_t ki) {
-  MixedArray::warnUsage(MixedArray::Reason::kNumericString, kIntMapKind);
-  return NvGetInt(ad, ki);
-}
-
 const TypedValue* MixedArray::NvGetStr(const ArrayData* ad,
                                        const StringData* k) {
-  return NvGetStrImpl<kMixedKind>(ad, k);
-}
-
-template <ArrayData::ArrayKind aKind>
-ALWAYS_INLINE
-const TypedValue* MixedArray::NvGetStrImpl(const ArrayData* ad,
-                                           const StringData* k) {
-  if (aKind == kIntMapKind) {
-    MixedArray::warnUsage(Reason::kNvGetStr, kIntMapKind);
-  }
   auto a = asMixed(ad);
   auto i = a->find(k, k->hash());
   if (LIKELY(validPos(i))) {
@@ -1829,10 +1520,6 @@ const TypedValue* MixedArray::NvGetStrImpl(const ArrayData* ad,
   }
   return nullptr;
 }
-
-template const TypedValue*
-MixedArray::NvGetStrImpl<ArrayData::kIntMapKind>(const ArrayData* ad,
-                                                 const StringData* k);
 
 void MixedArray::NvGetKey(const ArrayData* ad, TypedValue* out, ssize_t pos) {
   auto a = asMixed(ad);
@@ -1842,12 +1529,6 @@ void MixedArray::NvGetKey(const ArrayData* ad, TypedValue* out, ssize_t pos) {
 }
 
 ArrayData* MixedArray::Append(ArrayData* ad, const Variant& v, bool copy) {
-  return AppendImpl<kMixedKind>(ad, v, copy);
-}
-
-template <ArrayData::ArrayKind aKind>
-ALWAYS_INLINE
-ArrayData* MixedArray::AppendImpl(ArrayData* ad, const Variant& v, bool copy) {
   auto a = asMixed(ad);
   if (UNLIKELY(a->m_nextKI < 0)) {
     raise_warning("Cannot add element to the array as the next element is "
@@ -1856,33 +1537,14 @@ ArrayData* MixedArray::AppendImpl(ArrayData* ad, const Variant& v, bool copy) {
   }
   a = copy ? a->copyMixedAndResizeIfNeeded()
            : a->resizeIfNeeded();
-  if (aKind != kMixedKind) {
-    MixedArray::downgradeAndWarn(a, Reason::kAppend);
-  }
   a->nextInsert(v);
   return a;
 }
 
-template ArrayData*
-MixedArray::AppendImpl<ArrayData::kIntMapKind>(ArrayData* ad, const Variant& v,
-                                               bool copy);
-template ArrayData*
-MixedArray::AppendImpl<ArrayData::kStrMapKind>(ArrayData* ad, const Variant& v,
-                                               bool copy);
-
 ArrayData* MixedArray::AppendRef(ArrayData* ad, Variant& v, bool copy) {
-  return AppendRefImpl<kMixedKind>(ad, v, copy);
-}
-
-template <ArrayData::ArrayKind aKind>
-ALWAYS_INLINE
-ArrayData* MixedArray::AppendRefImpl(ArrayData* ad, Variant& v, bool copy) {
   auto a = asMixed(ad);
   a = copy ? a->copyMixedAndResizeIfNeeded()
            : a->resizeIfNeeded();
-  if (aKind != kMixedKind) {
-    MixedArray::downgradeAndWarn(a, Reason::kAppendRef);
-  }
 
   // Note: preserving behavior, but I think this can leak the copy if
   // the user error handler throws.
@@ -1896,35 +1558,13 @@ ArrayData* MixedArray::AppendRefImpl(ArrayData* ad, Variant& v, bool copy) {
   return a->nextInsertRef(v);
 }
 
-template ArrayData*
-MixedArray::AppendRefImpl<ArrayData::kIntMapKind>(ArrayData*, Variant&, bool);
-template ArrayData*
-MixedArray::AppendRefImpl<ArrayData::kStrMapKind>(ArrayData*, Variant&, bool);
-
 ArrayData* MixedArray::AppendWithRef(ArrayData* ad, const Variant& v,
                                      bool copy) {
-  return AppendWithRefImpl<kMixedKind>(ad, v, copy);
-}
-
-template <ArrayData::ArrayKind aKind>
-ALWAYS_INLINE
-ArrayData* MixedArray::AppendWithRefImpl(ArrayData* ad, const Variant& v,
-                                         bool copy) {
   auto a = asMixed(ad);
   a = copy ? a->copyMixedAndResizeIfNeeded()
            : a->resizeIfNeeded();
-  if (aKind != kMixedKind) {
-    MixedArray::downgradeAndWarn(a, Reason::kAppendRef);
-  }
   return a->nextInsertWithRef(v);
 }
-
-template ArrayData*
-MixedArray::AppendWithRefImpl<ArrayData::kIntMapKind>(ArrayData*,
-                                                      const Variant&, bool);
-template ArrayData*
-MixedArray::AppendWithRefImpl<ArrayData::kStrMapKind>(ArrayData*,
-                                                      const Variant&, bool);
 
 /*
  * Copy an array to a new array of mixed kind, with a particular
@@ -1938,18 +1578,13 @@ MixedArray* MixedArray::CopyReserve(const MixedArray* src,
   auto const cap   = cmret.first;
   auto const mask  = cmret.second;
   auto const ad    = smartAllocArray(cap, mask);
+  auto const oldUsed = src->m_used;
 
-  auto const oldSize        = src->m_size;
-  auto const oldPosUnsigned = static_cast<uint32_t>(src->m_pos);
-  auto const oldNextKI      = src->m_nextKI;
-  auto const oldUsed        = src->m_used;
-  auto const oldKind        = src->m_kind;
-
-  ad->m_kindAndSize     = uint64_t{oldSize} << 32 | oldKind << 24;
-  ad->m_posAndCount     = uint64_t{1} << 32 | oldPosUnsigned;
+  ad->m_sizeAndPos      = src->m_sizeAndPos;
+  ad->m_kindAndCount    = src->m_packedCapCode | uint64_t{1} << 32; // count=1
   ad->m_cap             = cap;
   ad->m_tableMask       = mask;
-  ad->m_nextKI          = oldNextKI;
+  ad->m_nextKI          = src->m_nextKI;
 
   auto const data  = ad->data();
   auto const table = reinterpret_cast<int32_t*>(data + cap);
@@ -2007,14 +1642,14 @@ MixedArray* MixedArray::CopyReserve(const MixedArray* src,
   assert(i == dstElm - data);
   ad->m_used = i;
 
-  assert(ad->m_kind == oldKind);
-  assert(ad->m_size == oldSize);
+  assert(ad->m_kind == src->m_kind);
+  assert(ad->m_size == src->m_size);
   assert(ad->m_count == 1);
   assert(ad->m_cap == cap);
   assert(ad->m_used <= oldUsed);
   assert(ad->m_used == dstElm - data);
   assert(ad->m_tableMask == mask);
-  assert(ad->m_nextKI == oldNextKI);
+  assert(ad->m_nextKI == src->m_nextKI);
   assert(ad->checkInvariants());
   return ad;
 }
@@ -2147,17 +1782,8 @@ ArrayData* MixedArray::Merge(ArrayData* ad, const ArrayData* elems) {
 }
 
 ArrayData* MixedArray::Pop(ArrayData* ad, Variant& value) {
-  return PopImpl<kMixedKind>(ad, value);
-}
-
-template <ArrayData::ArrayKind aKind>
-ALWAYS_INLINE
-ArrayData* MixedArray::PopImpl(ArrayData* ad, Variant& value) {
   auto a = asMixed(ad);
   if (a->hasMultipleRefs()) a = a->copyMixed();
-  if (aKind != kMixedKind) {
-    MixedArray::downgradeAndWarn(a, Reason::kPop);
-  }
   auto elms = a->data();
   if (a->m_size) {
     ssize_t pos = IterLast(a);
@@ -2178,23 +1804,9 @@ ArrayData* MixedArray::PopImpl(ArrayData* ad, Variant& value) {
   return a;
 }
 
-template
-ArrayData* MixedArray::PopImpl<ArrayData::kIntMapKind>(ArrayData*, Variant&);
-template
-ArrayData* MixedArray::PopImpl<ArrayData::kStrMapKind>(ArrayData*, Variant&);
-
 ArrayData* MixedArray::Dequeue(ArrayData* adInput, Variant& value) {
-  return DequeueImpl<kMixedKind>(adInput, value);
-}
-
-template <ArrayData::ArrayKind aKind>
-ALWAYS_INLINE
-ArrayData* MixedArray::DequeueImpl(ArrayData* adInput, Variant& value) {
   auto a = asMixed(adInput);
   if (a->hasMultipleRefs()) a = a->copyMixed();
-  if (aKind != kMixedKind) {
-    MixedArray::downgradeAndWarn(a, Reason::kDequeue);
-  }
   auto elms = a->data();
   if (a->m_size) {
     ssize_t pos = a->nextElm(elms, -1);
@@ -2215,19 +1827,11 @@ ArrayData* MixedArray::DequeueImpl(ArrayData* adInput, Variant& value) {
   return a;
 }
 
-template ArrayData*
-MixedArray::DequeueImpl<ArrayData::kIntMapKind>(ArrayData*, Variant&);
-template ArrayData*
-MixedArray::DequeueImpl<ArrayData::kStrMapKind>(ArrayData*, Variant&);
-
 ArrayData* MixedArray::Prepend(ArrayData* adInput,
                               const Variant& v,
                               bool copy) {
   auto a = asMixed(adInput);
   if (a->hasMultipleRefs()) a = a->copyMixedAndResizeIfNeeded();
-  if (UNLIKELY(a->m_kind != kMixedKind)) {
-    MixedArray::downgradeAndWarn(a, Reason::kPrepend);
-  }
 
   auto elms = a->data();
   if (a->m_used == 0 || !isTombstone(elms[0].data.m_type)) {
@@ -2272,15 +1876,6 @@ void MixedArray::OnSetEvalScalar(ArrayData* ad) {
 }
 
 bool MixedArray::AdvanceMArrayIter(ArrayData* ad, MArrayIter& fp) {
-  return AdvanceMArrayIterImpl<kMixedKind>(ad, fp);
-}
-
-template <ArrayData::ArrayKind aKind>
-ALWAYS_INLINE
-bool MixedArray::AdvanceMArrayIterImpl(ArrayData* ad, MArrayIter& fp) {
-  if (aKind != kMixedKind) {
-    MixedArray::downgradeAndWarn(ad, Reason::kForeachByRef);
-  }
   auto a = asMixed(ad);
   Elm* elms = a->data();
   if (fp.getResetFlag()) {
@@ -2299,13 +1894,6 @@ bool MixedArray::AdvanceMArrayIterImpl(ArrayData* ad, MArrayIter& fp) {
   a->m_pos = a->nextElm(elms, fp.m_pos);
   return true;
 }
-
-template bool
-MixedArray::AdvanceMArrayIterImpl<ArrayData::kIntMapKind>(ArrayData* ad,
-                                                          MArrayIter& fp);
-template bool
-MixedArray::AdvanceMArrayIterImpl<ArrayData::kStrMapKind>(ArrayData* ad,
-                                                          MArrayIter& fp);
 
 //////////////////////////////////////////////////////////////////////
 

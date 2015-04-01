@@ -320,9 +320,9 @@ void internalSplit(DelimT delim, StringPiece sp, OutputIterator out,
       ignoreEmpty);
   }
 
-  int tokenStartPos = 0;
-  int tokenSize = 0;
-  for (int i = 0; i <= strSize - dSize; ++i) {
+  size_t tokenStartPos = 0;
+  size_t tokenSize = 0;
+  for (size_t i = 0; i <= strSize - dSize; ++i) {
     if (atDelim(&s[i], delim)) {
       if (!ignoreEmpty || tokenSize > 0) {
         *out++ = conv(StringPiece(&s[tokenStartPos], tokenSize));
@@ -567,8 +567,8 @@ void backslashify(const String1& input, String2& output, bool hex_style) {
 
 template <class String1, class String2>
 void humanify(const String1& input, String2& output) {
-  int numUnprintable = 0;
-  int numPrintablePrefix = 0;
+  size_t numUnprintable = 0;
+  size_t numPrintablePrefix = 0;
   for (unsigned char c : input) {
     if (c < 0x20 || c > 0x7e || c == '\\') {
       ++numUnprintable;
@@ -615,9 +615,9 @@ bool hexlify(const InputString& input, OutputString& output,
   if (!append_output) output.clear();
 
   static char hexValues[] = "0123456789abcdef";
-  int j = output.size();
+  auto j = output.size();
   output.resize(2 * input.size() + output.size());
-  for (int i = 0; i < input.size(); ++i) {
+  for (size_t i = 0; i < input.size(); ++i) {
     int ch = input[i];
     output[j++] = hexValues[(ch >> 4) & 0xf];
     output[j++] = hexValues[ch & 0xf];
@@ -639,7 +639,7 @@ bool unhexlify(const InputString& input, OutputString& output) {
            -1;
   };
 
-  for (int i = 0; i < input.size(); i += 2) {
+  for (size_t i = 0; i < input.size(); i += 2) {
     int highBits = unhex(input[i]);
     int lowBits = unhex(input[i + 1]);
     if (highBits < 0 || lowBits < 0) {

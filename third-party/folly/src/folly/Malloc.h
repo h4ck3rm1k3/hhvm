@@ -20,6 +20,18 @@
 #ifndef FOLLY_MALLOC_H_
 #define FOLLY_MALLOC_H_
 
+/**
+ * Define various MALLOCX_* macros normally provided by jemalloc.  We define
+ * them so that we don't have to include jemalloc.h, in case the program is
+ * built without jemalloc support.
+ */
+#ifndef MALLOCX_LG_ALIGN
+#define MALLOCX_LG_ALIGN(la) (la)
+#endif
+#ifndef MALLOCX_ZERO
+#define MALLOCX_ZERO (static_cast<int>(0x40))
+#endif
+
 // If using fbstring from libstdc++, then just define stub code
 // here to typedef the fbstring type into the folly namespace.
 // This provides backwards compatibility for code that explicitly
@@ -46,21 +58,29 @@ namespace folly {
 #pragma GCC system_header
 
 /**
- * Declare rallocm(), allocm(), and mallctl() as weak symbols. These will be
- * provided by jemalloc if we are using jemalloc, or will be NULL if we are
- * using another malloc implementation.
+ * Declare *allocx() and mallctl() as weak symbols. These will be provided by
+ * jemalloc if we are using jemalloc, or will be NULL if we are using another
+ * malloc implementation.
  */
-extern "C" int rallocm(void**, size_t*, size_t, size_t, int)
-__attribute__((weak));
-extern "C" int allocm(void**, size_t*, size_t, int)
-__attribute__((weak));
+extern "C" void* mallocx(size_t, int)
+__attribute__((__weak__));
+extern "C" void* rallocx(void*, size_t, int)
+__attribute__((__weak__));
+extern "C" size_t xallocx(void*, size_t, size_t, int)
+__attribute__((__weak__));
+extern "C" size_t sallocx(const void*, int)
+__attribute__((__weak__));
+extern "C" void dallocx(void*, int)
+__attribute__((__weak__));
+extern "C" size_t nallocx(size_t, int)
+__attribute__((__weak__));
 extern "C" int mallctl(const char*, void*, size_t*, void*, size_t)
-__attribute__((weak));
+__attribute__((__weak__));
 
 #include <bits/functexcept.h>
 #define FOLLY_HAVE_MALLOC_H 1
 #else
-#include <folly/detail/Malloc.h>
+#include <folly/detail/Malloc.h> /* nolint */
 #include <folly/Portability.h>
 #endif
 
@@ -80,29 +100,6 @@ __attribute__((weak));
 
 #include <new>
 
-/**
- * Define various ALLOCM_* macros normally provided by jemalloc.  We define
- * them so that we don't have to include jemalloc.h, in case the program is
- * built without jemalloc support.
- */
-#ifndef ALLOCM_SUCCESS
-
-#define ALLOCM_SUCCESS 0
-#define ALLOCM_ERR_OOM 1
-#define ALLOCM_ERR_NOT_MOVED 2
-
-#define ALLOCM_ZERO    64
-#define ALLOCM_NO_MOVE 128
-
-#define ALLOCM_LG_ALIGN(la) (la)
-
-#if defined(JEMALLOC_MANGLE) && defined(JEMALLOC_EXPERIMENTAL)
-#define rallocm je_rallocm
-#define allocm je_allocm
-#endif
-
-#endif /* ALLOCM_SUCCESS */
-
 #ifdef _LIBSTDCXX_FBSTRING
 namespace std _GLIBCXX_VISIBILITY(default) {
 _GLIBCXX_BEGIN_NAMESPACE_VERSION
@@ -116,11 +113,11 @@ bool usingJEMallocSlow();
  * Determine if we are using jemalloc or not.
  */
 inline bool usingJEMalloc() {
-  // Checking for rallocm != NULL is not sufficient; we may be in a dlopen()ed
-  // module that depends on libjemalloc, so rallocm is resolved, but the main
+  // Checking for rallocx != NULL is not sufficient; we may be in a dlopen()ed
+  // module that depends on libjemalloc, so rallocx is resolved, but the main
   // program might be using a different memory allocator. Look at the
   // implementation of usingJEMallocSlow() for the (hacky) details.
-  static bool result = usingJEMallocSlow();
+  static const bool result = usingJEMallocSlow();
   return result;
 }
 
@@ -128,33 +125,29 @@ inline bool usingJEMalloc() {
  * For jemalloc's size classes, see
  * http://www.canonware.com/download/jemalloc/jemalloc-latest/doc/jemalloc.html
  */
-inline size_t goodMallocSize(size_t minSize) {
+inline size_t goodMallocSize(size_t minSize) noexcept {
   if (!usingJEMalloc()) {
     // Not using jemalloc - no smarts
     return minSize;
   }
+  size_t goodSize;
   if (minSize <= 64) {
     // Choose smallest allocation to be 64 bytes - no tripping over
     // cache line boundaries, and small string optimization takes care
     // of short strings anyway.
-    return 64;
-  }
-  if (minSize <= 512) {
+    goodSize = 64;
+  } else if (minSize <= 512) {
     // Round up to the next multiple of 64; we don't want to trip over
     // cache line boundaries.
-    return (minSize + 63) & ~size_t(63);
+    goodSize = (minSize + 63) & ~size_t(63);
+  } else {
+    // Boundaries between size classes depend on numerious factors, some of
+    // which can even be modified at run-time. Determine the good allocation
+    // size by calling nallocx() directly.
+    goodSize = nallocx(minSize, 0);
   }
-  if (minSize <= 3840) {
-    // Round up to the next multiple of 256
-    return (minSize + 255) & ~size_t(255);
-  }
-  if (minSize <= 4072 * 1024) {
-    // Round up to the next multiple of 4KB
-    return (minSize + 4095) & ~size_t(4095);
-  }
-  // Holy Moly
-  // Round up to the next multiple of 4MB
-  return (minSize + 4194303) & ~size_t(4194303);
+  assert(nallocx(goodSize, 0) == goodSize);
+  return goodSize;
 }
 
 // We always request "good" sizes for allocation, so jemalloc can
@@ -208,8 +201,14 @@ inline void* smartRealloc(void* p,
   if (usingJEMalloc()) {
     // using jemalloc's API. Don't forget that jemalloc can never grow
     // in place blocks smaller than 4096 bytes.
+    //
+    // NB: newCapacity may not be precisely equal to a jemalloc size class,
+    // i.e. newCapacity is not guaranteed to be the result of a
+    // goodMallocSize() call, therefore xallocx() may return more than
+    // newCapacity bytes of space.  Use >= rather than == to check whether
+    // xallocx() successfully expanded in place.
     if (currentCapacity >= jemallocMinInPlaceExpandable &&
-        rallocm(&p, nullptr, newCapacity, 0, ALLOCM_NO_MOVE) == ALLOCM_SUCCESS) {
+        xallocx(p, newCapacity, 0, 0) >= newCapacity) {
       // Managed to expand in place
       return p;
     }

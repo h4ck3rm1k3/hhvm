@@ -101,6 +101,23 @@ TEST(ThreadLocalPtr, TestRelease) {
   EXPECT_EQ(10, Widget::totalVal_);
 }
 
+TEST(ThreadLocalPtr, CreateOnThreadExit) {
+  Widget::totalVal_ = 0;
+  ThreadLocal<Widget> w;
+  ThreadLocalPtr<int> tl;
+
+  std::thread([&] {
+      tl.reset(new int(1), [&] (int* ptr, TLPDestructionMode mode) {
+        delete ptr;
+        // This test ensures Widgets allocated here are not leaked.
+        ++w.get()->val_;
+        ThreadLocal<Widget> wl;
+        ++wl.get()->val_;
+      });
+    }).join();
+  EXPECT_EQ(2, Widget::totalVal_);
+}
+
 // Test deleting the ThreadLocalPtr object
 TEST(ThreadLocalPtr, CustomDeleter2) {
   Widget::totalVal_ = 0;
@@ -184,7 +201,7 @@ TEST(ThreadLocal, SimpleRepeatDestructor) {
 
 TEST(ThreadLocal, InterleavedDestructors) {
   Widget::totalVal_ = 0;
-  ThreadLocal<Widget>* w = nullptr;
+  std::unique_ptr<ThreadLocal<Widget>> w;
   int wVersion = 0;
   const int wVersionMax = 2;
   int thIter = 0;
@@ -214,8 +231,7 @@ TEST(ThreadLocal, InterleavedDestructors) {
     {
       std::lock_guard<std::mutex> g(lock);
       thIterPrev = thIter;
-      delete w;
-      w = new ThreadLocal<Widget>();
+      w.reset(new ThreadLocal<Widget>());
       ++wVersion;
     }
     while (true) {
@@ -361,7 +377,7 @@ class FillObject {
 
 }  // namespace
 
-#if FOLLY_HAVE_STD__THIS_THREAD__SLEEP_FOR
+#if FOLLY_HAVE_STD_THIS_THREAD_SLEEP_FOR
 TEST(ThreadLocal, Stress) {
   constexpr size_t numFillObjects = 250;
   std::array<ThreadLocalPtr<FillObject>, numFillObjects> objects;
@@ -421,6 +437,7 @@ int totalValue() {
 
 }  // namespace
 
+#ifdef FOLLY_HAVE_PTHREAD_ATFORK
 TEST(ThreadLocal, Fork) {
   EXPECT_EQ(1, ptr->value());  // ensure created
   EXPECT_EQ(1, totalValue());
@@ -490,6 +507,7 @@ TEST(ThreadLocal, Fork) {
 
   EXPECT_EQ(1, totalValue());
 }
+#endif
 
 struct HoldsOneTag2 {};
 

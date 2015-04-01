@@ -20,6 +20,8 @@
 #include "hphp/runtime/server/transport.h"
 #include <evhttp.h>
 
+#include <folly/IPAddress.h>
+
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -35,6 +37,7 @@ public:
   virtual const char *getUrl();
   virtual const char *getRemoteHost();
   virtual uint16_t getRemotePort();
+  virtual const std::string& getServerAddr();
   virtual const void *getPostData(int &size);
   virtual bool hasMorePostData();
   virtual const void *getMorePostData(int &size);
@@ -47,7 +50,8 @@ public:
   virtual void removeHeaderImpl(const char *name);
   virtual void addRequestHeaderImpl(const char *name, const char *value);
   virtual void removeRequestHeaderImpl(const char *name);
-  virtual void sendImpl(const void *data, int size, int code, bool chunked);
+  virtual void sendImpl(const void *data, int size, int code, bool chunked,
+                        bool eom);
   virtual void onSendEndImpl();
   virtual bool isServerStopping();
   virtual int getRequestSize() const;
@@ -60,6 +64,7 @@ private:
   int m_workerId;
   std::string m_url;
   std::string m_remote_host;
+  folly::IPAddress m_remote_ip;
   uint16_t m_remote_port;
   std::string m_http_version;
   Method m_method;

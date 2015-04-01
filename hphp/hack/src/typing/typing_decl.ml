@@ -23,6 +23,9 @@ module Env = Typing_env
 module DynamicYield = Typing_dynamic_yield
 module Reason = Typing_reason
 module Inst = Typing_instantiate
+module Attrs = Attributes
+
+module SN = Naming_special_names
 
 (*****************************************************************************)
 (* Module used to track what classes are declared and which ones still need
@@ -30,11 +33,11 @@ module Inst = Typing_instantiate
  * a worker needs to know if the type of a class is ready or if it needs to
  * be recomputed. When ClassStatus.mem *class-name* returns true, we know
  * the class has already been recomputed by a different worker.
- * TypedefStatus is a similar mechanism for typedefs.
+ * TypedefHeap is a similar mechanism for typedefs.
  *)
 (*****************************************************************************)
 
-module ClassStatus = SharedMem.NoCache(struct
+module ClassStatus = SharedMem.NoCache (String) (struct
   type t = unit
   let prefix = Prefix.make()
 end)
@@ -48,10 +51,6 @@ let report_class_ready class_name =
 let remove_classes class_set =
   ClassStatus.remove_batch class_set
 
-(* For somewhat silly historical reasons having to do with the lack of
- * .hhi's for fairly core XHP classes, we unfortunately mark all XHP
- * classes as not having their members fully known *)
-let xhp_is_not_strict = true
 
 (*****************************************************************************)
 (* Checking that the kind of a class is compatible with its parent
@@ -60,7 +59,7 @@ let xhp_is_not_strict = true
  *)
 (*****************************************************************************)
 
-let check_extend_kind env parent_pos parent_kind child_pos child_kind c =
+let check_extend_kind env parent_pos parent_kind child_pos child_kind =
   match parent_kind, child_kind with
     (* What is allowed *)
   | (Ast.Cabstract | Ast.Cnormal), (Ast.Cabstract | Ast.Cnormal)
@@ -93,7 +92,7 @@ let desugar_class_hint = function
 let check_arity pos class_name class_type class_parameters =
   let arity = List.length class_type.tc_tparams in
   if List.length class_parameters <> arity
-  then Errors.class_arity pos class_name arity;
+  then Errors.class_arity pos class_type.tc_pos class_name arity;
   ()
 
 let make_substitution self_ty pos class_name class_type class_parameters =
@@ -114,14 +113,14 @@ let add_grand_parents_or_traits parent_pos class_nast acc parent_type =
   let class_pos = fst class_nast.c_name in
   let class_kind = class_nast.c_kind in
   if not is_trait
-  then check_extend_kind env parent_pos parent_type.tc_kind class_pos class_kind class_nast;
+  then check_extend_kind env parent_pos parent_type.tc_kind class_pos class_kind;
   let extends = SSet.union extends parent_type.tc_extends in
   env, extends, parent_type.tc_members_fully_known && is_complete, is_trait
 
 let get_class_parent_or_trait class_nast (env, parents, is_complete, is_trait) hint =
   let parent_pos, parent, _ = desugar_class_hint hint in
   let parents = SSet.add parent parents in
-  let env, parent_type = Env.get_class_dep env parent in
+  let parent_type = Env.get_class_dep env parent in
   match parent_type with
   | None ->
       (* The class lives in PHP *)
@@ -142,9 +141,14 @@ let get_class_parents_and_traits env class_nast =
   let acc = env, parents, is_complete, true in
   let env, parents, is_complete, _ =
     List.fold_left (get_class_parent_or_trait class_nast) acc class_nast.c_uses in
+  (* XHP classes whose attributes were imported via "attribute :foo;" syntax *)
+  let acc = env, parents, is_complete, true in
+  let env, parents, is_complete, _ =
+    List.fold_left (get_class_parent_or_trait class_nast) acc class_nast.c_xhp_attr_uses in
   env, parents, is_complete
 
-let merge_single_req req_name env subst inc_req_ty existing_req_opt incoming_pos =
+let merge_single_req env subst inc_req_ty existing_req_opt
+    incoming_pos =
   match existing_req_opt with
     | Some ex_req_ty ->
       (* If multiple uses/impls require the *exact same* ancestor, ... *)
@@ -175,7 +179,7 @@ let merge_parent_class_reqs class_nast impls
     (env, req_ancestors, req_ancestors_extends) parent_hint =
   let parent_pos, parent_name, parent_params = desugar_class_hint parent_hint in
   let env, parent_params = lfold Typing_hint.hint env parent_params in
-  let env, parent_type = Env.get_class_dep env parent_name in
+  let parent_type = Env.get_class_dep env parent_name in
 
   match parent_type with
     | None ->
@@ -207,7 +211,7 @@ let merge_parent_class_reqs class_nast impls
             SMap.fold (begin fun req_name added_req_ty acc ->
               let env, existing_reqs = acc in
               let ex_ty_opt = SMap.get req_name existing_reqs in
-              let env, merged_ty = (merge_single_req req_name env subst
+              let env, merged_ty = (merge_single_req env subst
                 added_req_ty ex_ty_opt parent_pos) in
               env, SMap.add req_name merged_ty existing_reqs
             end) parent_type.tc_req_ancestors acc
@@ -220,8 +224,8 @@ let merge_parent_class_reqs class_nast impls
 let declared_class_req class_nast impls (env, requirements, req_extends) hint =
   let env, req_ty = Typing_hint.hint env hint in
   let req_pos, req_name, req_params = desugar_class_hint hint in
-  let env, req_params = lfold Typing_hint.hint env req_params in
-  let env, req_type = Env.get_class_dep env req_name in
+  let env, _ = lfold Typing_hint.hint env req_params in
+  let req_type = Env.get_class_dep env req_name in
 
   (* for concrete classes, check required ancestors against actual
    * ancestors; for traits and interfaces, the required extends classes
@@ -242,7 +246,6 @@ let declared_class_req class_nast impls (env, requirements, req_extends) hint =
   in
 
   let req_extends = SSet.add req_name req_extends in
-  let env, req_type = Env.get_class_dep env req_name in
   match req_type with
     | None -> (* The class lives in PHP : error?? *)
       let requirements = SMap.add req_name req_ty requirements in
@@ -252,9 +255,9 @@ let declared_class_req class_nast impls (env, requirements, req_extends) hint =
       (* since the req is declared on this class, we should
        * emphatically *not* substitute: a require extends Foo<T> is
        * going to be this class's <T> *)
-      let subst = SMap.empty in
+      let subst = Inst.make_subst [] [] in
       let ex_ty_opt = SMap.get req_name requirements in
-      let env, merged = merge_single_req req_name env subst
+      let env, merged = merge_single_req env subst
         req_ty ex_ty_opt req_pos in
       let requirements = SMap.add req_name merged requirements in
 
@@ -313,7 +316,7 @@ let ifun_decl nenv (f: Ast.fun_) =
 type class_env = {
   nenv: Naming.env;
   stack: SSet.t;
-  all_classes: SSet.t SMap.t;
+  all_classes: Relative_path.Set.t SMap.t;
 }
 
 let check_if_cyclic class_env (pos, cid) =
@@ -328,19 +331,19 @@ let rec class_decl_if_missing_opt class_env = function
   | Some c -> class_decl_if_missing class_env c
 
 and class_decl_if_missing class_env c =
-  let pos, cid as c_name = c.Ast.c_name in
+  let _, cid as c_name = c.Ast.c_name in
   if check_if_cyclic class_env c_name
   then ()
   else begin
     if Naming_heap.ClassHeap.mem cid then () else
-    class_naming_and_decl class_env cid c
+      class_naming_and_decl class_env cid c
   end
 
-and class_naming_and_decl class_env cid c =
+and class_naming_and_decl (class_env:class_env) cid c =
   let class_env = { class_env with stack = SSet.add cid class_env.stack } in
   let c = Naming.class_ class_env.nenv c in
   class_parents_decl class_env c;
-  class_decl c;
+  class_decl (Naming.typechecker_options class_env.nenv) c;
   (* It is important to add the "named" ast (nast.ml) only
    * AFTER we are done declaring the type type of the class.
    * Otherwise there is a subtle race condition.
@@ -366,20 +369,21 @@ and class_parents_decl class_env c =
   List.iter class_hint c.c_extends;
   List.iter class_hint c.c_implements;
   List.iter class_hint c.c_uses;
+  List.iter class_hint c.c_xhp_attr_uses;
   List.iter class_hint c.c_req_extends;
   List.iter class_hint c.c_req_implements;
   ()
 
 and class_hint_decl class_env hint =
   match hint with
-    | _, Happly ((p, cid), _)
+    | _, Happly ((_, cid), _)
       when SMap.mem cid class_env.all_classes && not (is_class_ready cid) ->
       (* We are supposed to redeclare the class *)
-        let files = SMap.find_unsafe cid class_env.all_classes in
-        SSet.iter begin fun fn ->
-          let class_opt = Parser_heap.find_class_in_file fn cid in
-          class_decl_if_missing_opt class_env class_opt
-        end files
+      let files = SMap.find_unsafe cid class_env.all_classes in
+      Relative_path.Set.iter begin fun fn ->
+        let class_opt = Parser_heap.find_class_in_file fn cid in
+        class_decl_if_missing_opt class_env class_opt
+      end files
     | _ ->
       (* This class lives in PHP land *)
       ()
@@ -389,7 +393,7 @@ and class_is_abstract c =
     | Ast.Cabstract | Ast.Cinterface | Ast.Ctrait | Ast.Cenum -> true
     | _ -> false
 
-and class_decl c =
+and class_decl tcopt c =
   let is_abstract = class_is_abstract c in
   let cls_pos, cls_name = c.c_name in
   let env = Typing_env.empty (Pos.filename cls_pos) in
@@ -404,7 +408,10 @@ and class_decl c =
   let consts = inherited.Typing_inherit.ih_consts in
   let env, consts =
     List.fold_left (class_const_decl c) (env, consts) c.c_consts in
-  let consts = SMap.add "class" (class_class_decl c.c_name) consts in
+  let consts = SMap.add SN.Members.mClass (class_class_decl c.c_name) consts in
+  let typeconsts = inherited.Typing_inherit.ih_typeconsts in
+  let env, typeconsts =
+    List.fold_left (typeconst_decl c) (env, typeconsts) c.c_typeconsts in
   let sclass_var = static_class_var_decl c in
   let scvars = inherited.Typing_inherit.ih_scvars in
   let env, scvars = List.fold_left sclass_var (env, scvars) c.c_static_vars in
@@ -418,12 +425,12 @@ and class_decl c =
     | Some {ce_type = (_, Tfun ({ft_abstract = true; _})); _} -> false
     | _ -> true in
   let impl = c.c_extends @ c.c_implements @ c.c_uses in
-  let impl = match SMap.get "__toString" m with
-    | Some {ce_type = (_, Tfun ft); _} when cls_name <> "\\Stringish" ->
+  let impl = match SMap.get SN.Members.__toString m with
+    | Some {ce_type = (_, Tfun ft); _} when cls_name <> SN.Classes.cStringish ->
       (* HHVM implicitly adds Stringish interface for every class/iface/trait
        * with a __toString method; "string" also implements this interface *)
       let pos = ft.ft_pos in
-      let h = (pos, Nast.Happly ((pos, "\\Stringish"), [])) in
+      let h = (pos, Nast.Happly ((pos, SN.Classes.cStringish), [])) in
       h :: impl
     | _ -> impl
   in
@@ -456,9 +463,15 @@ and class_decl c =
        || DynamicYield.contains_dynamic_yield_interface req_ancestors_extends
        || DynamicYield.contains_dynamic_yield req_ancestors_extends)
   in
-  let env, m = if dy_check then DynamicYield.decl env m else env, m in
+  let env, m = if dy_check
+    then
+      (* let () = Printf.printf "DynamicYield.decl %s\n" cls_name in  *)
+      DynamicYield.decl env m
+    else env, m
+  in
   let ext_strict = List.fold_left (trait_exists env) ext_strict c.c_uses in
-  let not_strict_because_xhp = xhp_is_not_strict && c.c_is_xhp in
+  let unsafe_xhp = TypecheckerOptions.unsafe_xhp tcopt in
+  let not_strict_because_xhp = unsafe_xhp && c.c_is_xhp in
   if not ext_strict && not not_strict_because_xhp && (Env.is_strict env) then
     let p, name = c.c_name in
     Errors.strict_members_not_known p name
@@ -492,6 +505,7 @@ and class_decl c =
     tc_pos = fst c.c_name;
     tc_tparams = tparams;
     tc_consts = consts;
+    tc_typeconsts = typeconsts;
     tc_cvars = cvars;
     tc_scvars = scvars;
     tc_methods = m;
@@ -506,10 +520,10 @@ and class_decl c =
     tc_enum_type = enum;
   } in
   if Ast.Cnormal = c.c_kind then
-    SMap.iter (method_check_trait_overrides c) m
-  else ();
-  if Ast.Cnormal = c.c_kind then
-    SMap.iter (method_check_trait_overrides c) sm
+    begin
+      SMap.iter (method_check_trait_overrides c) m;
+      SMap.iter (method_check_trait_overrides c) sm;
+    end
   else ();
   SMap.iter begin fun x _ ->
     Typing_deps.add_idep (Some class_dep) (Dep.Class x)
@@ -521,11 +535,11 @@ and class_decl c =
 
 and trait_exists env acc trait =
   match trait with
-    | (_, Happly ((p2, trait), _)) ->
-      let env, class_ = Env.get_class_dep env trait in
+    | (_, Happly ((_, trait), _)) ->
+      let class_ = Env.get_class_dep env trait in
       (match class_ with
         | None -> false
-        | Some class_ -> acc
+        | Some _class -> acc
       )
     | _ -> false
 
@@ -541,7 +555,10 @@ and check_static_method obj method_name { ce_type = (reason_for_type, _); _ } =
 
 and constructor_decl env (pcstr, pconsist) class_ =
   (* constructors in children of class_ must be consistent? *)
-  let cconsist = class_.c_final || SMap.mem "ConsistentConstruct" class_.c_user_attributes in
+  let cconsist = class_.c_final ||
+    Attrs.mem
+      SN.UserAttributes.uaConsistentConstruct
+      class_.c_user_attributes in
   match class_.c_constructor, pcstr with
     | None, _ -> env, (pcstr, cconsist || pconsist)
     | Some method_, Some {ce_final = true; ce_type = (r, _); _ } ->
@@ -553,7 +570,7 @@ and constructor_decl env (pcstr, pconsist) class_ =
       env, (cstr, cconsist || mconsist || pconsist)
 
 and build_constructor env class_ method_ =
-  let env, ty = method_decl class_ env method_ in
+  let env, ty = method_decl env method_ in
   let _, class_name = class_.c_name in
   let vis = visibility class_name method_.m_visibility in
   let mconsist = method_.m_final || class_.c_kind == Ast.Cinterface in
@@ -563,12 +580,15 @@ and build_constructor env class_ method_ =
   let mconsist = match ty with
     | (_, Tfun ({ft_abstract = true; _})) -> true
     | _ -> mconsist in
-  (* the alternative to overriding <<ConsistentConstruct>> is marking
-   * the corresponding 'new static()' UNSAFE, potentially impacting the safety
-   * of a large type hierarchy. *)
-  let consist_override = SMap.mem "UNSAFE_Construct" method_.m_user_attributes in
+  (* the alternative to overriding
+   * UserAttributes.uaConsistentConstruct is marking the corresponding
+   * 'new static()' UNSAFE, potentially impacting the safety of a large
+   * type hierarchy. *)
+  let consist_override =
+    Attrs.mem SN.UserAttributes.uaUnsafeConstruct method_.m_user_attributes in
   let cstr = {
     ce_final = method_.m_final;
+    ce_is_xhp_attr = false;
     ce_override = consist_override;
     ce_synthesized = false;
     ce_visibility = vis;
@@ -578,36 +598,48 @@ and build_constructor env class_ method_ =
   env, (Some cstr, mconsist)
 
 and class_const_decl c (env, acc) (h, id, e) =
+  let c_name = (snd c.c_name) in
   let env, ty =
-    match h with
-      | None ->
-        (match snd e with
+    match h, e with
+      | Some h, Some _ -> Typing_hint.hint env h
+      | Some h, None ->
+        let env, h_ty = Typing_hint.hint env h in
+        let pos, name = id in
+        env, (Reason.Rwitness pos, Tgeneric (c_name^"::"^name, Some h_ty))
+      | None, Some e -> begin
+        let rec infer_const (p, expr_) = match expr_ with
           | String _
-          | String2 ([], _)
+          | String2 ([], _) -> Reason.Rwitness p, Tprim Tstring
           | True
-          | False
-          | Int _
-          | Float _
-          | Array _ ->
-            let _, ty = Typing.expr env e in
-            (* We don't want to keep the environment of the inference
-             * CAREFULL, right now, array is just Tarray, with no
-             * type variable, if we were to add parameters array<T>,
-             * we would have to: make a full expansion, that is,
-             * replace all the type variables in ty by their "true" type,
-             * because this feature doesn't exist, this isn't necessary
-             * right now. I am adding this tag "array", because I know
-             * I would search for it if I was changing the way arrays are
-             * typed.
-             *)
-            env, ty
+          | False -> Reason.Rwitness p, Tprim Tbool
+          | Int _ -> Reason.Rwitness p, Tprim Tint
+          | Float _ -> Reason.Rwitness p, Tprim Tfloat
+          | Unop ((Ast.Uminus | Ast.Uplus | Ast.Utild | Ast.Unot), e2) ->
+            infer_const e2
           | _ ->
-            env, (Reason.Rwitness (fst id), Tany)
-        )
-      | Some h -> Typing_hint.hint env h
+            (* We can't infer the type of everything here. Notably, if you
+             * define a const in terms of another const, we need an annotation,
+             * since the other const may not have been declared yet.
+             *
+             * Also note that a number of expressions are considered invalid
+             * as constant initializers, even if we can infer their type; see
+             * Naming.check_constant_expr. *)
+            if c.c_mode = Ast.Mstrict && c.c_kind <> Ast.Cenum
+            then Errors.missing_typehint (fst id);
+            Reason.Rwitness (fst id), Tany
+        in
+        (env, infer_const e)
+      end
+      | None, None ->
+        let pos, name = id in
+        if c.c_mode = Ast.Mstrict then Errors.missing_typehint pos;
+        let r = Reason.Rwitness pos in
+        let const_ty = r, Tgeneric (c_name^"::"^name, Some (r, Tany)) in
+        env, const_ty
   in
-  let ce = { ce_final = true; ce_override = false; ce_synthesized = false;
-             ce_visibility = Vpublic; ce_type = ty; ce_origin = (snd c.c_name);
+  let ce = { ce_final = true; ce_is_xhp_attr = false; ce_override = false;
+             ce_synthesized = false; ce_visibility = Vpublic; ce_type = ty;
+             ce_origin = c_name;
            } in
   let acc = SMap.add (snd id) ce acc in
   env, acc
@@ -619,6 +651,7 @@ and class_class_decl class_id =
   let reason = Reason.Rclass_class (pos, name) in
   {
     ce_final       = false;
+    ce_is_xhp_attr = false;
     ce_override    = false;
     ce_synthesized = true;
     ce_visibility  = Vpublic;
@@ -627,33 +660,45 @@ and class_class_decl class_id =
   }
 
 and class_var_decl c (env, acc) cv =
-  let env, ty =
-    match cv.cv_type with
-      | None -> env, (Reason.Rwitness (fst cv.cv_id), Tany)
-      | Some ty' -> Typing_hint.hint env ty'
+  let env, ty = match cv.cv_type with
+    | None -> env, (Reason.Rwitness (fst cv.cv_id), Tany)
+    | Some ty' when cv.cv_is_xhp ->
+      (* If this is an XHP attribute and we're in strict mode,
+         relax to partial mode to allow the use of the "array"
+         annotation without specifying type parameters. Until
+         recently HHVM did not allow "array" with type parameters
+         in XHP attribute declarations, so this is a temporary
+         hack to support existing code for now. *)
+      (* Task #5815945: Get rid of this Hack *)
+      let env = if (Env.is_strict env)
+        then Env.set_mode env Ast.Mpartial
+        else env
+      in
+      Typing_hint.hint env ty'
+    | Some ty' -> Typing_hint.hint env ty'
   in
   let id = snd cv.cv_id in
   let vis = visibility (snd c.c_name) cv.cv_visibility in
-  let ce = { ce_final = true; ce_override = false; ce_synthesized = false;
-             ce_visibility = vis; ce_type = ty; ce_origin = (snd c.c_name);
-           } in
+  let ce = {
+    ce_final = true; ce_is_xhp_attr = cv.cv_is_xhp; ce_override = false;
+    ce_synthesized = false; ce_visibility = vis; ce_type = ty;
+    ce_origin = (snd c.c_name);
+  } in
   let acc = SMap.add id ce acc in
   env, acc
 
 and static_class_var_decl c (env, acc) cv =
-  let env, ty =
-    match cv.cv_type with
-      | None -> env, (Reason.Rwitness (fst cv.cv_id), Tany)
-      | Some ty -> Typing_hint.hint env ty in
+  let env, ty = match cv.cv_type with
+    | None -> env, (Reason.Rwitness (fst cv.cv_id), Tany)
+    | Some ty -> Typing_hint.hint env ty in
   let id = snd cv.cv_id in
   let vis = visibility (snd c.c_name) cv.cv_visibility in
-  let ce = { ce_final = true; ce_override = false; ce_synthesized = false;
-             ce_visibility = vis; ce_type = ty; ce_origin = (snd c.c_name);
-           }
-  in
+  let ce = { ce_final = true; ce_is_xhp_attr = cv.cv_is_xhp; ce_override = false;
+             ce_synthesized = false; ce_visibility = vis; ce_type = ty;
+             ce_origin = (snd c.c_name);
+           } in
   let acc = SMap.add ("$"^id) ce acc in
-  if cv.cv_expr = None && (c.c_mode = Ast.Mstrict ||
-      c.c_mode = Ast.Mpartial)
+  if cv.cv_expr = None && (c.c_mode = Ast.Mstrict || c.c_mode = Ast.Mpartial)
   then begin match cv.cv_type with
     | None
     | Some (_, Hmixed)
@@ -667,7 +712,32 @@ and visibility cid = function
   | Protected -> Vprotected cid
   | Private   -> Vprivate cid
 
-and method_decl c env m =
+and typeconst_decl c (env, acc) {
+  c_tconst_name = (pos, name);
+  c_tconst_constraint = constr;
+  c_tconst_type = type_;
+} =
+  match c.c_kind with
+  | Ast.Ctrait | Ast.Cenum ->
+      let kind = match c.c_kind with
+        | Ast.Ctrait -> `trait
+        | Ast.Cenum -> `enum
+        | _ -> assert false in
+      Errors.cannot_declare_constant kind pos c.c_name;
+      env, acc
+  | Ast.Cinterface | Ast.Cabstract | Ast.Cnormal ->
+      let env, constr = opt Typing_hint.hint env constr in
+      let env, ty = opt Typing_hint.hint env type_ in
+      let tc = {
+        ttc_name = (pos, name);
+        ttc_constraint = constr;
+        ttc_type = ty;
+        ttc_origin = snd c.c_name;
+      } in
+      let acc = SMap.add name tc acc in
+      env, acc
+
+and method_decl env m =
   let env, arity_min, params = Typing.make_params env true 0 m.m_params in
   let env, ret =
     match m.m_ret, m.m_fun_kind with
@@ -677,7 +747,7 @@ and method_decl c env m =
       | None, FAsync ->
         let pos = fst m.m_name in
         env, (Reason.Rasync_ret pos,
-              Tapply ((pos, "\\Awaitable"), [(Reason.Rwitness pos, Tany)]))
+              Tapply ((pos, SN.Classes.cAwaitable), [(Reason.Rwitness pos, Tany)]))
       | Some ret, _ -> Typing_hint.hint env ret in
   let env, arity = match m.m_variadic with
     | FVvariadicArg param ->
@@ -693,6 +763,8 @@ and method_decl c env m =
   let ft = {
     ft_pos      = fst m.m_name;
     ft_unsafe   = m.m_unsafe;
+    ft_deprecated =
+      Attrs.deprecated ~kind:"method" m.m_name m.m_user_attributes;
     ft_abstract = m.m_abstract;
     ft_arity    = arity;
     ft_tparams  = tparams;
@@ -704,8 +776,8 @@ and method_decl c env m =
 
 and method_check_override c m acc =
   let pos, id = m.m_name in
-  let class_pos, class_id = c.c_name in
-  let override = SMap.mem "Override" m.m_user_attributes in
+  let _, class_id = c.c_name in
+  let override = Attrs.mem SN.UserAttributes.uaOverride m.m_user_attributes in
   if m.m_visibility = Private && override then
     Errors.private_override pos class_id id;
   match SMap.get id acc with
@@ -721,7 +793,7 @@ and method_check_override c m acc =
 
 and method_decl_acc c (env, acc) m =
   let check_override = method_check_override c m acc in
-  let env, ty = method_decl c env m in
+  let env, ty = method_decl env m in
   let _, id = m.m_name in
   let vis =
     match SMap.get id acc, m.m_visibility with
@@ -730,8 +802,9 @@ and method_decl_acc c (env, acc) m =
       | _ -> visibility (snd c.c_name) m.m_visibility
   in
   let ce = {
-    ce_final = m.m_final; ce_override = check_override; ce_synthesized = false;
-    ce_visibility = vis; ce_type = ty; ce_origin = snd (c.c_name);
+    ce_final = m.m_final; ce_is_xhp_attr = false; ce_override = check_override;
+    ce_synthesized = false; ce_visibility = vis; ce_type = ty;
+    ce_origin = snd (c.c_name);
   } in
   let acc = SMap.add id ce acc in
   env, acc
@@ -746,7 +819,7 @@ and method_check_trait_overrides c id method_ce =
 (*****************************************************************************)
 
 let rec type_typedef_decl_if_missing nenv typedef =
-  let pos, tid = typedef.Ast.t_id in
+  let _, tid = typedef.Ast.t_id in
   if Naming_heap.TypedefHeap.mem tid
   then ()
   else
@@ -756,26 +829,24 @@ and type_typedef_naming_and_decl nenv tdef =
   let pos, tid = tdef.Ast.t_id in
   let is_abstract =
     match tdef.Ast.t_kind with
-    | Ast.Alias x -> false
-    | Ast.NewType x -> true
+    | Ast.Alias _ -> false
+    | Ast.NewType _ -> true
   in
-  let (params, tcstr, concrete_type) =
-    Naming.typedef nenv tdef in
-  let decl = is_abstract, params, concrete_type in
+  let params, tcstr, concrete_type as decl = Naming.typedef nenv tdef in
   let filename = Pos.filename pos in
   let env = Typing_env.empty filename in
   let env = Typing_env.set_mode env tdef.Ast.t_mode in
   let env = Env.set_root env (Typing_deps.Dep.Class tid) in
   let env, params = lfold Typing.type_param env params in
   let env, concrete_type = Typing_hint.hint env concrete_type in
-  let env, tcstr =
+  let _env, tcstr =
     match tcstr with
     | None -> env, None
     | Some constraint_type ->
-        let env, constraint_type = Typing_hint.hint env constraint_type in
-        let sub_type = Typing_ops.sub_type pos Reason.URnewtype_cstr in
-        let env = sub_type env constraint_type concrete_type in
-        env, Some constraint_type
+      let env, constraint_type = Typing_hint.hint env constraint_type in
+      let sub_type = Typing_ops.sub_type pos Reason.URnewtype_cstr in
+      let env = sub_type env constraint_type concrete_type in
+      env, Some constraint_type
   in
   let visibility =
     if is_abstract then Env.Typedef.Private else Env.Typedef.Public

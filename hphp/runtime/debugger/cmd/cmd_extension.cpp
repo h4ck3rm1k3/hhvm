@@ -17,7 +17,8 @@
 #include "hphp/runtime/debugger/cmd/cmd_extension.h"
 #include <set>
 #include <vector>
-#include "hphp/runtime/ext/ext_array.h"
+#include "hphp/runtime/base/string-util.h"
+#include "hphp/runtime/ext/array/ext_array.h"
 #include "hphp/util/text-art.h"
 
 using namespace HPHP::TextArt;
@@ -89,14 +90,12 @@ bool CmdExtension::processList(DebuggerProxy &proxy) {
   IDebuggable::InfoVec info;
 
   Array exts = Extension::GetLoadedExtensions();
-  typedef std::set<std::string, string_lessi> sorted_iset;
-  sorted_iset names;
+  std::set<std::string, string_lessi> names;
   for (ArrayIter iter(exts); iter; ++iter) {
     names.insert(iter.second().toString().data());
   }
-  for (sorted_iset::const_iterator iter = names.begin();
-       iter != names.end(); ++iter) {
-    Extension *ext = Extension::GetExtension(*iter);
+  for (auto const& name : names) {
+    auto ext = Extension::GetExtension(name);
     assert(ext);
     if (ext) {
       int support = ext->debuggerSupport();
@@ -105,7 +104,7 @@ bool CmdExtension::processList(DebuggerProxy &proxy) {
       line += (support & IDebuggable::SupportDump) ? "Yes     " : "        ";
       line += (support & IDebuggable::SupportVerb) ? "Yes     " : "        ";
       line += ext->getVersion();
-      IDebuggable::Add(info, iter->c_str(), line);
+      IDebuggable::Add(info, name.c_str(), line);
     }
   }
   int nameLen;

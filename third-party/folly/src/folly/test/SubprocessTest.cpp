@@ -256,13 +256,21 @@ TEST(CommunicateSubprocessTest, Duplex) {
   proc.waitChecked();
 }
 
+TEST(CommunicateSubprocessTest, ProcessGroupLeader) {
+  const auto testIsLeader = "test $(cut -d ' ' -f 5 /proc/$$/stat) = $$";
+  Subprocess nonLeader(testIsLeader);
+  EXPECT_THROW(nonLeader.waitChecked(), CalledProcessError);
+  Subprocess leader(testIsLeader, Subprocess::Options().processGroupLeader());
+  leader.waitChecked();
+}
+
 TEST(CommunicateSubprocessTest, Duplex2) {
   checkFdLeak([] {
     // Pipe 200,000 lines through sed
     const size_t numCopies = 100000;
     auto iobuf = IOBuf::copyBuffer("this is a test\nanother line\n");
     IOBufQueue input;
-    for (int n = 0; n < numCopies; ++n) {
+    for (size_t n = 0; n < numCopies; ++n) {
       input.append(iobuf->clone());
     }
 

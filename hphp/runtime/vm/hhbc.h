@@ -17,11 +17,13 @@
 #ifndef incl_HPHP_VM_HHBC_H_
 #define incl_HPHP_VM_HHBC_H_
 
-#include "folly/Optional.h"
+#include <folly/Optional.h>
 
-#include "hphp/runtime/base/types.h"
 #include "hphp/runtime/base/repo-auth-type.h"
 #include "hphp/runtime/base/typed-value.h"
+#include "hphp/runtime/base/types.h"
+#include "hphp/util/functional.h"
+#include "hphp/util/hash-map-typedefs.h"
 
 namespace HPHP {
 
@@ -129,9 +131,9 @@ enum LocationCode {
   // Base is a function return value.
   LR,
 
-  NumLocationCodes,
-  InvalidLocationCode = NumLocationCodes
+  InvalidLocationCode, // keep this last
 };
+constexpr int NumLocationCodes = InvalidLocationCode;
 
 inline int numLocationCodeImms(LocationCode lc) {
   switch (lc) {
@@ -139,9 +141,10 @@ inline int numLocationCodeImms(LocationCode lc) {
     return 1;
   case LC: case LH: case LGC: case LNC: case LSC: case LR:
     return 0;
-  default:
-    not_reached();
+  case InvalidLocationCode:
+    break;
   }
+  not_reached();
 }
 
 inline int numLocationCodeStackVals(LocationCode lc) {
@@ -152,9 +155,10 @@ inline int numLocationCodeStackVals(LocationCode lc) {
     return 1;
   case LSC:
     return 2;
-  default:
-    not_reached();
+  case InvalidLocationCode:
+    break;
   }
+  not_reached();
 }
 
 // Returns string representation of `lc'.  (Pointer to internal static
@@ -186,9 +190,10 @@ enum MemberCode {
   // New element operation.  (No real stack element.)
   MW,
 
-  NumMemberCodes,
-  InvalidMemberCode = NumMemberCodes
+  InvalidMemberCode,
 };
+
+constexpr int NumMemberCodes = InvalidMemberCode;
 
 enum MInstrAttr {
   MIA_none         = 0x00,
@@ -457,6 +462,16 @@ enum class OODeclExistsOp : uint8_t {
 #undef OO_DECL_EXISTS_OP
 };
 
+#define OBJMETHOD_OPS                             \
+  OBJMETHOD_OP(NullThrows)                        \
+  OBJMETHOD_OP(NullSafe)
+
+enum class ObjMethodOp : uint8_t {
+#define OBJMETHOD_OP(x) x,
+  OBJMETHOD_OPS
+#undef OBJMETHOD_OP
+};
+
 constexpr int32_t kMaxConcatN = 4;
 
 //  name             immediates        inputs           outputs     flags
@@ -475,6 +490,7 @@ constexpr int32_t kMaxConcatN = 4;
   O(BoxRNop,         NA,               ONE(RV),         ONE(VV),    NF) \
   O(UnboxR,          NA,               ONE(RV),         ONE(CV),    NF) \
   O(UnboxRNop,       NA,               ONE(RV),         ONE(CV),    NF) \
+  O(RGetCNop,        NA,               ONE(CV),         ONE(RV),    NF) \
   O(Null,            NA,               NOV,             ONE(CV),    NF) \
   O(NullUninit,      NA,               NOV,             ONE(UV),    NF) \
   O(True,            NA,               NOV,             ONE(CV),    NF) \
@@ -485,9 +501,6 @@ constexpr int32_t kMaxConcatN = 4;
   O(Array,           ONE(AA),          NOV,             ONE(CV),    NF) \
   O(NewArray,        ONE(IVA),         NOV,             ONE(CV),    NF) \
   O(NewMixedArray,   ONE(IVA),         NOV,             ONE(CV),    NF) \
-  O(NewVArray,       ONE(IVA),         NOV,             ONE(CV),    NF) \
-  O(NewMIArray,      ONE(IVA),         NOV,             ONE(CV),    NF) \
-  O(NewMSArray,      ONE(IVA),         NOV,             ONE(CV),    NF) \
   O(NewLikeArrayL,   TWO(LA,IVA),      NOV,             ONE(CV),    NF) \
   O(NewPackedArray,  ONE(IVA),         CMANY,           ONE(CV),    NF) \
   O(NewStructArray,  ONE(VSA),         SMANY,           ONE(CV),    NF) \
@@ -517,7 +530,6 @@ constexpr int32_t kMaxConcatN = 4;
   O(Div,             NA,               TWO(CV,CV),      ONE(CV),    NF) \
   O(Mod,             NA,               TWO(CV,CV),      ONE(CV),    NF) \
   O(Pow,             NA,               TWO(CV,CV),      ONE(CV),    NF) \
-  O(Sqrt,            NA,               ONE(CV),         ONE(CV),    NF) \
   O(Xor,             NA,               TWO(CV,CV),      ONE(CV),    NF) \
   O(Not,             NA,               ONE(CV),         ONE(CV),    NF) \
   O(Same,            NA,               TWO(CV,CV),      ONE(CV),    NF) \
@@ -572,6 +584,7 @@ constexpr int32_t kMaxConcatN = 4;
   O(VGetM,           ONE(MA),          MMANY,           ONE(VV),    NF) \
   O(AGetC,           NA,               ONE(CV),         ONE(AV),    NF) \
   O(AGetL,           ONE(LA),          NOV,             ONE(AV),    NF) \
+  O(GetMemoKey,      NA,               ONE(CV),         ONE(CV),    NF) \
   O(AKExists,        NA,               TWO(CV,CV),      ONE(CV),    NF) \
   O(IssetL,          ONE(LA),          NOV,             ONE(CV),    NF) \
   O(IssetN,          NA,               ONE(CV),         ONE(CV),    NF) \
@@ -622,8 +635,10 @@ constexpr int32_t kMaxConcatN = 4;
   O(FPushFunc,       ONE(IVA),         ONE(CV),         NOV,        NF) \
   O(FPushFuncD,      TWO(IVA,SA),      NOV,             NOV,        NF) \
   O(FPushFuncU,      THREE(IVA,SA,SA), NOV,             NOV,        NF) \
-  O(FPushObjMethod,  ONE(IVA),         TWO(CV,CV),      NOV,        NF) \
-  O(FPushObjMethodD, TWO(IVA,SA),      ONE(CV),         NOV,        NF) \
+  O(FPushObjMethod,  TWO(IVA,                                           \
+                       OA(ObjMethodOp)), TWO(CV,CV),    NOV,        NF) \
+  O(FPushObjMethodD, THREE(IVA,SA,                                      \
+                       OA(ObjMethodOp)), ONE(CV),       NOV,        NF) \
   O(FPushClsMethod,  ONE(IVA),         TWO(AV,CV),      NOV,        NF) \
   O(FPushClsMethodF, ONE(IVA),         TWO(AV,CV),      NOV,        NF) \
   O(FPushClsMethodD, THREE(IVA,SA,SA), NOV,             NOV,        NF) \
@@ -709,11 +724,8 @@ constexpr int32_t kMaxConcatN = 4;
   O(Await,           ONE(IVA),         ONE(CV),         ONE(CV),    NF) \
   O(Strlen,          NA,               ONE(CV),         ONE(CV),    NF) \
   O(IncStat,         TWO(IVA,IVA),     NOV,             NOV,        NF) \
-  O(Abs,             NA,               ONE(CV),         ONE(CV),    NF) \
   O(Idx,             NA,               THREE(CV,CV,CV), ONE(CV),    NF) \
   O(ArrayIdx,        NA,               THREE(CV,CV,CV), ONE(CV),    NF) \
-  O(Floor,           NA,               ONE(CV),         ONE(CV),    NF) \
-  O(Ceil,            NA,               ONE(CV),         ONE(CV),    NF) \
   O(CheckProp,       ONE(SA),          NOV,             ONE(CV),    NF) \
   O(InitProp,        TWO(SA,                                            \
                        OA(InitPropOp)),ONE(CV),         NOV,        NF) \
@@ -945,6 +957,7 @@ const char* subopToName(IncDecOp);
 const char* subopToName(BareThisOp);
 const char* subopToName(SilenceOp);
 const char* subopToName(OODeclExistsOp);
+const char* subopToName(ObjMethodOp);
 
 /*
  * Try to parse a string into a subop name of a given type.
@@ -968,6 +981,7 @@ Offset instrJumpTarget(const Op* instrs, Offset pos);
  * Returns the set of bytecode offsets for the instructions that may
  * be executed immediately after opc.
  */
+using OffsetSet = hphp_hash_set<Offset>;
 OffsetSet instrSuccOffsets(Op* opc, const Unit* unit);
 
 struct StackTransInfo {
@@ -976,9 +990,9 @@ struct StackTransInfo {
     InsertMid
   };
   Kind kind;
-  int numPops;
-  int numPushes;
-  int pos;
+  int numPops;   // only for PushPop
+  int numPushes; // only for PushPop
+  int pos;       // only for InsertMid
 };
 
 bool instrIsNonCallControlFlow(Op opcode);

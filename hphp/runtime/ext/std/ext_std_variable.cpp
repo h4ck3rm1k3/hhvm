@@ -16,12 +16,13 @@
 */
 #include "hphp/runtime/ext/std/ext_std_variable.h"
 
-#include "folly/Likely.h"
+#include <folly/Likely.h>
 
 #include "hphp/util/logger.h"
 #include "hphp/runtime/base/variable-serializer.h"
 #include "hphp/runtime/base/variable-unserializer.h"
 #include "hphp/runtime/base/builtin-functions.h"
+#include "hphp/runtime/base/zend-functions.h"
 #include "hphp/runtime/vm/jit/translator-inline.h"
 #include "hphp/runtime/server/http-protocol.h"
 
@@ -35,6 +36,7 @@ const StaticString
   s_integer("integer"),
   s_int("int"),
   s_float("float"),
+  s_double("double"),
   s_string("string"),
   s_object("object"),
   s_array("array"),
@@ -73,6 +75,7 @@ bool HHVM_FUNCTION(settype, VRefParam var, const String& type) {
   else if (type == s_integer) var = var.toInt64();
   else if (type == s_int    ) var = var.toInt64();
   else if (type == s_float  ) var = var.toDouble();
+  else if (type == s_double ) var = var.toDouble();
   else if (type == s_string ) var = var.toString();
   else if (type == s_array  ) var = var.toArray();
   else if (type == s_object ) var = var.toObject();
@@ -186,45 +189,46 @@ void HHVM_FUNCTION(debug_zval_dump, const Variant& variable) {
 
 String HHVM_FUNCTION(serialize, const Variant& value) {
   switch (value.getType()) {
-  case KindOfUninit:
-  case KindOfNull:
-    return "N;";
-  case KindOfBoolean:
-    return value.getBoolean() ? "b:1;" : "b:0;";
-  case KindOfInt64: {
-    StringBuffer sb;
-    sb.append("i:");
-    sb.append(value.getInt64());
-    sb.append(';');
-    return sb.detach();
+    case KindOfUninit:
+    case KindOfNull:
+      return "N;";
+    case KindOfBoolean:
+      return value.getBoolean() ? "b:1;" : "b:0;";
+    case KindOfInt64: {
+      StringBuffer sb;
+      sb.append("i:");
+      sb.append(value.getInt64());
+      sb.append(';');
+      return sb.detach();
+    }
+    case KindOfStaticString:
+    case KindOfString: {
+      StringData *str = value.getStringData();
+      StringBuffer sb;
+      sb.append("s:");
+      sb.append(str->size());
+      sb.append(":\"");
+      sb.append(str->data(), str->size());
+      sb.append("\";");
+      return sb.detach();
+    }
+    case KindOfResource:
+      return "i:0;";
+    case KindOfArray: {
+      ArrayData *arr = value.getArrayData();
+      if (arr->empty()) return "a:0:{}";
+      // fall-through
+    }
+    case KindOfDouble:
+    case KindOfObject: {
+      VariableSerializer vs(VariableSerializer::Type::Serialize);
+      return vs.serialize(value, true);
+    }
+    case KindOfRef:
+    case KindOfClass:
+      break;
   }
-  case KindOfStaticString:
-  case KindOfString: {
-    StringData *str = value.getStringData();
-    StringBuffer sb;
-    sb.append("s:");
-    sb.append(str->size());
-    sb.append(":\"");
-    sb.append(str->data(), str->size());
-    sb.append("\";");
-    return sb.detach();
-  }
-  case KindOfArray: {
-    ArrayData *arr = value.getArrayData();
-    if (arr->empty()) return "a:0:{}";
-    // fall-through
-  }
-  case KindOfObject:
-  case KindOfResource:
-  case KindOfDouble: {
-    VariableSerializer vs(VariableSerializer::Type::Serialize);
-    return vs.serialize(value, true);
-  }
-  default:
-    assert(false);
-    break;
-  }
-  return empty_string();
+  not_reached();
 }
 
 Variant HHVM_FUNCTION(unserialize, const String& str,

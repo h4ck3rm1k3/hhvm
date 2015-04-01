@@ -54,7 +54,7 @@ class SlowFingerprint {
     return *this;
   }
 
-  SlowFingerprint& update(const folly::StringPiece& str) {
+  SlowFingerprint& update(const folly::StringPiece str) {
     const char* p = str.start();
     for (int i = str.size(); i != 0; p++, i--) {
       update8(static_cast<uint8_t>(*p));
@@ -90,4 +90,3 @@ class SlowFingerprint {
 }  // namespace folly
 
 #endif /* FOLLY_DETAIL_SLOWFINGERPRINT_H_ */
-

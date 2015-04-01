@@ -25,20 +25,18 @@ abstract class A {
 class B extends A {
 
   public function __construct() {
-    if(true) {
+    if (true) {
       parent::__construct();
-    }
-    else {
+    } else {
       $this->init();
     }
   }
 
   private function init(): void {
-    if(false) {
+    if (false) {
       parent::__construct();
     } else {
       parent::__construct();
     }
   }
 }
-

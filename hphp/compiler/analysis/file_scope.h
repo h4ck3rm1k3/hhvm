@@ -62,12 +62,12 @@ public:
     NoEffect                 = 0x0100, // does not side effect
     HelperFunction           = 0x0200, // runtime helper function
     ContainsGetDefinedVars   = 0x0400, // need VariableTable with getDefinedVars
-    MixedVariableArgument    = 0x0800, // variable args, may or may not be ref'd
     IsFoldable               = 0x01000,// function can be constant folded
     NoFCallBuiltin           = 0x02000,// function should not use FCallBuiltin
     AllowOverride            = 0x04000,// allow override of systemlib or builtin
     NeedsFinallyLocals       = 0x08000,
     VariadicArgumentParam    = 0x10000,// ...$ capture of variable arguments
+    ContainsAssert           = 0x20000,// contains call to assert()
   };
 
   typedef boost::adjacency_list<boost::setS, boost::vecS> Graph;
@@ -138,15 +138,6 @@ public:
   void getConstantNames(std::vector<std::string> &names);
   TypePtr getConstantType(const std::string &name);
 
-  void addIncludeDependency(AnalysisResultPtr ar, const std::string &file,
-                            bool byInlined);
-  void addClassDependency(AnalysisResultPtr ar,
-                          const std::string &classname);
-  void addFunctionDependency(AnalysisResultPtr ar,
-                             const std::string &funcname, bool byInlined);
-  void addConstantDependency(AnalysisResultPtr ar,
-                             const std::string &decname);
-
   void addClassAlias(const std::string& target, const std::string& alias) {
     m_classAliasMap.insert(
       std::make_pair(
@@ -186,13 +177,8 @@ public:
   int preloadPriority() const { return m_preloadPriority; }
 
   void analyzeProgram(AnalysisResultPtr ar);
-  void analyzeIncludes(AnalysisResultPtr ar);
-  void analyzeIncludesHelper(AnalysisResultPtr ar);
-  bool insertClassUtil(AnalysisResultPtr ar, ClassScopeRawPtr cls, bool def);
 
   bool checkClass(const std::string &cls);
-  ClassScopeRawPtr resolveClass(ClassScopeRawPtr cls);
-  FunctionScopeRawPtr resolveFunction(FunctionScopeRawPtr func);
   void visit(AnalysisResultPtr ar,
              void (*cb)(AnalysisResultPtr, StatementPtr, void*),
              void *data);
@@ -213,7 +199,6 @@ public:
 private:
   int m_size;
   MD5 m_md5;
-  unsigned m_includeState : 2;
   unsigned m_system : 1;
   unsigned m_isHHFile : 1;
   int m_preloadPriority;
@@ -228,7 +213,6 @@ private:
   vertex_descriptor m_vertex;
 
   std::string m_pseudoMainName;
-  BlockScopeSet m_providedDefs;
   std::set<std::string> m_redecBases;
 
   // Map from class alias names to the class they are aliased to.

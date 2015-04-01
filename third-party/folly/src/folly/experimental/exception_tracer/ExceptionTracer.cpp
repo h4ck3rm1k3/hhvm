@@ -33,7 +33,7 @@ using namespace ::folly::symbolizer;
 using namespace __cxxabiv1;
 
 extern "C" {
-StackTraceStack* getExceptionStackTraceStack(void) __attribute__((weak));
+StackTraceStack* getExceptionStackTraceStack(void) __attribute__((__weak__));
 typedef StackTraceStack* (*GetExceptionStackTraceStackType)(void);
 GetExceptionStackTraceStackType getExceptionStackTraceStackFn;
 }
@@ -54,7 +54,7 @@ std::ostream& operator<<(std::ostream& out, const ExceptionInfo& info) {
       << (info.frames.size() == 1 ? " frame" : " frames")
       << ")\n";
   try {
-    ssize_t frameCount = info.frames.size();
+    size_t frameCount = info.frames.size();
     // Skip our own internal frames
     static constexpr size_t skip = 3;
 

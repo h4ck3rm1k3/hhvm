@@ -10,19 +10,18 @@
  */
 
 trait DynamicYield {
-  public function __call(string $name, array<mixed> $args = array()): void {
-  }
+  public function __call(string $name, array<mixed> $args = array()): void {}
 }
 
 interface IUseDynamicYield {}
 
 interface IFoo extends IUseDynamicYield {
-  public function yieldStuff(): Awaitable<int>;
+  public function genStuff(): Awaitable<int>;
 }
 
 class Foo implements IFoo {
   // Don't use DynamicYield
-  public async function yieldStuff(): Awaitable<int> {
+  public async function genStuff(): Awaitable<int> {
     return 42;
   }
 }

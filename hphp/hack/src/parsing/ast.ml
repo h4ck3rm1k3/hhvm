@@ -8,8 +8,6 @@
  *
  *)
 
-open Utils
-
 (*****************************************************************************)
 (* Parsing modes *)
 (*****************************************************************************)
@@ -41,6 +39,11 @@ type cst_kind =
 type id = Pos.t * string
 type pstring = Pos.t * string
 
+type variance =
+  | Covariant
+  | Contravariant
+  | Invariant
+
 type program = def list
 
 and def =
@@ -70,7 +73,7 @@ and gconst = {
     cst_namespace: Namespace_env.env;
   }
 
-and tparam = id * hint option
+and tparam = variance * id * hint option
 
 and tconstraint = hint option
 
@@ -80,7 +83,7 @@ and typedef_kind =
 
 and class_ = {
     c_mode: mode;
-    c_user_attributes: user_attribute SMap.t;
+    c_user_attributes: user_attribute list;
     c_final: bool;
     c_kind: class_kind;
     c_is_xhp: bool;
@@ -98,8 +101,10 @@ and enum_ = {
   e_constraint : hint option;
 }
 
-and user_attribute =
-  expr list (* user attributes are restricted to scalar values *)
+and user_attribute = {
+  ua_name: id;
+  ua_params: expr list (* user attributes are restricted to scalar values *)
+}
 
 and class_kind =
   | Cabstract
@@ -114,10 +119,15 @@ and trait_req_kind =
 
 and class_elt =
   | Const of hint option * (id * expr) list
+  | AbsConst of hint option * id
   | Attributes of class_attr list
+  | TypeConst of typeconst
   | ClassUse of hint
+  | XhpAttrUse of hint
   | ClassTraitRequire of trait_req_kind * hint
   | ClassVars of kind list * hint option * class_var list
+  | XhpAttr of kind list * hint option * class_var list * bool *
+               ((Pos.t * expr list) option)
   | Method of method_
 
 and class_attr =
@@ -143,6 +153,10 @@ and kind =
   | Public
   | Protected
 
+and og_null_flavor =
+  | OG_nullthrows
+  | OG_nullsafe
+
 (* id without $ *)
 and class_var = id * expr option
 
@@ -152,9 +166,17 @@ and method_ = {
   m_name: id;
   m_params: fun_param list;
   m_body: block;
-  m_user_attributes : user_attribute SMap.t;
+  m_user_attributes : user_attribute list;
   m_ret: hint option;
+  m_ret_by_ref: bool;
   m_fun_kind: fun_kind;
+}
+
+and typeconst = {
+  tconst_abstract: bool;
+  tconst_name: id;
+  tconst_constraint: hint option;
+  tconst_type: hint option;
 }
 
 and is_reference = bool
@@ -171,17 +193,18 @@ and fun_param = {
    * can be only Public or Protected or Private.
    *)
   param_modifier: kind option;
-  param_user_attributes: user_attribute SMap.t;
+  param_user_attributes: user_attribute list;
 }
 
 and fun_ = {
   f_mode            : mode;
   f_tparams         : tparam list;
   f_ret             : hint option;
+  f_ret_by_ref      : bool;
   f_name            : id;
   f_params          : fun_param list;
   f_body            : block;
-  f_user_attributes : user_attribute SMap.t;
+  f_user_attributes : user_attribute list;
   f_mtime           : float;
   f_fun_kind        : fun_kind;
   f_namespace       : Namespace_env.env;
@@ -198,6 +221,20 @@ and hint_ =
   | Htuple of hint list
   | Happly of id * hint list
   | Hshape of shape_field list
+ (* This represents the use of a type const. Type consts are accessed like
+  * regular consts in Hack, i.e.
+  *
+  * Class::TypeConst
+  *
+  * Type const access can be chained such as
+  *
+  * Class::TC1::TC2::TC3
+  *
+  * This will result in the following representation
+  *
+  * Haccess ("Class", "TC1", ["TC2", "TC3"])
+  *)
+  | Haccess of id * id * id list
 
 and shape_field_name =
   | SFlit of pstring
@@ -241,11 +278,11 @@ and expr_ =
   | Id of id
   | Lvar of id
   | Clone of expr
-  | Obj_get of expr * expr
+  | Obj_get of expr * expr * og_null_flavor
   | Array_get of expr * expr option
   | Class_get of id * pstring
   | Class_const of id * pstring
-  | Call of expr * expr list
+  | Call of expr * expr list * expr list
   | Int of pstring
   | Float of pstring
   | String of pstring
@@ -260,9 +297,10 @@ and expr_ =
   | Binop of bop * expr * expr
   | Eif of expr * expr option * expr
   | InstanceOf of expr * expr
-  | New of id * expr list
-  (* Traditional PHP-style closure with a use list. *)
-  | Efun of fun_ * id list
+  | New of expr * expr list * expr list
+  (* Traditional PHP-style closure with a use list. Each use element is
+    a name and a bool indicating if its a reference or value *)
+  | Efun of fun_ * (id * bool) list
   (*
    * Hack-style lambda expressions (no id list, we'll find the captures
    * during name resolution).
@@ -270,6 +308,14 @@ and expr_ =
   | Lfun of fun_
   | Xml of id * (id * expr) list * expr list
   | Unsafeexpr of expr
+  | Import of import_flavor * expr
+  | Ref of expr
+
+and import_flavor =
+  | Include
+  | Require
+  | IncludeOnce
+  | RequireOnce
 
 and afield =
   | AFvalue of expr
@@ -277,7 +323,7 @@ and afield =
 
 and bop =
 | Plus
-| Minus | Star | Slash | Eqeq | EQeqeq
+| Minus | Star | Slash | Eqeq | EQeqeq | Starstar
 | Diff | Diff2 | AMpamp | BArbar | Lt
 | Lte | Gt | Gte | Dot | Amp | Bar | Ltlt
 | Gtgt | Percent | Xor

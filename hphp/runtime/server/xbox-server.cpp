@@ -15,6 +15,8 @@
 */
 
 #include "hphp/runtime/server/xbox-server.h"
+#include "hphp/runtime/base/builtin-functions.h"
+#include "hphp/runtime/base/comparisons.h"
 #include "hphp/runtime/base/runtime-option.h"
 #include "hphp/runtime/server/rpc-request-handler.h"
 #include "hphp/runtime/server/satellite-server.h"
@@ -55,16 +57,21 @@ std::string XboxTransport::getHeader(const char *name) {
 }
 
 void XboxTransport::sendImpl(const void *data, int size, int code,
-                             bool chunked) {
+                             bool chunked, bool eom) {
   m_response.append((const char*)data, size);
   if (code) {
     m_code = code;
+  }
+  if (eom) {
+    onSendEndImpl();
   }
 }
 
 void XboxTransport::onSendEndImpl() {
   Lock lock(this);
-
+  if (m_done) {
+    return;
+  }
   m_done = true;
   if (m_event) {
     m_event->finish();
@@ -125,7 +132,7 @@ struct XboxWorker
       *s_xbox_prev_req_init_doc = reqInitDoc;
 
       job->onRequestStart(job->getStartTimer());
-      createRequestHandler()->handleRequest(job);
+      createRequestHandler()->run(job);
       destroyRequestHandler();
       job->decRefCount();
     } catch (...) {
@@ -346,12 +353,12 @@ public:
 private:
   XboxTransport *m_job;
 };
-IMPLEMENT_OBJECT_ALLOCATION(XboxTask)
+IMPLEMENT_RESOURCE_ALLOCATION(XboxTask)
 
 ///////////////////////////////////////////////////////////////////////////////
 
 Resource XboxServer::TaskStart(const String& msg, const String& reqInitDoc /* = "" */,
-    ServerTaskEvent<XboxServer, XboxTransport> *event /* = nullptr */) {
+  ServerTaskEvent<XboxServer, XboxTransport> *event /* = nullptr */) {
   {
     Lock l(s_dispatchMutex);
     if (s_dispatcher &&
@@ -359,8 +366,7 @@ Resource XboxServer::TaskStart(const String& msg, const String& reqInitDoc /* = 
          RuntimeOption::XboxServerThreadCount ||
          s_dispatcher->getQueuedJobs() <
          RuntimeOption::XboxServerMaxQueueLength)) {
-      XboxTask *task = NEWOBJ(XboxTask)(msg, reqInitDoc);
-      Resource ret(task);
+      auto task = makeSmartPtr<XboxTask>(msg, reqInitDoc);
       XboxTransport *job = task->getJob();
       job->incRefCount(); // paired with worker's decRefCount()
 
@@ -377,7 +383,7 @@ Resource XboxServer::TaskStart(const String& msg, const String& reqInitDoc /* = 
       assert(s_dispatcher);
       s_dispatcher->enqueue(job);
 
-      return ret;
+      return Resource(std::move(task));
     }
   }
   const char* errMsg =
@@ -392,13 +398,11 @@ Resource XboxServer::TaskStart(const String& msg, const String& reqInitDoc /* = 
 }
 
 bool XboxServer::TaskStatus(const Resource& task) {
-  XboxTask *ptask = task.getTyped<XboxTask>();
-  return ptask->getJob()->isDone();
+  return cast<XboxTask>(task)->getJob()->isDone();
 }
 
 int XboxServer::TaskResult(const Resource& task, int timeout_ms, Variant &ret) {
-  XboxTask *ptask = task.getTyped<XboxTask>();
-  return TaskResult(ptask->getJob(), timeout_ms, ret);
+  return TaskResult(cast<XboxTask>(task)->getJob(), timeout_ms, ret);
 }
 
 int XboxServer::TaskResult(XboxTransport *job, int timeout_ms, Variant &ret) {

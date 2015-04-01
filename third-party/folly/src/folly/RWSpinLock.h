@@ -46,6 +46,18 @@
  *    RWTicketSpinLock<64> only allows up to 2^16 - 1 concurrent
  *    readers and writers.
  *
+ *    RWTicketSpinLock<..., true> (kFavorWriter = true, that is, strict
+ *    writer priority) is NOT reentrant, even for lock_shared().
+ *
+ *    The lock will not grant any new shared (read) accesses while a thread
+ *    attempting to acquire the lock in write mode is blocked. (That is,
+ *    if the lock is held in shared mode by N threads, and a thread attempts
+ *    to acquire it in write mode, no one else can acquire it in shared mode
+ *    until these N threads release the lock and then the blocked thread
+ *    acquires and releases the exclusive lock.) This also applies for
+ *    attempts to reacquire the lock in shared mode by threads that already
+ *    hold it in shared mode, making the lock non-reentrant.
+ *
  *    RWSpinLock handles 2^30 - 1 concurrent readers.
  *
  * @author Xin Liu <xliux@fb.com>
@@ -115,6 +127,13 @@ pthread_rwlock_t Read        728698     24us       101ns     7.28ms     194us
 #include <x86intrin.h>
 #else
 #undef RW_SPINLOCK_USE_X86_INTRINSIC_
+#endif
+
+// iOS doesn't define _mm_cvtsi64_si128 and friends
+#if defined(__SSE2__) && !TARGET_OS_IPHONE
+#define RW_SPINLOCK_USE_SSE_INSTRUCTIONS_
+#else
+#undef RW_SPINLOCK_USE_SSE_INSTRUCTIONS_
 #endif
 
 #include <atomic>
@@ -274,7 +293,7 @@ class RWSpinLock : boost::noncopyable {
       lock_->lock_shared();
     }
 
-    ReadHolder(ReadHolder&& other) : lock_(other.lock_) {
+    ReadHolder(ReadHolder&& other) noexcept : lock_(other.lock_) {
       other.lock_ = nullptr;
     }
 
@@ -333,7 +352,7 @@ class RWSpinLock : boost::noncopyable {
       if (lock_) lock_->unlock_and_lock_upgrade();
     }
 
-    UpgradedHolder(UpgradedHolder&& other) : lock_(other.lock_) {
+    UpgradedHolder(UpgradedHolder&& other) noexcept : lock_(other.lock_) {
       other.lock_ = nullptr;
     }
 
@@ -383,7 +402,7 @@ class RWSpinLock : boost::noncopyable {
       if (lock_) lock_->unlock_upgrade_and_lock();
     }
 
-    WriteHolder(WriteHolder&& other) : lock_(other.lock_) {
+    WriteHolder(WriteHolder&& other) noexcept : lock_(other.lock_) {
       other.lock_ = nullptr;
     }
 
@@ -442,7 +461,7 @@ struct RWTicketIntTrait<64> {
   typedef uint32_t HalfInt;
   typedef uint16_t QuarterInt;
 
-#ifdef __SSE2__
+#ifdef RW_SPINLOCK_USE_SSE_INSTRUCTIONS_
   static __m128i make128(const uint16_t v[4]) {
     return _mm_set_epi16(0, 0, 0, 0, v[3], v[2], v[1], v[0]);
   }
@@ -464,7 +483,7 @@ struct RWTicketIntTrait<32> {
   typedef uint16_t HalfInt;
   typedef uint8_t QuarterInt;
 
-#ifdef __SSE2__
+#ifdef RW_SPINLOCK_USE_SSE_INSTRUCTIONS_
   static __m128i make128(const uint8_t v[4]) {
     return _mm_set_epi8(0, 0, 0, 0, 0, 0, 0, 0,
         0, 0, 0, 0, v[3], v[2], v[1], v[0]);
@@ -598,7 +617,7 @@ class RWTicketSpinLockT : boost::noncopyable {
     t.whole = load_acquire(&ticket.whole);
     FullInt old = t.whole;
 
-#ifdef __SSE2__
+#ifdef RW_SPINLOCK_USE_SSE_INSTRUCTIONS_
     // SSE2 can reduce the lock and unlock overhead by 10%
     static const QuarterInt kDeltaBuf[4] = { 1, 1, 0, 0 };   // write/read/user
     static const __m128i kDelta = IntTraitType::make128(kDeltaBuf);
@@ -626,7 +645,7 @@ class RWTicketSpinLockT : boost::noncopyable {
     RWTicket t, old;
     old.whole = t.whole = load_acquire(&ticket.whole);
     old.users = old.read;
-#ifdef  __SSE2__
+#ifdef RW_SPINLOCK_USE_SSE_INSTRUCTIONS_
     // SSE2 may reduce the total lock and unlock overhead by 10%
     static const QuarterInt kDeltaBuf[4] = { 0, 1, 1, 0 };   // write/read/user
     static const __m128i kDelta = IntTraitType::make128(kDeltaBuf);

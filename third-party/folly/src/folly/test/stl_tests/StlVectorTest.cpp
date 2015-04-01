@@ -2729,9 +2729,6 @@ int main(int argc, char** argv) {
 
 #else // GCC 4.7 guard
 
-#include <gflags/gflags.h>
-#include <gtest/gtest.h>
-
 // do nothing
 TEST(placeholder, gccversion) {}
 
@@ -2743,4 +2740,3 @@ int main(int argc, char** argv) {
 }
 
 #endif // GCC 4.7 guard
-

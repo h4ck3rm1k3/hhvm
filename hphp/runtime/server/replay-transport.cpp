@@ -14,8 +14,7 @@
    +----------------------------------------------------------------------+
 */
 #include "hphp/runtime/server/replay-transport.h"
-
-#include <boost/lexical_cast.hpp>
+#include <folly/Conv.h>
 
 #include "hphp/runtime/base/string-util.h"
 #include "hphp/runtime/base/zend-functions.h"
@@ -69,7 +68,8 @@ void ReplayTransport::recordInput(Transport* transport, const char *filename) {
 }
 
 void ReplayTransport::replayInput(const char *filename) {
-  Config::Parse(filename, m_ini, m_hdf);
+  std::string fname = filename;
+  Config::ParseConfigFile(fname, m_ini, m_hdf);
   replayInputImpl();
 }
 
@@ -134,11 +134,11 @@ void ReplayTransport::removeHeaderImpl(const char *name) {
 }
 
 void ReplayTransport::sendImpl(const void *data, int size, int code,
-                               bool chunked) {
+                               bool chunked, bool eom) {
   m_code = code;
 
   m_response = "HTTP/1.1 ";
-  m_response += boost::lexical_cast<std::string>(code);
+  m_response += folly::to<std::string>(code);
   m_response += " ";
   m_response += HttpProtocol::GetReasonString(m_code);
   m_response += "\r\n";
@@ -156,6 +156,9 @@ void ReplayTransport::sendImpl(const void *data, int size, int code,
   m_response += "\r\n";
   m_response.append((const char *)data, size);
   m_response += "\r\n";
+  if (eom) {
+    onSendEndImpl();
+  }
 }
 
 ///////////////////////////////////////////////////////////////////////////////

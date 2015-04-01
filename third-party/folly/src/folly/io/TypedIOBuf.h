@@ -173,7 +173,7 @@ class TypedIOBuf {
   void push(IT begin, IT end) {
     uint32_t n = std::distance(begin, end);
     if (usingJEMalloc()) {
-      // Rely on rallocm() and avoid exponential growth to limit
+      // Rely on xallocx() and avoid exponential growth to limit
       // amount of memory wasted.
       reserve(headroom(), n);
     } else if (tailroom() < n) {
@@ -216,4 +216,3 @@ class TypedIOBuf {
 }  // namespace folly
 
 #endif /* FOLLY_IO_TYPEDIOBUF_H_ */
-

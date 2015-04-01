@@ -36,7 +36,8 @@ class Options {
   public static array $original_framework_info = [];
   public static int $num_threads = -1;
   public static bool $as_phpunit = false;
-  public static ?string $toran_proxy = null;
+  public static ?string $cache_directory = null;
+  public static bool $local_source_only = false;
 
   public static function parse(OptionMap $options, array $argv): Vector {
     $ini_settings = Map { };
@@ -45,7 +46,7 @@ class Options {
     self::$original_framework_info = self::$framework_info;
     // Put any script error to a file when we are in a mode like --csv and
     // want to control what gets printed to something like STDOUT.
-    unlink(self::$script_errors_file);
+    delete_file(self::$script_errors_file);
 
     // Don't use $argv[0] which just contains the program to run
     $framework_names = new Vector(array_slice($argv, 1));
@@ -183,8 +184,16 @@ class Options {
       $framework_names->removeKey(0);
     }
 
-    if ($options->containsKey('toran-proxy')) {
-      self::$toran_proxy = ((string) $options['toran-proxy']) ?: null;
+    if ($options->containsKey('cache-directory')) {
+      self::$cache_directory = ((string) $options['cache-directory']) ?: null;
+      $framework_names->removeKey(0);
+    } else if (is_dir(__DIR__.'/facebook/cache')) {
+      // For test reliability, we always want this to be set
+      self::$cache_directory = realpath(__DIR__.'/facebook/cache');
+    }
+
+    if ($options->containsKey('local-source-only')) {
+      self::$local_source_only = true;
       $framework_names->removeKey(0);
     }
 

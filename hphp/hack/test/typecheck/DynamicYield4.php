@@ -10,14 +10,13 @@
  */
 
 trait DynamicYield {
-  public function __call(string $name, array $args = array()) {
-  }
+  public function __call(string $name, array $args = array()) {}
 }
 
 class Foo {
   use DynamicYield;
 
-  public async function yieldSomeString(): Awaitable<string> {
+  public async function genSomeString(): Awaitable<string> {
     return 'hello';
   }
 }

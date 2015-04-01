@@ -20,11 +20,12 @@
 #include <cinttypes>
 
 #include "hphp/util/either.h"
-#include "hphp/runtime/base/types.h"
 #include "hphp/runtime/base/apc-string.h"
-#include "hphp/runtime/base/complex-types.h"
+#include "hphp/runtime/base/type-string.h"
 
 namespace HPHP {
+
+struct ObjectData;
 
 //////////////////////////////////////////////////////////////////////
 
@@ -48,7 +49,7 @@ struct APCObject {
       APCHandle* obj, size_t& size, const Variant& value);
 
   // Return an instance of a PHP object from the given object handle
-  static Variant MakeObject(APCHandle* handle);
+  static Variant MakeObject(const APCHandle* handle);
 
   // Delete the APC object holding the object data
   static void Delete(APCHandle* handle);
@@ -83,8 +84,8 @@ private:
 
 private:
   static APCHandle* MakeShared(String data, size_t& size) {
-    APCHandle* handle = APCString::MakeShared(KindOfObject, data.get(), size);
-    handle->mustCache();
+    auto const handle = APCString::MakeShared(KindOfObject, data.get(), size);
+    handle->setSerializedObj();
     return handle;
   }
 

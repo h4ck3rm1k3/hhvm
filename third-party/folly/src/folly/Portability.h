@@ -18,7 +18,7 @@
 #define FOLLY_PORTABILITY_H_
 
 #ifndef FOLLY_NO_CONFIG
-#include "folly-config.h"
+#include <folly/folly-config.h>
 #endif
 
 #ifdef FOLLY_PLATFORM_CONFIG
@@ -29,7 +29,7 @@
 #include <features.h>
 #endif
 
-#include "CPortability.h"
+#include <folly/CPortability.h>
 
 #if FOLLY_HAVE_SCHED_H
  #include <sched.h>
@@ -51,7 +51,7 @@
 
 // MaxAlign: max_align_t isn't supported by gcc
 #ifdef __GNUC__
-struct MaxAlign { char c; } __attribute__((aligned));
+struct MaxAlign { char c; } __attribute__((__aligned__));
 #else /* !__GNUC__ */
 # error Cannot define MaxAlign on this platform
 #endif
@@ -64,6 +64,7 @@ struct MaxAlign { char c; } __attribute__((aligned));
 # ifdef _USE_ATTRIBUTES_FOR_SAL
 #    undef _USE_ATTRIBUTES_FOR_SAL
 # endif
+/* nolint */
 # define _USE_ATTRIBUTES_FOR_SAL 1
 # include <sal.h>
 # define FOLLY_PRINTF_FORMAT _Printf_format_string_
@@ -71,14 +72,14 @@ struct MaxAlign { char c; } __attribute__((aligned));
 #else
 # define FOLLY_PRINTF_FORMAT /**/
 # define FOLLY_PRINTF_FORMAT_ATTR(format_param, dots_param) \
-  __attribute__((format(printf, format_param, dots_param)))
+  __attribute__((__format__(__printf__, format_param, dots_param)))
 #endif
 
 // noreturn
 #if defined(_MSC_VER)
 # define FOLLY_NORETURN __declspec(noreturn)
 #elif defined(__clang__) || defined(__GNUC__)
-# define FOLLY_NORETURN __attribute__((noreturn))
+# define FOLLY_NORETURN __attribute__((__noreturn__))
 #else
 # define FOLLY_NORETURN
 #endif
@@ -87,7 +88,7 @@ struct MaxAlign { char c; } __attribute__((aligned));
 #ifdef _MSC_VER
 # define FOLLY_NOINLINE __declspec(noinline)
 #elif defined(__clang__) || defined(__GNUC__)
-# define FOLLY_NOINLINE __attribute__((noinline))
+# define FOLLY_NOINLINE __attribute__((__noinline__))
 #else
 # define FOLLY_NOINLINE
 #endif
@@ -96,7 +97,7 @@ struct MaxAlign { char c; } __attribute__((aligned));
 #ifdef _MSC_VER
 # define FOLLY_ALWAYS_INLINE __forceinline
 #elif defined(__clang__) || defined(__GNUC__)
-# define FOLLY_ALWAYS_INLINE inline __attribute__((always_inline))
+# define FOLLY_ALWAYS_INLINE inline __attribute__((__always_inline__))
 #else
 # define FOLLY_ALWAYS_INLINE
 #endif
@@ -114,7 +115,7 @@ struct MaxAlign { char c; } __attribute__((aligned));
 # define FOLLY_PACK_PUSH __pragma(pack(push, 1))
 # define FOLLY_PACK_POP __pragma(pack(pop))
 #elif defined(__clang__) || defined(__GNUC__)
-# define FOLLY_PACK_ATTR __attribute__((packed))
+# define FOLLY_PACK_ATTR __attribute__((__packed__))
 # define FOLLY_PACK_PUSH /**/
 # define FOLLY_PACK_POP /**/
 #else
@@ -126,9 +127,11 @@ struct MaxAlign { char c; } __attribute__((aligned));
 // portable version check
 #ifndef __GNUC_PREREQ
 # if defined __GNUC__ && defined __GNUC_MINOR__
+/* nolint */
 #  define __GNUC_PREREQ(maj, min) ((__GNUC__ << 16) + __GNUC_MINOR__ >= \
                                    ((maj) << 16) + (min))
 # else
+/* nolint */
 #  define __GNUC_PREREQ(maj, min) 0
 # endif
 #endif
@@ -149,7 +152,8 @@ struct MaxAlign { char c; } __attribute__((aligned));
 /* Platform specific TLS support
  * gcc implements __thread
  * msvc implements __declspec(thread)
- * the semantics are the same (but remember __thread is broken on apple)
+ * the semantics are the same
+ * (but remember __thread has different semantics when using emutls (ex. apple))
  */
 #if defined(_MSC_VER)
 # define FOLLY_TLS __declspec(thread)
@@ -235,6 +239,7 @@ typedef SSIZE_T ssize_t;
 # define strerror_r(errno,buf,len) strerror_s(buf,len,errno)
 
 // compiler specific to compiler specific
+// nolint
 # define __PRETTY_FUNCTION__ __FUNCSIG__
 #endif
 
@@ -243,6 +248,11 @@ namespace FOLLY_GFLAGS_NAMESPACE { }
 namespace gflags {
 using namespace FOLLY_GFLAGS_NAMESPACE;
 }  // namespace gflags
+#endif
+
+// for TARGET_OS_IPHONE
+#ifdef __APPLE__
+#include <TargetConditionals.h>
 #endif
 
 #endif // FOLLY_PORTABILITY_H_

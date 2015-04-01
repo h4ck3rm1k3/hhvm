@@ -16,6 +16,8 @@
 
 #include "hphp/compiler/analysis/analysis_result.h"
 
+#include <folly/Conv.h>
+
 #include <iomanip>
 #include <algorithm>
 #include <sstream>
@@ -87,6 +89,18 @@ AnalysisResult::AnalysisResult()
   m_classForcedVariants[0] = m_classForcedVariants[1] = false;
 }
 
+AnalysisResult::~AnalysisResult() {
+  always_assert(!m_finish);
+}
+
+void AnalysisResult::finish() {
+  if (m_finish) {
+    decltype(m_finish) f;
+    f.swap(m_finish);
+    f(shared_from_this());
+  }
+}
+
 void AnalysisResult::appendExtraCode(const std::string &key,
                                      const std::string &code) {
   string &extraCode = m_extraCodes[key];
@@ -123,9 +137,6 @@ void AnalysisResult::addFileScope(FileScopePtr fileScope) {
   FileScopePtr &res = m_files[fileScope->getName()];
   assert(!res);
   res = fileScope;
-  vertex_descriptor vertex = add_vertex(m_depGraph);
-  fileScope->setVertex(vertex);
-  m_fileVertMap[vertex] = fileScope;
   m_fileScopes.push_back(fileScope);
 }
 
@@ -285,9 +296,6 @@ ClassScopePtr AnalysisResult::findExactClass(ConstructPtr cs,
     if (cls->getName() == currentCls->getName()) {
       return currentCls;
     }
-  }
-  if (FileScopePtr currentFile = cs->getFileScope()) {
-    return currentFile->resolveClass(cls);
   }
   return ClassScopePtr();
 }
@@ -484,75 +492,6 @@ void AnalysisResult::markRedeclaringClasses() {
 ///////////////////////////////////////////////////////////////////////////////
 // Dependencies
 
-void AnalysisResult::link(FileScopePtr user, FileScopePtr provider) {
-  if (user != provider) {
-    bool needsLock = getPhase() != AnalyzeAll &&
-                     getPhase() != AnalyzeFinal;
-    ConditionalLock lock(m_depGraphMutex, needsLock);
-    add_edge(user->vertex(), provider->vertex(), m_depGraph);
-  }
-}
-
-bool AnalysisResult::addClassDependency(FileScopePtr usingFile,
-                                        const std::string &className) {
-  if (m_systemClasses.find(className) != m_systemClasses.end())
-    return true;
-
-  StringToClassScopePtrVecMap::const_iterator iter =
-    m_classDecs.find(className);
-  if (iter == m_classDecs.end() || !iter->second.size()) return false;
-  ClassScopePtr classScope = iter->second[0];
-  if (iter->second.size() != 1) {
-    classScope = usingFile->resolveClass(classScope);
-    if (!classScope) return false;
-  }
-  FileScopePtr fileScope = classScope->getContainingFile();
-  link(usingFile, fileScope);
-  return true;
-}
-
-bool AnalysisResult::addFunctionDependency(FileScopePtr usingFile,
-                                           const std::string &functionName) {
-  if (m_functions.find(functionName) != m_functions.end())
-    return true;
-  StringToFunctionScopePtrMap::const_iterator iter =
-    m_functionDecs.find(functionName);
-  if (iter == m_functionDecs.end()) return false;
-  FunctionScopePtr functionScope = iter->second;
-  if (functionScope->isRedeclaring()) {
-    functionScope = usingFile->resolveFunction(functionScope);
-    if (!functionScope) return false;
-  }
-  FileScopePtr fileScope = functionScope->getContainingFile();
-  link(usingFile, fileScope);
-  return true;
-}
-
-bool AnalysisResult::addIncludeDependency(FileScopePtr usingFile,
-                                          const std::string &includeFilename) {
-  assert(!includeFilename.empty());
-  FileScopePtr fileScope = findFileScope(includeFilename);
-  if (fileScope) {
-    link(usingFile, fileScope);
-    return true;
-  } else {
-    return false;
-  }
-}
-
-bool AnalysisResult::addConstantDependency(FileScopePtr usingFile,
-                                           const std::string &constantName) {
-  if (m_constants->isPresent(constantName))
-    return true;
-
-  StringToFileScopePtrMap::const_iterator iter =
-    m_constDecs.find(constantName);
-  if (iter == m_constDecs.end()) return false;
-  FileScopePtr fileScope = iter->second;
-  link(usingFile, fileScope);
-  return true;
-}
-
 bool AnalysisResult::isConstantDeclared(const std::string &constName) const {
   if (m_constants->isPresent(constName)) return true;
   StringToFileScopePtrMap::const_iterator iter = m_constDecs.find(constName);
@@ -591,7 +530,7 @@ void AnalysisResult::checkClassDerivations() {
   AnalysisResultPtr ar = shared_from_this();
   for (StringToClassScopePtrVecMap::const_iterator iter = m_classDecs.begin();
        iter != m_classDecs.end(); ++iter) {
-    for (ClassScopePtr cls: iter->second) {
+    for (ClassScopePtr cls : iter->second) {
       if (Option::WholeProgram) {
         try {
           cls->importUsedTraits(ar);
@@ -767,97 +706,6 @@ void AnalysisResult::analyzeProgram(bool system /* = false */) {
     for (StringToFunctionScopePtrMap::const_iterator iterMethod =
            methods.begin(); iterMethod != methods.end(); ++iterMethod) {
       m_methodToClassDecs[iterMethod->first].push_back(cls);
-    }
-  }
-
-  // Analyze perfect virtuals
-  if (Option::AnalyzePerfectVirtuals && !system) {
-    analyzePerfectVirtuals();
-  }
-}
-
-void AnalysisResult::analyzeIncludes() {
-  AnalysisResultPtr ar = shared_from_this();
-  for (unsigned i = 0; i < m_fileScopes.size(); i++) {
-    m_fileScopes[i]->analyzeIncludes(ar);
-  }
-}
-
-static void addClassRootMethods(AnalysisResultPtr ar, ClassScopePtr cls,
-                                hphp_string_set &methods) {
-  const StringToFunctionScopePtrMap &funcs = cls->getFunctions();
-  for (StringToFunctionScopePtrMap::const_iterator iter =
-         funcs.begin(); iter != funcs.end(); ++iter) {
-    ClassScopePtrVec roots;
-    cls->getRootParents(ar, iter->first, roots, cls);
-    for (unsigned int i = 0; i < roots.size(); i++) {
-      methods.insert(roots[i]->getName() + "::" + iter->first);
-    }
-  }
-}
-
-static void addClassRootMethods(AnalysisResultPtr ar, ClassScopePtr cls,
-                                StringToFunctionScopePtrVecMap &methods) {
-  const StringToFunctionScopePtrMap &funcs = cls->getFunctions();
-  for (StringToFunctionScopePtrMap::const_iterator iter =
-         funcs.begin(); iter != funcs.end(); ++iter) {
-    ClassScopePtr root = cls->getRootParent(ar, iter->first);
-    string cluster = root->getName() + "::" + iter->first;
-    FunctionScopePtrVec &fs = methods[cluster];
-    fs.push_back(iter->second);
-  }
-}
-
-void AnalysisResult::analyzePerfectVirtuals() {
-  AnalysisResultPtr ar = shared_from_this();
-
-  StringToFunctionScopePtrVecMap methods;
-  hphp_string_set redeclaringMethods;
-  for (StringToClassScopePtrVecMap::const_iterator iter = m_classDecs.begin();
-       iter != m_classDecs.end(); ++iter) {
-    for (unsigned int i = 0; i < iter->second.size(); i++) {
-      ClassScopePtr cls = iter->second[i];
-
-      // being conservative, not to do redeclaring classes at all
-      if (cls->derivesFromRedeclaring() == Derivation::Redeclaring) {
-        addClassRootMethods(ar, cls, redeclaringMethods);
-        continue;
-      }
-
-      // classes derived from system or extension classes can be complicated
-      ClassScopePtr root = cls->getRootParent(ar);
-      if (!root->isUserClass() || root->isExtensionClass()) continue;
-
-      // cluster virtual methods by a root parent that also defined the method
-      addClassRootMethods(ar, cls, methods);
-    }
-  }
-    // if ANY class in the hierarchy is a reclaring one, ignore
-  for (hphp_string_set::const_iterator iter = redeclaringMethods.begin();
-       iter != redeclaringMethods.end(); ++iter) {
-    methods.erase(*iter);
-  }
-  for (StringToFunctionScopePtrVecMap::const_iterator iter = methods.begin();
-       iter != methods.end(); ++iter) {
-    // if it's unique, ignore
-    const FunctionScopePtrVec &funcs = iter->second;
-    if (funcs.size() < 2) {
-      continue;
-    }
-
-    if (!funcs[0]->isPrivate()) {
-      bool perfect = true;
-      for (unsigned int i = 1; i < funcs.size(); i++) {
-        if (funcs[i]->isPrivate() || !funcs[0]->matchParams(funcs[i])) {
-          perfect = false;
-          break;
-        }
-      }
-      if (perfect) {
-        for (unsigned int i = 0; i < funcs.size(); i++) {
-          funcs[i]->setPerfectVirtual();
-        }
-      }
     }
   }
 }
@@ -1160,22 +1008,20 @@ public:
   }
 };
 
-// Pre, InferTypes, and Post defined in depth_first_visitor.h
+// Pre defined in depth_first_visitor.h
 
 typedef   OptVisitor<Pre>          PreOptVisitor;
 typedef   OptWorker<Pre>           PreOptWorker;
-typedef   OptVisitor<InferTypes>   InferTypesVisitor;
-typedef   OptWorker<InferTypes>    InferTypesWorker;
-typedef   OptVisitor<Post>         PostOptVisitor;
-typedef   OptWorker<Post>          PostOptWorker;
 
 template<>
 void OptWorker<Pre>::onThreadEnter() {
   hphp_session_init();
+  hphp_context_init();
 }
 
 template<>
 void OptWorker<Pre>::onThreadExit() {
+  hphp_context_exit();
   hphp_session_exit();
 }
 
@@ -1213,28 +1059,7 @@ void DepthFirstVisitor<Pre, OptVisitor>::setup() {
 }
 
 template<>
-void DepthFirstVisitor<InferTypes, OptVisitor>::setup() {
-  IMPLEMENT_OPT_VISITOR_SETUP(InferTypesWorker);
-}
-
-template<>
-void DepthFirstVisitor<Post, OptVisitor>::setup() {
-  IMPLEMENT_OPT_VISITOR_SETUP(PostOptWorker);
-}
-
-template<>
 void DepthFirstVisitor<Pre, OptVisitor>::enqueue(BlockScopeRawPtr scope) {
-  IMPLEMENT_OPT_VISITOR_ENQUEUE(scope);
-}
-
-template<>
-void DepthFirstVisitor<InferTypes, OptVisitor>::enqueue(
-  BlockScopeRawPtr scope) {
-  IMPLEMENT_OPT_VISITOR_ENQUEUE(scope);
-}
-
-template<>
-void DepthFirstVisitor<Post, OptVisitor>::enqueue(BlockScopeRawPtr scope) {
   IMPLEMENT_OPT_VISITOR_ENQUEUE(scope);
 }
 
@@ -1297,10 +1122,7 @@ static inline void DumpScopeWithDeps(BlockScopeRawPtr scope) {
   for (BlockScopeRawPtrFlagsVec::const_iterator it = ordered.begin(),
        end = ordered.end(); it != end; ++it) {
     BlockScopeRawPtrFlagsVec::value_type pf = *it;
-    string prefix = "    ";
-    prefix += "(";
-    prefix += boost::lexical_cast<string>(pf->second);
-    prefix += ") ";
+    auto prefix = folly::to<string>("    (", pf->second, ") ");
     DumpScope(pf->first, prefix.c_str());
   }
 }
@@ -1389,9 +1211,7 @@ AnalysisResult::processScopesParallel(const char *id,
         v.size() > 20 ? v.begin() + 20 : v.end();
       for (std::vector<BIPair>::const_iterator it = v.begin();
           it != end; ++it) {
-        string prefix;
-        prefix += boost::lexical_cast<string>((*it).second);
-        prefix += " times: ";
+        auto prefix = folly::to<string>((*it).second, " times: ");
         DumpScope((*it).first, prefix.c_str());
       }
       std::cout << "Number of global force reruns: "
@@ -1480,135 +1300,6 @@ void AnalysisResult::preOptimize() {
 }
 
 ///////////////////////////////////////////////////////////////////////////////
-// infer types
-
-template<>
-int
-DepthFirstVisitor<InferTypes, OptVisitor>::visitScope(BlockScopeRawPtr scope) {
-  // acquire a lock on the scope
-  SimpleLock lock(scope->getInferTypesMutex());
-
-  // set the thread local to this scope-
-  // use an object to do this so if an exception is thrown we can take
-  // advantage of stack-unwinding
-  //
-  // NOTE: this *must* happen *after* the lock has been acquired, since there
-  // is code which depends on this ordering
-  SetCurrentScope sc(scope);
-
-  StatementPtr stmt = scope->getStmt();
-  MethodStatementPtr m =
-    dynamic_pointer_cast<MethodStatement>(stmt);
-  bool pushPrev = m && !scope->isFirstPass() &&
-    !scope->getContainingFunction()->inPseudoMain();
-  if (m) {
-    if (pushPrev) scope->getVariables()->beginLocal();
-    scope->getContainingFunction()->pushReturnType();
-  }
-
-  int ret = 0;
-  try {
-    bool done;
-    do {
-      scope->clearUpdated();
-      if (m) {
-        scope->getContainingFunction()->clearRetExprs();
-        m->inferFunctionTypes(this->m_data.m_ar);
-      } else {
-        for (int i = 0, n = stmt->getKidCount(); i < n; i++) {
-          StatementPtr kid(
-            dynamic_pointer_cast<Statement>(stmt->getNthKid(i)));
-          if (kid) {
-            kid->inferTypes(this->m_data.m_ar);
-          }
-        }
-      }
-
-      done = !scope->getUpdated();
-      ret |= scope->getUpdated();
-      scope->incPass();
-    } while (!done);
-
-    if (m) {
-      bool changed = scope->getContainingFunction()->popReturnType();
-      if (changed && scope->selfUser() & BlockScope::UseKindCallerReturn) {
-        // for a recursive caller, we must let the scope run again, because
-        // there are potentially AST nodes which are interested in the updated
-        // return type
-#ifdef HPHP_INSTRUMENT_TYPE_INF
-        ++RescheduleException::s_NumForceRerunSelfCaller;
-#endif /* HPHP_INSTRUMENT_TYPE_INF */
-        scope->setForceRerun(true);
-      }
-      if (pushPrev) {
-        scope->getVariables()->endLocal();
-        ret = 0; // since we really care about the updated flags *after*
-                 // endLocal()
-      }
-      scope->getContainingFunction()->fixRetExprs();
-      ret |= scope->getUpdated();
-      scope->clearUpdated();
-    }
-  } catch (RescheduleException &e) {
-    // potential deadlock detected- reschedule
-    // this scope to run at a later time
-#ifdef HPHP_INSTRUMENT_TYPE_INF
-    ++RescheduleException::s_NumReschedules;
-#endif /* HPHP_INSTRUMENT_TYPE_INF */
-    ret |= scope->getUpdated();
-    if (m) {
-      scope->getContainingFunction()->resetReturnType();
-      if (pushPrev) {
-        scope->getVariables()->resetLocal();
-        ret = 0; // since we really care about the updated flags *after*
-                 // resetLocal()
-      }
-      scope->getContainingFunction()->fixRetExprs();
-      ret |= scope->getUpdated();
-      scope->clearUpdated();
-    }
-    scope->setNeedsReschedule(true);
-  }
-
-  // inc regardless of reschedule exception or not, since these are the
-  // semantics of run id
-  scope->incRunId();
-
-  return ret;
-}
-
-template<>
-bool AnalysisResult::postWaitCallback<InferTypes>(
-    bool first, bool again,
-    const BlockScopeRawPtrQueue &scopes, void *context) {
-
-#ifdef HPHP_INSTRUMENT_TYPE_INF
-  std::cout << "Number of rescheduled: " <<
-    RescheduleException::s_NumReschedules << std::endl;
-  RescheduleException::s_NumReschedules = 0;
-
-  std::cout << "Number of force rerun self callers: " <<
-    RescheduleException::s_NumForceRerunSelfCaller << std::endl;
-  RescheduleException::s_NumForceRerunSelfCaller = 0;
-
-  std::cout << "Number of return types changed: " <<
-    RescheduleException::s_NumRetTypesChanged << std::endl;
-  RescheduleException::s_NumRetTypesChanged = 0;
-
-  std::cout << "Lock contention: " << std::endl;
-  for (LProfileMap::const_iterator it = BaseTryLock::s_LockProfileMap.begin();
-       it != BaseTryLock::s_LockProfileMap.end(); ++it) {
-    const LEntry &entry = it->first;
-    int count = it->second;
-    std::cout << "(" << entry.first << "@" << entry.second << "): " <<
-      count << std::endl;
-  }
-
-  BaseTryLock::s_LockProfileMap.clear();
-#endif /* HPHP_INSTRUMENT_TYPE_INF */
-
-  return again;
-}
 
 #ifdef HPHP_INSTRUMENT_TYPE_INF
 std::atomic<int> RescheduleException::s_NumReschedules(0);
@@ -1617,126 +1308,8 @@ std::atomic<int> RescheduleException::s_NumRetTypesChanged(0);
 LProfileMap BaseTryLock::s_LockProfileMap;
 #endif /* HPHP_INSTRUMENT_TYPE_INF */
 
-void AnalysisResult::inferTypes() {
-  setPhase(FirstInference);
-  BlockScopeRawPtrQueue scopes;
-  getScopesSet(scopes);
-
-  for (auto scope : scopes) {
-    scope->setInTypeInference(true);
-    scope->clearUpdated();
-    assert(scope->getNumDepsToWaitFor() == 0);
-  }
-
-#ifdef HPHP_INSTRUMENT_TYPE_INF
-  assert(RescheduleException::s_NumReschedules          == 0);
-  assert(RescheduleException::s_NumForceRerunSelfCaller == 0);
-  assert(BaseTryLock::s_LockProfileMap.empty());
-#endif /* HPHP_INSTRUMENT_TYPE_INF */
-
-  processScopesParallel<InferTypes>("InferTypes");
-
-  for (auto scope : scopes) {
-    scope->setInTypeInference(false);
-    scope->clearUpdated();
-    assert(scope->getMark() == BlockScope::MarkProcessed);
-    assert(scope->getNumDepsToWaitFor() == 0);
-  }
-}
-
 ///////////////////////////////////////////////////////////////////////////////
-// post-opt
 
-template<>
-int DepthFirstVisitor<Post, OptVisitor>::visit(BlockScopeRawPtr scope) {
-  scope->clearUpdated();
-  StatementPtr stmt = scope->getStmt();
-  bool done = false;
-  if (MethodStatementPtr m =
-      dynamic_pointer_cast<MethodStatement>(stmt)) {
-
-    AliasManager am(1);
-    if (am.optimize(this->m_data.m_ar, m)) {
-      scope->addUpdates(BlockScope::UseKindCaller);
-    }
-    if (Option::LocalCopyProp || Option::EliminateDeadCode) {
-      done = true;
-    }
-  }
-
-  if (!done) {
-    StatementPtr rep = this->visitStmtRecur(stmt);
-    always_assert(!rep);
-  }
-
-  return scope->getUpdated();
-}
-
-template<>
-ExpressionPtr DepthFirstVisitor<Post, OptVisitor>::visit(ExpressionPtr e) {
-  return e->postOptimize(this->m_data.m_ar);
-}
-
-template<>
-StatementPtr DepthFirstVisitor<Post, OptVisitor>::visit(StatementPtr stmt) {
-  return stmt->postOptimize(this->m_data.m_ar);
-}
-
-class FinalWorker : public JobQueueWorker<MethodStatementPtr, AnalysisResult*> {
-public:
-  virtual void doJob(MethodStatementPtr m) {
-    try {
-      AliasManager am(1);
-      am.finalSetup(m_context->shared_from_this(), m);
-    } catch (Exception &e) {
-      Logger::Error("%s", e.getMessage().c_str());
-    }
-  }
-};
-
-template<>
-void AnalysisResult::preWaitCallback<Post>(
-    bool first, const BlockScopeRawPtrQueue &scopes, void *context) {
-  assert(!Option::ControlFlow || context != nullptr);
-  if (first && Option::ControlFlow) {
-    auto *dispatcher
-      = (JobQueueDispatcher<FinalWorker> *) context;
-    for (BlockScopeRawPtrQueue::const_iterator it = scopes.begin(),
-           end = scopes.end(); it != end; ++it) {
-      BlockScopeRawPtr scope = *it;
-      if (MethodStatementPtr m =
-          dynamic_pointer_cast<MethodStatement>(scope->getStmt())) {
-        dispatcher->enqueue(m);
-      }
-    }
-  }
-}
-
-void AnalysisResult::postOptimize() {
-  setPhase(AnalysisResult::PostOptimize);
-  if (Option::ControlFlow) {
-    BlockScopeRawPtrQueue scopes;
-    getScopesSet(scopes);
-
-    unsigned int threadCount = Option::ParserThreadCount;
-    if (threadCount > scopes.size()) {
-      threadCount = scopes.size();
-    }
-    if (threadCount <= 0) threadCount = 1;
-
-    JobQueueDispatcher<FinalWorker> dispatcher(
-      threadCount, true, 0, false, this);
-
-    processScopesParallel<Post>("PostOptimize", &dispatcher);
-
-    dispatcher.start();
-    dispatcher.stop();
-  } else {
-    processScopesParallel<Post>("PostOptimize");
-  }
-}
-
-///////////////////////////////////////////////////////////////////////////////
 } // namespace HPHP
 
 ///////////////////////////////////////////////////////////////////////////////

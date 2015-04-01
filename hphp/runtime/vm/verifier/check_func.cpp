@@ -16,7 +16,8 @@
 
 #include "hphp/runtime/vm/verifier/check.h"
 
-#include "hphp/runtime/base/mixed-array.h"
+#include "hphp/runtime/base/struct-array.h"
+#include "hphp/runtime/vm/native.h"
 
 #include "hphp/runtime/vm/verifier/cfg.h"
 #include "hphp/runtime/vm/verifier/util.h"
@@ -127,6 +128,36 @@ class FuncChecker {
   bool m_verbose;
   FlavorDesc* m_tmp_sig;
 };
+
+bool checkNativeFunc(const Func* func, bool verbose) {
+  auto const funcname = func->name();
+  auto const pc = func->preClass();
+  auto const clsname = pc ? pc->name() : nullptr;
+  auto const& info = Native::GetBuiltinFunction(funcname, clsname,
+                                                func->isStatic());
+
+  if (func->builtinFuncPtr() == Native::unimplementedWrapper) return true;
+
+  auto const& tc = func->returnTypeConstraint();
+  auto const message = Native::checkTypeFunc(info.sig, tc, func);
+
+  if (message) {
+    auto const tstr = info.sig.toString(clsname ? clsname->data() : nullptr,
+                                        funcname->data());
+    verify_error(func->unit(), func,
+      "<<__Native>> function %s%s%s does not match C++ function "
+      "signature (%s): %s\n",
+      clsname ? clsname->data() : "",
+      clsname ? "::" : "",
+      funcname->data(),
+      tstr.c_str(),
+      message
+    );
+    return false;
+  }
+
+  return true;
+}
 
 bool checkFunc(const Func* func, bool verbose) {
   if (verbose) {
@@ -494,7 +525,7 @@ bool FuncChecker::checkImmediates(const char* name, const Op* instr) {
     }
     case VSA: { // vector of litstr ids
       auto len = *(uint32_t*)pc;
-      if (len < 1 || len > MixedArray::MaxMakeSize) {
+      if (len < 1 || len > StructArray::MaxMakeSize) {
         error("invalid length of immedate VSA vector %d at offset %d\n",
               len, offset(pc));
         return false;
@@ -581,6 +612,14 @@ bool FuncChecker::checkImmediates(const char* name, const Op* instr) {
         OO_DECL_EXISTS_OPS
 #undef OO_DECL_EXISTS_OP
           error("invalid operation for OODeclExists: %d\n", op);
+        ok = false;
+        break;
+      case OpFPushObjMethodD:
+      case OpFPushObjMethod:
+#define OBJMETHOD_OP(x) if (op == static_cast<uint8_t>(ObjMethodOp::x)) break;
+        OBJMETHOD_OPS
+#undef OBJMETHOD_OP
+          error("invalid operation for FPushObjMethod*: %d\n", op);
         ok = false;
         break;
       }

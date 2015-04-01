@@ -22,6 +22,7 @@
 #include <vector>
 #include <set>
 #include <boost/range/adaptors.hpp>
+#include <folly/Memory.h>
 #include "hphp/util/alloc.h"
 #include "hphp/util/async-func.h"
 #include "hphp/util/atomic.h"
@@ -126,10 +127,10 @@ public:
    */
   JobQueue(int threadCount, bool threadRoundRobin, int dropCacheTimeout,
            bool dropStack, int lifoSwitchThreshold=INT_MAX,
-           int maxJobQueuingMs = -1, int numPriorities = 1, int groups = 1,
+           int maxJobQueuingMs = -1, int numPriorities = 1,
            int queuedJobsReleaseRate = 3,
            IHostHealthObserver* healthStatus = nullptr)
-      : SynchronizableMulti(threadRoundRobin ? 1 : threadCount, groups),
+      : SynchronizableMulti(threadRoundRobin ? 1 : threadCount),
         m_jobCount(0), m_stopped(false), m_workerCount(0),
         m_dropCacheTimeout(dropCacheTimeout), m_dropStack(dropStack),
         m_lifoSwitchThreshold(lifoSwitchThreshold),
@@ -242,7 +243,6 @@ public:
         true : (m_healthStatus->getStatus() != HealthLevel::BackOff));
 
     while (m_jobCount == 0 || !ableToDeque) {
-
       uint32_t kNumPriority = m_jobQueues.size();
       if (m_jobQueues[kNumPriority - 1].size() > 0) {
         // we do not block HealthMon requests (with the highest priority)
@@ -265,6 +265,9 @@ public:
           DropCachePolicy::dropCache();
           flushed = true;
         }
+      }
+      if (!ableToDeque) {
+        ableToDeque = m_healthStatus->getStatus() != HealthLevel::BackOff;
       }
     }
     if (inc) incActiveWorker();
@@ -356,7 +359,7 @@ struct JobQueue<TJob,true,Policy> : JobQueue<TJob,false,Policy> {
   JobQueue(int threadCount, bool threadRoundRobin, int dropCacheTimeout,
            bool dropStack, int lifoSwitchThreshold=INT_MAX,
            int maxJobQueuingMs = -1, int numPriorities = 1,
-           int groups = 1, int queuedJobsReleaseRate = 3,
+           int queuedJobsReleaseRate = 3,
            IHostHealthObserver* healthStatus = nullptr) :
     JobQueue<TJob,false,Policy>(threadCount,
                                 threadRoundRobin,
@@ -366,7 +369,6 @@ struct JobQueue<TJob,true,Policy> : JobQueue<TJob,false,Policy> {
                                 maxJobQueuingMs,
                                 numPriorities,
                                 queuedJobsReleaseRate,
-                                groups,
                                 healthStatus) {
     pthread_cond_init(&m_cond, nullptr);
   }
@@ -509,11 +511,11 @@ public:
                      typename TWorker::ContextType context,
                      int lifoSwitchThreshold = INT_MAX,
                      int maxJobQueuingMs = -1, int numPriorities = 1,
-                     int groups = 1, int queuedJobsReleaseRate = 3)
+                     int queuedJobsReleaseRate = 3)
       : m_stopped(true), m_healthStatus(HealthLevel::Bold), m_id(0),
         m_context(context), m_maxThreadCount(threadCount),
         m_queue(threadCount, threadRoundRobin, dropCacheTimeout, dropStack,
-                lifoSwitchThreshold, maxJobQueuingMs, numPriorities, groups,
+                lifoSwitchThreshold, maxJobQueuingMs, numPriorities,
                 queuedJobsReleaseRate, this),
         m_startReaperThread(maxJobQueuingMs > 0) {
     assert(threadCount >= 1);
@@ -564,6 +566,7 @@ public:
    */
   void start() {
     Lock lock(m_mutex);
+    m_queue.setNumGroups(num_numa_nodes());
     // Spin up more worker threads if appropriate
     int target = getTargetNumWorkers();
     for (int n = m_workers.size(); n < target; ++n) {
@@ -581,7 +584,7 @@ public:
       // thread just for expiring off old requests so we guarantee requests are
       // taken off the queue as soon as possible when they expire even if all
       // other worker threads are stalled.
-      m_queue.setJobReaperId(addWorkerImpl(true));
+      m_queue.setJobReaperId(addReaper());
     }
   }
 
@@ -647,6 +650,9 @@ public:
    * enqueued at this moment, or this call may block for longer time.
    */
   void stop() {
+    // TODO(t5572120): If stop has already been called when the destructor
+    // runs, we'd bail out here and potentially start destroying AsyncFuncs
+    // that are still running.
     if (m_stopped) return;
     m_stopped = true;
 
@@ -661,6 +667,8 @@ public:
         if (!m_funcs.empty()) {
           func = *m_funcs.begin();
           m_funcs.erase(func);
+        } else if (m_reaperFunc) {
+          func = m_reaperFunc.release();
         }
       }
       if (func == nullptr) {
@@ -711,7 +719,19 @@ private:
   Mutex m_mutex;
   std::set<TWorker*> m_workers;
   std::set<AsyncFunc<TWorker> *> m_funcs;
+  std::unique_ptr<TWorker> m_reaper;
+  std::unique_ptr<AsyncFunc<TWorker>> m_reaperFunc;
   const bool m_startReaperThread;
+
+  int addReaper() {
+    m_reaper = folly::make_unique<TWorker>();
+    m_reaperFunc = folly::make_unique<AsyncFunc<TWorker>>(m_reaper.get(),
+                                                          &TWorker::start);
+    int id = m_id++;
+    m_reaper->create(id, &m_queue, m_reaperFunc.get(), m_context);
+    m_reaperFunc->start();
+    return id;
+  }
 
   // return the id for the worker.
   int addWorkerImpl(bool start) {

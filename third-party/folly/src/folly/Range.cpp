@@ -32,35 +32,15 @@ namespace folly {
 const AsciiCaseSensitive asciiCaseSensitive = AsciiCaseSensitive();
 const AsciiCaseInsensitive asciiCaseInsensitive = AsciiCaseInsensitive();
 
-std::ostream& operator<<(std::ostream& os, const StringPiece& piece) {
+std::ostream& operator<<(std::ostream& os, const StringPiece piece) {
   os.write(piece.start(), piece.size());
   return os;
 }
 
-std::ostream& operator<<(std::ostream& os, const MutableStringPiece& piece) {
+std::ostream& operator<<(std::ostream& os, const MutableStringPiece piece) {
   os.write(piece.start(), piece.size());
   return os;
 }
-
-namespace detail {
-
-size_t qfind_first_byte_of_memchr(const StringPiece& haystack,
-                                  const StringPiece& needles) {
-  size_t best = haystack.size();
-  for (char needle: needles) {
-    const void* ptr = memchr(haystack.data(), needle, best);
-    if (ptr) {
-      auto found = static_cast<const char*>(ptr) - haystack.data();
-      best = std::min<size_t>(best, found);
-    }
-  }
-  if (best == haystack.size()) {
-    return StringPiece::npos;
-  }
-  return best;
-}
-
-}  // namespace detail
 
 namespace {
 
@@ -84,26 +64,24 @@ inline size_t nextAlignedIndex(const char* arr) {
 }
 
 // build sse4.2-optimized version even if -msse4.2 is not passed to GCC
-size_t qfind_first_byte_of_needles16(const StringPiece& haystack,
-                                     const StringPiece& needles)
+size_t qfind_first_byte_of_needles16(const StringPiece haystack,
+                                     const StringPiece needles)
   __attribute__ ((__target__("sse4.2"), noinline))
   FOLLY_DISABLE_ADDRESS_SANITIZER;
 
 // helper method for case where needles.size() <= 16
-size_t qfind_first_byte_of_needles16(const StringPiece& haystack,
-                                     const StringPiece& needles) {
+size_t qfind_first_byte_of_needles16(const StringPiece haystack,
+                                     const StringPiece needles) {
   DCHECK(!haystack.empty());
   DCHECK(!needles.empty());
   DCHECK_LE(needles.size(), 16);
-  // benchmarking shows that memchr beats out SSE for small needle-sets
-  // with large haystacks.
   if ((needles.size() <= 2 && haystack.size() >= 256) ||
       // must bail if we can't even SSE-load a single segment of haystack
       (haystack.size() < 16 &&
        PAGE_FOR(haystack.end() - 1) != PAGE_FOR(haystack.data() + 15)) ||
       // can't load needles into SSE register if it could cross page boundary
       PAGE_FOR(needles.end() - 1) != PAGE_FOR(needles.data() + 15)) {
-    return detail::qfind_first_byte_of_memchr(haystack, needles);
+    return detail::qfind_first_byte_of_nosse(haystack, needles);
   }
 
   auto arr2 = __builtin_ia32_loaddqu(needles.data());
@@ -160,8 +138,8 @@ class FastByteSet {
 
 namespace detail {
 
-size_t qfind_first_byte_of_byteset(const StringPiece& haystack,
-                                   const StringPiece& needles) {
+size_t qfind_first_byte_of_byteset(const StringPiece haystack,
+                                   const StringPiece needles) {
   FastByteSet s;
   for (auto needle: needles) {
     s.add(needle);
@@ -177,9 +155,9 @@ size_t qfind_first_byte_of_byteset(const StringPiece& haystack,
 #if FOLLY_HAVE_EMMINTRIN_H && __GNUC_PREREQ(4, 6)
 
 template <bool HAYSTACK_ALIGNED>
-size_t scanHaystackBlock(const StringPiece& haystack,
-                         const StringPiece& needles,
-                         int64_t idx)
+size_t scanHaystackBlock(const StringPiece haystack,
+                         const StringPiece needles,
+                         uint64_t idx)
 // inline is okay because it's only called from other sse4.2 functions
   __attribute__ ((__target__("sse4.2")))
 // Turn off ASAN because the "arr2 = ..." assignment in the loop below reads
@@ -193,9 +171,9 @@ size_t scanHaystackBlock(const StringPiece& haystack,
 // If !HAYSTACK_ALIGNED, then caller must ensure that it is safe to load the
 // block.
 template <bool HAYSTACK_ALIGNED>
-size_t scanHaystackBlock(const StringPiece& haystack,
-                         const StringPiece& needles,
-                         int64_t blockStartIdx) {
+size_t scanHaystackBlock(const StringPiece haystack,
+                         const StringPiece needles,
+                         uint64_t blockStartIdx) {
   DCHECK_GT(needles.size(), 16);  // should handled by *needles16() method
   DCHECK(blockStartIdx + 16 <= haystack.size() ||
          (PAGE_FOR(haystack.data() + blockStartIdx) ==
@@ -230,12 +208,12 @@ size_t scanHaystackBlock(const StringPiece& haystack,
   return StringPiece::npos;
 }
 
-size_t qfind_first_byte_of_sse42(const StringPiece& haystack,
-                                 const StringPiece& needles)
+size_t qfind_first_byte_of_sse42(const StringPiece haystack,
+                                 const StringPiece needles)
   __attribute__ ((__target__("sse4.2"), noinline));
 
-size_t qfind_first_byte_of_sse42(const StringPiece& haystack,
-                                 const StringPiece& needles) {
+size_t qfind_first_byte_of_sse42(const StringPiece haystack,
+                                 const StringPiece needles) {
   if (UNLIKELY(needles.empty() || haystack.empty())) {
     return StringPiece::npos;
   } else if (needles.size() <= 16) {
@@ -270,24 +248,20 @@ size_t qfind_first_byte_of_sse42(const StringPiece& haystack,
 }
 #endif // FOLLY_HAVE_EMMINTRIN_H && GCC 4.6+
 
-size_t qfind_first_byte_of_nosse(const StringPiece& haystack,
-                                 const StringPiece& needles) {
+size_t qfind_first_byte_of_nosse(const StringPiece haystack,
+                                 const StringPiece needles) {
   if (UNLIKELY(needles.empty() || haystack.empty())) {
     return StringPiece::npos;
   }
   // The thresholds below were empirically determined by benchmarking.
   // This is not an exact science since it depends on the CPU, the size of
   // needles, and the size of haystack.
-  if (haystack.size() == 1 ||
-      (haystack.size() < 4 && needles.size() <= 16)) {
-    return qfind_first_of(haystack, needles, asciiCaseSensitive);
-  } else if ((needles.size() >= 4 && haystack.size() <= 10) ||
+  if ((needles.size() >= 4 && haystack.size() <= 10) ||
              (needles.size() >= 16 && haystack.size() <= 64) ||
              needles.size() >= 32) {
     return qfind_first_byte_of_byteset(haystack, needles);
   }
-
-  return qfind_first_byte_of_memchr(haystack, needles);
+  return qfind_first_of(haystack, needles, asciiCaseSensitive);
 }
 
 }  // namespace detail

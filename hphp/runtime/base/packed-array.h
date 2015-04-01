@@ -22,6 +22,7 @@
 
 #include "hphp/runtime/base/typed-value.h"
 #include "hphp/runtime/base/array-common.h"
+#include "hphp/runtime/base/sort-flags.h"
 
 namespace HPHP {
 
@@ -52,11 +53,9 @@ struct MixedArray;
 struct PackedArray {
   static void Release(ArrayData*);
   static const TypedValue* NvGetInt(const ArrayData*, int64_t ki);
-  static const TypedValue* NvGetIntConverted(const ArrayData*, int64_t ki);
   static const TypedValue* NvGetStr(const ArrayData*, const StringData*);
   static void NvGetKey(const ArrayData*, TypedValue* out, ssize_t pos);
   static ArrayData* SetInt(ArrayData*, int64_t k, Cell v, bool copy);
-  static ArrayData* SetIntConverted(ArrayData*, int64_t k, Cell v, bool copy);
   static ArrayData* SetStr(ArrayData*, StringData* k, Cell v, bool copy);
   static size_t Vsize(const ArrayData*);
   static const Variant& GetValueRef(const ArrayData* ad, ssize_t pos);
@@ -88,7 +87,7 @@ struct PackedArray {
   static ArrayData* CopyWithStrongIterators(const ArrayData*);
   static ArrayData* NonSmartCopy(const ArrayData*);
   static ArrayData* NonSmartCopyHelper(const ArrayData*);
-  static ArrayData* EscalateForSort(ArrayData*);
+  static ArrayData* EscalateForSort(ArrayData*, SortFunction);
   static void Ksort(ArrayData*, int, bool);
   static void Sort(ArrayData*, int, bool);
   static void Asort(ArrayData*, int, bool);
@@ -123,6 +122,11 @@ struct PackedArray {
   static ArrayData* NonSmartConvert(const ArrayData*);
   static ArrayData* NonSmartConvertHelper(const ArrayData*);
 
+  static ptrdiff_t entriesOffset();
+  static uint32_t getMaxCapInPlaceFast(uint32_t cap);
+
+  static size_t heapSize(const ArrayData*);
+
 private:
   static ArrayData* Grow(ArrayData*);
   static ArrayData* GrowHelper(ArrayData*);
@@ -134,6 +138,7 @@ private:
   static ArrayData* CopyAndResizeIfNeeded(const ArrayData*);
   static ArrayData* ResizeIfNeeded(ArrayData*);
 
+  static SortFlavor preSort(ArrayData*);
 public:
   enum class Reason : uint8_t {
     kForeachByRef,

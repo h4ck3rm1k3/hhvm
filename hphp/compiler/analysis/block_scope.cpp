@@ -121,17 +121,7 @@ ClassScopeRawPtr BlockScope::findExactClass(ClassScopeRawPtr cls) {
       return currentCls;
     }
   }
-  if (FileScopePtr currentFile = getContainingFile()) {
-    return currentFile->resolveClass(cls);
-  }
   return ClassScopeRawPtr();
-}
-
-FunctionScopeRawPtr BlockScope::findExactFunction(FunctionScopeRawPtr func) {
-  if (FileScopePtr currentFile = getContainingFile()) {
-    return currentFile->resolveFunction(func);
-  }
-  return FunctionScopeRawPtr();
 }
 
 bool BlockScope::hasUser(BlockScopeRawPtr user, int useKinds) const {
@@ -225,12 +215,6 @@ BlockScope::setModifiers(ModifierExpressionPtr modifiers) {
   ModifierExpressionPtr oldModifiers = m_modifiers;
   m_modifiers = modifiers;
   return oldModifiers;
-}
-
-void BlockScope::inferTypes(AnalysisResultPtr ar) {
-  if (m_stmt) {
-    m_stmt->inferTypes(ar);
-  }
 }
 
 void BlockScope::outputPHP(CodeGenerator &cg, AnalysisResultPtr ar) {

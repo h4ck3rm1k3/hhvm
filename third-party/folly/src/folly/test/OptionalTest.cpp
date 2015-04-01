@@ -97,13 +97,66 @@ TEST(Optional, Const) {
 TEST(Optional, Simple) {
   Optional<int> opt;
   EXPECT_FALSE(bool(opt));
+  EXPECT_EQ(42, opt.value_or(42));
   opt = 4;
   EXPECT_TRUE(bool(opt));
   EXPECT_EQ(4, *opt);
+  EXPECT_EQ(4, opt.value_or(42));
   opt = 5;
   EXPECT_EQ(5, *opt);
   opt.clear();
   EXPECT_FALSE(bool(opt));
+}
+
+class MoveTester {
+public:
+  /* implicit */ MoveTester(const char* s) : s_(s) {}
+  MoveTester(const MoveTester&) = default;
+  MoveTester(MoveTester&& other) noexcept {
+    s_ = std::move(other.s_);
+    other.s_ = "";
+  }
+  MoveTester& operator=(const MoveTester&) = default;
+  MoveTester& operator=(MoveTester&&) = default;
+private:
+  friend bool operator==(const MoveTester& o1, const MoveTester& o2);
+  std::string s_;
+};
+
+bool operator==(const MoveTester& o1, const MoveTester& o2) {
+  return o1.s_ == o2.s_;
+}
+
+TEST(Optional, value_or_rvalue_arg) {
+  Optional<MoveTester> opt;
+  MoveTester dflt = "hello";
+  EXPECT_EQ("hello", opt.value_or(dflt));
+  EXPECT_EQ("hello", dflt);
+  EXPECT_EQ("hello", opt.value_or(std::move(dflt)));
+  EXPECT_EQ("", dflt);
+  EXPECT_EQ("world", opt.value_or("world"));
+
+  dflt = "hello";
+  // Make sure that the const overload works on const objects
+  const auto& optc = opt;
+  EXPECT_EQ("hello", optc.value_or(dflt));
+  EXPECT_EQ("hello", dflt);
+  EXPECT_EQ("hello", optc.value_or(std::move(dflt)));
+  EXPECT_EQ("", dflt);
+  EXPECT_EQ("world", optc.value_or("world"));
+
+  dflt = "hello";
+  opt = "meow";
+  EXPECT_EQ("meow", opt.value_or(dflt));
+  EXPECT_EQ("hello", dflt);
+  EXPECT_EQ("meow", opt.value_or(std::move(dflt)));
+  EXPECT_EQ("hello", dflt);  // only moved if used
+}
+
+TEST(Optional, value_or_noncopyable) {
+  Optional<std::unique_ptr<int>> opt;
+  std::unique_ptr<int> dflt(new int(42));
+  EXPECT_EQ(42, *std::move(opt).value_or(std::move(dflt)));
 }
 
 TEST(Optional, EmptyConstruct) {
@@ -229,16 +282,16 @@ TEST(Optional, Comparisons) {
   Optional<int> o1(1);
   Optional<int> o2(2);
 
-  EXPECT_TRUE(o_ <= o_);
-  EXPECT_TRUE(o_ == o_);
-  EXPECT_TRUE(o_ >= o_);
+  EXPECT_TRUE(o_ <= (o_));
+  EXPECT_TRUE(o_ == (o_));
+  EXPECT_TRUE(o_ >= (o_));
 
   EXPECT_TRUE(o1 < o2);
   EXPECT_TRUE(o1 <= o2);
-  EXPECT_TRUE(o1 <= o1);
-  EXPECT_TRUE(o1 == o1);
+  EXPECT_TRUE(o1 <= (o1));
+  EXPECT_TRUE(o1 == (o1));
   EXPECT_TRUE(o1 != o2);
-  EXPECT_TRUE(o1 >= o1);
+  EXPECT_TRUE(o1 >= (o1));
   EXPECT_TRUE(o2 >= o1);
   EXPECT_TRUE(o2 > o1);
 
@@ -246,7 +299,7 @@ TEST(Optional, Comparisons) {
   EXPECT_FALSE(o2 <= o1);
   EXPECT_FALSE(o2 <= o1);
   EXPECT_FALSE(o2 == o1);
-  EXPECT_FALSE(o1 != o1);
+  EXPECT_FALSE(o1 != (o1));
   EXPECT_FALSE(o1 >= o2);
   EXPECT_FALSE(o1 >= o2);
   EXPECT_FALSE(o1 > o2);
@@ -288,7 +341,7 @@ TEST(Optional, Comparisons) {
   EXPECT_TRUE(6 >  boi);
 
   boost::optional<bool> bob(false);
-  EXPECT_TRUE(bob);
+  EXPECT_TRUE((bool)bob);
   EXPECT_TRUE(bob == false); // well that was confusing
   EXPECT_FALSE(bob != false);
 }

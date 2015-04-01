@@ -199,8 +199,6 @@ template <class Derived, bool containerMode, class... Args>
 template <class Output>
 void BaseFormatter<Derived, containerMode, Args...>::appendOutput(Output& out)
     const {
-  auto p = str_.begin();
-  auto end = str_.end();
 
   // Copy raw string (without format specifiers) to output;
   // not as simple as we'd like, as we still need to translate "}}" to "}"
@@ -224,6 +222,9 @@ void BaseFormatter<Derived, containerMode, Args...>::appendOutput(Output& out)
       ++p;
     }
   };
+
+  auto p = str_.begin();
+  auto end = str_.end();
 
   int nextArg = 0;
   bool hasDefaultArgIndex = false;
@@ -294,7 +295,7 @@ template <class Derived, bool containerMode, class... Args>
 void writeTo(FILE* fp,
              const BaseFormatter<Derived, containerMode, Args...>& formatter) {
   auto writer = [fp] (StringPiece sp) {
-    ssize_t n = fwrite(sp.data(), 1, sp.size(), fp);
+    size_t n = fwrite(sp.data(), 1, sp.size(), fp);
     if (n < sp.size()) {
       throwSystemError("Formatter writeTo", "fwrite failed");
     }
@@ -306,8 +307,19 @@ namespace format_value {
 
 template <class FormatCallback>
 void formatString(StringPiece val, FormatArg& arg, FormatCallback& cb) {
+  if (arg.width != FormatArg::kDefaultWidth && arg.width < 0) {
+    throw BadFormatArg("folly::format: invalid width");
+  }
+  if (arg.precision != FormatArg::kDefaultPrecision && arg.precision < 0) {
+    throw BadFormatArg("folly::format: invalid precision");
+  }
+
+  // XXX: clang should be smart enough to not need the two static_cast<size_t>
+  // uses below given the above checks. If clang ever becomes that smart, we
+  // should remove the otherwise unnecessary warts.
+
   if (arg.precision != FormatArg::kDefaultPrecision &&
-      val.size() > arg.precision) {
+      val.size() > static_cast<size_t>(arg.precision)) {
     val.reset(val.data(), arg.precision);
   }
 
@@ -324,9 +336,10 @@ void formatString(StringPiece val, FormatArg& arg, FormatCallback& cb) {
   };
 
   int padRemaining = 0;
-  if (arg.width != FormatArg::kDefaultWidth && val.size() < arg.width) {
+  if (arg.width != FormatArg::kDefaultWidth &&
+      val.size() < static_cast<size_t>(arg.width)) {
     char fill = arg.fill == FormatArg::kDefaultFill ? ' ' : arg.fill;
-    int padChars = arg.width - val.size();
+    int padChars = static_cast<int> (arg.width - val.size());
     memset(padBuf, fill, std::min(padBufSize, padChars));
 
     switch (arg.align) {
@@ -634,7 +647,7 @@ class FormatValue<double> {
          DoubleToStringConverter::kMaxFixedDigitsAfterPoint),
         (8 + DoubleToStringConverter::kMaxExponentialDigits),
         (7 + DoubleToStringConverter::kMaxPrecisionDigits)})];
-    StringBuilder builder(buf + 1, sizeof(buf) - 1);
+    StringBuilder builder(buf + 1, static_cast<int> (sizeof(buf) - 1));
 
     char plusSign;
     switch (arg.sign) {
@@ -931,7 +944,7 @@ struct IndexableTraitsSeq : public FormatTraitsBase {
 
   static const value_type& at(const C& c, int idx,
                               const value_type& dflt) {
-    return (idx >= 0 && idx < c.size()) ? c.at(idx) : dflt;
+    return (idx >= 0 && size_t(idx) < c.size()) ? c.at(idx) : dflt;
   }
 };
 

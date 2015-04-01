@@ -492,15 +492,13 @@ public:
     return m_retLocal;
   }
 
-  class IncludeTimeFatalException : public Exception {
-  public:
+  struct IncludeTimeFatalException : Exception {
     ConstructPtr m_node;
     bool m_parseFatal;
     IncludeTimeFatalException(ConstructPtr node, const char* fmt, ...)
         : Exception(), m_node(node), m_parseFatal(false) {
       va_list ap; va_start(ap, fmt); format(fmt, ap); va_end(ap);
     }
-    virtual ~IncludeTimeFatalException() throw() {}
     EXCEPTION_COMMON_IMPL(IncludeTimeFatalException);
     void setParseFatal(bool b = true) { m_parseFatal = b; }
   };
@@ -709,7 +707,7 @@ public:
   Id emitVisitAndSetUnnamedL(Emitter& e, ExpressionPtr exp);
   Id emitSetUnnamedL(Emitter& e);
   void emitPushAndFreeUnnamedL(Emitter& e, Id tempLocal, Offset start);
-  DataType analyzeSwitch(SwitchStatementPtr s, SwitchState& state);
+  MaybeDataType analyzeSwitch(SwitchStatementPtr s, SwitchState& state);
   void emitIntegerSwitch(Emitter& e, SwitchStatementPtr s,
                          std::vector<Label>& caseLabels, Label& done,
                          const SwitchState& state);
@@ -747,13 +745,12 @@ public:
                              bool coerce_params = false);
   void emitMethodPrologue(Emitter& e, MethodStatementPtr meth);
   void emitMethod(MethodStatementPtr meth);
-  void emitMemoizeProp(Emitter &e, MethodStatementPtr meth,
-                       const StringData *propName, int localID);
-  void emitMemoizeMethod(MethodStatementPtr meth, const StringData *methName,
-                         const StringData *propName);
+  void emitMemoizeProp(Emitter& e, MethodStatementPtr meth, Id localID,
+                       const std::vector<Id>& paramIDs, uint numParams);
+  void addMemoizeProp(MethodStatementPtr meth);
+  void emitMemoizeMethod(MethodStatementPtr meth, const StringData* methName);
   void emitConstMethodCallNoParams(Emitter& e, string name);
-  void emitCreateStaticWaitHandle(Emitter& e, std::string cls,
-                                  std::function<void()> emitParam);
+  bool emitHHInvariant(Emitter& e, SimpleFunctionCallPtr);
   void emitMethodDVInitializers(Emitter& e,
                                 MethodStatementPtr& meth,
                                 Label& topOfBody);
@@ -784,7 +781,8 @@ public:
   void emitFuncCallArg(Emitter& e, ExpressionPtr exp, int paramId);
   void emitBuiltinCallArg(Emitter& e, ExpressionPtr exp, int paramId,
                          bool byRef);
-  void emitBuiltinDefaultArg(Emitter& e, Variant& v, DataType t, int paramId);
+  void emitBuiltinDefaultArg(Emitter& e, Variant& v,
+                             MaybeDataType t, int paramId);
   void emitClass(Emitter& e, ClassScopePtr cNode, bool topLevel);
   void emitTypedef(Emitter& e, TypedefStatementPtr);
   void emitForeachListAssignment(Emitter& e,
@@ -805,7 +803,7 @@ public:
   // These methods handle the return, break, continue, and goto operations.
   // These methods are aware of try/finally blocks and foreach blocks and
   // will free iterators and jump to finally epilogues as appropriate.
-  void emitReturn(Emitter& e, char sym, bool hasConstraint, StatementPtr s);
+  void emitReturn(Emitter& e, char sym, StatementPtr s);
   void emitBreak(Emitter& e, int depth, StatementPtr s);
   void emitContinue(Emitter& e, int depth, StatementPtr s);
   void emitGoto(Emitter& e, StringData* name, StatementPtr s);
@@ -828,6 +826,10 @@ public:
                               std::vector<Label*>& cases, int depth);
   void emitGotoTrampoline(Emitter& e, Region* entry,
                           std::vector<Label*>& cases, StringData* name);
+
+  // Returns true if VerifyRetType should be emitted before Ret for
+  // the current function.
+  bool shouldEmitVerifyRetType();
 
   Funclet* addFunclet(Thunklet* body);
   Funclet* addFunclet(StatementPtr stmt,
@@ -901,7 +903,7 @@ public:
                                 StringData* name, bool alloc);
 };
 
-void emitAllHHBC(AnalysisResultPtr ar);
+void emitAllHHBC(AnalysisResultPtr&& ar);
 
 
 extern "C" {

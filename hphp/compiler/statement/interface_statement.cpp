@@ -97,14 +97,12 @@ void InterfaceStatement::onParse(AnalysisResultConstPtr ar,
   }
 
   ClassScopePtr classScope
-    (new ClassScope(ClassScope::KindOfInterface, m_name, "", bases,
+    (new ClassScope(ClassScope::KindOf::Interface, m_name, "", bases,
                     m_docComment, stmt, attrs));
   setBlockScope(classScope);
   scope->addClass(ar, classScope);
 
-  if (Option::PersistenceHook) {
-    classScope->setPersistent(Option::PersistenceHook(classScope, scope));
-  }
+  classScope->setPersistent(false);
 
   if (m_stmt) {
     for (int i = 0; i < m_stmt->getCount(); i++) {
@@ -197,7 +195,6 @@ void InterfaceStatement::analyzeProgram(AnalysisResultPtr ar) {
   vector<string> bases;
   if (m_base) m_base->getStrings(bases);
   for (unsigned int i = 0; i < bases.size(); i++) {
-    addUserClass(ar, bases[i]);
     ClassScopePtr cls = ar->findClass(bases[i]);
     if (cls) {
       if (!cls->isInterface()) {
@@ -251,9 +248,6 @@ StatementPtr InterfaceStatement::preOptimize(AnalysisResultConstPtr ar) {
   return StatementPtr();
 }
 
-void InterfaceStatement::inferTypes(AnalysisResultPtr ar) {
-}
-
 ///////////////////////////////////////////////////////////////////////////////
 
 void InterfaceStatement::outputCodeModel(CodeGenerator &cg) {
@@ -289,21 +283,6 @@ void InterfaceStatement::outputCodeModel(CodeGenerator &cg) {
 
 ///////////////////////////////////////////////////////////////////////////////
 // code generation functions
-
-void InterfaceStatement::getAllParents(AnalysisResultConstPtr ar,
-                                       std::vector<std::string> &names) {
-  vector<string> bases;
-  if (m_base) {
-    m_base->getStrings(bases);
-    for (unsigned int i = 0; i < bases.size(); i++) {
-      ClassScopePtr cls = ar->findClass(bases[i]);
-      if (cls) {
-        cls->getAllParents(ar, names);
-        names.push_back(cls->getOriginalName());
-      }
-    }
-  }
-}
 
 void InterfaceStatement::outputPHP(CodeGenerator &cg, AnalysisResultPtr ar) {
   ClassScopeRawPtr classScope = getClassScope();

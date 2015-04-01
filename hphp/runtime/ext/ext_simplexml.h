@@ -45,20 +45,22 @@ typedef enum {
   SXE_ITER_ATTRLIST = 3
 } SXE_ITER;
 
-FORWARD_DECLARE_CLASS(SimpleXMLElement);
+using SimpleXMLElementBase = ExtObjectDataFlags<
+  ObjectData::UseGet|
+  ObjectData::UseSet|
+  ObjectData::UseIsset|
+  ObjectData::UseUnset|
+  ObjectData::CallToImpl|
+  ObjectData::HasClone|
+  ObjectData::HasPropEmpty
+>;
 
-class c_SimpleXMLElement :
-      public ExtObjectDataFlags<ObjectData::UseGet|
-                                ObjectData::UseSet|
-                                ObjectData::UseIsset|
-                                ObjectData::UseUnset|
-                                ObjectData::CallToImpl|
-                                ObjectData::HasClone>,
-      public Sweepable {
- public:
-  DECLARE_CLASS(SimpleXMLElement)
+struct c_SimpleXMLElement : SweepableObj<SimpleXMLElementBase> {
+  DECLARE_CLASS_NO_SWEEP(SimpleXMLElement)
+  static void Sweep(ObjectData*);
+  void sweep();
 
-  public: c_SimpleXMLElement(Class* cls = c_SimpleXMLElement::classof());
+  explicit c_SimpleXMLElement(Class* cls = c_SimpleXMLElement::classof());
   public: ~c_SimpleXMLElement();
   public: void t___construct(const String& data, int64_t options = 0,
                              bool data_is_url = false, const String& ns = "",
@@ -92,6 +94,7 @@ class c_SimpleXMLElement :
   public: Variant t___unset(Variant name);
 
  public:
+  static bool    PropEmpty(ObjectData* obj, const StringData* key);
   static c_SimpleXMLElement* Clone(ObjectData* obj);
   static bool    ToBool(const ObjectData* obj) noexcept;
   static int64_t ToInt64(const ObjectData* obj) noexcept;
@@ -112,8 +115,6 @@ class c_SimpleXMLElement :
 
 ///////////////////////////////////////////////////////////////////////////////
 // class SimpleXMLElementIterator
-
-FORWARD_DECLARE_CLASS(SimpleXMLElementIterator);
 
 class c_SimpleXMLElementIterator : public ExtObjectData {
  public:

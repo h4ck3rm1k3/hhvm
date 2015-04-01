@@ -75,10 +75,11 @@ inline uint64_t timespecDiff(timespec end, timespec start) {
     assert(end.tv_nsec >= start.tv_nsec);
     return end.tv_nsec - start.tv_nsec;
   }
-  assert(end.tv_sec > start.tv_sec &&
-         end.tv_sec - start.tv_sec <
+  assert(end.tv_sec > start.tv_sec);
+  auto diff = uint64_t(end.tv_sec - start.tv_sec);
+  assert(diff <
          std::numeric_limits<uint64_t>::max() / 1000000000UL);
-  return (end.tv_sec - start.tv_sec) * 1000000000UL
+  return diff * 1000000000UL
     + end.tv_nsec - start.tv_nsec;
 }
 
@@ -116,7 +117,7 @@ struct BenchmarkSuspender {
   }
 
   BenchmarkSuspender(const BenchmarkSuspender &) = delete;
-  BenchmarkSuspender(BenchmarkSuspender && rhs) {
+  BenchmarkSuspender(BenchmarkSuspender && rhs) noexcept {
     start = rhs.start;
     rhs.start.tv_nsec = rhs.start.tv_sec = 0;
   }
@@ -149,12 +150,11 @@ struct BenchmarkSuspender {
   }
 
   /**
-   * This helps the macro definition. To get around the dangers of
-   * operator bool, returns a pointer to member (which allows no
-   * arithmetic).
+   * This is for use inside of if-conditions, used in BENCHMARK macros.
+   * If-conditions bypass the explicit on operator bool.
    */
-  operator int BenchmarkSuspender::*() const {
-    return nullptr;
+  explicit operator bool() const {
+    return false;
   }
 
   /**

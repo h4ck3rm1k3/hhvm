@@ -55,18 +55,18 @@ public:
   const ArrayData*   arrVal() const       { return type().arrVal(); }
   const Func*        funcVal() const      { return type().funcVal(); }
   const Class*       clsVal() const       { return type().clsVal(); }
-  RDS::Handle        rdsHandleVal() const { return type().rdsHandleVal(); }
+  ConstCctx          cctxVal() const      { return type().cctxVal(); }
+  rds::Handle        rdsHandleVal() const { return type().rdsHandleVal(); }
   TCA                tcaVal() const       { return type().tcaVal(); }
   Variant            variantVal() const;
 
   /*
-   * Returns: Type::subtypeOf(type(), tag).
+   * @returns: type() <= tag
    *
-   * This should be used for most checks on the types of IRInstruction
-   * sources.
+   * This should be used for most checks on the types of IRInstruction sources.
    */
   bool isA(Type tag) const {
-    return type().subtypeOf(tag);
+    return type() <= tag;
   }
 
   /*

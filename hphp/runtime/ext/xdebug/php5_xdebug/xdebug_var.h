@@ -15,7 +15,7 @@
    | Authors:  Derick Rethans <derick@xdebug.org>                         |
    +----------------------------------------------------------------------+
  */
-// TODO(#4489053) This should use hhvm constructs as well as be cleaned up
+// TODO(#3704) This should use hhvm constructs as well as be cleaned up
 
 #ifndef incl_XDEBUG_VAR_H_
 #define incl_XDEBUG_VAR_H_
@@ -27,11 +27,23 @@
 
 namespace HPHP {
 ////////////////////////////////////////////////////////////////////////////////
+// Errors
+
+const String xdebug_error_type(int errnum);
+
+////////////////////////////////////////////////////////////////////////////////
+// Variable Exporting
 
 struct XDebugExporter {
   typedef smart::hash_map<void*, int, pointer_hash<void> > SmartPtrCtrMap;
   SmartPtrCtrMap counts; // Map of pointer -> # of times we've seen this object
-  int level = 0;         // Current level we are at
+  int level;             // Current level we are at
+
+  // Resets the state of the exporter. Called before each export
+  void reset() {
+    counts.clear();
+    level = 0;
+  }
 
   // These all must be provided
   uint32_t max_depth;         // Max depth to print for arrays/objects

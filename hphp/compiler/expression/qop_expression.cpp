@@ -17,7 +17,8 @@
 #include "hphp/compiler/expression/qop_expression.h"
 #include "hphp/compiler/analysis/code_error.h"
 #include "hphp/compiler/code_model_enums.h"
-#include "hphp/runtime/base/complex-types.h"
+
+#include "hphp/runtime/base/type-variant.h"
 
 using namespace HPHP;
 
@@ -105,47 +106,6 @@ ExpressionPtr QOpExpression::preOptimize(AnalysisResultConstPtr ar) {
   return ExpressionPtr();
 }
 
-ExpressionPtr QOpExpression::postOptimize(AnalysisResultConstPtr ar) {
-  if (getActualType() && getActualType()->is(Type::KindOfString) &&
-      m_expYes && m_expYes->isLiteralString() != m_expNo->isLiteralString()) {
-    setActualType(Type::Variant);
-    setExpectedType(Type::String);
-    m_expYes->setExpectedType(Type::Variant);
-    m_expNo->setExpectedType(Type::Variant);
-  }
-  return ExpressionPtr();
-}
-
-TypePtr QOpExpression::inferTypes(AnalysisResultPtr ar, TypePtr type,
-                                  bool coerce) {
-  if (m_expYes) {
-    m_condition->inferAndCheck(ar, Type::Boolean, false);
-    TypePtr typeYes = m_expYes->inferAndCheck(ar, Type::Some, coerce);
-    TypePtr typeNo = m_expNo->inferAndCheck(ar, Type::Some, coerce);
-    if (Type::SameType(typeYes, typeNo) &&
-        m_expYes->isLiteralString() == m_expNo->isLiteralString()) {
-      // already the same type, no coercion needed
-      // special case on literal string since String is slower than Variant
-      m_expYes->inferAndCheck(ar, typeYes, false);
-      m_expNo->inferAndCheck(ar, typeYes, false);
-      return typeYes;
-    }
-  } else {
-    TypePtr typeYes = m_condition->inferAndCheck(ar, Type::Some, coerce);
-    TypePtr typeNo = m_expNo->inferAndCheck(ar, Type::Some, coerce);
-    if (Type::SameType(typeYes, typeNo) &&
-        m_condition->isLiteralString() == m_expNo->isLiteralString()) {
-      // already the same type, no coercion needed
-      // special case on literal string since String is slower than Variant
-      m_condition->inferAndCheck(ar, typeYes, false);
-      m_expNo->inferAndCheck(ar, typeYes, false);
-      return typeYes;
-    }
-  }
-
-  return Type::Variant;
-}
-
 ExpressionPtr QOpExpression::unneededHelper() {
   bool yesEffect = false;
   if (m_expYes) {
@@ -200,4 +160,3 @@ void QOpExpression::outputPHP(CodeGenerator &cg, AnalysisResultPtr ar) {
   cg_printf(" : ");
   m_expNo->outputPHP(cg, ar);
 }
-

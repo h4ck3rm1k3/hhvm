@@ -16,7 +16,6 @@
 
 #include "hphp/compiler/expression/ordering.h"
 #include "hphp/compiler/analysis/code_error.h"
-#include "hphp/runtime/base/complex-types.h"
 #include "hphp/compiler/code_model_enums.h"
 
 using namespace HPHP;
@@ -80,12 +79,6 @@ void Ordering::setNthKid(int n, ConstructPtr cp) {
     default:
       break;
   }
-}
-
-TypePtr Ordering::inferTypes(AnalysisResultPtr ar, TypePtr type,
-                                  bool coerce) {
-  m_key->inferAndCheck(ar, Type::Some, false);
-  return Type::Object;
 }
 
 ///////////////////////////////////////////////////////////////////////////////

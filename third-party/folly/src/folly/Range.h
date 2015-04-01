@@ -24,6 +24,7 @@
 #include <folly/FBString.h>
 #include <algorithm>
 #include <boost/operators.hpp>
+#include <climits>
 #include <cstring>
 #include <glog/logging.h>
 #include <iosfwd>
@@ -121,6 +122,23 @@ value_before(Iter i) {
   return *--i;
 }
 
+/*
+ * Use IsCharPointer<T>::type to enable const char* or char*.
+ * Use IsCharPointer<T>::const_type to enable only const char*.
+ */
+template <class T> struct IsCharPointer {};
+
+template <>
+struct IsCharPointer<char*> {
+  typedef int type;
+};
+
+template <>
+struct IsCharPointer<const char*> {
+  typedef int const_type;
+  typedef int type;
+};
+
 } // namespace detail
 
 /**
@@ -166,6 +184,9 @@ public:
   constexpr Range() : b_(), e_() {
   }
 
+  constexpr Range(const Range&) = default;
+  constexpr Range(Range&&) = default;
+
 public:
   // Works for all iterators
   constexpr Range(Iter start, Iter end) : b_(start), e_(end) {
@@ -176,19 +197,19 @@ public:
       : b_(start), e_(start + size) { }
 
 #if FOLLY_HAVE_CONSTEXPR_STRLEN
-  // Works only for Range<const char*>
+  template <class T = Iter, typename detail::IsCharPointer<T>::type = 0>
   constexpr /* implicit */ Range(Iter str)
       : b_(str), e_(str + strlen(str)) {}
 #else
-  // Works only for Range<const char*>
+  template <class T = Iter, typename detail::IsCharPointer<T>::type = 0>
   /* implicit */ Range(Iter str)
       : b_(str), e_(str + strlen(str)) {}
 #endif
-  // Works only for Range<const char*>
+  template <class T = Iter, typename detail::IsCharPointer<T>::const_type = 0>
   /* implicit */ Range(const std::string& str)
       : b_(str.data()), e_(b_ + str.size()) {}
 
-  // Works only for Range<const char*>
+  template <class T = Iter, typename detail::IsCharPointer<T>::const_type = 0>
   Range(const std::string& str, std::string::size_type startFrom) {
     if (UNLIKELY(startFrom > str.size())) {
       throw std::out_of_range("index out of range");
@@ -196,7 +217,8 @@ public:
     b_ = str.data() + startFrom;
     e_ = str.data() + str.size();
   }
-  // Works only for Range<const char*>
+
+  template <class T = Iter, typename detail::IsCharPointer<T>::const_type = 0>
   Range(const std::string& str,
         std::string::size_type startFrom,
         std::string::size_type size) {
@@ -210,23 +232,18 @@ public:
       e_ = b_ + size;
     }
   }
-  Range(const Range<Iter>& str,
-        size_t startFrom,
-        size_t size) {
-    if (UNLIKELY(startFrom > str.size())) {
-      throw std::out_of_range("index out of range");
-    }
-    b_ = str.b_ + startFrom;
-    if (str.size() - startFrom < size) {
-      e_ = str.e_;
-    } else {
-      e_ = b_ + size;
-    }
-  }
-  // Works only for Range<const char*>
+
+  Range(const Range& other,
+        size_type first,
+        size_type length = npos)
+      : Range(other.subpiece(first, length))
+    { }
+
+  template <class T = Iter, typename detail::IsCharPointer<T>::const_type = 0>
   /* implicit */ Range(const fbstring& str)
     : b_(str.data()), e_(b_ + str.size()) { }
-  // Works only for Range<const char*>
+
+  template <class T = Iter, typename detail::IsCharPointer<T>::const_type = 0>
   Range(const fbstring& str, fbstring::size_type startFrom) {
     if (UNLIKELY(startFrom > str.size())) {
       throw std::out_of_range("index out of range");
@@ -234,7 +251,8 @@ public:
     b_ = str.data() + startFrom;
     e_ = str.data() + str.size();
   }
-  // Works only for Range<const char*>
+
+  template <class T = Iter, typename detail::IsCharPointer<T>::const_type = 0>
   Range(const fbstring& str, fbstring::size_type startFrom,
         fbstring::size_type size) {
     if (UNLIKELY(startFrom > str.size())) {
@@ -307,6 +325,9 @@ public:
       e_(other.end()) {
   }
 
+  Range& operator=(const Range& rhs) & = default;
+  Range& operator=(Range&& rhs) & = default;
+
   void clear() {
     b_ = Iter();
     e_ = Iter();
@@ -358,10 +379,10 @@ public:
     assert(b_ < e_);
     return detail::value_before(e_);
   }
-  // Works only for Range<const char*>
+  // Works only for Range<const char*> and Range<char*>
   std::string str() const { return std::string(b_, size()); }
   std::string toString() const { return str(); }
-  // Works only for Range<const char*>
+  // Works only for Range<const char*> and Range<char*>
   fbstring fbstr() const { return fbstring(b_, size()); }
   fbstring toFbstring() const { return fbstr(); }
 
@@ -369,13 +390,19 @@ public:
     return const_range_type(*this);
   };
 
-  // Works only for Range<const char*> (and Range<char*>)
+  // Works only for Range<const char*> and Range<char*>
   int compare(const const_range_type& o) const {
     const size_type tsize = this->size();
     const size_type osize = o.size();
     const size_type msize = std::min(tsize, osize);
     int r = traits_type::compare(data(), o.data(), msize);
-    if (r == 0) r = tsize - osize;
+    if (r == 0 && tsize != osize) {
+      // We check the signed bit of the subtraction and bit shift it
+      // to produce either 0 or 2. The subtraction yields the
+      // comparison values of either -1 or 1.
+      r = (static_cast<int>(
+             (osize - tsize) >> (CHAR_BIT * sizeof(size_t) - 1)) << 1) - 1;
+    }
     return r;
   }
 
@@ -399,7 +426,7 @@ public:
     return b_[i];
   }
 
-  // Works only for Range<const char*>
+  // Works only for Range<const char*> and Range<char*>
   uint32_t hash() const {
     // Taken from fbi/nstring.h:
     //    Quick and dirty bernstein hash...fine for short ascii strings
@@ -434,13 +461,12 @@ public:
     --e_;
   }
 
-  Range subpiece(size_type first,
-                 size_type length = std::string::npos) const {
+  Range subpiece(size_type first, size_type length = npos) const {
     if (UNLIKELY(first > size())) {
       throw std::out_of_range("index out of range");
     }
-    return Range(b_ + first,
-                 std::min<std::string::size_type>(length, size() - first));
+
+    return Range(b_ + first, std::min(length, size() - first));
   }
 
   // string work-alike functions
@@ -803,8 +829,8 @@ typedef Range<char*> MutableStringPiece;
 typedef Range<const unsigned char*> ByteRange;
 typedef Range<unsigned char*> MutableByteRange;
 
-std::ostream& operator<<(std::ostream& os, const StringPiece& piece);
-std::ostream& operator<<(std::ostream& os, const MutableStringPiece& piece);
+std::ostream& operator<<(std::ostream& os, const StringPiece piece);
+std::ostream& operator<<(std::ostream& os, const MutableStringPiece piece);
 
 /**
  * Templated comparison operators
@@ -891,7 +917,7 @@ operator>=(const T& lhs, const U& rhs) {
 }
 
 struct StringPieceHash {
-  std::size_t operator()(const StringPiece& str) const {
+  std::size_t operator()(const StringPiece str) const {
     return static_cast<std::size_t>(str.hash());
   }
 };
@@ -957,15 +983,15 @@ size_t qfind(const Range<T>& haystack,
 
 namespace detail {
 
-size_t qfind_first_byte_of_nosse(const StringPiece& haystack,
-                                 const StringPiece& needles);
+size_t qfind_first_byte_of_nosse(const StringPiece haystack,
+                                 const StringPiece needles);
 
 #if FOLLY_HAVE_EMMINTRIN_H && __GNUC_PREREQ(4, 6)
-size_t qfind_first_byte_of_sse42(const StringPiece& haystack,
-                                 const StringPiece& needles);
+size_t qfind_first_byte_of_sse42(const StringPiece haystack,
+                                 const StringPiece needles);
 
-inline size_t qfind_first_byte_of(const StringPiece& haystack,
-                                  const StringPiece& needles) {
+inline size_t qfind_first_byte_of(const StringPiece haystack,
+                                  const StringPiece needles) {
   static auto const qfind_first_byte_of_fn =
     folly::CpuId().sse42() ? qfind_first_byte_of_sse42
                            : qfind_first_byte_of_nosse;
@@ -973,8 +999,8 @@ inline size_t qfind_first_byte_of(const StringPiece& haystack,
 }
 
 #else
-inline size_t qfind_first_byte_of(const StringPiece& haystack,
-                                  const StringPiece& needles) {
+inline size_t qfind_first_byte_of(const StringPiece haystack,
+                                  const StringPiece needles) {
   return qfind_first_byte_of_nosse(haystack, needles);
 }
 #endif // FOLLY_HAVE_EMMINTRIN_H

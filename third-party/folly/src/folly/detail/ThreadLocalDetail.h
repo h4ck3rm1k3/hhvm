@@ -30,6 +30,18 @@
 #include <folly/Exception.h>
 #include <folly/Malloc.h>
 
+// In general, emutls cleanup is not guaranteed to play nice with the way
+// StaticMeta mixes direct pthread calls and the use of __thread. This has
+// caused problems on multiple platforms so don't use __thread there.
+//
+// XXX: Ideally we would instead determine if emutls is in use at runtime as it
+// is possible to configure glibc on Linux to use emutls regardless.
+#if !__APPLE__ && !__ANDROID__
+#define FOLLY_TLD_USE_FOLLY_TLS 1
+#else
+#undef FOLLY_TLD_USE_FOLLY_TLS
+#endif
+
 namespace folly {
 namespace threadlocal_detail {
 
@@ -73,13 +85,15 @@ class CustomDeleter : public DeleterBase {
  * This must be POD, as we memset() it to 0 and memcpy() it around.
  */
 struct ElementWrapper {
-  void dispose(TLPDestructionMode mode) {
-    if (ptr != nullptr) {
-      DCHECK(deleter != nullptr);
-      deleter->dispose(ptr, mode);
-
-      cleanup();
+  bool dispose(TLPDestructionMode mode) {
+    if (ptr == nullptr) {
+      return false;
     }
+
+    DCHECK(deleter != nullptr);
+    deleter->dispose(ptr, mode);
+    cleanup();
+    return true;
   }
 
   void* release() {
@@ -164,8 +178,8 @@ struct StaticMeta {
     return *inst_;
   }
 
-  int nextId_;
-  std::vector<int> freeIds_;
+  uint32_t nextId_;
+  std::vector<uint32_t> freeIds_;
   std::mutex lock_;
   pthread_key_t pthreadKey_;
   ThreadEntry head_;
@@ -183,7 +197,7 @@ struct StaticMeta {
     t->next = t->prev = t;
   }
 
-#if !__APPLE__
+#ifdef FOLLY_TLD_USE_FOLLY_TLS
   static FOLLY_TLS ThreadEntry threadEntry_;
 #endif
   static StaticMeta<Tag>* inst_;
@@ -193,17 +207,26 @@ struct StaticMeta {
     int ret = pthread_key_create(&pthreadKey_, &onThreadExit);
     checkPosixError(ret, "pthread_key_create failed");
 
+#if FOLLY_HAVE_PTHREAD_ATFORK
     ret = pthread_atfork(/*prepare*/ &StaticMeta::preFork,
                          /*parent*/ &StaticMeta::onForkParent,
                          /*child*/ &StaticMeta::onForkChild);
     checkPosixError(ret, "pthread_atfork failed");
+#elif !__ANDROID__
+    // pthread_atfork is not part of the Android NDK at least as of n9d. If
+    // something is trying to call native fork() directly at all with Android's
+    // process management model, this is probably the least of the problems.
+    //
+    // But otherwise, this is a problem.
+    #warning pthread_atfork unavailable
+#endif
   }
   ~StaticMeta() {
     LOG(FATAL) << "StaticMeta lives forever!";
   }
 
   static ThreadEntry* getThreadEntry() {
-#if !__APPLE__
+#ifdef FOLLY_TLD_USE_FOLLY_TLS
     return &threadEntry_;
 #else
     ThreadEntry* threadEntry =
@@ -237,8 +260,8 @@ struct StaticMeta {
   }
 
   static void onThreadExit(void* ptr) {
-    auto & meta = instance();
-#if !__APPLE__
+    auto& meta = instance();
+#ifdef FOLLY_TLD_USE_FOLLY_TLS
     ThreadEntry* threadEntry = getThreadEntry();
 
     DCHECK_EQ(ptr, &meta);
@@ -252,21 +275,30 @@ struct StaticMeta {
       // No need to hold the lock any longer; the ThreadEntry is private to this
       // thread now that it's been removed from meta.
     }
-    FOR_EACH_RANGE(i, 0, threadEntry->elementsCapacity) {
-      threadEntry->elements[i].dispose(TLPDestructionMode::THIS_THREAD);
+    // NOTE: User-provided deleter / object dtor itself may be using ThreadLocal
+    // with the same Tag, so dispose() calls below may (re)create some of the
+    // elements or even increase elementsCapacity, thus multiple cleanup rounds
+    // may be required.
+    for (bool shouldRun = true; shouldRun; ) {
+      shouldRun = false;
+      FOR_EACH_RANGE(i, 0, threadEntry->elementsCapacity) {
+        if (threadEntry->elements[i].dispose(TLPDestructionMode::THIS_THREAD)) {
+          shouldRun = true;
+        }
+      }
     }
     free(threadEntry->elements);
     threadEntry->elements = nullptr;
     pthread_setspecific(meta.pthreadKey_, nullptr);
 
-#if __APPLE__
-    // Allocated in getThreadEntry(); free it
+#ifndef FOLLY_TLD_USE_FOLLY_TLS
+    // Allocated in getThreadEntry() when not using folly TLS; free it
     delete threadEntry;
 #endif
   }
 
-  static int create() {
-    int id;
+  static uint32_t create() {
+    uint32_t id;
     auto & meta = instance();
     std::lock_guard<std::mutex> g(meta.lock_);
     if (!meta.freeIds_.empty()) {
@@ -278,7 +310,7 @@ struct StaticMeta {
     return id;
   }
 
-  static void destroy(size_t id) {
+  static void destroy(uint32_t id) {
     try {
       auto & meta = instance();
       // Elements in other threads that use this id.
@@ -320,7 +352,7 @@ struct StaticMeta {
    * Reserve enough space in the ThreadEntry::elements for the item
    * @id to fit in.
    */
-  static void reserve(int id) {
+  static void reserve(uint32_t id) {
     auto& meta = instance();
     ThreadEntry* threadEntry = getThreadEntry();
     size_t prevCapacity = threadEntry->elementsCapacity;
@@ -336,40 +368,30 @@ struct StaticMeta {
     // under the lock.
     if (usingJEMalloc()) {
       bool success = false;
-      size_t newByteSize = newCapacity * sizeof(ElementWrapper);
-      size_t realByteSize = 0;
+      size_t newByteSize = nallocx(newCapacity * sizeof(ElementWrapper), 0);
 
       // Try to grow in place.
       //
-      // Note that rallocm(ALLOCM_ZERO) will only zero newly allocated memory,
+      // Note that xallocx(MALLOCX_ZERO) will only zero newly allocated memory,
       // even if a previous allocation allocated more than we requested.
-      // This is fine; we always use ALLOCM_ZERO with jemalloc and we
+      // This is fine; we always use MALLOCX_ZERO with jemalloc and we
       // always expand our allocation to the real size.
       if (prevCapacity * sizeof(ElementWrapper) >=
           jemallocMinInPlaceExpandable) {
-        success = (rallocm(reinterpret_cast<void**>(&threadEntry->elements),
-                           &realByteSize,
-                           newByteSize,
-                           0,
-                           ALLOCM_NO_MOVE | ALLOCM_ZERO) == ALLOCM_SUCCESS);
-
+        success = (xallocx(threadEntry->elements, newByteSize, 0, MALLOCX_ZERO)
+                   == newByteSize);
       }
 
       // In-place growth failed.
       if (!success) {
-        // Note that, unlike calloc,allocm(... ALLOCM_ZERO) zeros all
-        // allocated bytes (*realByteSize) and not just the requested
-        // bytes (newByteSize)
-        success = (allocm(reinterpret_cast<void**>(&reallocated),
-                          &realByteSize,
-                          newByteSize,
-                          ALLOCM_ZERO) == ALLOCM_SUCCESS);
+        success = ((reallocated = static_cast<ElementWrapper*>(
+                    mallocx(newByteSize, MALLOCX_ZERO))) != nullptr);
       }
 
       if (success) {
         // Expand to real size
-        assert(realByteSize / sizeof(ElementWrapper) >= newCapacity);
-        newCapacity = realByteSize / sizeof(ElementWrapper);
+        assert(newByteSize / sizeof(ElementWrapper) >= newCapacity);
+        newCapacity = newByteSize / sizeof(ElementWrapper);
       } else {
         throw std::bad_alloc();
       }
@@ -409,14 +431,14 @@ struct StaticMeta {
 
     free(reallocated);
 
-#if !__APPLE__
+#ifdef FOLLY_TLD_USE_FOLLY_TLS
     if (prevCapacity == 0) {
       pthread_setspecific(meta.pthreadKey_, &meta);
     }
 #endif
   }
 
-  static ElementWrapper& get(size_t id) {
+  static ElementWrapper& get(uint32_t id) {
     ThreadEntry* threadEntry = getThreadEntry();
     if (UNLIKELY(threadEntry->elementsCapacity <= id)) {
       reserve(id);
@@ -426,9 +448,10 @@ struct StaticMeta {
   }
 };
 
-#if !__APPLE__
+#ifdef FOLLY_TLD_USE_FOLLY_TLS
 template <class Tag>
-FOLLY_TLS ThreadEntry StaticMeta<Tag>::threadEntry_ = {0};
+FOLLY_TLS ThreadEntry StaticMeta<Tag>::threadEntry_{nullptr, 0,
+                                                    nullptr, nullptr};
 #endif
 template <class Tag> StaticMeta<Tag>* StaticMeta<Tag>::inst_ = nullptr;
 

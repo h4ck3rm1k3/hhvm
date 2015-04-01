@@ -5,8 +5,8 @@
 $x = ezc_create_cloneable_in_array();
 print count($x) . "\n";
 ezc_call(
- function( $x ) {
-   print $x ? "true\n" : "false\n";
- },
- array()
+  function( $x ) {
+    print $x ? "true\n" : "false\n";
+  },
+  array()
 );

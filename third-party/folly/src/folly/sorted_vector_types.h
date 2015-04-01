@@ -552,6 +552,22 @@ public:
     return end();
   }
 
+  mapped_type& at(const key_type& key) {
+    iterator it = find(key);
+    if (it != end()) {
+      return it->second;
+    }
+    throw std::out_of_range("sorted_vector_map::at");
+  }
+
+  const mapped_type& at(const key_type& key) const {
+    const_iterator it = find(key);
+    if (it != end()) {
+      return it->second;
+    }
+    throw std::out_of_range("sorted_vector_map::at");
+  }
+
   size_type count(const key_type& key) const {
     return find(key) == end() ? 0 : 1;
   }
@@ -640,4 +656,3 @@ inline void swap(sorted_vector_map<K,V,C,A,G>& a,
 }
 
 #endif
-

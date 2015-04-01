@@ -261,8 +261,13 @@ class IOBufQueue {
    */
   void clear();
 
+  /**
+   * Append the queue to a std::string. Non-destructive.
+   */
+  void appendToString(std::string& out) const;
+
   /** Movable */
-  IOBufQueue(IOBufQueue&&);
+  IOBufQueue(IOBufQueue&&) noexcept;
   IOBufQueue& operator=(IOBufQueue&&);
 
  private:

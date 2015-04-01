@@ -17,7 +17,7 @@
 #ifndef incl_HPHP_CONFIG_H_
 #define incl_HPHP_CONFIG_H_
 
-#include "folly/dynamic.h"
+#include <folly/dynamic.h>
 #include "hphp/util/hdf.h"
 
 namespace HPHP {
@@ -33,12 +33,33 @@ typedef folly::dynamic IniSettingMap;
 enum class HackStrictOption {
   OFF, // PHP5 behavior
   WARN,
-  ERROR
+  ON
 };
 
-struct Config {
 
-  static void Parse(const std::string &config, IniSettingMap &ini, Hdf &hdf);
+/*
+ * Normalizes hdf string names to their ini counterparts
+ *
+ * We have special handling for a few hdf strings such as those containing
+ * MySQL, Eval, IPv[4|6] and EnableHipHopSyntax
+ */
+std::string hdfToIni(const std::string&);
+
+struct Config {
+  static void ParseConfigFile(const std::string &filename, IniSettingMap &ini,
+                              Hdf &hdf);
+
+  static void ParseIniFile(const std::string &filename);
+  static void ParseIniFile(const std::string &filename, IniSettingMap &ini,
+                           const bool constants_only = false);
+
+  static void ParseHdfFile(const std::string &filename, Hdf &hdf);
+
+  // Parse and process a .ini string (e.g., -d)
+  static void ParseIniString(const std::string iniStr, IniSettingMap &ini);
+
+  // Parse and process a .hdf string (e.g., -v)
+  static void ParseHdfString(const std::string hdfStr, Hdf &hdf);
 
   /** Prefer the Bind() over the GetFoo() as it makes ini_get() work too. */
   static void Bind(bool& loc, const IniSettingMap &ini,
@@ -69,6 +90,8 @@ struct Config {
                    const Hdf& config);
   static void Bind(std::vector<std::string>& loc, const IniSettingMap& ini,
                    const Hdf& config);
+  static void Bind(std::map<std::string, std::string>& loc,
+                   const IniSettingMap& ini, const Hdf& config);
 
   /**
    * These Bind()s should be used for ini settings. Specifically, they should
@@ -127,6 +150,20 @@ struct Config {
   static double GetDouble(const IniSettingMap &ini, const Hdf& config,
                           const double defValue = 0);
 
+  /**
+   * Use this for iterating over options that are stored as objects in
+   * runtime options (e.g. FilesMatch). This function iterates over the
+   * settings passed as ini/hdf, calls back to, generally, the constructor of
+   * the object in question.
+   *
+   * Note: For now, we are not `ini_get()` enabling these type of options as
+   * it is not trivial to come up with a non-hacky and workable way to store
+   * the data correctly. Also, as usual, Hdf takes priority.
+   */
+  static void Iterate(const IniSettingMap &ini, const Hdf &hdf,
+                      std::function<void (const IniSettingMap&,
+                                          const Hdf&)> cb);
+
   template<class T>
   static void Get(const IniSettingMap &ini, const Hdf& config, T &data) {
     config.configGet(data);
@@ -149,6 +186,10 @@ struct Config {
   private:
 
   static std::string IniName(const Hdf& config);
+  static std::string IniName(const std::string& config);
+
+  static void SetParsedIni(IniSettingMap &ini, const std::string confStr,
+                           const std::string filename, bool extensions_only);
 
   static void StringInsert(std::vector<std::string> &values,
                            const std::string &key,

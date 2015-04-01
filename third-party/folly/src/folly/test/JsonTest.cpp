@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+#include <folly/FileUtil.h>
 #include <folly/json.h>
 #include <gtest/gtest.h>
 #include <gflags/gflags.h>
@@ -379,9 +380,27 @@ TEST(Json, SortKeys) {
   EXPECT_EQ(sorted_keys, folly::json::serialize(value, opts_on));
 }
 
+TEST(Json, StripComments) {
+  const std::string kTestDir = "folly/test/";
+  const std::string kTestFile = "json_test_data/commented.json";
+  const std::string kTestExpected = "json_test_data/commented.json.exp";
+
+  std::string testStr;
+  std::string expectedStr;
+  if (!folly::readFile(kTestFile.data(), testStr) &&
+      !folly::readFile((kTestDir + kTestFile).data(), testStr)) {
+    FAIL() << "can not read test file " << kTestFile;
+  }
+  if (!folly::readFile(kTestExpected.data(), expectedStr) &&
+      !folly::readFile((kTestDir + kTestExpected).data(), expectedStr)) {
+    FAIL() << "can not read test file " << kTestExpected;
+  }
+  EXPECT_EQ(expectedStr, folly::json::stripComments(testStr));
+}
+
 BENCHMARK(jsonSerialize, iters) {
   folly::json::serialization_opts opts;
-  for (int i = 0; i < iters; ++i) {
+  for (size_t i = 0; i < iters; ++i) {
     folly::json::serialize(
       "qwerty \xc2\x80 \xef\xbf\xbf poiuy"
       "qwerty \xc2\x80 \xef\xbf\xbf poiuy"
@@ -401,7 +420,7 @@ BENCHMARK(jsonSerializeWithNonAsciiEncoding, iters) {
   folly::json::serialization_opts opts;
   opts.encode_non_ascii = true;
 
-  for (int i = 0; i < iters; ++i) {
+  for (size_t i = 0; i < iters; ++i) {
     folly::json::serialize(
       "qwerty \xc2\x80 \xef\xbf\xbf poiuy"
       "qwerty \xc2\x80 \xef\xbf\xbf poiuy"
@@ -421,7 +440,7 @@ BENCHMARK(jsonSerializeWithUtf8Validation, iters) {
   folly::json::serialization_opts opts;
   opts.validate_utf8 = true;
 
-  for (int i = 0; i < iters; ++i) {
+  for (size_t i = 0; i < iters; ++i) {
     folly::json::serialize(
       "qwerty \xc2\x80 \xef\xbf\xbf poiuy"
       "qwerty \xc2\x80 \xef\xbf\xbf poiuy"
@@ -438,19 +457,19 @@ BENCHMARK(jsonSerializeWithUtf8Validation, iters) {
 }
 
 BENCHMARK(parseSmallStringWithUtf, iters) {
-  for (int i = 0; i < iters << 4; ++i) {
+  for (size_t i = 0; i < iters << 4; ++i) {
     parseJson("\"I \\u2665 UTF-8 thjasdhkjh blah blah blah\"");
   }
 }
 
 BENCHMARK(parseNormalString, iters) {
-  for (int i = 0; i < iters << 4; ++i) {
+  for (size_t i = 0; i < iters << 4; ++i) {
     parseJson("\"akjhfk jhkjlakjhfk jhkjlakjhfk jhkjl akjhfk\"");
   }
 }
 
 BENCHMARK(parseBigString, iters) {
-  for (int i = 0; i < iters; ++i) {
+  for (size_t i = 0; i < iters; ++i) {
     parseJson("\""
       "akjhfk jhkjlakjhfk jhkjlakjhfk jhkjl akjhfk"
       "akjhfk jhkjlakjhfk jhkjlakjhfk jhkjl akjhfk"
@@ -472,7 +491,7 @@ BENCHMARK(toJson, iters) {
     "{\"old_value\":40,\"changed\":true,\"opened\":false,\"foo\":[1,2,3,4,5,6]}"
   );
 
-  for (int i = 0; i < iters; i++) {
+  for (size_t i = 0; i < iters; i++) {
     toJson(something);
   }
 }

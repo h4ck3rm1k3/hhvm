@@ -15,6 +15,7 @@
 */
 
 #include "hphp/compiler/statement/method_statement.h"
+#include <folly/Conv.h>
 #include <map>
 #include <set>
 #include "hphp/compiler/statement/return_statement.h"
@@ -47,7 +48,6 @@
 #include "hphp/compiler/builtin_symbols.h"
 #include "hphp/compiler/analysis/alias_manager.h"
 
-#include "hphp/runtime/base/complex-types.h"
 
 #include "hphp/parser/parser.h"
 #include "hphp/util/text-util.h"
@@ -171,7 +171,7 @@ FunctionScopePtr MethodStatement::onInitialParse(AnalysisResultConstPtr ar,
       if (names.find(param->getName()) != names.end()) {
         Compiler::Error(Compiler::RedundantParameter, param);
         for (int j = 0; j < 1000; j++) {
-          string name = param->getName() + lexical_cast<string>(j);
+          string name = param->getName() + folly::to<string>(j);
           if (names.find(name) == names.end() &&
               allDeclNames.find(name) == allDeclNames.end()) {
             param->rename(name);
@@ -212,7 +212,12 @@ FunctionScopePtr MethodStatement::onInitialParse(AnalysisResultConstPtr ar,
   funcScope->setParamCounts(ar, -1, -1);
 
   if (funcScope->isNative()) {
-    if (m_retTypeAnnotation) {
+    if ((m_name == "__construct") || (m_name == "__destruct")) {
+      funcScope->setReturnType(ar, Type::Null);
+      assert(!m_retTypeAnnotation ||
+             !m_retTypeAnnotation->dataType().hasValue() ||
+             (m_retTypeAnnotation->dataType() == KindOfNull));
+    } else if (m_retTypeAnnotation) {
       funcScope->setReturnType(
         ar, Type::FromDataType(m_retTypeAnnotation->dataType(), Type::Variant));
     } else {
@@ -302,6 +307,16 @@ void MethodStatement::onParseRecur(AnalysisResultConstPtr ar,
         );
       }
     }
+    if (!m_modifiers->isStatic() && classScope->isStaticUtil()) {
+      m_modifiers->parseTimeFatal(
+        Compiler::InvalidAttribute,
+        "Class %s contains non-static method %s and "
+        "therefore cannot be declared 'abstract final'",
+        classScope->getOriginalName().c_str(),
+        getOriginalName().c_str()
+      );
+    }
+
     if (isNative) {
       if (getStmts()) {
         parseTimeFatal(Compiler::InvalidAttribute,
@@ -309,9 +324,17 @@ void MethodStatement::onParseRecur(AnalysisResultConstPtr ar,
                        classScope->getOriginalName().c_str(),
                        getOriginalName().c_str());
       }
-      if (!m_retTypeAnnotation) {
+      auto is_ctordtor = (m_name == "__construct") || (m_name == "__destruct");
+      if (!m_retTypeAnnotation && !is_ctordtor) {
         parseTimeFatal(Compiler::InvalidAttribute,
                        "Native method %s::%s() must have a return type hint",
+                       classScope->getOriginalName().c_str(),
+                       getOriginalName().c_str());
+      } else if (m_retTypeAnnotation &&
+                 is_ctordtor &&
+                (m_retTypeAnnotation->dataType() != KindOfNull)) {
+        parseTimeFatal(Compiler::InvalidAttribute,
+                       "Native method %s::%s() must return void",
                        classScope->getOriginalName().c_str(),
                        getOriginalName().c_str());
       }
@@ -467,8 +490,6 @@ void MethodStatement::analyzeProgram(AnalysisResultPtr ar) {
   if (m_stmt) m_stmt->analyzeProgram(ar);
 
   if (ar->getPhase() == AnalysisResult::AnalyzeAll) {
-    funcScope->setParamSpecs(ar);
-
     if (Option::IsDynamicFunction(m_method, m_name) || Option::AllDynamic) {
       funcScope->setDynamic();
     }
@@ -531,12 +552,6 @@ void MethodStatement::analyzeProgram(AnalysisResultPtr ar) {
         }
       }
     }
-  } else if (ar->getPhase() == AnalysisResult::AnalyzeFinal) {
-    TypePtr ret = funcScope->getReturnType();
-    if (ret && ret->isSpecificObject()) {
-      FileScopePtr fs = getFileScope();
-      if (fs) fs->addClassDependency(ar, ret->getName());
-    }
   }
 }
 
@@ -573,49 +588,6 @@ void MethodStatement::setNthKid(int n, ConstructPtr cp) {
     default:
       assert(false);
       break;
-  }
-}
-
-void MethodStatement::inferTypes(AnalysisResultPtr ar) {
-}
-
-void MethodStatement::inferFunctionTypes(AnalysisResultPtr ar) {
-  IMPLEMENT_INFER_AND_CHECK_ASSERT(getFunctionScope());
-
-  FunctionScopeRawPtr funcScope = getFunctionScope();
-  bool pseudoMain = funcScope->inPseudoMain();
-
-  if (m_stmt && funcScope->isFirstPass()) {
-    if (pseudoMain ||
-        funcScope->getReturnType() ||
-        m_stmt->hasRetExp()) {
-      bool lastIsReturn = false;
-      if (m_stmt->getCount()) {
-        StatementPtr lastStmt = (*m_stmt)[m_stmt->getCount()-1];
-        if (lastStmt->is(Statement::KindOfReturnStatement)) {
-          lastIsReturn = true;
-        }
-      }
-      if (!lastIsReturn) {
-        ExpressionPtr constant =
-          makeScalarExpression(ar, funcScope->inPseudoMain() ?
-                               Variant(1) :
-                               Variant(Variant::NullInit()));
-        ReturnStatementPtr returnStmt =
-          ReturnStatementPtr(
-            new ReturnStatement(getScope(), getLabelScope(),
-                                getLocation(), constant));
-        m_stmt->addElement(returnStmt);
-      }
-    }
-  }
-
-  if (m_params) {
-    m_params->inferAndCheck(ar, Type::Any, false);
-  }
-
-  if (m_stmt) {
-    m_stmt->inferTypes(ar);
   }
 }
 

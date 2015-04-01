@@ -30,11 +30,12 @@ namespace folly {
 
 namespace {
 
-// Keep it open for the duration of the program
-File randomDevice("/dev/urandom");
-
 void readRandomDevice(void* data, size_t size) {
-  PCHECK(readFull(randomDevice.fd(), data, size) == size);
+  // Keep the random device open for the duration of the program.
+  static int randomFd = ::open("/dev/urandom", O_RDONLY);
+  PCHECK(randomFd >= 0);
+  auto bytesRead = readFull(randomFd, data, size);
+  PCHECK(bytesRead >= 0 && size_t(bytesRead) == size);
 }
 
 class BufferedRandomDevice {
@@ -91,16 +92,18 @@ void BufferedRandomDevice::getSlow(unsigned char* data, size_t size) {
   ptr_ += size;
 }
 
-ThreadLocal<BufferedRandomDevice> bufferedRandomDevice;
 
 }  // namespace
 
 void Random::secureRandom(void* data, size_t size) {
+  static ThreadLocal<BufferedRandomDevice> bufferedRandomDevice;
   bufferedRandomDevice->get(data, size);
 }
 
-folly::ThreadLocalPtr<ThreadLocalPRNG::LocalInstancePRNG>
-ThreadLocalPRNG::localInstance;
+ThreadLocalPRNG::ThreadLocalPRNG() {
+  static folly::ThreadLocal<ThreadLocalPRNG::LocalInstancePRNG> localInstance;
+  local_ = localInstance.get();
+}
 
 class ThreadLocalPRNG::LocalInstancePRNG {
  public:
@@ -108,12 +111,6 @@ class ThreadLocalPRNG::LocalInstancePRNG {
 
   Random::DefaultGenerator rng;
 };
-
-ThreadLocalPRNG::LocalInstancePRNG* ThreadLocalPRNG::initLocal() {
-  auto ret = new LocalInstancePRNG;
-  localInstance.reset(ret);
-  return ret;
-}
 
 uint32_t ThreadLocalPRNG::getImpl(LocalInstancePRNG* local) {
   return local->rng();

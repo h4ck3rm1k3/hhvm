@@ -21,12 +21,24 @@
 
 #pragma once
 
-#include <features.h>
+#ifndef FOLLY_NO_CONFIG
+#include <folly/folly-config.h>
+#endif
+
+#ifdef FOLLY_HAVE_FEATURES_H
+# include <features.h>
+#endif
+
+#if defined(__GLIBC__) && !defined(__APPLE__)
+#if __GLIBC_PREREQ(2, 9)
+# define FOLLY_GLIBC_2_9
+#endif
+#endif
 
 // <sys/eventfd.h> doesn't exist on older glibc versions
-#if (defined(__GLIBC__) && __GLIBC_PREREQ(2, 9))
+#ifdef FOLLY_GLIBC_2_9
 #include <sys/eventfd.h>
-#else /* !(defined(__GLIBC__) && __GLIBC_PREREQ(2, 9)) */
+#else /* !def FOLLY_GLIBC_2_9 */
 
 #include <sys/syscall.h>
 #include <unistd.h>
@@ -37,8 +49,10 @@
 // arch/x86/include/asm/unistd_{32,64}.h
 #ifndef __NR_eventfd2
 #if FOLLY_X64
+/* nolint */
 #define __NR_eventfd2  290
 #elif defined(__i386__)
+/* nolint */
 #define __NR_eventfd2  328
 #else
 #error "Can't define __NR_eventfd2 for your architecture."

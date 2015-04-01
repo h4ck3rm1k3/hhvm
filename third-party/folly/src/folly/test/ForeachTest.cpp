@@ -175,9 +175,9 @@ TEST(Foreach, ForEachRangeR) {
 
 std::map<int, std::string> bmMap;  // For use in benchmarks below.
 
-void setupBenchmark(int iters) {
+void setupBenchmark(size_t iters) {
   bmMap.clear();
-  for (int i = 0; i < iters; ++i) {
+  for (size_t i = 0; i < iters; ++i) {
     bmMap[i] = "teststring";
   }
 }
@@ -242,7 +242,7 @@ BENCHMARK(ForEachKVMacro, iters) {
 
 BENCHMARK(ForEachManual, iters) {
   int sum = 1;
-  for (auto i = 1; i < iters; ++i) {
+  for (size_t i = 1; i < iters; ++i) {
     sum *= i;
   }
   doNotOptimizeAway(sum);
@@ -258,7 +258,7 @@ BENCHMARK(ForEachRange, iters) {
 
 BENCHMARK(ForEachDescendingManual, iters) {
   int sum = 1;
-  for (auto i = iters; i-- > 1; ) {
+  for (size_t i = iters; i-- > 1; ) {
     sum *= i;
   }
   doNotOptimizeAway(sum);
@@ -266,7 +266,7 @@ BENCHMARK(ForEachDescendingManual, iters) {
 
 BENCHMARK(ForEachRangeR, iters) {
   int sum = 1;
-  FOR_EACH_RANGE_R (i, 1, iters) {
+  FOR_EACH_RANGE_R (i, 1U, iters) {
     sum *= i;
   }
   doNotOptimizeAway(sum);

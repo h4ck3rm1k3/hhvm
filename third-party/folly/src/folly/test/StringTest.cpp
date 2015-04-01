@@ -16,6 +16,7 @@
 
 #include <folly/String.h>
 
+#include <cstdarg>
 #include <random>
 #include <boost/algorithm/string.hpp>
 #include <gtest/gtest.h>
@@ -60,11 +61,70 @@ TEST(StringPrintf, Appending) {
   EXPECT_EQ(s, "abc 123");
 }
 
+void vprintfCheck(const char* expected, const char* fmt, ...) {
+  va_list apOrig;
+  va_start(apOrig, fmt);
+  SCOPE_EXIT {
+    va_end(apOrig);
+  };
+  va_list ap;
+  va_copy(ap, apOrig);
+  SCOPE_EXIT {
+    va_end(ap);
+  };
+
+  // Check both APIs for calling stringVPrintf()
+  EXPECT_EQ(expected, stringVPrintf(fmt, ap));
+  va_end(ap);
+  va_copy(ap, apOrig);
+
+  std::string out;
+  stringVPrintf(&out, fmt, ap);
+  va_end(ap);
+  va_copy(ap, apOrig);
+  EXPECT_EQ(expected, out);
+
+  // Check stringVAppendf() as well
+  std::string prefix = "foobar";
+  out = prefix;
+  EXPECT_EQ(prefix + expected, stringVAppendf(&out, fmt, ap));
+  va_end(ap);
+  va_copy(ap, apOrig);
+}
+
+void vprintfError(const char* fmt, ...) {
+  va_list ap;
+  va_start(ap, fmt);
+  SCOPE_EXIT {
+    va_end(ap);
+  };
+
+  // OSX's sprintf family does not return a negative number on a bad format
+  // string, but Linux does. It's unclear to me which behavior is more
+  // correct.
+#if !__APPLE__
+  EXPECT_THROW({stringVPrintf(fmt, ap);},
+               std::runtime_error);
+#endif
+}
+
+TEST(StringPrintf, VPrintf) {
+  vprintfCheck("foo", "%s", "foo");
+  vprintfCheck("long string requiring reallocation 1 2 3 0x12345678",
+               "%s %s %d %d %d %#x",
+               "long string", "requiring reallocation", 1, 2, 3, 0x12345678);
+  vprintfError("bogus%", "foo");
+}
+
 TEST(StringPrintf, VariousSizes) {
-  // Test a wide variety of output sizes
-  for (int i = 0; i < 100; ++i) {
+  // Test a wide variety of output sizes, making sure to cross the
+  // vsnprintf buffer boundary implementation detail.
+  for (int i = 0; i < 4096; ++i) {
     string expected(i + 1, 'a');
-    EXPECT_EQ("X" + expected + "X", stringPrintf("X%sX", expected.c_str()));
+    expected = "X" + expected + "X";
+    string result = stringPrintf("%s", expected.c_str());
+    EXPECT_EQ(expected.size(), result.size());
+    EXPECT_EQ(expected, result);
   }
 
   EXPECT_EQ("abc12345678910111213141516171819202122232425xyz",
@@ -95,13 +155,36 @@ TEST(StringPrintf, oldStringAppendf) {
   EXPECT_EQ(string("helloa/b/c/d"), s);
 }
 
-BENCHMARK(new_stringPrintfSmall, iters) {
+// A simple benchmark that tests various output sizes for a simple
+// input; the goal is to measure the output buffer resize code cost.
+void stringPrintfOutputSize(int iters, int param) {
+  string buffer;
+  BENCHMARK_SUSPEND { buffer.resize(param, 'x'); }
+
   for (int64_t i = 0; i < iters; ++i) {
-    int32_t x = int32_t(i);
-    int32_t y = int32_t(i + 1);
-    string s =
-      stringPrintf("msg msg msg msg msg msg msg msg:  %d, %d, %s",
-                   x, y, "hello");
+    string s = stringPrintf("msg: %d, %d, %s", 10, 20, buffer.c_str());
+  }
+}
+
+// The first few of these tend to fit in the inline buffer, while the
+// subsequent ones cross that limit, trigger a second vsnprintf, and
+// exercise a different codepath.
+BENCHMARK_PARAM(stringPrintfOutputSize, 1)
+BENCHMARK_PARAM(stringPrintfOutputSize, 4)
+BENCHMARK_PARAM(stringPrintfOutputSize, 16)
+BENCHMARK_PARAM(stringPrintfOutputSize, 64)
+BENCHMARK_PARAM(stringPrintfOutputSize, 256)
+BENCHMARK_PARAM(stringPrintfOutputSize, 1024)
+
+// Benchmark simple stringAppendf behavior to show a pathology Lovro
+// reported (t5735468).
+BENCHMARK(stringPrintfAppendfBenchmark, iters) {
+  for (unsigned int i = 0; i < iters; ++i) {
+    string s;
+    BENCHMARK_SUSPEND { s.reserve(300000); }
+    for (int j = 0; j < 300000; ++j) {
+      stringAppendf(&s, "%d", 1);
+    }
   }
 }
 
@@ -998,6 +1081,9 @@ TEST(String, join) {
 
   join("_", { "", "f", "a", "c", "e", "b", "o", "o", "k", "" }, output);
   EXPECT_EQ(output, "_f_a_c_e_b_o_o_k_");
+
+  output = join("", input3.begin(), input3.end());
+  EXPECT_EQ(output, "facebook");
 }
 
 TEST(String, hexlify) {
@@ -1152,7 +1238,7 @@ TEST(String, toLowerAsciiUnaligned) {
 
 BENCHMARK(splitOnSingleChar, iters) {
   static const std::string line = "one:two:three:four";
-  for (int i = 0; i < iters << 4; ++i) {
+  for (size_t i = 0; i < iters << 4; ++i) {
     std::vector<StringPiece> pieces;
     folly::split(':', line, pieces);
   }
@@ -1160,7 +1246,7 @@ BENCHMARK(splitOnSingleChar, iters) {
 
 BENCHMARK(splitOnSingleCharFixed, iters) {
   static const std::string line = "one:two:three:four";
-  for (int i = 0; i < iters << 4; ++i) {
+  for (size_t i = 0; i < iters << 4; ++i) {
     StringPiece a, b, c, d;
     folly::split(':', line, a, b, c, d);
   }
@@ -1168,7 +1254,7 @@ BENCHMARK(splitOnSingleCharFixed, iters) {
 
 BENCHMARK(splitOnSingleCharFixedAllowExtra, iters) {
   static const std::string line = "one:two:three:four";
-  for (int i = 0; i < iters << 4; ++i) {
+  for (size_t i = 0; i < iters << 4; ++i) {
     StringPiece a, b, c, d;
     folly::split<false>(':', line, a, b, c, d);
   }
@@ -1176,7 +1262,7 @@ BENCHMARK(splitOnSingleCharFixedAllowExtra, iters) {
 
 BENCHMARK(splitStr, iters) {
   static const std::string line = "one-*-two-*-three-*-four";
-  for (int i = 0; i < iters << 4; ++i) {
+  for (size_t i = 0; i < iters << 4; ++i) {
     std::vector<StringPiece> pieces;
     folly::split("-*-", line, pieces);
   }
@@ -1184,7 +1270,7 @@ BENCHMARK(splitStr, iters) {
 
 BENCHMARK(splitStrFixed, iters) {
   static const std::string line = "one-*-two-*-three-*-four";
-  for (int i = 0; i < iters << 4; ++i) {
+  for (size_t i = 0; i < iters << 4; ++i) {
     StringPiece a, b, c, d;
     folly::split("-*-", line, a, b, c, d);
   }
@@ -1193,7 +1279,7 @@ BENCHMARK(splitStrFixed, iters) {
 BENCHMARK(boost_splitOnSingleChar, iters) {
   static const std::string line = "one:two:three:four";
   bool(*pred)(char) = [] (char c) -> bool { return c == ':'; };
-  for (int i = 0; i < iters << 4; ++i) {
+  for (size_t i = 0; i < iters << 4; ++i) {
     std::vector<boost::iterator_range<std::string::const_iterator> > pieces;
     boost::split(pieces, line, pred);
   }
@@ -1202,7 +1288,7 @@ BENCHMARK(boost_splitOnSingleChar, iters) {
 BENCHMARK(joinCharStr, iters) {
   static const std::vector<std::string> input = {
     "one", "two", "three", "four", "five", "six", "seven" };
-  for (int i = 0; i < iters << 4; ++i) {
+  for (size_t i = 0; i < iters << 4; ++i) {
     std::string output;
     folly::join(':', input, output);
   }
@@ -1211,7 +1297,7 @@ BENCHMARK(joinCharStr, iters) {
 BENCHMARK(joinStrStr, iters) {
   static const std::vector<std::string> input = {
     "one", "two", "three", "four", "five", "six", "seven" };
-  for (int i = 0; i < iters << 4; ++i) {
+  for (size_t i = 0; i < iters << 4; ++i) {
     std::string output;
     folly::join(":", input, output);
   }
@@ -1220,7 +1306,7 @@ BENCHMARK(joinStrStr, iters) {
 BENCHMARK(joinInt, iters) {
   static const auto input = {
     123, 456, 78910, 1112, 1314, 151, 61718 };
-  for (int i = 0; i < iters << 4; ++i) {
+  for (size_t i = 0; i < iters << 4; ++i) {
     std::string output;
     folly::join(":", input, output);
   }

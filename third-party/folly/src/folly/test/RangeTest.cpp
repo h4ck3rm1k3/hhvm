@@ -34,11 +34,8 @@
 namespace folly { namespace detail {
 
 // declaration of functions in Range.cpp
-size_t qfind_first_byte_of_memchr(const StringPiece& haystack,
-                                  const StringPiece& needles);
-
-size_t qfind_first_byte_of_byteset(const StringPiece& haystack,
-                                   const StringPiece& needles);
+size_t qfind_first_byte_of_byteset(const StringPiece haystack,
+                                   const StringPiece needles);
 
 }}  // namespaces
 
@@ -805,6 +802,16 @@ TEST(StringPiece, split_step_with_process_range_delimiter_additional_args) {
   EXPECT_TRUE(p.empty());
 }
 
+TEST(StringPiece, NoInvalidImplicitConversions) {
+  struct IsString {
+    bool operator()(folly::Range<int*>) { return false; }
+    bool operator()(folly::StringPiece) { return true; }
+  };
+
+  std::string s = "hello";
+  EXPECT_TRUE(IsString()(s));
+}
+
 TEST(qfind, UInt32_Ranges) {
   vector<uint32_t> a({1, 2, 3, 260, 5});
   vector<uint32_t> b({2, 3, 4});
@@ -840,19 +847,14 @@ struct NoSseNeedleFinder {
   }
 };
 
-struct MemchrNeedleFinder {
-  static size_t find_first_byte_of(StringPiece haystack, StringPiece needles) {
-    return detail::qfind_first_byte_of_memchr(haystack, needles);
-  }
-};
-
 struct ByteSetNeedleFinder {
   static size_t find_first_byte_of(StringPiece haystack, StringPiece needles) {
     return detail::qfind_first_byte_of_byteset(haystack, needles);
   }
 };
 
-typedef ::testing::Types<SseNeedleFinder, NoSseNeedleFinder, MemchrNeedleFinder,
+typedef ::testing::Types<SseNeedleFinder,
+                         NoSseNeedleFinder,
                          ByteSetNeedleFinder> NeedleFinders;
 TYPED_TEST_CASE(NeedleFinderTest, NeedleFinders);
 
@@ -895,9 +897,9 @@ TYPED_TEST(NeedleFinderTest, Empty) {
 TYPED_TEST(NeedleFinderTest, Unaligned) {
   // works correctly even if input buffers are not 16-byte aligned
   string s = "0123456789ABCDEFGH";
-  for (int i = 0; i < s.size(); ++i) {
+  for (size_t i = 0; i < s.size(); ++i) {
     StringPiece a(s.c_str() + i);
-    for (int j = 0; j < s.size(); ++j) {
+    for (size_t j = 0; j < s.size(); ++j) {
       StringPiece b(s.c_str() + j);
       EXPECT_EQ((i > j) ? 0 : j - i, this->find_first_byte_of(a, b));
     }
@@ -912,23 +914,23 @@ TYPED_TEST(NeedleFinderTest, Needles256) {
   const auto maxValue = std::numeric_limits<StringPiece::value_type>::max();
   // make the size ~big to avoid any edge-case branches for tiny haystacks
   const int haystackSize = 50;
-  for (int i = minValue; i <= maxValue; i++) {  // <=
+  for (size_t i = minValue; i <= maxValue; i++) {  // <=
     needles.push_back(i);
   }
   EXPECT_EQ(StringPiece::npos, this->find_first_byte_of("", needles));
-  for (int i = minValue; i <= maxValue; i++) {
+  for (size_t i = minValue; i <= maxValue; i++) {
     EXPECT_EQ(0, this->find_first_byte_of(string(haystackSize, i), needles));
   }
 
   needles.append("these are redundant characters");
   EXPECT_EQ(StringPiece::npos, this->find_first_byte_of("", needles));
-  for (int i = minValue; i <= maxValue; i++) {
+  for (size_t i = minValue; i <= maxValue; i++) {
     EXPECT_EQ(0, this->find_first_byte_of(string(haystackSize, i), needles));
   }
 }
 
 TYPED_TEST(NeedleFinderTest, Base) {
-  for (int i = 0; i < 32; ++i) {
+  for (size_t i = 0; i < 32; ++i) {
     for (int j = 0; j < 32; ++j) {
       string s = string(i, 'X') + "abca" + string(i, 'X');
       string delims = string(j, 'Y') + "a" + string(j, 'Y');
@@ -1047,10 +1049,11 @@ TEST(RangeFunc, CArray) {
   testRangeFunc(x, 4);
 }
 
-std::string get_rand_str(
-    int size, std::uniform_int_distribution<>& dist, std::mt19937& gen) {
+std::string get_rand_str(size_t size,
+                         std::uniform_int_distribution<>& dist,
+                         std::mt19937& gen) {
   std::string ret(size, '\0');
-  for (int i=0; i<size; ++i) {
+  for (size_t i = 0; i < size; ++i) {
     ret[i] = static_cast<char>(dist(gen));
   }
 
@@ -1076,9 +1079,9 @@ TEST(ReplaceAt, exhaustiveTest) {
   std::uniform_int_distribution<> dist('a', 'z');
 
   for (int i=0; i < 100; ++i) {
-    for (int j = 1; j <= msp.size(); ++j) {
+    for (size_t j = 1; j <= msp.size(); ++j) {
       auto replacement = get_rand_str(j, dist, gen);
-      for (int pos=0; pos < msp.size() - j; ++pos) {
+      for (size_t pos = 0; pos < msp.size() - j; ++pos) {
         msp.replaceAt(pos, replacement);
         str.replace(pos, replacement.size(), replacement);
         EXPECT_EQ(msp.compare(str), 0);
@@ -1132,9 +1135,9 @@ TEST(ReplaceAll, randomTest) {
   std::uniform_int_distribution<> dist('A', 'Z');
 
   for (int i=0; i < 100; ++i) {
-    for (int j = 1; j <= orig.size(); ++j) {
+    for (size_t j = 1; j <= orig.size(); ++j) {
       auto replacement = get_rand_str(j, dist, gen);
-      for (int pos=0; pos < msp.size() - j; ++pos) {
+      for (size_t pos = 0; pos < msp.size() - j; ++pos) {
         auto piece = orig.substr(pos, j);
         EXPECT_EQ(msp.replaceAll(piece, replacement), 1);
         EXPECT_EQ(msp.find(replacement), pos);
@@ -1165,4 +1168,16 @@ TEST(ReplaceAll, BadArg) {
   }
 
   EXPECT_EQ(count, 2);
+}
+
+TEST(Range, Constructors) {
+  vector<int> c = {1, 2, 3};
+  typedef Range<vector<int>::iterator> RangeType;
+  typedef Range<vector<int>::const_iterator> ConstRangeType;
+  RangeType cr(c.begin(), c.end());
+  auto subpiece1 = ConstRangeType(cr, 1, 5);
+  auto subpiece2 = ConstRangeType(cr, 1);
+  EXPECT_EQ(subpiece1.size(), 2);
+  EXPECT_EQ(subpiece1.begin(), subpiece2.begin());
+  EXPECT_EQ(subpiece1.end(), subpiece2.end());
 }

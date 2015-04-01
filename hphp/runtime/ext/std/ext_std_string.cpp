@@ -16,6 +16,8 @@
 */
 
 #include "hphp/runtime/ext/std/ext_std_string.h"
+#include "hphp/runtime/base/execution-context.h"
+#include "hphp/runtime/base/string-buffer.h"
 #include "hphp/runtime/base/zend-printf.h"
 
 namespace HPHP {
@@ -52,8 +54,7 @@ Variant HHVM_FUNCTION(wordwrap, const String& str, int64_t linewidth /* = 75 */,
     auto new_sd = StringData::Make(str.get(), CopyString);
     new_sd->invalidateHash();
     Variant ret = new_sd;
-    auto const bs = new_sd->bufferSlice();
-    char* newtext = bs.begin();
+    char* newtext = new_sd->mutableData();
     auto bc = brkstr[0];
     size_t current = 0, laststart = 0, lastspace = 0;
     for (; current < textlen; current++) {
@@ -131,10 +132,10 @@ Variant HHVM_FUNCTION(wordwrap, const String& str, int64_t linewidth /* = 75 */,
   auto s = strbuf.detach();
 
   // if it's not possible to reduce the output string's capacity by more
-  // than 25%, then we can just return the string as is
+  // than 25%, then we can just return the string as is.
   size_t estShrinkCap =
     MemoryManager::estimateSmartCap(sizeof(StringData) + s.size() + 1);
-  if (estShrinkCap * 4 >= (size_t)s.get()->capacity() * 3) {
+  if (estShrinkCap * 4 >= (size_t)s.capacity() * 3) {
     return s;
   }
   // reallocate into a smaller buffer so that we don't waste memory

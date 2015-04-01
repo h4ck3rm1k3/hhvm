@@ -86,10 +86,7 @@ public:
   FunctionScope(bool method, const std::string &name, bool reference);
   void setParamCounts(AnalysisResultConstPtr ar,
                       int minParam, int numDeclParam);
-  void setParamSpecs(AnalysisResultPtr ar);
   void setParamName(int index, const std::string &name);
-  void setParamDefault(int index, const char* value, int64_t len,
-                       const std::string &text);
   void setRefParam(int index);
   bool hasRefParam(int max) const;
 
@@ -204,7 +201,6 @@ public:
   bool usesVariableArgumentFunc() const;
   bool isReferenceVariableArgument() const;
   void setVariableArgument(int reference);
-  bool isMixedVariableArgument() const;
 
   /**
    * Whether this function has no side effects
@@ -265,25 +261,16 @@ public:
    * Note that for generators and async functions, this is different
    * from what caller actually gets when calling the function.
    */
-  void pushReturnType();
   void setReturnType(AnalysisResultConstPtr ar, TypePtr type);
   TypePtr getReturnType() const {
-    return m_prevReturn ? m_prevReturn : m_returnType;
+    return m_returnType;
   }
-  bool popReturnType();
-  void resetReturnType();
-
-  void addRetExprToFix(ExpressionPtr e);
-  void clearRetExprs();
-  void fixRetExprs();
 
   void setOptFunction(FunctionOptPtr fn) { m_optFunction = fn; }
   FunctionOptPtr getOptFunction() const { return m_optFunction; }
 
   /**
    * Whether this is a virtual function that needs to go through invoke().
-   * A perfect virtual will be generated as C++ virtual function without
-   * going through invoke(), but rather directly generated as obj->foo().
    * "Overriding" is only being used by magic methods, enforcing parameter
    * and return types.
    */
@@ -291,8 +278,6 @@ public:
   bool isVirtual() const { return m_virtual;}
   void setHasOverride() { m_hasOverride = true; }
   bool hasOverride() const { return m_hasOverride; }
-  void setPerfectVirtual();
-  bool isPerfectVirtual() const { return m_perfectVirtual;}
   void setOverriding(TypePtr returnType, TypePtr param1 = TypePtr(),
                      TypePtr param2 = TypePtr());
   bool isOverriding() const { return m_overriding;}
@@ -327,22 +312,8 @@ public:
    * extraArgs) at run time */
   bool mayUseVV() const;
 
-  /**
-   * Whether this function matches the specified one with same number of
-   * parameters and types and defaults, so to qualify for perfect virtuals.
-   */
-  bool matchParams(FunctionScopePtr func);
-
-  /**
-   * What is the inferred type of this function's parameter at specified
-   * index. Returns number of extra arguments to put into ArgumentArray.
-   */
-  int inferParamTypes(AnalysisResultPtr ar, ConstructPtr exp,
-                      ExpressionListPtr params, bool &valid);
-
   TypePtr setParamType(AnalysisResultConstPtr ar, int index, TypePtr type);
   TypePtr getParamType(int index);
-  TypePtr getParamTypeSpec(int index) { return m_paramTypeSpecs[index]; }
 
   typedef hphp_hash_map<std::string, ExpressionPtr, string_hashi,
     string_eqstri> UserAttributeMap;
@@ -451,12 +422,8 @@ private:
   int m_attribute;
   std::vector<std::string> m_paramNames;
   TypePtrVec m_paramTypes;
-  TypePtrVec m_paramTypeSpecs;
-  std::vector<std::string> m_paramDefaults;
-  std::vector<std::string> m_paramDefaultTexts;
   std::vector<bool> m_refs;
   TypePtr m_returnType;
-  TypePtr m_prevReturn;
   ModifierExpressionPtr m_modifiers;
   UserAttributeMap m_userAttributes;
 
@@ -465,7 +432,6 @@ private:
   unsigned m_refReturn : 1; // whether it's "function &get_reference()"
   unsigned m_virtual : 1;
   unsigned m_hasOverride : 1;
-  unsigned m_perfectVirtual : 1;
   unsigned m_dynamic : 1;
   unsigned m_dynamicInvoke : 1;
   unsigned m_overriding : 1; // overriding a virtual function
@@ -495,7 +461,6 @@ private:
   StatementPtr m_stmtCloned; // cloned method body stmt
   int m_inlineIndex;
   FunctionOptPtr m_optFunction;
-  ExpressionPtrVec m_retExprsToFix;
   ExpressionListPtr m_closureVars;
   ExpressionListPtr m_closureValues;
   ReadWriteMutex m_inlineMutex;

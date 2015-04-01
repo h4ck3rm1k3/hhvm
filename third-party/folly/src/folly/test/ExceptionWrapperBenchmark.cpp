@@ -34,7 +34,7 @@ DEFINE_int32(num_threads, 32, "Number of threads to run concurrency "
  */
 BENCHMARK(exception_ptr_create_and_test, iters) {
   std::runtime_error e("payload");
-  for (int i = 0; i < iters; ++i) {
+  for (size_t i = 0; i < iters; ++i) {
     auto ep = std::make_exception_ptr(e);
     assert(ep);
   }
@@ -42,9 +42,9 @@ BENCHMARK(exception_ptr_create_and_test, iters) {
 
 BENCHMARK_RELATIVE(exception_wrapper_create_and_test, iters) {
   std::runtime_error e("payload");
-  for (int i = 0; i < iters; ++i) {
+  for (size_t i = 0; i < iters; ++i) {
     auto ew = folly::make_exception_wrapper<std::runtime_error>(e);
-    assert(ew.get());
+    assert(ew);
   }
 }
 
@@ -58,7 +58,7 @@ BENCHMARK(exception_ptr_create_and_test_concurrent, iters) {
       threads.emplace_back([&go, iters] {
         while (!go) { }
         std::runtime_error e("payload");
-        for (int i = 0; i < iters; ++i) {
+        for (size_t i = 0; i < iters; ++i) {
           auto ep = std::make_exception_ptr(e);
           assert(ep);
         }
@@ -79,9 +79,9 @@ BENCHMARK_RELATIVE(exception_wrapper_create_and_test_concurrent, iters) {
       threads.emplace_back([&go, iters] {
         while (!go) { }
         std::runtime_error e("payload");
-        for (int i = 0; i < iters; ++i) {
+        for (size_t i = 0; i < iters; ++i) {
           auto ew = folly::make_exception_wrapper<std::runtime_error>(e);
-          assert(ew.get());
+          assert(ew);
         }
       });
     }
@@ -101,7 +101,7 @@ BENCHMARK_DRAW_LINE()
  */
 BENCHMARK(exception_ptr_create_and_throw, iters) {
   std::runtime_error e("payload");
-  for (int i = 0; i < iters; ++i) {
+  for (size_t i = 0; i < iters; ++i) {
     auto ep = std::make_exception_ptr(e);
     try {
       std::rethrow_exception(ep);
@@ -113,7 +113,7 @@ BENCHMARK(exception_ptr_create_and_throw, iters) {
 
 BENCHMARK_RELATIVE(exception_wrapper_create_and_throw, iters) {
   std::runtime_error e("payload");
-  for (int i = 0; i < iters; ++i) {
+  for (size_t i = 0; i < iters; ++i) {
     auto ew = folly::make_exception_wrapper<std::runtime_error>(e);
     try {
       ew.throwException();
@@ -125,11 +125,9 @@ BENCHMARK_RELATIVE(exception_wrapper_create_and_throw, iters) {
 
 BENCHMARK_RELATIVE(exception_wrapper_create_and_cast, iters) {
   std::runtime_error e("payload");
-  for (int i = 0; i < iters; ++i) {
+  for (size_t i = 0; i < iters; ++i) {
     auto ew = folly::make_exception_wrapper<std::runtime_error>(e);
-    std::exception* basePtr = static_cast<std::exception*>(ew.get());
-    auto ep = dynamic_cast<std::runtime_error*>(basePtr);
-    assert(ep);
+    assert(ew.is_compatible_with<std::runtime_error>());
   }
 }
 
@@ -144,7 +142,7 @@ BENCHMARK(exception_ptr_create_and_throw_concurrent, iters) {
       threads.emplace_back([&go, iters] {
         while (!go) { }
         std::runtime_error e("payload");
-        for (int i = 0; i < iters; ++i) {
+        for (size_t i = 0; i < iters; ++i) {
           auto ep = std::make_exception_ptr(e);
           try {
             std::rethrow_exception(ep);
@@ -169,7 +167,7 @@ BENCHMARK_RELATIVE(exception_wrapper_create_and_throw_concurrent, iters) {
       threads.emplace_back([&go, iters] {
         while (!go) { }
         std::runtime_error e("payload");
-        for (int i = 0; i < iters; ++i) {
+        for (size_t i = 0; i < iters; ++i) {
           auto ew = folly::make_exception_wrapper<std::runtime_error>(e);
           try {
             ew.throwException();
@@ -194,11 +192,9 @@ BENCHMARK_RELATIVE(exception_wrapper_create_and_cast_concurrent, iters) {
       threads.emplace_back([&go, iters] {
         while (!go) { }
         std::runtime_error e("payload");
-        for (int i = 0; i < iters; ++i) {
+        for (size_t i = 0; i < iters; ++i) {
           auto ew = folly::make_exception_wrapper<std::runtime_error>(e);
-          std::exception* basePtr = static_cast<std::exception*>(ew.get());
-          auto ep = dynamic_cast<std::runtime_error*>(basePtr);
-          assert(ep);
+          assert(ew.is_compatible_with<std::runtime_error>());
         }
       });
     }

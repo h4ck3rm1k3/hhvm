@@ -261,7 +261,7 @@ TEST(LifoSem, multi_try_wait) {
     }
   };
 
-  std::atomic<bool> consumer_stop;
+  DeterministicAtomic<bool> consumer_stop(false);
   int consumed = 0;
 
   auto consumer = [&]{
@@ -289,12 +289,12 @@ BENCHMARK(lifo_sem_pingpong, iters) {
   LifoSem a;
   LifoSem b;
   auto thr = std::thread([&]{
-    for (int i = 0; i < iters; ++i) {
+    for (size_t i = 0; i < iters; ++i) {
       a.wait();
       b.post();
     }
   });
-  for (int i = 0; i < iters; ++i) {
+  for (size_t i = 0; i < iters; ++i) {
     a.post();
     b.wait();
   }
@@ -304,11 +304,11 @@ BENCHMARK(lifo_sem_pingpong, iters) {
 BENCHMARK(lifo_sem_oneway, iters) {
   LifoSem a;
   auto thr = std::thread([&]{
-    for (int i = 0; i < iters; ++i) {
+    for (size_t i = 0; i < iters; ++i) {
       a.wait();
     }
   });
-  for (int i = 0; i < iters; ++i) {
+  for (size_t i = 0; i < iters; ++i) {
     a.post();
   }
   thr.join();
@@ -316,7 +316,7 @@ BENCHMARK(lifo_sem_oneway, iters) {
 
 BENCHMARK(single_thread_lifo_post, iters) {
   LifoSem sem;
-  for (int n = 0; n < iters; ++n) {
+  for (size_t n = 0; n < iters; ++n) {
     sem.post();
     asm volatile ("":::"memory");
   }
@@ -324,7 +324,7 @@ BENCHMARK(single_thread_lifo_post, iters) {
 
 BENCHMARK(single_thread_lifo_wait, iters) {
   LifoSem sem(iters);
-  for (int n = 0; n < iters; ++n) {
+  for (size_t n = 0; n < iters; ++n) {
     sem.wait();
     asm volatile ("":::"memory");
   }
@@ -332,7 +332,7 @@ BENCHMARK(single_thread_lifo_wait, iters) {
 
 BENCHMARK(single_thread_lifo_postwait, iters) {
   LifoSem sem;
-  for (int n = 0; n < iters; ++n) {
+  for (size_t n = 0; n < iters; ++n) {
     sem.post();
     asm volatile ("":::"memory");
     sem.wait();
@@ -342,7 +342,7 @@ BENCHMARK(single_thread_lifo_postwait, iters) {
 
 BENCHMARK(single_thread_lifo_trywait, iters) {
   LifoSem sem;
-  for (int n = 0; n < iters; ++n) {
+  for (size_t n = 0; n < iters; ++n) {
     EXPECT_FALSE(sem.tryWait());
     asm volatile ("":::"memory");
   }
@@ -351,7 +351,7 @@ BENCHMARK(single_thread_lifo_trywait, iters) {
 BENCHMARK(single_thread_posix_postwait, iters) {
   sem_t sem;
   EXPECT_EQ(sem_init(&sem, 0, 0), 0);
-  for (int n = 0; n < iters; ++n) {
+  for (size_t n = 0; n < iters; ++n) {
     EXPECT_EQ(sem_post(&sem), 0);
     EXPECT_EQ(sem_wait(&sem), 0);
   }
@@ -361,7 +361,7 @@ BENCHMARK(single_thread_posix_postwait, iters) {
 BENCHMARK(single_thread_posix_trywait, iters) {
   sem_t sem;
   EXPECT_EQ(sem_init(&sem, 0, 0), 0);
-  for (int n = 0; n < iters; ++n) {
+  for (size_t n = 0; n < iters; ++n) {
     EXPECT_EQ(sem_trywait(&sem), -1);
   }
   EXPECT_EQ(sem_destroy(&sem), 0);
@@ -407,25 +407,25 @@ BENCHMARK_NAMED_PARAM(contendedUse, 16_to_16, 16, 16)
 BENCHMARK_NAMED_PARAM(contendedUse, 32_to_32, 32, 32)
 BENCHMARK_NAMED_PARAM(contendedUse, 32_to_1000, 32, 1000)
 
-// sudo nice -n -20 tao/queues/LifoSemTests --benchmark --bm_min_iters=10000000
+// sudo nice -n -20 folly/test/LifoSemTests --benchmark --bm_min_iters=10000000
 // ============================================================================
-// tao/queues/LifoSemTests.cpp                     relative  time/iter  iters/s
+// folly/test/LifoSemTests.cpp                     relative  time/iter  iters/s
 // ============================================================================
-// lifo_sem_pingpong                                            1.91us  522.92K
-// lifo_sem_oneway                                            211.18ns    4.74M
-// single_thread_lifo_post                                     19.71ns   50.75M
-// single_thread_lifo_wait                                     18.84ns   53.09M
-// single_thread_lifo_postwait                                 39.41ns   25.37M
-// single_thread_lifo_trywait                                 912.10ps    1.10G
-// single_thread_posix_postwait                                32.93ns   30.37M
-// single_thread_posix_trywait                                 10.06ns   99.36M
+// lifo_sem_pingpong                                          396.84ns    2.52M
+// lifo_sem_oneway                                             88.52ns   11.30M
+// single_thread_lifo_post                                     14.78ns   67.67M
+// single_thread_lifo_wait                                     13.53ns   73.90M
+// single_thread_lifo_postwait                                 28.91ns   34.59M
+// single_thread_lifo_trywait                                 670.13ps    1.49G
+// single_thread_posix_postwait                                24.12ns   41.46M
+// single_thread_posix_trywait                                  6.76ns  147.88M
 // ----------------------------------------------------------------------------
-// contendedUse(1_to_1)                                       208.21ns    4.80M
-// contendedUse(1_to_32)                                      532.41ns    1.88M
-// contendedUse(32_to_1)                                      153.74ns    6.50M
-// contendedUse(16_to_16)                                     301.86ns    3.31M
-// contendedUse(32_to_32)                                     268.32ns    3.73M
-// contendedUse(32_to_1000)                                   966.27ns    1.03M
+// contendedUse(1_to_1)                                       143.60ns    6.96M
+// contendedUse(1_to_32)                                      244.06ns    4.10M
+// contendedUse(32_to_1)                                      131.99ns    7.58M
+// contendedUse(16_to_16)                                     210.64ns    4.75M
+// contendedUse(32_to_32)                                     222.91ns    4.49M
+// contendedUse(32_to_1000)                                   453.39ns    2.21M
 // ============================================================================
 
 int main(int argc, char ** argv) {

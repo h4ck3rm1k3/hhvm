@@ -1,0 +1,8 @@
+{
+  "pools": {
+    "A-foo": {
+      "servers": []
+    }
+  },
+  "route": "AllSyncRoute|Pool|A-foo"
+}

@@ -17,6 +17,7 @@
 #ifndef FOLLY_VARINT_H_
 #define FOLLY_VARINT_H_
 
+#include <type_traits>
 #include <folly/Range.h>
 
 namespace folly {
@@ -55,7 +56,8 @@ size_t encodeVarint(uint64_t val, uint8_t* buf);
 /**
  * Decode a value from a given buffer, advances data past the returned value.
  */
-uint64_t decodeVarint(ByteRange& data);
+template <class T>
+uint64_t decodeVarint(Range<T*>& data);
 
 /**
  * ZigZag encoding that maps signed integers with a small absolute value
@@ -88,13 +90,20 @@ inline size_t encodeVarint(uint64_t val, uint8_t* buf) {
   return p - buf;
 }
 
-inline uint64_t decodeVarint(ByteRange& data) {
+template <class T>
+inline uint64_t decodeVarint(Range<T*>& data) {
+  static_assert(
+      std::is_same<typename std::remove_cv<T>::type, char>::value ||
+          std::is_same<typename std::remove_cv<T>::type, unsigned char>::value,
+      "Only character ranges are supported");
+
   const int8_t* begin = reinterpret_cast<const int8_t*>(data.begin());
   const int8_t* end = reinterpret_cast<const int8_t*>(data.end());
   const int8_t* p = begin;
   uint64_t val = 0;
 
-  if (LIKELY(end - begin >= kMaxVarintLength64)) {  // fast path
+  // end is always greater than or equal to begin, so this subtraction is safe
+  if (LIKELY(size_t(end - begin) >= kMaxVarintLength64)) {  // fast path
     int64_t b;
     do {
       b = *p++; val  = (b & 0x7f)      ; if (b >= 0) break;
@@ -107,7 +116,7 @@ inline uint64_t decodeVarint(ByteRange& data) {
       b = *p++; val |= (b & 0x7f) << 49; if (b >= 0) break;
       b = *p++; val |= (b & 0x7f) << 56; if (b >= 0) break;
       b = *p++; val |= (b & 0x7f) << 63; if (b >= 0) break;
-      throw std::invalid_argument("Invalid varint value");  // too big
+      throw std::invalid_argument("Invalid varint value. Too big.");
     } while (false);
   } else {
     int shift = 0;
@@ -115,7 +124,10 @@ inline uint64_t decodeVarint(ByteRange& data) {
       val |= static_cast<uint64_t>(*p++ & 0x7f) << shift;
       shift += 7;
     }
-    if (p == end) throw std::invalid_argument("Invalid varint value");
+    if (p == end) {
+      throw std::invalid_argument("Invalid varint value. Too small: " +
+                                  std::to_string(end - begin) + " bytes");
+    }
     val |= static_cast<uint64_t>(*p++) << shift;
   }
 
@@ -126,4 +138,3 @@ inline uint64_t decodeVarint(ByteRange& data) {
 }  // namespaces
 
 #endif /* FOLLY_VARINT_H_ */
-

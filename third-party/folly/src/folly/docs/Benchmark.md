@@ -16,8 +16,8 @@ build (either directly or packaged with a library).
 Using `folly/Benchmark.h` is very simple. Here's an example:
 
 ``` Cpp
-    #include "folly/Benchmark.h"
-    #include "folly/Foreach.h"
+    #include <folly/Benchmark.h>
+    #include <folly/Foreach.h>
     #include <vector>
     using namespace std;
     using namespace folly;
@@ -70,8 +70,8 @@ passed by the framework down to the function. The type of the count is
 implicitly `unsigned`. Consider a slightly reworked example:
 
 ``` Cpp
-    #include "folly/Benchmark.h"
-    #include "folly/Foreach.h"
+    #include <folly/Benchmark.h>
+    #include <folly/Foreach.h>
     #include <vector>
     using namespace std;
     using namespace folly;
@@ -126,8 +126,8 @@ front insertion for a vector as a baseline and see how back insertion
 compares with it:
 
 ``` Cpp
-    #include "folly/Benchmark.h"
-    #include "folly/Foreach.h"
+    #include <folly/Benchmark.h>
+    #include <folly/Foreach.h>
     #include <vector>
     using namespace std;
     using namespace folly;
@@ -195,7 +195,7 @@ measurements in any way.
 ### Suspending a benchmark
 ***
 
-Sometimes benchmarking code must to some preparation work that is
+Sometimes benchmarking code must do some preparation work that is
 physically inside the benchmark function, but should not take part to
 its time budget. To temporarily suspend the benchmark, use the
 pseudo-statement `BENCHMARK_SUSPEND` as follows:

@@ -31,14 +31,13 @@ namespace HPHP {
  * wait handle it is waiting for. Once a wait handle blocking this wait handle
  * is finished, a notification is received and the operation can be resumed.
  */
-FORWARD_DECLARE_CLASS(BlockableWaitHandle);
 class c_BlockableWaitHandle : public c_WaitableWaitHandle {
  public:
   DECLARE_CLASS_NO_SWEEP(BlockableWaitHandle)
 
-  explicit c_BlockableWaitHandle(Class* cls =
-      c_BlockableWaitHandle::classof())
-    : c_WaitableWaitHandle(cls)
+  explicit c_BlockableWaitHandle(Class* cls = c_BlockableWaitHandle::classof(),
+                                 HeaderKind kind = HeaderKind::Object)
+    : c_WaitableWaitHandle(cls, kind)
   {}
   ~c_BlockableWaitHandle() {}
 
@@ -47,16 +46,12 @@ class c_BlockableWaitHandle : public c_WaitableWaitHandle {
     return offsetof(c_BlockableWaitHandle, m_blockable);
   }
 
-  AsioBlockable* getBlockable() { return &m_blockable; }
-
   void exitContextBlocked(context_idx_t ctx_idx);
 
   static const int8_t STATE_BLOCKED = 2;
 
  protected:
   void blockOn(c_WaitableWaitHandle* child);
-  void detectCycle(c_WaitableWaitHandle* child) const;
-  ObjectData* createCycleException(c_WaitableWaitHandle* child) const;
 };
 
 ///////////////////////////////////////////////////////////////////////////////

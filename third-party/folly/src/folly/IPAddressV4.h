@@ -137,9 +137,10 @@ class IPAddressV4 : boost::totally_ordered<IPAddressV4> {
   bool inSubnetWithMask(const IPAddressV4& subnet, const ByteArray4 mask) const;
 
   // @see IPAddress#isLoopback
-  bool isLoopback() const {
-    return (INADDR_LOOPBACK == toLongHBO());
-  }
+  bool isLoopback() const;
+
+  // @see IPAddress#isLinkLocal
+  bool isLinkLocal() const;
 
   // @see IPAddress#isNonroutable
   bool isNonroutable() const;
@@ -228,6 +229,8 @@ class IPAddressV4 : boost::totally_ordered<IPAddressV4> {
 
  private:
   union AddressStorage {
+    static_assert(sizeof(in_addr) == sizeof(ByteArray4),
+                  "size of in_addr and ByteArray4 are different");
     in_addr inAddr_;
     ByteArray4 bytes_;
     AddressStorage() {

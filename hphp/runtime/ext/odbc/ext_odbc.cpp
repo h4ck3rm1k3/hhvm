@@ -214,7 +214,7 @@ public:
   SQLSMALLINT type, decimal, nullable;
   SQLULEN col_size;
 };
-IMPLEMENT_OBJECT_ALLOCATION(ODBCParam);
+IMPLEMENT_RESOURCE_ALLOCATION(ODBCParam);
 
 ODBCParam::ODBCParam(const SQLHSTMT hdl_stmt, const int i_col)
 {
@@ -362,7 +362,7 @@ bool ODBCCursor::prepare_query(const String& query)
 
   // store information about data types the db is expecting
   for (int i=1; i <= params_size_; i++) {
-    params_.append(Resource(NEWOBJ(ODBCParam)(hdl_stmt_, i)));
+    params_.append(Resource(newres<ODBCParam>(hdl_stmt_, i)));
   }
   assert(params_.size() == params_size_);
   return true;
@@ -430,7 +430,7 @@ bool ODBCCursor::bind_buffer()
 
   // retrieve info about columns
   for (int i_col=1; i_col <= columns_count_; i_col++) {
-    column = NEWOBJ(ODBCColumn)(hdl_stmt_, i_col);
+    column = newres<ODBCColumn>(hdl_stmt_, i_col);
     row_size += column->total_column_size();
     columns_.append(Resource(column));
   }
@@ -604,7 +604,7 @@ private:
   // finish current transaction (commit or rollback)
   bool end_transaction(const bool is_commit);
 };
-IMPLEMENT_OBJECT_ALLOCATION(ODBCLink);
+IMPLEMENT_RESOURCE_ALLOCATION(ODBCLink);
 
 ODBCLink::ODBCLink()
 {
@@ -683,7 +683,7 @@ void ODBCLink::close()
 
 Variant ODBCLink::exec(const String& query)
 {
-  ODBCCursor *cursor = NEWOBJ(ODBCCursor)(hdl_dbconn_);
+  ODBCCursor *cursor = newres<ODBCCursor>(hdl_dbconn_);
   Resource ret(cursor);
 
   if (!cursor->exec_query(query)) {
@@ -697,7 +697,7 @@ Variant ODBCLink::exec(const String& query)
 
 Variant ODBCLink::prepare(const String& query)
 {
-  ODBCCursor *cursor = NEWOBJ(ODBCCursor)(hdl_dbconn_);
+  ODBCCursor *cursor = newres<ODBCCursor>(hdl_dbconn_);
   Resource ret(cursor);
 
   if (!cursor->prepare_query(query)) {
@@ -792,9 +792,9 @@ bool HHVM_FUNCTION(odbc_commit, const Resource& link)
 }
 
 Variant HHVM_FUNCTION(odbc_connect, const String& dsn, const String& username,
-    const String& password)
+    const String& password, const Variant& cursor_type /* = 0 */)
 {
-  ODBCLink *odbc_link = NEWOBJ(ODBCLink)();
+  ODBCLink *odbc_link = newres<ODBCLink>();
   Resource ret(odbc_link);
 
   if (!odbc_link->connect(dsn, username, password)) {
@@ -810,17 +810,18 @@ void HHVM_FUNCTION(odbc_close, const Resource& link)
     odbc_link->close();
 }
 
-const String HHVM_FUNCTION(odbc_error, const Resource& link)
+const String HHVM_FUNCTION(odbc_error, const Variant& link)
 {
   return String::FromCStr((char*)ODBCContext::get_last_error_code());
 }
 
-const String HHVM_FUNCTION(odbc_errormsg, const Resource& link)
+const String HHVM_FUNCTION(odbc_errormsg, const Variant& link)
 {
   return String::FromCStr((char*)ODBCContext::get_last_error_msg());
 }
 
-Variant HHVM_FUNCTION(odbc_exec, const Resource& link, const String& query)
+Variant HHVM_FUNCTION(odbc_exec, const Resource& link, const String& query,
+                      const Variant& flags /* = 0 */)
 {
   ODBCLink *odbc_link = safe_get_typed<ODBCLink>(link);
   if (odbc_link == nullptr)
@@ -828,15 +829,16 @@ Variant HHVM_FUNCTION(odbc_exec, const Resource& link, const String& query)
   return odbc_link->exec(query);
 }
 
-bool HHVM_FUNCTION(odbc_execute, const Resource& result, const Array& params)
+bool HHVM_FUNCTION(odbc_execute, const Resource& result, const Variant& params)
 {
   ODBCCursor *odbc_result = safe_get_typed<ODBCCursor>(result);
   if (odbc_result == nullptr)
     return false;
-  return odbc_result->exec_prepared_query(params);
+  return odbc_result->exec_prepared_query(params.toArray());
 }
 
-Variant HHVM_FUNCTION(odbc_fetch_array, const Resource& cursor)
+Variant HHVM_FUNCTION(odbc_fetch_array, const Resource& cursor,
+                      const Variant& rownumber /* = 0 */)
 {
   ODBCCursor *odbc_cursor = safe_get_typed<ODBCCursor>(cursor);
   if (odbc_cursor == nullptr)
@@ -869,10 +871,10 @@ bool HHVM_FUNCTION(odbc_rollback, const Resource& link)
 }
 
 ///////////////////////////////////////////////////////////////////////////////
-static class ODBCExtension : public Extension {
+static class ODBCExtension final : public Extension {
  public:
   ODBCExtension() : Extension("odbc") { }
-  virtual void moduleInit() {
+  void moduleInit() override {
     HHVM_FE(odbc_set_autocommit);
     HHVM_FE(odbc_get_autocommit);
     HHVM_FE(odbc_commit);

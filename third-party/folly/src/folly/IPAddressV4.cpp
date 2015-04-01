@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-#include "IPAddressV4.h"
+#include <folly/IPAddressV4.h>
 
 #include <ostream>
 #include <string>
@@ -27,6 +27,7 @@ using std::ostream;
 using std::string;
 
 namespace folly {
+
 
 // free functions
 size_t hash_value(const IPAddressV4& addr) {
@@ -141,6 +142,18 @@ bool IPAddressV4::inSubnetWithMask(const IPAddressV4& subnet,
   const ByteArray4 subMask = detail::Bytes::mask(subnet.toByteArray(),
                                                  cidrMask);
   return (mask == subMask);
+}
+
+// public
+bool IPAddressV4::isLoopback() const {
+  static IPAddressV4 loopback_addr("127.0.0.0");
+  return inSubnetWithMask(loopback_addr, fetchMask(8));
+}
+
+// public
+bool IPAddressV4::isLinkLocal() const {
+  static IPAddressV4 linklocal_addr("169.254.0.0");
+  return inSubnetWithMask(linklocal_addr, fetchMask(16));
 }
 
 // public

@@ -15,9 +15,11 @@
 */
 
 #include "hphp/runtime/base/proxy-array.h"
-#include "hphp/runtime/base/runtime-error.h"
-#include "hphp/runtime/base/array-iterator.h"
+
+#include "hphp/runtime/base/array-data-defs.h"
 #include "hphp/runtime/base/array-init.h"
+#include "hphp/runtime/base/array-iterator.h"
+#include "hphp/runtime/base/runtime-error.h"
 #include "hphp/runtime/base/zend-custom-element.h"
 #include "hphp/runtime/ext_zend_compat/hhvm/zend-wrap-func.h"
 
@@ -81,9 +83,10 @@ void ProxyArray::Release(ArrayData*ad) {
 
 void ProxyArray::reseatable(const ArrayData* oldArr, ArrayData* newArr) {
   if (innerArr(oldArr) != newArr) {
-    decRefArr(innerArr(oldArr));
+    auto old = innerArr(oldArr);
     newArr->incRefCount();
     asProxyArray(oldArr)->m_ref->tv()->m_data.parr = newArr;
+    decRefArr(old);
   }
 }
 
@@ -347,39 +350,42 @@ bool ProxyArray::AdvanceMArrayIter(ArrayData* ad, MArrayIter& fp) {
   return innerArr(ad)->advanceMArrayIter(fp);
 }
 
-ArrayData* ProxyArray::EscalateForSort(ArrayData* ad) {
-  auto r = innerArr(ad)->escalateForSort();
+ArrayData* ProxyArray::EscalateForSort(ArrayData* ad, SortFunction sf) {
+  auto r = innerArr(ad)->escalateForSort(sf);
   reseatable(ad, r);
   return ad;
 }
 
 void ProxyArray::Ksort(ArrayData* ad, int sort_flags, bool ascending) {
-reseatable(ad, innerArr(ad)->escalateForSort());
+  auto const sf = getSortFunction(SORTFUNC_KSORT, ascending);
+  reseatable(ad, innerArr(ad)->escalateForSort(sf));
   return innerArr(ad)->ksort(sort_flags, ascending);
 }
 
 void ProxyArray::Sort(ArrayData* ad, int sort_flags, bool ascending) {
-  reseatable(ad, innerArr(ad)->escalateForSort());
+  auto const sf = getSortFunction(SORTFUNC_SORT, ascending);
+  reseatable(ad, innerArr(ad)->escalateForSort(sf));
   return innerArr(ad)->sort(sort_flags, ascending);
 }
 
 void ProxyArray::Asort(ArrayData* ad, int sort_flags, bool ascending) {
-  reseatable(ad, innerArr(ad)->escalateForSort());
+  auto const sf = getSortFunction(SORTFUNC_ASORT, ascending);
+  reseatable(ad, innerArr(ad)->escalateForSort(sf));
   return innerArr(ad)->asort(sort_flags, ascending);
 }
 
 bool ProxyArray::Uksort(ArrayData* ad, const Variant& cmp_function) {
-  reseatable(ad, innerArr(ad)->escalateForSort());
+  reseatable(ad, innerArr(ad)->escalateForSort(SORTFUNC_UKSORT));
   return innerArr(ad)->uksort(cmp_function);
 }
 
 bool ProxyArray::Usort(ArrayData* ad, const Variant& cmp_function) {
-  reseatable(ad, innerArr(ad)->escalateForSort());
+  reseatable(ad, innerArr(ad)->escalateForSort(SORTFUNC_USORT));
   return innerArr(ad)->usort(cmp_function);
 }
 
 bool ProxyArray::Uasort(ArrayData* ad, const Variant& cmp_function) {
-  reseatable(ad, innerArr(ad)->escalateForSort());
+  reseatable(ad, innerArr(ad)->escalateForSort(SORTFUNC_UASORT));
   return innerArr(ad)->uasort(cmp_function);
 }
 
@@ -423,8 +429,8 @@ void ProxyArray::proxyAppend(void* data, uint32_t data_size, void** dest) {
       *dest = (void*)(&r->nvGet(k)->m_data.pref);
     }
   } else {
-    ResourceData * elt = makeElementResource(data, data_size, dest);
-    r = innerArr(this)->append(elt, false);
+    auto elt = makeElementResource(data, data_size, dest);
+    r = innerArr(this)->append(Variant(std::move(elt)), false);
   }
   reseatable(this, r);
 }
@@ -441,11 +447,12 @@ void ProxyArray::proxyInit(uint32_t nSize,
   m_destructor = pDestructor;
 }
 
-ResourceData * ProxyArray::makeElementResource(
-    void *pData, uint nDataSize, void **pDest) const {
-  ZendCustomElement * elt = new ZendCustomElement(pData, nDataSize,
-                                                  pDest, m_destructor);
-  return static_cast<ResourceData*>(elt);
+SmartPtr<ResourceData>
+ProxyArray::makeElementResource(void* pData, uint nDataSize,
+                                void** pDest) const {
+  auto elt = makeSmartPtr<ZendCustomElement>(pData, nDataSize, m_destructor);
+  if (pDest) *pDest = elt->data();
+  return elt;
 }
 
 void * ProxyArray::proxyGet(StringData * str) const {
@@ -497,7 +504,7 @@ void * ProxyArray::elementToData(Variant * v) const {
     return (void*)(&tv->m_data.pref);
   } else {
     always_assert(tv->m_type == KindOfResource);
-    ZendCustomElement * elt = dynamic_cast<ZendCustomElement*>(tv->m_data.pres);
+    auto elt = dynamic_cast<ZendCustomElement*>(tv->m_data.pres);
     always_assert(elt);
     return elt->data();
   }

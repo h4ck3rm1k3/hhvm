@@ -22,7 +22,7 @@
 
 namespace HPHP { namespace jit {
 
-static const Trace::Module TRACEMOD = Trace::pgo;
+TRACE_SET_MOD(pgo);
 
 /**
  * Remove from pConds the elements that correspond to stack positions
@@ -67,37 +67,33 @@ RegionDescPtr selectHotTrace(TransID triggerId,
   if (selectedVec) selectedVec->clear();
 
   PostConditions accumPostConds;
-  // Maps BlockIds to the set of BC offsets for its successor blocks.
-  // Used to prevent multiple successors with the same SrcKey for now.
-  // This can go away once task #4157613 is done.
-  hphp_hash_map<RegionDesc::BlockId, SrcKeySet> succSKSet;
 
   // Maps from BlockIds to accumulated post conditions for that block.
   // Used to determine if we can add branch-over edges by checking the
   // pre-conditions of the successor block.
   hphp_hash_map<RegionDesc::BlockId, PostConditions> blockPostConds;
 
+  uint32_t numBCInstrs = 0;
+
   while (!selectedSet.count(tid)) {
 
     RegionDescPtr blockRegion = profData->transRegion(tid);
     if (blockRegion == nullptr) break;
+
+    // Break if region would be larger than the specified limit.
+    auto newInstrSize = numBCInstrs + blockRegion->instrSize();
+    if (newInstrSize > RuntimeOption::EvalJitMaxRegionInstrs) {
+      FTRACE(2, "selectHotTrace: breaking region at Translation {} because "
+             "size ({}) would exceed of maximum translation limit\n",
+             tid, newInstrSize);
+      break;
+    }
 
     // If the debugger is attached, only allow single-block regions.
     if (prevId != kInvalidTransID && isDebuggerAttachedProcess()) {
       FTRACE(2, "selectHotTrace: breaking region at Translation {} "
              "because of debugger is attached\n", tid);
       break;
-    }
-
-    // Break if block is not the first and requires reffiness checks.
-    // Task #2589970: fix translateRegion to support mid-region reffiness checks
-    if (prevId != kInvalidTransID) {
-      auto nRefDeps = blockRegion->entry()->reffinessPreds().size();
-      if (nRefDeps > 0) {
-        FTRACE(2, "selectHotTrace: breaking region because of refDeps ({}) at "
-               "Translation {}\n", nRefDeps, tid);
-        break;
-      }
     }
 
     // Break if block is not the first and it corresponds to the main
@@ -124,52 +120,18 @@ RegionDescPtr selectHotTrace(TransID triggerId,
       }
     }
 
-    // Break trace if translation tid cannot follow the execution of
-    // the entire translation prevId.  This can only happen if the
-    // execution of prevId takes a side exit that leads to the
-    // execution of tid.
-    if (prevId != kInvalidTransID) {
-      Op* lastInstr = profData->transLastInstr(prevId);
-      const Unit* unit = profData->transFunc(prevId)->unit();
-      OffsetSet succOffs = instrSuccOffsets(lastInstr, unit);
-      if (!succOffs.count(profData->transSrcKey(tid).offset())) {
-        if (HPHP::Trace::moduleEnabled(HPHP::Trace::pgo, 2)) {
-          FTRACE(2, "selectHotTrace: WARNING: Breaking region @: {}\n",
-                 show(*region));
-          FTRACE(2, "selectHotTrace: next translation selected: tid = {}\n{}\n",
-                 tid, show(*blockRegion));
-          FTRACE(2, "\nsuccOffs = {}\n", folly::join(", ", succOffs));
-        }
-        break;
-      }
-    }
-
     bool hasPredBlock = !region->empty();
     RegionDesc::BlockId predBlockId = (hasPredBlock ?
                                        region->blocks().back().get()->id() : 0);
     auto const& newFirstBlock = blockRegion->entry();
     auto newFirstBlockId = newFirstBlock->id();
-    auto newFirstBlockSk = newFirstBlock->start();
     auto newLastBlockId  = blockRegion->blocks().back()->id();
-
-    // Make sure we don't end up with multiple successors for the same
-    // SrcKey. Task #4157613 will allow the following check to go away.
-    // This needs to be done before we insert blockRegion into region,
-    // to avoid creating unreachable blocks.
-    if (RuntimeOption::EvalHHIRBytecodeControlFlow && hasPredBlock &&
-        succSKSet[predBlockId].count(newFirstBlockSk)) {
-      break;
-    }
 
     // Add blockRegion's blocks and arcs to region.
     region->append(*blockRegion);
+    numBCInstrs += blockRegion->instrSize();
 
     if (hasPredBlock) {
-      if (RuntimeOption::EvalHHIRBytecodeControlFlow) {
-        // This is checked above.
-        assert(succSKSet[predBlockId].count(newFirstBlockSk) == 0);
-        succSKSet[predBlockId].insert(newFirstBlockSk);
-      }
       region->addArc(predBlockId, newFirstBlockId);
     }
 
@@ -186,27 +148,23 @@ RegionDescPtr selectHotTrace(TransID triggerId,
         auto otherFirstBlockId = other.get()->id();
         if (!hasTransId(otherFirstBlockId)) continue;
         auto otherTransId = getTransId(otherFirstBlockId);
-        auto otherFirstBlockSk = other.get()->start();
         auto otherRegion = profData->transRegion(otherTransId);
         auto otherLastBlockId = otherRegion->blocks().back()->id();
         // When loops are off, stop once we hit the newTransId we just inserted.
         if (!RuntimeOption::EvalJitLoops && otherTransId == newTransId) break;
         if (cfg.hasArc(otherTransId, newTransId) &&
-            // Task #4157613 will allow the following check to go away
-            !succSKSet[otherLastBlockId].count(newFirstBlockSk) &&
             preCondsAreSatisfied(newFirstBlock,
                                  blockPostConds[otherLastBlockId])) {
           region->addArc(otherLastBlockId, newFirstBlockId);
-          succSKSet[otherLastBlockId].insert(newFirstBlockSk);
         }
         // When Eval.JitLoops is set, insert back-edges in the
         // region if they exist in the TransCFG.
         if (RuntimeOption::EvalJitLoops &&
             cfg.hasArc(newTransId, otherTransId) &&
-            // Task #4157613 will allow the following check to go away
-            !succSKSet[newLastBlockId].count(otherFirstBlockSk)) {
+            // Don't add the arc if the last opcode in the source block ends the
+            // region.
+            !breaksRegion(*profData->transLastInstr(newTransId))) {
           region->addArc(newLastBlockId, otherFirstBlockId);
-          succSKSet[newLastBlockId].insert(otherFirstBlockSk);
         }
       }
     }
@@ -264,6 +222,10 @@ RegionDescPtr selectHotTrace(TransID triggerId,
     prevId = tid;
     tid = maxArc->dst();
   }
+
+  FTRACE(3, "selectHotTrace: before chainRetransBlocks:\n{}\n", show(*region));
+  region->chainRetransBlocks();
+  FTRACE(3, "selectHotTrace: after chainRetransBlocks:\n{}\n", show(*region));
 
   return region;
 }

@@ -13,11 +13,13 @@
    | license@php.net so we can mail you a copy immediately.               |
    +----------------------------------------------------------------------+
 */
+
 #ifndef incl_HPHP_TYPE_CONSTRAINT_H_
 #define incl_HPHP_TYPE_CONSTRAINT_H_
 
 #include "hphp/runtime/vm/named-entity.h"
 #include "hphp/runtime/vm/type-profile.h"
+#include "hphp/runtime/base/annot-type.h"
 
 #include "hphp/util/functional.h"
 
@@ -38,7 +40,7 @@ namespace HPHP {
  * function or method parameter typehint at runtime.
  */
 struct TypeConstraint {
-  enum Flags {
+  enum Flags : uint8_t {
     NoFlags = 0x0,
 
     /*
@@ -73,15 +75,26 @@ struct TypeConstraint {
      * E.g. "@int"
      */
     Soft = 0x10,
+
+    /*
+     * Indicates a type constraint is a type constant, which is similar to a
+     * type alias defined inside a class. For instance, the constraint on $x
+     * is a TypeConstant
+     * class Foo {
+     *   const type T = int;
+     *   public function bar(Foo::T $x) { ... }
+     */
+     TypeConstant = 0x20,
   };
 
   /*
-   * Special type constraints use a "MetaType", instead of just
+   * Special type constraints use a "Type", instead of just
    * underlyingDataType().
    *
    * See underlyingDataType().
    */
-  enum class MetaType { Precise, Self, Parent, Callable, Number };
+  using Type = AnnotType;
+  using MetaType = AnnotMetaType;
 
   static const int32_t ReturnId = -1;
 
@@ -131,23 +144,21 @@ struct TypeConstraint {
   /*
    * Access to the "meta type" for this TypeConstraint.
    */
-  MetaType metaType() const { return m_type.metatype; }
+  MetaType metaType() const { return getAnnotMetaType(m_type); }
 
   /*
    * Returns the underlying DataType for this TypeConstraint.
-   *
-   * This DataType is probably not relevant if the metaType is not
-   * MetaType::Precise, and also is a bit special when it is
-   * KindOfObject: it may either be a type alias or a class, depending
-   * on what typeName() means in a given request.
    */
-  DataType underlyingDataType() const { return m_type.dt; }
+  MaybeDataType underlyingDataType() const {
+    auto const dt = getAnnotDataType(m_type);
+    return dt != KindOfUninit ? MaybeDataType(dt) : folly::none;
+  }
 
   /*
    * Returns the underlying DataType for this TypeConstraint,
    * chasing down type aliases.
    */
-  DataType underlyingDataTypeResolved() const;
+  MaybeDataType underlyingDataTypeResolved() const;
 
   /*
    * Predicates for various properties of the type constraint.
@@ -157,21 +168,20 @@ struct TypeConstraint {
   bool isHHType()   const { return m_flags & HHType; }
   bool isExtended() const { return m_flags & ExtendedHint; }
   bool isTypeVar()  const { return m_flags & TypeVar; }
-  bool isSelf()     const { return metaType() == MetaType::Self; }
-  bool isParent()   const { return metaType() == MetaType::Parent; }
-  bool isCallable() const { return metaType() == MetaType::Callable; }
-  bool isNumber()   const { return metaType() == MetaType::Number; }
+  bool isTypeConstant() const { return m_flags & TypeConstant; }
+
   bool isPrecise()  const { return metaType() == MetaType::Precise; }
+  bool isMixed()    const { return m_type == Type::Mixed; }
+  bool isSelf()     const { return m_type == Type::Self; }
+  bool isParent()   const { return m_type == Type::Parent; }
+  bool isCallable() const { return m_type == Type::Callable; }
+  bool isNumber()   const { return m_type == Type::Number; }
+  bool isArrayKey() const { return m_type == Type::ArrayKey; }
 
-  bool isArray()    const { return m_type.dt == KindOfArray; }
+  bool isArray()    const { return m_type == Type::Array; }
+  bool isObject()  const { return m_type == Type::Object; }
 
-  bool isObjectOrTypeAlias() const {
-    assert(IMPLIES(isNumber(), m_type.dt != KindOfObject));
-    assert(IMPLIES(isParent(), m_type.dt == KindOfObject));
-    assert(IMPLIES(isSelf(), m_type.dt == KindOfObject));
-    assert(IMPLIES(isCallable(), m_type.dt == KindOfObject));
-    return m_type.dt == KindOfObject;
-  }
+  AnnotType type() const { return m_type; }
 
   /*
    * A string representation of this type constraint.
@@ -203,12 +213,7 @@ struct TypeConstraint {
   // General check for any constraint.
   bool check(TypedValue* tv, const Func* func) const;
 
-  // Check a constraint when !isObjectOrTypeAlias().
-  bool checkPrimitive(DataType dt) const;
-
-  // Checks a constraint that is a type alias when we know tv is or is
-  // not an object.
-  bool checkTypeAliasObj(const TypedValue* tv) const;
+  bool checkTypeAliasObj(const Class* cls) const;
   bool checkTypeAliasNonObj(const TypedValue* tv) const;
 
   // NB: will throw if the check fails.
@@ -236,26 +241,16 @@ struct TypeConstraint {
   }
 
 private:
-  struct Type {
-    DataType dt;
-    MetaType metatype;
-  };
-  typedef hphp_hash_map<const StringData*, Type,
-                        string_data_hash, string_data_isame> TypeMap;
-
-private:
-  static TypeMap s_typeNamesToTypes;
-
-private:
   void init();
   void selfToTypeName(const Func* func, const StringData **typeName) const;
   void parentToTypeName(const Func* func, const StringData **typeName) const;
 
 private:
-  // m_type represents the DataType to check on.  We don't know
-  // whether a bare name is a class/interface name or a type alias, so
-  // when this is set to KindOfObject we may have to look up a type
-  // alias name and test for a different DataType.
+  // m_type represents the type to check on.  We don't know whether a
+  // bare name is a class/interface name or a type alias or an enum,
+  // so when this is set to Type::Object we may have to resolve a type
+  // alias or enum and test for a different DataType (see annotCompat()
+  // for details).
   Type m_type;
   Flags m_flags;
   LowStringPtr m_typeName;

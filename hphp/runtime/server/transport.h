@@ -24,14 +24,16 @@
 
 #include "hphp/util/compression.h"
 #include "hphp/util/functional.h"
-#include "hphp/runtime/base/types.h"
-#include "hphp/runtime/base/complex-types.h"
-#include "hphp/runtime/base/string-holder.h"
 #include "hphp/runtime/base/debuggable.h"
 #include "hphp/runtime/base/runtime-option.h"
+#include "hphp/runtime/base/string-holder.h"
+#include "hphp/runtime/base/type-string.h"
 
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
+
+class Array;
+struct Variant;
 
 /**
  * For storing headers and cookies.
@@ -126,6 +128,8 @@ public:
   // The transport can say exactly what script to use
   virtual const std::string getScriptFilename() { return ""; }
   virtual const std::string getPathTranslated() { return ""; }
+  virtual const std::string getPathInfo() { return ""; }
+  virtual bool isPathInfoSet() {return false; }
 
   /**
    * Server Headers
@@ -133,8 +137,9 @@ public:
   virtual const char *getServerName() {
     return "";
   };
-  virtual const char *getServerAddr() {
-    return RuntimeOption::ServerPrimaryIP.c_str();
+  virtual const std::string& getServerAddr() {
+    auto const& ipv4 = RuntimeOption::GetServerPrimaryIPv4();
+    return ipv4.empty() ? RuntimeOption::GetServerPrimaryIPv6() : ipv4;
   };
   virtual uint16_t getServerPort() {
     return RuntimeOption::ServerPort;
@@ -237,7 +242,7 @@ public:
    * Caller deletes data, callee must copy
    */
   virtual void sendImpl(const void *data, int size, int code,
-                        bool chunked) = 0;
+                        bool chunked, bool eom) = 0;
 
   /**
    * Override to implement more send end logic.
@@ -365,11 +370,7 @@ public:
   /**
    * Sending back a response.
    */
-  void setResponse(int code, const char *info) {
-    assert(code != 500 || (info && *info)); // must have a reason for a 500
-    m_responseCode = code;
-    m_responseCodeInfo = info ? info : "";
-  }
+  void setResponse(int code, const char *info = nullptr);
   const std::string &getResponseInfo() const { return m_responseCodeInfo; }
   bool headersSent() { return m_headerSent;}
   bool setHeaderCallback(const Variant& callback);
@@ -392,7 +393,7 @@ public:
     sendRaw((void*)data.c_str(), data.length(), code, compressed, chunked,
             codeInfo);
   }
-  void redirect(const char *location, int code, const char *info );
+  void redirect(const char *location, int code, const char *info = nullptr);
 
   // TODO: support rfc1867
   virtual bool isUploadedFile(const String& filename);

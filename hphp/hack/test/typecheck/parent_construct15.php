@@ -22,7 +22,6 @@ abstract class A {
 
 }
 
-
 abstract class B extends A {
   protected int $y;
 
@@ -41,5 +40,4 @@ final class C extends B {
     $this->do_this_too();
     print $this->x;
   }
-
 }

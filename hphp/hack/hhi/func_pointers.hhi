@@ -1,5 +1,13 @@
 <?hh // decl
-// Copyright 2004-present Facebook. All Rights Reserved.
+/**
+ * Copyright (c) 2014, Facebook, Inc.
+ * All rights reserved.
+ *
+ * This source code is licensed under the BSD-style license found in the
+ * LICENSE file in the "hack" directory of this source tree. An additional grant
+ * of patent rights can be found in the PATENTS file in the same directory.
+ *
+ */
 
 // The functions in this file are defined in HHVM and known to the
 // typechecker. They do not appear in .hhi files because there's no
@@ -63,8 +71,8 @@ function class_meth(string $cls_name, string $meth_name); // becomes:
  *
  * Example:
  *   class C {
- *     private function isOdd(int $i): bool { return $i % 2 == 1; }
- *     private function filter(Vector<int> $data): Vector<int> {
+ *     public function isOdd(int $i): bool { return $i % 2 == 1; }
+ *     public function filter(Vector<int> $data): Vector<int> {
  *       $callback = inst_meth($this, 'isOdd');
  *       return $data->filter($callback);
  *     }

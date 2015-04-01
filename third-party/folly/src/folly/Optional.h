@@ -54,10 +54,10 @@
  *    cout << *v << endl;
  *  }
  */
-#include <utility>
 #include <cassert>
 #include <cstddef>
 #include <type_traits>
+#include <utility>
 
 #include <boost/operators.hpp>
 
@@ -225,6 +225,17 @@ class Optional {
   const Value* operator->() const { return &value(); }
         Value* operator->()       { return &value(); }
 
+  // Return a copy of the value if set, or a given default if not.
+  template <class U>
+  Value value_or(U&& dflt) const& {
+    return hasValue_ ? value_ : std::forward<U>(dflt);
+  }
+
+  template <class U>
+  Value value_or(U&& dflt) && {
+    return hasValue_ ? std::move(value_) : std::forward<U>(dflt);
+  }
+
  private:
   template<class... Args>
   void construct(Args&&... args) {
@@ -270,11 +281,27 @@ Opt make_optional(T&& v) {
   return Opt(std::forward<T>(v));
 }
 
+///////////////////////////////////////////////////////////////////////////////
+// Comparisons.
+
 template<class V>
-bool operator< (const Optional<V>& a, const Optional<V>& b) {
-  if (a.hasValue() != b.hasValue()) { return a.hasValue() < b.hasValue(); }
-  if (a.hasValue())                 { return a.value()    < b.value(); }
-  return false;
+bool operator==(const Optional<V>& a, const V& b) {
+  return a.hasValue() && a.value() == b;
+}
+
+template<class V>
+bool operator!=(const Optional<V>& a, const V& b) {
+  return !(a == b);
+}
+
+template<class V>
+bool operator==(const V& a, const Optional<V>& b) {
+  return b.hasValue() && b.value() == a;
+}
+
+template<class V>
+bool operator!=(const V& a, const Optional<V>& b) {
+  return !(a == b);
 }
 
 template<class V>
@@ -285,18 +312,15 @@ bool operator==(const Optional<V>& a, const Optional<V>& b) {
 }
 
 template<class V>
-bool operator<=(const Optional<V>& a, const Optional<V>& b) {
-  return !(b < a);
-}
-
-template<class V>
 bool operator!=(const Optional<V>& a, const Optional<V>& b) {
-  return !(b == a);
+  return !(a == b);
 }
 
 template<class V>
-bool operator>=(const Optional<V>& a, const Optional<V>& b) {
-  return !(a < b);
+bool operator< (const Optional<V>& a, const Optional<V>& b) {
+  if (a.hasValue() != b.hasValue()) { return a.hasValue() < b.hasValue(); }
+  if (a.hasValue())                 { return a.value()    < b.value(); }
+  return false;
 }
 
 template<class V>
@@ -304,20 +328,28 @@ bool operator> (const Optional<V>& a, const Optional<V>& b) {
   return b < a;
 }
 
-// To supress comparability of Optional<T> with T, despite implicit conversion.
+template<class V>
+bool operator<=(const Optional<V>& a, const Optional<V>& b) {
+  return !(b < a);
+}
+
+template<class V>
+bool operator>=(const Optional<V>& a, const Optional<V>& b) {
+  return !(a < b);
+}
+
+// Suppress comparability of Optional<T> with T, despite implicit conversion.
 template<class V> bool operator< (const Optional<V>&, const V& other) = delete;
 template<class V> bool operator<=(const Optional<V>&, const V& other) = delete;
-template<class V> bool operator==(const Optional<V>&, const V& other) = delete;
-template<class V> bool operator!=(const Optional<V>&, const V& other) = delete;
 template<class V> bool operator>=(const Optional<V>&, const V& other) = delete;
 template<class V> bool operator> (const Optional<V>&, const V& other) = delete;
 template<class V> bool operator< (const V& other, const Optional<V>&) = delete;
 template<class V> bool operator<=(const V& other, const Optional<V>&) = delete;
-template<class V> bool operator==(const V& other, const Optional<V>&) = delete;
-template<class V> bool operator!=(const V& other, const Optional<V>&) = delete;
 template<class V> bool operator>=(const V& other, const Optional<V>&) = delete;
 template<class V> bool operator> (const V& other, const Optional<V>&) = delete;
 
+///////////////////////////////////////////////////////////////////////////////
+
 } // namespace folly
 
-#endif//FOLLY_OPTIONAL_H_
+#endif // FOLLY_OPTIONAL_H_

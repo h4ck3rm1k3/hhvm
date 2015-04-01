@@ -17,15 +17,10 @@
 #include "hphp/test/ext/test.h"
 #include "hphp/test/ext/test_parser_expr.h"
 #include "hphp/test/ext/test_parser_stmt.h"
-#include "hphp/test/ext/test_code_error.h"
 #include "hphp/test/ext/test_cpp_base.h"
 #include "hphp/test/ext/test_util.h"
 #include "hphp/test/ext/test_ext.h"
 #include "hphp/test/ext/test_server.h"
-#ifdef ENABLE_FASTCGI
-#include "hphp/test/ext/test_fastcgi.h"
-#include "hphp/test/ext/test_fastcgi_protocol.h"
-#endif
 #include "hphp/compiler/option.h"
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -40,21 +35,10 @@ void Test::RunTestsImpl(bool &allPassed, std::string &suite,
     return;
   }
 
-#ifdef ENABLE_FASTCGI
-  if (set == "TestFastCGI") {
-    Option::EnableEval = Option::FullEval;
-    // flaky, see t3064325
-    // RUN_TESTSUITE(TestFastCGIServer);
-    RUN_TESTSUITE(TestFastCGIProtocol);
-    return;
-  }
-#endif
-
   // set based tests with many suites
   if (set == "TestUnit") {
     RUN_TESTSUITE(TestParserExpr);
     RUN_TESTSUITE(TestParserStmt);
-    RUN_TESTSUITE(TestCodeError);
     RUN_TESTSUITE(TestUtil);
     RUN_TESTSUITE(TestCppBase);
     return;

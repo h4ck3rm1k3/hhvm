@@ -20,19 +20,23 @@
 #include <map>
 #include <string>
 
-#include "folly/Conv.h"
+#include <folly/Conv.h>
 
 #include "hphp/util/logger.h"
 #include "hphp/util/text-util.h"
 
 #include "hphp/runtime/base/arch.h"
-#include "hphp/runtime/base/hphp-system.h"
+#include "hphp/runtime/base/array-init.h"
+#include "hphp/runtime/base/builtin-functions.h"
+#include "hphp/runtime/base/externals.h"
 #include "hphp/runtime/base/http-client.h"
 #include "hphp/runtime/base/program-functions.h"
+#include "hphp/runtime/base/request-injection-data.h"
 #include "hphp/runtime/base/runtime-option.h"
+#include "hphp/runtime/base/string-util.h"
 #include "hphp/runtime/base/zend-string.h"
 #include "hphp/runtime/base/zend-url.h"
-#include "hphp/runtime/ext/ext_string.h"
+#include "hphp/runtime/ext/string/ext_string.h"
 #include "hphp/runtime/server/replay-transport.h"
 #include "hphp/runtime/server/request-uri.h"
 #include "hphp/runtime/server/source-root-info.h"
@@ -232,7 +236,20 @@ void HttpProtocol::PrepareSystemVariables(Transport *transport,
   for (auto& key : s_arraysToUnset) {
     g->remove(key.get(), false);
   }
-  g->set(s_HTTP_RAW_POST_DATA, empty_string_variant_ref, false);
+
+  // according to doc if content type is multipart/form-data
+  // $HTTP_RAW_POST_DATA should always not available
+  bool shouldSetHttpRawPostData = false;
+  if (RuntimeOption::AlwaysPopulateRawPostData) {
+    std::string dummy;
+    if (!IsRfc1867(transport->getHeader("Content-Type"), dummy)) {
+      shouldSetHttpRawPostData = true;
+    }
+  }
+
+  if (shouldSetHttpRawPostData) {
+    g->set(s_HTTP_RAW_POST_DATA, empty_string_variant_ref, false);
+  }
 
 #define X(name)                                       \
   Array name##arr(Array::Create());                   \
@@ -250,51 +267,94 @@ void HttpProtocol::PrepareSystemVariables(Transport *transport,
 
   Variant HTTP_RAW_POST_DATA;
   SCOPE_EXIT {
-    g->set(s_HTTP_RAW_POST_DATA.get(), HTTP_RAW_POST_DATA, false);
+    if (shouldSetHttpRawPostData) {
+      g->set(s_HTTP_RAW_POST_DATA.get(), HTTP_RAW_POST_DATA, false);
+    }
   };
 
-  StartRequest(SERVERarr);
-  PrepareEnv(ENVarr, transport);
+  auto variablesOrder = ThreadInfo::s_threadInfo.getNoCheck()
+    ->m_reqInjectionData.getVariablesOrder();
+
+  auto requestOrder = ThreadInfo::s_threadInfo.getNoCheck()
+    ->m_reqInjectionData.getRequestOrder();
+
+  if (requestOrder.empty()) {
+    requestOrder = variablesOrder;
+  }
+
+  bool postPopulated = false;
+
+  for (char& c : variablesOrder) {
+    switch(c) {
+      case 'e':
+      case 'E':
+        PrepareEnv(ENVarr, transport);
+        break;
+      case 'g':
+      case 'G':
+        if (!r.queryString().empty()) {
+          PrepareGetVariable(GETarr, r);
+        }
+        break;
+      case 'p':
+      case 'P':
+        postPopulated = true;
+        PreparePostVariables(POSTarr, HTTP_RAW_POST_DATA,
+                             FILESarr, transport);
+        break;
+      case 'c':
+      case 'C':
+        PrepareCookieVariable(COOKIEarr, transport);
+        break;
+      case 's':
+      case 'S':
+        StartRequest(SERVERarr);
+        PrepareServerVariable(SERVERarr,
+            transport,
+            r,
+            sri,
+            vhost);
+        break;
+    }
+  }
+
+  if (!postPopulated && shouldSetHttpRawPostData) {
+    // Always try to populate $HTTP_RAW_POST_DATA if not populated
+    Array dummyPost(Array::Create());
+    Array dummyFiles(Array::Create());
+    PreparePostVariables(dummyPost, HTTP_RAW_POST_DATA,
+                         dummyFiles, transport);
+  }
+
   PrepareRequestVariables(REQUESTarr,
                           GETarr,
                           POSTarr,
-                          HTTP_RAW_POST_DATA,
-                          FILESarr,
                           COOKIEarr,
-                          transport,
-                          r);
-  PrepareServerVariable(SERVERarr,
-                        transport,
-                        r,
-                        sri,
-                        vhost);
+                          requestOrder);
 }
 
 void HttpProtocol::PrepareRequestVariables(Array& request,
                                            Array& get,
                                            Array& post,
-                                           Variant& raw_post,
-                                           Array& files,
                                            Array& cookie,
-                                           Transport *transport,
-                                           const RequestURI &r) {
-
-  // $_GET and $_REQUEST
-  if (!r.queryString().empty()) {
-    PrepareGetVariable(get, r);
-    CopyParams(request, get);
+                                           const std::string& requestOrder) {
+  for (const char& c : requestOrder) {
+    switch(c) {
+      case 'g':
+      case 'G':
+        CopyParams(request, get);
+        break;
+      case 'p':
+      case 'P':
+        CopyParams(request, post);
+        break;
+      case 'c':
+      case 'C':
+        CopyParams(request, cookie);
+        break;
+    }
   }
 
-  // $_POST and $_REQUEST
-  if (transport->getMethod() == Transport::Method::POST) {
-    PreparePostVariables(post, raw_post, files, transport);
-    CopyParams(request, post);
-  }
-
-  // $_COOKIE
-  if (PrepareCookieVariable(cookie, transport)) {
-    CopyParams(request, cookie);
-  }
 }
 
 void HttpProtocol::PrepareGetVariable(Array& get,
@@ -308,6 +368,9 @@ void HttpProtocol::PreparePostVariables(Array& post,
                                         Variant& raw_post,
                                         Array& files,
                                         Transport *transport) {
+  if (transport->getMethod() != Transport::Method::POST) {
+    return;
+  }
 
   std::string contentType = transport->getHeader("Content-Type");
   std::string contentLength = transport->getHeader("Content-Length");
@@ -422,7 +485,7 @@ static void CopyHeaderVariables(Array& server,
     auto const& key = header.first;
     auto const& values = header.second;
     auto normalizedKey = s_HTTP_ +
-                         string_replace(f_strtoupper(key), s_dash,
+                         string_replace(HHVM_FN(strtoupper)(key), s_dash,
                                         s_underscore);
 
     // Detect suspicious headers.  We are about to modify header names for
@@ -763,9 +826,6 @@ void HttpProtocol::DecodeParameters(Array& variables, const char *data,
       val++;
       len = p - val;
       String value = url_decode(val, len);
-      if (RuntimeOption::EnableMagicQuotesGpc) {
-        value = string_addslashes(value.data(), len);
-      }
 
       register_variable(variables, (char*)sname.data(), value);
     } else if (!post) {
@@ -804,9 +864,6 @@ void HttpProtocol::DecodeCookies(Array& variables, char *data) {
         ++val;
         len = strlen(val);
         String value = url_decode(val, len);
-        if (RuntimeOption::EnableMagicQuotesGpc) {
-          value = string_addslashes(value.data(), len);
-        }
 
         register_variable(variables, (char*)sname.data(), value, false);
       } else {
@@ -846,7 +903,7 @@ bool HttpProtocol::IsRfc1867(const string contentType, string &boundary) {
     }
   } else {
     /* search for the end of the boundary */
-    e = strchr(s, ',');
+    e = strpbrk(s, ",;");
   }
   if (e) {
     e[0] = '\0';
@@ -872,6 +929,7 @@ void HttpProtocol::DecodeRfc1867(Transport *transport,
 }
 
 const char *HttpProtocol::GetReasonString(int code) {
+  // https://tools.ietf.org/html/rfc7231#section-6.1
   switch (code) {
   case 100: return "Continue";
   case 101: return "Switching Protocols";
@@ -882,7 +940,6 @@ const char *HttpProtocol::GetReasonString(int code) {
   case 204: return "No Content";
   case 205: return "Reset Content";
   case 206: return "Partial Content";
-  case 207: return "Multi-Status";
   case 300: return "Multiple Choices";
   case 301: return "Moved Permanently";
   case 302: return "Found";
@@ -898,24 +955,24 @@ const char *HttpProtocol::GetReasonString(int code) {
   case 405: return "Method Not Allowed";
   case 406: return "Not Acceptable";
   case 407: return "Proxy Authentication Required";
-  case 408: return "Request Time-out";
+  case 408: return "Request Timeout";
   case 409: return "Conflict";
   case 410: return "Gone";
   case 411: return "Length Required";
   case 412: return "Precondition Failed";
-  case 413: return "Request Entity Too Large";
-  case 414: return "Request-URI Too Large";
+  case 413: return "Payload Too Large";
+  case 414: return "URI Too Long";
   case 415: return "Unsupported Media Type";
-  case 416: return "Requested range not satisfiable";
+  case 416: return "Range Not Satisfiable";
   case 417: return "Expectation Failed";
   case 500: return "Internal Server Error";
   case 501: return "Not Implemented";
   case 502: return "Bad Gateway";
   case 503: return "Service Unavailable";
-  case 504: return "Gateway Time-out";
-  case 505: return "HTTP Version not supported";
+  case 504: return "Gateway Timeout";
+  case 505: return "HTTP Version Not Supported";
   }
-  return "Bad Response";
+  return "";
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -947,15 +1004,12 @@ bool HttpProtocol::ProxyRequest(Transport *transport, bool force,
     data = (const char *)transport->getPostData(size);
   }
 
-  code = 0; // HTTP status of curl or 0 for "no server response code"
   std::vector<String> responseHeaders;
   HttpClient http;
-  if (data && size) {
-    code = http.post(url.c_str(), data, size, response, &requestHeaders,
-                     &responseHeaders);
-  } else {
-    code = http.get(url.c_str(), response, &requestHeaders, &responseHeaders);
-  }
+  code = http.request(transport->getMethodName(),
+                      url.c_str(), data, size, response, &requestHeaders,
+                      &responseHeaders);
+
   if (code == 0) {
     if (!force) return false; // so we can retry
     Logger::Error("Unable to proxy %s: %s", url.c_str(),

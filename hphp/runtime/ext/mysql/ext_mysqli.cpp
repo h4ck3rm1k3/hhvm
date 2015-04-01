@@ -15,11 +15,14 @@
    +----------------------------------------------------------------------+
 */
 
-#include "hphp/runtime/base/base-includes.h"
 #include <vector>
+
+#include "hphp/runtime/base/array-init.h"
 #include "hphp/runtime/ext/extension.h"
 #include "hphp/runtime/ext/mysql/mysql_common.h"
+#include "hphp/runtime/ext/mysql/ext_mysql.h"
 #include "hphp/util/logger.h"
+#include "hphp/runtime/vm/native-prop-handler.h"
 
 #include "mysql.h"
 
@@ -27,9 +30,13 @@ namespace HPHP {
 
 const StaticString
   s_mysqli("mysqli"),
+  s_connection_errno("__connection_errno"),
+  s_connection_error("__connection_error"),
   s_connection("__connection"),
   s_link("__link"),
   s_result("__result"),
+  s_resulttype("__resulttype"),
+  s_done("__done"),
   s_stmt("__stmt"),
   s_charset("charset"),
   s_collation("collation"),
@@ -50,8 +57,27 @@ const StaticString
   s_def("def"),
   s_free("free");
 
+// ini settings settable anywhere -- PHP_INI_ALL
+struct MysqliIniSetting {
+  int m_default_port;
+  std::string m_default_socket;
+  std::string m_default_host;
+  std::string m_default_user;
+  std::string m_default_pw;
+};
+
+IMPLEMENT_THREAD_LOCAL(MysqliIniSetting, s_ini_setting);
+
+// System-wide ini settings -- PHP_INI_SYSTEM
+static bool allow_local_infile = true;
+static bool allow_persistent = true;
+static int max_persistent = -1;
+static int max_links = -1;
+static bool reconnect = false;
+
 //////////////////////////////////////////////////////////////////////////////
 // helper
+
 static Resource get_connection_resource(ObjectData* obj) {
   auto res = obj->o_realProp(
     s_connection,
@@ -65,9 +91,9 @@ static Resource get_connection_resource(ObjectData* obj) {
   return res->toResource();
 }
 
-static MySQL *get_connection(ObjectData* obj) {
+static std::shared_ptr<MySQL> get_connection(ObjectData* obj) {
   auto res = get_connection_resource(obj);
-  return res.getTyped<MySQL>(true, false);
+  return res.getTyped<MySQLResource>(true, false)->mysql();
 }
 
 static MySQLStmt *getStmt(ObjectData* obj) {
@@ -118,7 +144,7 @@ static TypedValue* bind_param_helper(ObjectData* obj, ActRec* ar,
     return arReturn(ar, false);
   }
 
-  std::vector<Variant*> vars;
+  PackedArrayInit vars(type_size);
   for (int i = 0; i < type_size; i++) {
     char t = types[i];
     if (t != 'i' && t != 'd' && t != 's' && t != 'b') {
@@ -126,10 +152,15 @@ static TypedValue* bind_param_helper(ObjectData* obj, ActRec* ar,
                     i + 2 + start_index);
       return arReturn(ar, false);
     }
-    vars.push_back(&getArg<KindOfRef>(ar, i + 1 + start_index));
+    auto rparam = &getArg<KindOfRef>(ar, i + 1 + start_index);
+
+    if (rparam->getRawType() != KindOfRef) {
+      return arReturn(ar, false);
+    }
+    vars.appendRef(*rparam);
   }
 
-  return arReturn(ar, getStmt(obj)->bind_param(types, vars));
+  return arReturn(ar, getStmt(obj)->bind_param(types, vars.toArray()));
 }
 
 static TypedValue* bind_result_helper(ObjectData* obj, ActRec* ar,
@@ -141,27 +172,41 @@ static TypedValue* bind_result_helper(ObjectData* obj, ActRec* ar,
     return arReturn(ar, false);
   }
 
-  std::vector<Variant*> vars;
+  PackedArrayInit vars(ar->numArgs());
   for (int i = start_index; i < ar->numArgs(); i++) {
-    vars.push_back(&getArg<KindOfRef>(ar, i));
+    auto rparam = &getArg<KindOfRef>(ar, i);
+
+    if (rparam->getRawType() != KindOfRef) {
+      return arReturn(ar, false);
+    }
+    vars.appendRef(*rparam);
   }
 
-  return arReturn(ar, getStmt(obj)->bind_result(vars));
+  return arReturn(ar, getStmt(obj)->bind_result(vars.toArray()));
 }
 
 //////////////////////////////////////////////////////////////////////////////
 // class mysqli
 
-#define VALIDATE_CONN(conn, state)                                             \
-  if (!conn || (state && (int64_t)conn->getState() < state)) {                 \
-    raise_warning("invalid object or resource mysqli");                        \
-    return init_null();                                                        \
+#define VALIDATE_CONN(conn, state)                                \
+  if (!conn ||                                                    \
+      (static_cast<MySQLState>(state) != MySQLState::CLOSED &&    \
+       conn->getState() < static_cast<MySQLState>(state))) {      \
+    raise_warning("invalid object or resource mysqli");           \
+    return init_null();                                           \
   }
 
 #define VALIDATE_CONN_CONNECTED(conn) VALIDATE_CONN(conn, MySQLState::CONNECTED)
 
-#define VALIDATE_RESOURCE(res, state)                                          \
-  MySQL* conn = res.getTyped<MySQL>(true, false);                              \
+// since we allow null (e.g. nullOkay is true in the call into type-resource),
+// we have to check if the resource data is null before we try to get a
+// connection.
+#define VALIDATE_RESOURCE(res, state)                                     \
+  auto rdata = res.getTyped<MySQLResource>(true, false);                  \
+  std::shared_ptr<MySQL> conn = nullptr;                                  \
+  if (rdata) {                                                            \
+    conn = rdata->mysql();                                                \
+  }                                                                       \
   VALIDATE_CONN(conn, state)
 
 static Variant HHVM_METHOD(mysqli, autocommit, bool mode) {
@@ -231,8 +276,9 @@ static Variant HHVM_METHOD(mysqli, hh_get_result, bool use_store) {
 }
 
 static void HHVM_METHOD(mysqli, hh_init) {
-  Resource data = new MySQL(nullptr, 0, nullptr, nullptr, nullptr);
-  this_->o_set(s_connection, data, s_mysqli.get());
+  auto data = std::make_shared<MySQL>(nullptr, 0, nullptr, nullptr, nullptr);
+  auto rsrc = makeSmartPtr<MySQLResource>(std::move(data));
+  this_->o_set(s_connection, Variant(std::move(rsrc)), s_mysqli.get());
 }
 
 static bool HHVM_METHOD(mysqli, hh_real_connect, const Variant& server,
@@ -250,7 +296,13 @@ static bool HHVM_METHOD(mysqli, hh_real_connect, const Variant& server,
                   conn, s, username.toString(), password.toString(),
                   dbname.toString(), client_flags.toInt64(), persistent, false,
                   -1, -1);
-  return ret.toBoolean();
+  if (ret.toBoolean()) {
+    // replace the connection incase we get a different one back (persistent)
+    this_->o_set(s_connection, ret, s_mysqli.get());
+    return true;
+  } else {
+    return false;
+  }
 }
 
 static Variant HHVM_METHOD(mysqli, hh_real_query, const String& query) {
@@ -305,7 +357,7 @@ static Variant HHVM_METHOD(mysqli, kill, int64_t processid) {
   return !mysql_kill(conn->get(), processid);
 }
 
-static DataType get_option_value_type(int64_t option) {
+static MaybeDataType get_option_value_type(int64_t option) {
   switch (option) {
     case MYSQL_INIT_COMMAND:
     case MYSQL_READ_DEFAULT_FILE:
@@ -357,7 +409,7 @@ static DataType get_option_value_type(int64_t option) {
 #endif
       return KindOfNull;
     default:
-      return KindOfUnknown;
+      return folly::none;
   }
 
   not_reached();
@@ -368,10 +420,8 @@ static Variant HHVM_METHOD(mysqli, options, int64_t option,
   auto conn = get_connection(this_);
   VALIDATE_CONN(conn, MySQLState::INITED)
 
-  DataType dt = get_option_value_type(option);
-  if (dt == KindOfUnknown) {
-    return false;
-  }
+  MaybeDataType dt = get_option_value_type(option);
+  if (!dt) return false;
 
   // Just holders for the value
   my_bool bool_value;
@@ -379,24 +429,35 @@ static Variant HHVM_METHOD(mysqli, options, int64_t option,
 
   const void *value_ptr = nullptr;
   if (!value.isNull()) {
-    switch (dt) {
-      case KindOfString:
-        other_value = value.toString();
-        value_ptr = other_value.getStringData()->data();
-        break;
-      case KindOfInt64:
-        other_value = value.toInt64();
-        value_ptr = other_value.getInt64Data();
-        break;
-      case KindOfBoolean:
-        bool_value = value.toBoolean();
-        value_ptr = &bool_value;
-        break;
-      case KindOfNull:
-        break;
-      default:
-        not_reached();
-    }
+    [&] {
+      switch (*dt) {
+        case KindOfNull:
+          return;
+        case KindOfBoolean:
+          bool_value = value.toBoolean();
+          value_ptr = &bool_value;
+          return;
+        case KindOfInt64:
+          other_value = value.toInt64();
+          value_ptr = other_value.getInt64Data();
+          return;
+        case KindOfString:
+          other_value = value.toString();
+          value_ptr = other_value.getStringData()->data();
+          return;
+        case KindOfUninit:
+        case KindOfDouble:
+        case KindOfStaticString:
+        case KindOfArray:
+        case KindOfObject:
+        case KindOfResource:
+        case KindOfRef:
+        case KindOfClass:
+          // Impossible.
+          break;
+      }
+      not_reached();
+    }();
   }
 
   return !mysql_options(conn->get(), (mysql_option)option,
@@ -445,8 +506,179 @@ static Variant HHVM_METHOD(mysqli, ssl_set, const Variant& key,
   return true;
 }
 
-#undef VALIDATE_CONN
-#undef VALIDATE_CONN_CONNECTED
+static Variant* getRawProp(ObjectData* obj,
+                          const String& propName,
+                          const String& className) {
+  return obj->o_realProp(
+    propName,
+    ObjectData::RealPropUnchecked,
+    className.get()
+  );
+}
+
+static Variant getStaticProp(ObjectData* obj, const StaticString& prop) {
+  auto cls = obj->getVMClass();
+  return tvAsVariant(cls->getSPropData(cls->lookupSProp(prop.get())));
+}
+
+static int64_t HHVM_FUNCTION(mysqli_get_client_version) {
+  return mysql_get_client_version();
+}
+
+// Native accessor properties of mysqli.
+
+static Variant mysqli_client_info_get(ObjectData* this_) {
+  return HHVM_FN(mysql_get_client_info)();
+}
+
+static Variant mysqli_client_version_get(ObjectData* this_) {
+  return HHVM_FN(mysqli_get_client_version)();
+}
+
+static Variant mysqli_connect_errno_get(ObjectData* this_) {
+  return getStaticProp(this_, s_connection_errno);
+}
+
+static Variant mysqli_connect_error_get(ObjectData* this_) {
+  return getStaticProp(this_, s_connection_error);
+}
+
+static Variant mysqli_affected_rows_get(ObjectData* this_) {
+  auto res = get_connection_resource(this_);
+  VALIDATE_RESOURCE(res, MySQLState::INITED)
+  return HHVM_FN(mysql_affected_rows)(res);
+}
+
+static Variant mysqli_error_get(ObjectData* this_) {
+  auto res = get_connection_resource(this_);
+  VALIDATE_RESOURCE(res, MySQLState::INITED)
+  return HHVM_FN(mysql_error)(res);
+}
+
+static Variant mysqli_errno_get(ObjectData* this_) {
+  auto res = get_connection_resource(this_);
+  VALIDATE_RESOURCE(res, MySQLState::INITED)
+  return HHVM_FN(mysql_errno)(res);
+}
+
+static Variant mysqli_field_count_get(ObjectData* this_) {
+  return HHVM_MN(mysqli, hh_field_count)(this_);
+}
+
+static Variant mysqli_host_info_get(ObjectData* this_) {
+  auto res = get_connection_resource(this_);
+  VALIDATE_RESOURCE(res, MySQLState::INITED)
+  return HHVM_FN(mysql_get_host_info)(res);
+}
+
+static Variant mysqli_info_get(ObjectData* this_) {
+  auto res = get_connection_resource(this_);
+  VALIDATE_RESOURCE(res, MySQLState::INITED)
+  return HHVM_FN(mysql_info)(res);
+}
+
+static Variant mysqli_insert_id_get(ObjectData* this_) {
+  auto res = get_connection_resource(this_);
+  VALIDATE_RESOURCE(res, MySQLState::INITED)
+  return HHVM_FN(mysql_insert_id)(res);
+}
+
+static Variant mysqli_protocol_version_get(ObjectData* this_) {
+  auto res = get_connection_resource(this_);
+  VALIDATE_RESOURCE(res, MySQLState::INITED)
+  return HHVM_FN(mysql_get_proto_info)(res);
+}
+
+static Variant mysqli_server_info_get(ObjectData* this_) {
+  auto res = get_connection_resource(this_);
+  VALIDATE_RESOURCE(res, MySQLState::INITED)
+  return HHVM_FN(mysql_get_server_info)(res);
+}
+
+static Variant mysqli_server_version_get(ObjectData* this_) {
+  return HHVM_MN(mysqli, hh_server_version)(this_);
+}
+
+static Variant mysqli_sqlstate_get(ObjectData* this_) {
+  return HHVM_MN(mysqli, hh_sqlstate)(this_);
+}
+
+static Variant mysqli_thread_id_get(ObjectData* this_) {
+  auto res = get_connection_resource(this_);
+  VALIDATE_RESOURCE(res, MySQLState::INITED)
+  return HHVM_FN(mysql_thread_id)(res);
+}
+
+static Variant mysqli_warning_count_get(ObjectData* this_) {
+  auto res = get_connection_resource(this_);
+  VALIDATE_RESOURCE(res, MySQLState::INITED)
+  return HHVM_FN(mysql_warning_count)(res);
+}
+
+static Variant mysqli_error_list_get(ObjectData* this_) {
+  Array ret = Array::Create();
+  Variant errorNumber = mysqli_errno_get(this_);
+
+  if (errorNumber.asInt64Val()) {
+    Array errorList = Array::Create();
+    errorList.set(String("errno"), errorNumber);
+    errorList.set(String("sqlstate"), mysqli_sqlstate_get(this_));
+    errorList.set(String("error"), mysqli_error_get(this_));
+    ret.set(0, errorList);
+  }
+
+  return ret;
+}
+
+static Native::PropAccessor mysqli_Accessors[] = {
+  {"client_info",       mysqli_client_info_get,
+                        nullptr, nullptr, nullptr},
+  {"client_version",    mysqli_client_version_get,
+                        nullptr, nullptr, nullptr},
+  {"connect_errno",     mysqli_connect_errno_get,
+                        nullptr, nullptr, nullptr},
+  {"connect_error",     mysqli_connect_error_get,
+                        nullptr, nullptr, nullptr},
+  {"affected_rows",     mysqli_affected_rows_get,
+                        nullptr, nullptr, nullptr},
+  {"error",             mysqli_error_get,
+                        nullptr, nullptr, nullptr},
+  {"errno",             mysqli_errno_get,
+                        nullptr, nullptr, nullptr},
+  {"field_count",       mysqli_field_count_get,
+                        nullptr, nullptr, nullptr},
+  {"host_info",         mysqli_host_info_get,
+                        nullptr, nullptr, nullptr},
+  {"info",              mysqli_info_get,
+                        nullptr, nullptr, nullptr},
+  {"insert_id",         mysqli_insert_id_get,
+                        nullptr, nullptr, nullptr},
+  {"protocol_version",  mysqli_protocol_version_get,
+                        nullptr, nullptr, nullptr},
+  {"server_info",       mysqli_server_info_get,
+                        nullptr, nullptr, nullptr},
+  {"server_version",    mysqli_server_version_get,
+                        nullptr, nullptr, nullptr},
+  {"sqlstate",          mysqli_sqlstate_get,
+                        nullptr, nullptr, nullptr},
+  {"thread_id",         mysqli_thread_id_get,
+                        nullptr, nullptr, nullptr},
+  {"warning_count",     mysqli_warning_count_get,
+                        nullptr, nullptr, nullptr},
+  {"error_list",        mysqli_error_list_get,
+                        nullptr, nullptr, nullptr},
+
+  {nullptr, nullptr, nullptr, nullptr, nullptr}
+};
+
+static Native::PropAccessorMap mysqli_accessorsMap
+((Native::PropAccessor*)mysqli_Accessors);
+
+// Prop handler for mysqli.
+struct mysqli_PropHandler : Native::MapPropHandler<mysqli_PropHandler> {
+  static constexpr Native::PropAccessorMap& map = mysqli_accessorsMap;
+};
+
 
 //////////////////////////////////////////////////////////////////////////////
 // class mysqli_driver
@@ -468,6 +700,16 @@ static Variant HHVM_METHOD(mysqli, ssl_set, const Variant& key,
     raise_warning("invalid object or resource mysqli_result");                 \
     return init_null();                                                        \
   }
+
+static Variant HHVM_METHOD(mysqli_result, get_mysqli_conn_resource,
+                           Object connection) {
+  auto res = get_connection_resource(connection.get());
+  VALIDATE_RESOURCE(res, MySQLState::CONNECTED);
+  return res;
+}
+
+#undef VALIDATE_CONN
+#undef VALIDATE_CONN_CONNECTED
 
 static Variant HHVM_METHOD(mysqli_result, hh_field_tell) {
   auto res = getResult(this_);
@@ -501,6 +743,80 @@ static Variant HHVM_METHOD(mysqli_result, fetch_field) {
 
   return obj;
 }
+
+// Consts to be used on PHP and C++ side.
+const int64_t _MYSQLI_STORE_RESULT = 0;
+const int64_t _MYSQLI_USE_RESULT = 1;
+
+// Native accessor properties of mysqli_result.
+
+Variant mysqli_result_current_field_get(ObjectData* this_) {
+  return HHVM_MN(mysqli_result, hh_field_tell)(this_);
+}
+
+Variant mysqli_result_field_count_get(ObjectData* this_) {
+  auto res = getResult(this_);
+  VALIDATE_RESULT(res)
+  return HHVM_FN(mysql_num_fields)(res);
+}
+
+Variant mysqli_result_lengths_get(ObjectData* this_) {
+  auto res = getResult(this_);
+  VALIDATE_RESULT(res)
+  auto lengths = HHVM_FN(mysql_fetch_lengths)(res);
+  if (!lengths.toBoolean()) {
+    return init_null_variant;
+  }
+  return lengths;
+}
+
+Variant mysqli_result_type_get(ObjectData* this_) {
+  return *getRawProp(this_, s_resulttype, s_mysqli_result);
+}
+
+Variant mysqli_result_num_rows_get(ObjectData* this_) {
+  auto res = getResult(this_);
+  VALIDATE_RESULT(res)
+
+  auto resultType = getRawProp(this_, s_resulttype, s_mysqli_result);
+  auto done = getRawProp(this_, s_done, s_mysqli_result)->toBoolean();
+
+  if (resultType->toInt64() == _MYSQLI_USE_RESULT && !done) {
+    raise_warning("Function can not be used with MYSQL_USE_RESULT");
+    return VarNR(0);
+  }
+
+  return HHVM_FN(mysql_num_rows)(res);
+}
+
+static Native::PropAccessor mysqli_result_Accessors[] = {
+  {"current_field", mysqli_result_current_field_get,
+                    nullptr, nullptr, nullptr},
+
+  {"field_count",   mysqli_result_field_count_get,
+                    nullptr, nullptr, nullptr},
+
+  {"lengths",       mysqli_result_lengths_get,
+                    nullptr, nullptr, nullptr},
+
+  {"type",          mysqli_result_type_get,
+                    nullptr, nullptr, nullptr},
+
+  {"num_rows",      mysqli_result_num_rows_get,
+                    nullptr, nullptr, nullptr},
+
+  {nullptr, nullptr, nullptr, nullptr, nullptr}
+};
+
+static Native::PropAccessorMap mysqli_result_accessorsMap
+((Native::PropAccessor*)mysqli_result_Accessors);
+
+// Prop handler for mysqli_result.
+struct mysqli_result_PropHandler :
+  Native::MapPropHandler<mysqli_result_PropHandler> {
+
+  static constexpr Native::PropAccessorMap& map = mysqli_result_accessorsMap;
+};
 
 #undef VALIDATE_RESULT
 
@@ -563,10 +879,9 @@ static Variant HHVM_METHOD(mysqli_stmt, hh_field_count) {
   return getStmt(this_)->field_count();
 }
 
-static void HHVM_METHOD(mysqli_stmt, hh_init, Variant connection) {
-  Object obj = connection.toObject();
-  auto data = NEWOBJ(MySQLStmt)(get_connection(obj.get())->get());
-  this_->o_set(s_stmt, Resource(data), s_mysqli_stmt.get());
+static void HHVM_METHOD(mysqli_stmt, hh_init, Object connection) {
+  auto data = makeSmartPtr<MySQLStmt>(get_connection(connection.get())->get());
+  this_->o_set(s_stmt, Variant(std::move(data)), s_mysqli_stmt.get());
 }
 
 static Variant HHVM_METHOD(mysqli_stmt, hh_insert_id) {
@@ -620,10 +935,6 @@ static Variant HHVM_METHOD(mysqli_stmt, send_long_data, int64_t param_nr,
 //////////////////////////////////////////////////////////////////////////////
 // functions
 
-static int64_t HHVM_FUNCTION(mysqli_get_client_version) {
-  return mysql_get_client_version();
-}
-
 void HHVM_FUNCTION(mysqli_free_result, const Variant& result) {
   if (!UNLIKELY(result.isObject()
       && result.toObject().instanceof(s_mysqli_result))) {
@@ -657,10 +968,76 @@ static bool HHVM_FUNCTION(mysqli_thread_safe) {
 
 //////////////////////////////////////////////////////////////////////////////
 
-class mysqliExtension : public Extension {
- public:
+class mysqliExtension final : public Extension {
+public:
   mysqliExtension() : Extension("mysqli") {}
-  virtual void moduleInit() {
+  // Use moduleLoad() for settings that are system-wide and cannot
+  // change per request (e.g. PHP_INI_SYSTEM)
+  void moduleLoad(const IniSetting::Map& ini, Hdf config) override {
+    // Not supporting local_infile yet. But this is the skeleton for
+    // when we do.
+    IniSetting::Bind(this, IniSetting::PHP_INI_SYSTEM,
+                     "mysqli.allow_local_infile",
+                     IniSetting::SetAndGet<bool>(
+                       [](const bool value) { return false; },
+                       []() { return false; }
+                     ),
+                     &allow_local_infile);
+    IniSetting::Bind(this, IniSetting::PHP_INI_SYSTEM,
+                     "mysqli.allow_persistent", "true",
+                     &allow_persistent);
+    IniSetting::Bind(this, IniSetting::PHP_INI_SYSTEM,
+                     "mysqli.max_persistent", "-1",
+                     &max_persistent);
+    IniSetting::Bind(this, IniSetting::PHP_INI_SYSTEM,
+                     "mysqli.max_links", "-1",
+                     &max_links);
+    IniSetting::Bind(this, IniSetting::PHP_INI_SYSTEM,
+                     "mysqli.reconnect", "false",
+                     &reconnect);
+    // Requires mysqlnd. This setting is actually an int, but setting
+    // to a bool that returns false for now. If and when we support
+    // this, we set to an int and define and bind to &cache_size
+    IniSetting::Bind(this, IniSetting::PHP_INI_SYSTEM,
+                     "mysqli.cache_size",
+                     IniSetting::SetAndGet<bool>(
+                       [](const bool value) { return false; },
+                       []() { return false; }
+                     ));
+
+    MySQL::SetAllowReconnect(reconnect);
+    MySQL::SetAllowPersistent(allow_persistent);
+    if (allow_persistent) {
+      // unlimited (0) is the default, if max_persistent is -1
+      if (max_persistent <= -1) {
+        MySQL::SetMaxNumPersistent(0);
+      } else {
+        MySQL::SetMaxNumPersistent(max_persistent);
+      }
+    }
+  }
+
+  // Use threadInit() for settings that can change per user request
+  // (e.g., PHP_INI_ALL, PHP_INI_USER)
+  void threadInit() override {
+    IniSetting::Bind(this, IniSetting::PHP_INI_ALL,
+                     "mysqli.default_port", "3306",
+                     &s_ini_setting->m_default_port);
+    IniSetting::Bind(this, IniSetting::PHP_INI_ALL,
+                     "mysqli.default_socket", nullptr,
+                     &s_ini_setting->m_default_socket);
+    IniSetting::Bind(this, IniSetting::PHP_INI_ALL,
+                     "mysqli.default_host", nullptr,
+                     &s_ini_setting->m_default_host);
+    IniSetting::Bind(this, IniSetting::PHP_INI_ALL,
+                     "mysqli.default_user", nullptr,
+                     &s_ini_setting->m_default_user);
+    IniSetting::Bind(this, IniSetting::PHP_INI_ALL,
+                     "mysqli.default_pw", nullptr,
+                     &s_ini_setting->m_default_pw);
+  }
+
+  void moduleInit() override {
     // mysqli
     HHVM_ME(mysqli, autocommit);
     HHVM_ME(mysqli, change_user);
@@ -685,9 +1062,16 @@ class mysqliExtension : public Extension {
     //HHVM_ME(mysqli, set_local_infile_handler);
     HHVM_ME(mysqli, ssl_set);
 
+    Native::registerNativeGuardedPropHandler
+      <mysqli_PropHandler>(s_mysqli.get());
+
     // mysqli_result
+    HHVM_ME(mysqli_result, get_mysqli_conn_resource);
     HHVM_ME(mysqli_result, hh_field_tell);
     HHVM_ME(mysqli_result, fetch_field);
+
+    Native::registerNativeGuardedPropHandler
+      <mysqli_result_PropHandler>(s_mysqli_result.get());
 
     // mysqli_stmt
     HHVM_ME(mysqli_stmt, attr_get);
@@ -743,8 +1127,8 @@ class mysqliExtension : public Extension {
     REGISTER_CONST_MIRROR(DATA_TRUNCATED)
 
     // Result type
-    REGISTER_CONST_VALUE(STORE_RESULT, 0)
-    REGISTER_CONST_VALUE(USE_RESULT, 1)
+    REGISTER_CONST_VALUE(STORE_RESULT, _MYSQLI_STORE_RESULT)
+    REGISTER_CONST_VALUE(USE_RESULT, _MYSQLI_USE_RESULT)
 
     // Report options
     REGISTER_CONST_VALUE(REPORT_OFF, 0)

@@ -25,7 +25,6 @@
 #include "hphp/compiler/option.h"
 #include "hphp/util/hash.h"
 #include "hphp/compiler/analysis/class_scope.h"
-#include "hphp/runtime/base/complex-types.h"
 
 using namespace HPHP;
 
@@ -242,14 +241,4 @@ ClassScopeRawPtr ConstantTable::findBase(
 ///////////////////////////////////////////////////////////////////////////////
 
 void ConstantTable::outputPHP(CodeGenerator &cg, AnalysisResultPtr ar) {
-  if (Option::GenerateInferredTypes) {
-    for (unsigned int i = 0; i < m_symbolVec.size(); i++) {
-      Symbol *sym = m_symbolVec[i];
-      if (sym->isSystem()) continue;
-
-      cg_printf("// @const  %s\t$%s\n",
-                sym->getFinalType()->toString().c_str(),
-                sym->getName().c_str());
-    }
-  }
 }

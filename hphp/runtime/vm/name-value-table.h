@@ -19,29 +19,29 @@
 
 #include <boost/noncopyable.hpp>
 
-#include "folly/Bits.h"
+#include <folly/Bits.h>
 
-#include "hphp/runtime/base/complex-types.h"
+#include "hphp/runtime/base/typed-value.h"
 
 namespace HPHP {
 
 //////////////////////////////////////////////////////////////////////
 
 struct ActRec;
+struct StringData;
 
 /*
- * This class implements a name to TypedValue map.  Basically a
- * hashtable from StringData* to TypedValue.
+ * This class implements a name to TypedValue map.  Basically a hashtable from
+ * StringData* to TypedValue.
  *
- * This is for use in variable environments in bytecode.cpp, and is
- * also used for the global variable environment ($GLOBALS via
- * NameValueTableWrapper).
+ * This is for use in variable environments in bytecode.cpp, and is also used
+ * for the global variable environment ($GLOBALS via GlobalsArray).
  *
- * The table may be optionally attached to an ActRec, in which case
- * it will contain a KindOfNamedLocal TypedValue per every named local
- * defined in ActRec's function. This is to keep storage for locals in
- * functions with a VarEnv in their normal location, but still make them
- * accessible by name through this table.
+ * The table may be optionally attached to an ActRec, in which case it will
+ * contain a kNamedLocalDataType TypedValue per every named local defined in
+ * ActRec's function.  This is to keep storage for locals in functions with a
+ * VarEnv in their normal location, but still make them accessible by name
+ * through this table.
  */
 struct NameValueTable : private boost::noncopyable {
   struct Iterator {
@@ -51,7 +51,7 @@ struct NameValueTable : private boost::noncopyable {
 
     /*
      * The following two constructors are primarily for using this with
-     * the ArrayData interface (see NameValueTableWrapper), which
+     * the ArrayData interface (see GlobalsArray), which
      * expects iterators to be represented by a ssize_t.
      *
      * The constructor taking `pos' must be given a value previously

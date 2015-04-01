@@ -16,10 +16,10 @@
 
 // @author Andrei Alexandrescu (andrei.alexandrescu@fb.com)
 
-#include "Benchmark.h"
-#include "Foreach.h"
-#include "json.h"
-#include "String.h"
+#include <folly/Benchmark.h>
+#include <folly/Foreach.h>
+#include <folly/json.h>
+#include <folly/String.h>
 
 #include <algorithm>
 #include <boost/regex.hpp>
@@ -28,6 +28,7 @@
 #include <limits>
 #include <utility>
 #include <vector>
+#include <cstring>
 
 using namespace std;
 
@@ -52,10 +53,18 @@ namespace folly {
 BenchmarkSuspender::NanosecondsSpent BenchmarkSuspender::nsSpent;
 
 typedef function<detail::TimeIterPair(unsigned int)> BenchmarkFun;
-static vector<tuple<const char*, const char*, BenchmarkFun>> benchmarks;
+
+
+vector<tuple<const char*, const char*, BenchmarkFun>>& benchmarks() {
+  static vector<tuple<const char*, const char*, BenchmarkFun>> _benchmarks;
+  return _benchmarks;
+}
+
+#define FB_FOLLY_GLOBAL_BENCHMARK_BASELINE fbFollyGlobalBenchmarkBaseline
+#define FB_STRINGIZE_X2(x) FB_STRINGIZE(x)
 
 // Add the global baseline
-BENCHMARK(globalBenchmarkBaseline) {
+BENCHMARK(FB_FOLLY_GLOBAL_BENCHMARK_BASELINE) {
 #ifdef _MSC_VER
   _ReadWriteBarrier();
 #else
@@ -63,9 +72,25 @@ BENCHMARK(globalBenchmarkBaseline) {
 #endif
 }
 
+int getGlobalBenchmarkBaselineIndex() {
+  const char *global = FB_STRINGIZE_X2(FB_FOLLY_GLOBAL_BENCHMARK_BASELINE);
+  auto it = std::find_if(
+    benchmarks().begin(),
+    benchmarks().end(),
+    [global](const tuple<const char*, const char*, BenchmarkFun> &v) {
+      return std::strcmp(get<1>(v), global) == 0;
+    }
+  );
+  CHECK(it != benchmarks().end());
+  return it - benchmarks().begin();
+}
+
+#undef FB_STRINGIZE_X2
+#undef FB_FOLLY_GLOBAL_BENCHMARK_BASELINE
+
 void detail::addBenchmarkImpl(const char* file, const char* name,
                               BenchmarkFun fun) {
-  benchmarks.emplace_back(file, name, std::move(fun));
+  benchmarks().emplace_back(file, name, std::move(fun));
 }
 
 /**
@@ -222,7 +247,7 @@ static double runBenchmarkGetNSPerIteration(const BenchmarkFun& fun,
   static const unsigned int epochs = 1000;
   // We establish a total time budget as we don't want a measurement
   // to take too long. This will curtail the number of actual epochs.
-  const uint64_t timeBudgetInNs = FLAGS_bm_max_secs * 1000000000;
+  const uint64_t timeBudgetInNs = FLAGS_bm_max_secs * 1000000000ULL;
   timespec global;
   CHECK_EQ(0, clock_gettime(CLOCK_REALTIME, &global));
 
@@ -328,8 +353,8 @@ static void printBenchmarkResultsAsTable(
 
   // Compute the longest benchmark name
   size_t longestName = 0;
-  FOR_EACH_RANGE (i, 1, benchmarks.size()) {
-    longestName = max(longestName, strlen(get<1>(benchmarks[i])));
+  FOR_EACH_RANGE (i, 1, benchmarks().size()) {
+    longestName = max(longestName, strlen(get<1>(benchmarks()[i])));
   }
 
   // Print a horizontal rule
@@ -413,10 +438,10 @@ static void printBenchmarkResults(
 }
 
 void runBenchmarks() {
-  CHECK(!benchmarks.empty());
+  CHECK(!benchmarks().empty());
 
   vector<tuple<const char*, const char*, double>> results;
-  results.reserve(benchmarks.size() - 1);
+  results.reserve(benchmarks().size() - 1);
 
   std::unique_ptr<boost::regex> bmRegex;
   if (!FLAGS_bm_regex.empty()) {
@@ -425,19 +450,24 @@ void runBenchmarks() {
 
   // PLEASE KEEP QUIET. MEASUREMENTS IN PROGRESS.
 
-  auto const globalBaseline = runBenchmarkGetNSPerIteration(
-    get<2>(benchmarks.front()), 0);
-  FOR_EACH_RANGE (i, 1, benchmarks.size()) {
+  unsigned int baselineIndex = getGlobalBenchmarkBaselineIndex();
+
+  auto const globalBaseline =
+      runBenchmarkGetNSPerIteration(get<2>(benchmarks()[baselineIndex]), 0);
+  FOR_EACH_RANGE (i, 0, benchmarks().size()) {
+    if (i == baselineIndex) {
+      continue;
+    }
     double elapsed = 0.0;
-    if (strcmp(get<1>(benchmarks[i]), "-") != 0) { // skip separators
-      if (bmRegex && !boost::regex_search(get<1>(benchmarks[i]), *bmRegex)) {
+    if (strcmp(get<1>(benchmarks()[i]), "-") != 0) { // skip separators
+      if (bmRegex && !boost::regex_search(get<1>(benchmarks()[i]), *bmRegex)) {
         continue;
       }
-      elapsed = runBenchmarkGetNSPerIteration(get<2>(benchmarks[i]),
+      elapsed = runBenchmarkGetNSPerIteration(get<2>(benchmarks()[i]),
                                               globalBaseline);
     }
-    results.emplace_back(get<0>(benchmarks[i]),
-                         get<1>(benchmarks[i]), elapsed);
+    results.emplace_back(get<0>(benchmarks()[i]),
+                         get<1>(benchmarks()[i]), elapsed);
   }
 
   // PLEASE MAKE NOISE. MEASUREMENTS DONE.

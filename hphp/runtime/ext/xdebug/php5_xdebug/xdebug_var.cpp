@@ -15,8 +15,6 @@
    | Authors:  Derick Rethans <derick@xdebug.org>                         |
    +----------------------------------------------------------------------+
  */
-// TODO(#4489053) This should be refactored after xml api is refactored.
-// TODO(#4489053) Only the xml code has been pulled in for now
 
 #include "hphp/runtime/ext/xdebug/php5_xdebug/xdebug_var.h"
 
@@ -25,284 +23,52 @@
 namespace HPHP {
 
 ////////////////////////////////////////////////////////////////////////////////
-// Dynamic symbol lookup
+// PHP Errors
 
-enum class SymbolType {
-  StaticRoot = 0,
-  StaticProp,
-  Root,
-  ArrayIndexAssoc,
-  ArrayIndexNum,
-  ObjProp
-};
+static const StaticString
+  s_FATAL_ERROR("Fatal error"),
+  s_CATCHABLE_FATAL_ERROR("Catchable fatal error"),
+  s_WARNING("Warning"),
+  s_PARSE_ERROR("Parse error"),
+  s_NOTICE("Notice"),
+  s_STRICT_STANDARDS("Strict standards"),
+  s_DEPRECATED("Deprecated"),
+  s_XDEBUG("Xdebug"),
+  s_UNKNOWN_ERROR("Unknown error");
 
-// Given a typed value tv return the associated class object
-static Class* xdebug_get_sym_class(const Variant& var) {
-  if (var.is(KindOfObject)) return var.toObject().get()->getVMClass();
+// Errors are generally passed around as errnum ints corresponding to an enum
+// ErrorModes value
+typedef ErrorConstants::ErrorModes ErrType;
 
-  return nullptr;
-}
-
-// Find a symbol given by string key of the specified symbol type. Context
-// information can be specified through ctx, sym, and ar.
-//
-// StaticRoot, StaticProp
-//   * Search for a static property given by key in class ctx
-//   * A class name may be encoded with the property as *classname*propname
-//     to indicate a class that should be used as the visibility context for
-//     loading the property
-static Variant xdebug_lookup_symbol(SymbolType type, String key, Class*& ctx,
-                                    Variant& sym, ActRec* ar) {
-  char* name = key.get()->mutableData();
-  char* end = key.get()->mutableData() + key.size();
-  assert(name != end);
-
-  switch (type) {
-    case SymbolType::StaticRoot:
-    case SymbolType::StaticProp: {
-      TypedValue* ret = nullptr;
-      if (!ctx) return uninit_null();
-
-      Class* newCtx = nullptr;
-      char* secStar;
-      bool vis, acc;
-      if ((ret = ctx->getSProp(ctx, key.get(), vis, acc))) {
-        return tvAsVariant(ret);
-      }
-
-      for (secStar = name + 1; secStar != end && *secStar != '*'; ++secStar);
-      if (secStar != end && *name == '*' && *secStar == '*') {
-        String clsKey(name + 1, secStar - name - 1, CopyStringMode());
-        String newKey(secStar + 1, end - secStar - 1, CopyStringMode());
-        newCtx = Unit::lookupClass(clsKey.get());
-        if (newCtx && (ret = ctx->getSProp(newCtx, newKey.get(),
-                                              vis, acc))) {
-          return tvAsVariant(ret);
-        }
-      }
-      return uninit_null();
-    }
-    break;
-
-    case SymbolType::Root: {
-      const Func* func = ar->func();
-
-      if (key.size() == 4 && strncmp(name, "this", 4) == 0) {
-        return ar->hasThis() ? ar->getThis() : nullptr;
-      }
-
-      Id localId = func->lookupVarId(key.get());
-
-      if (localId != kInvalidId) {
-        TypedValue* tv = frame_local(ar, localId);
-        return tv ? tvAsVariant(tv) : uninit_null();
-      }
-
-      Class* tmp = Unit::lookupClass(key.get());
-
-      if (tmp) ctx = tmp;
-      return uninit_null();
-    }
-    break;
-
-    case SymbolType::ArrayIndexAssoc: {
-      return  sym.isArray()  ? sym.asArrRef().rvalAt(key) :
-              sym.isObject() ? sym.asObjRef().o_get(key, false)
-                             : uninit_null();
-    }
-
-    case SymbolType::ArrayIndexNum: {
-      int64_t iKey = key.toInt64();
-
-      return  sym.isArray()  ? sym.asArrRef().rvalAt(iKey)
-                             : uninit_null();
-    }
-
-    case SymbolType::ObjProp: {
-      char* secStar;
-      if (!sym.is(KindOfObject)) return uninit_null();
-
-      Object obj = sym.toObject();
-      Variant v = obj->o_get(key, false);
-      if(!v.isNull()) return v;
-
-      for (secStar = name + 1; secStar != end && *secStar != '*'; ++secStar);
-      if (secStar != end && *name == '*' && *secStar == '*') {
-        String clsKey(name + 1, secStar - name - 1, CopyStringMode());
-        String newKey(secStar + 1, end - secStar - 1, CopyStringMode());
-        v = obj.o_get(key, false, clsKey);
-      }
-
-      return v;
-    }
+// String name for the given error type, as defined by php5 xdebug in
+// xdebug_var.c
+const String xdebug_error_type(int errnum) {
+  switch (static_cast<ErrType>(errnum)) {
+    case ErrType::ERROR:
+    case ErrType::CORE_ERROR:
+    case ErrType::COMPILE_ERROR:
+    case ErrType::USER_ERROR:
+      return s_FATAL_ERROR;
+    case ErrType::RECOVERABLE_ERROR:
+      return s_CATCHABLE_FATAL_ERROR;
+    case ErrType::WARNING:
+    case ErrType::CORE_WARNING:
+    case ErrType::COMPILE_WARNING:
+    case ErrType::USER_WARNING:
+      return s_WARNING;
+    case ErrType::PARSE:
+      return s_PARSE_ERROR;
+    case ErrType::NOTICE:
+    case ErrType::USER_NOTICE:
+      return s_NOTICE;
+    case ErrType::STRICT:
+      return s_STRICT_STANDARDS;
+    case ErrType::PHP_DEPRECATED:
+    case ErrType::USER_DEPRECATED:
+      return s_DEPRECATED;
+    default:
+      return s_UNKNOWN_ERROR;
   }
-
-  not_reached();
-}
-
-Variant xdebug_get_php_symbol(ActRec* ar, StringData* name) {
-  int state;
-  auto slice = name->slice();
-  const char *p = slice.begin();
-  const char *end = slice.end();
-  const char *keyword = nullptr;
-  const char *keyword_end = nullptr;
-  Class* ctx = nullptr;
-  Variant sym;
-  String key(name->size(), ReserveStringMode());
-  char quotechar = 0;
-  SymbolType type = SymbolType::Root;
-
-  StringData* sd = key.get();
-  char* keyBuf = sd->mutableData();
-
-  for (; p != end; ++p) {
-    switch (state) {
-      case 0:
-        if (*p == '$') {
-          keyword = p + 1;
-          break;
-        }
-        // special tricks
-        if (*p == ':') {
-          keyword = p;
-          state = 7;
-          break;
-        }
-        keyword = p;
-        state = 1;
-        // fallthrough
-      case 1:
-        if (*p == '[') {
-          keyword_end = p;
-          if (keyword) {
-            memcpy(keyBuf, keyword, keyword_end - keyword);
-            sd->setSize(keyword_end - keyword);
-            sym = xdebug_lookup_symbol(type, key, ctx, sym, ar);
-            ctx = nullptr;
-            keyword = nullptr;
-          }
-          state = 3;
-        } else if (*p == '-') {
-          keyword_end = p;
-          if (keyword) {
-            memcpy(keyBuf, keyword, keyword_end - keyword);
-            sd->setSize(keyword_end - keyword);
-            sym = xdebug_lookup_symbol(type, key, ctx, sym, ar);
-            ctx = xdebug_get_sym_class(sym);
-            keyword = nullptr;
-          }
-          state = 2;
-          type = SymbolType::ObjProp;
-        } else if (*p == ':') {
-          keyword_end = p;
-          if (keyword) {
-            memcpy(keyBuf, keyword, keyword_end - keyword);
-            sd->setSize(keyword_end - keyword);
-            // XXX: this call is going to set ctx
-            sym = xdebug_lookup_symbol(type, key, ctx, sym, ar);
-            keyword = nullptr;
-          }
-          state = 8;
-          type = SymbolType::StaticProp;
-        }
-        break;
-      case 2:
-        if (*p != '>') {
-          keyword = p;
-          state = 1;
-        }
-        break;
-      case 8:
-        if (*p != ':') {
-          keyword = p;
-          state = 1;
-        }
-        break;
-      // Parsing in [...]
-      case 3:
-        // Associative arrays
-        if (*p == '\'' || *p == '"') {
-          state = 4;
-          keyword = p + 1;
-          quotechar = *p;
-          type = SymbolType::ArrayIndexAssoc;
-        }
-        // Numerical index
-        if (*p >= '0' && *p <= '9') {
-          state = 6;
-          keyword = p;
-          type = SymbolType::ArrayIndexNum;
-        }
-        // Numerical index starting with a -
-        if (*p == '-') {
-          state = 9;
-          keyword = p;
-        }
-        break;
-      // Numerical index starting with a -
-      case 9:
-        if (*p >= '0' && *p <= '9') {
-          state = 6;
-          type = SymbolType::ArrayIndexNum;
-        }
-        break;
-      case 4:
-        if (*p == quotechar) {
-          quotechar = 0;
-          state = 5;
-          keyword_end = p;
-          memcpy(keyBuf, keyword, keyword_end - keyword);
-          sd->setSize(keyword_end - keyword);
-          sym = xdebug_lookup_symbol(type, key, ctx, sym, ar);
-          ctx = xdebug_get_sym_class(sym);
-          keyword = nullptr;
-        }
-        break;
-      case 5:
-        if (*p == ']') {
-          state = 1;
-        }
-        break;
-      case 6:
-        if (*p == ']') {
-          state = 1;
-          keyword_end = p;
-          memcpy(keyBuf, keyword, keyword_end - keyword);
-          sd->setSize(keyword_end - keyword);
-          sym = xdebug_lookup_symbol(type, key, ctx, sym, ar);
-          ctx = xdebug_get_sym_class(sym);
-          keyword = nullptr;
-        }
-        break;
-      // special cases, started with a ":"
-      case 7:
-        if (*p == ':') {
-          state = 1;
-          keyword_end = p;
-
-          // static class properties
-          if (keyword_end + 1 != end && strncmp(keyword, "::", 2) == 0) {
-            ctx = ar->hasClass() ? ar->getClass() :
-                  ar->hasThis()  ? ar->getThis()->getVMClass() :
-                  nullptr;
-
-            sym = uninit_null();
-            keyword = p + 1;
-            type = SymbolType::StaticRoot;
-          } else {
-            keyword = nullptr;
-          }
-        }
-        break;
-    }
-  }
-  if (keyword) {
-    memcpy(keyBuf, keyword, p - keyword);
-    sd->setSize(p - keyword);
-    sym = xdebug_lookup_symbol(type, key, ctx, sym, ar);
-  }
-  return sym;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -344,24 +110,28 @@ static void xdebug_object_element_export_xml_node(xdebug_xml_node& parent,
                                                   const Variant& key,
                                                   const Variant& val,
                                                   XDebugExporter& exporter) {
-  String prop_str = key.toString();
-  const Class* cls = obj->getVMClass();
-  const char* cls_name = cls->name()->data();
+  auto const prop_str = key.toString();
+  auto const cls = obj->getVMClass();
+  auto const cls_name = cls->name()->data();
 
-  // Compute whether the properity is static
-  bool visible, accessible;
-  bool is_static = cls->getSProp(nullptr, prop_str.get(),
-                                 visible, accessible) != nullptr;
+  // Compute whether the property is static
+
+  auto const sLookup = cls->getSProp(nullptr, prop_str.get());
+
+  auto const is_static = sLookup.prop != nullptr;
+  bool visible = is_static;
+  bool accessible = sLookup.accessible;
 
   // If the property is not static, we know it's a member, but need to grab the
   // visibility
   if (!is_static) {
-    bool unset;
-    obj->getProp(nullptr, prop_str.get(), visible, accessible, unset);
+    auto const lookup = obj->getProp(nullptr, prop_str.get());
+    visible = lookup.prop != nullptr;
+    accessible = lookup.accessible;
   }
 
   // This is public if it is visible and accessible from the nullptr context
-  bool is_public = visible && accessible;
+  auto const is_public = visible && accessible;
 
   // Compute the property name and full name
   const char* name;
@@ -510,7 +280,7 @@ xdebug_xml_node* xdebug_var_export_xml_node(const char* name,
 
     // Compute the page and the start/end indices
     // Note that php xdebug doesn't support pages except for at the top level
-    uint32_t page = exporter.level == 0 ? exporter.page : 0;
+    uint32_t page = exporter.level == 1 ? exporter.page : 0;
     uint32_t start = page * exporter.max_children;
     uint32_t end = (page + 1) * exporter.max_children;
     xdebug_xml_add_attribute_ex(node, "page", xdebug_sprintf("%d", page), 0, 1);
@@ -531,7 +301,7 @@ xdebug_xml_node* xdebug_var_export_xml_node(const char* name,
     exporter.level--;
     exporter.counts[arr.get()]--;
   } else if (var.isObject()) {
-    // TODO(#4489053) This could be merged into the above array code. For now,
+    // TODO(#3704) This could be merged into the above array code. For now,
     // it's separate as this was pulled originally from xdebug
     ObjectData* obj = var.toObject().get();
     Class* cls = obj->getVMClass();
@@ -546,6 +316,7 @@ xdebug_xml_node* xdebug_var_export_xml_node(const char* name,
 
     // If we've already seen this object, return
     if (exporter.counts[obj]++ > 0) {
+      xdebug_xml_add_attribute(node, "recursive", "1");
       return node;
     }
 
@@ -597,6 +368,10 @@ xdebug_xml_node* xdebug_get_value_xml_node(const char* name,
                                            XDebugVarType type
                                             /* = XDebugVarType::Normal */,
                                            XDebugExporter& exporter) {
+  // Ensure there all state is cleared in the exporter. This allows the same
+  // exporter to be used in multiple exports.
+  exporter.reset();
+
   // Compute the short and full name of the passed value
   char* short_name = nullptr;
   char* full_name = nullptr;

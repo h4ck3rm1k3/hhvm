@@ -17,28 +17,21 @@
 #ifndef incl_HPHP_CPP_BASE_EXCEPTIONS_H_
 #define incl_HPHP_CPP_BASE_EXCEPTIONS_H_
 
-#include <boost/intrusive_ptr.hpp>
 #include <string>
 #include <atomic>
 #include <utility>
 
-#include "folly/String.h"
+#include <folly/String.h>
 
 #include "hphp/util/portability.h"
 #include "hphp/util/exception.h"
+#include "hphp/runtime/base/type-array.h"
 
 namespace HPHP {
 
 //////////////////////////////////////////////////////////////////////
 
-struct Array;
-struct ArrayData;
 struct String;
-
-//////////////////////////////////////////////////////////////////////
-
-void intrusive_ptr_add_ref(ArrayData* a);
-void intrusive_ptr_release(ArrayData* a);
 
 //////////////////////////////////////////////////////////////////////
 
@@ -81,7 +74,7 @@ private:
   void computeBacktrace(bool skipFrame = false);
 
 private:
-  boost::intrusive_ptr<ArrayData> m_btp;
+  Array m_btp;
   bool m_silent{false};
 };
 
@@ -90,9 +83,15 @@ struct FatalErrorException : ExtendedException {
     : ExtendedException("%s", msg)
   {}
   FatalErrorException(int, const char *msg, ...) ATTRIBUTE_PRINTF(3,4);
-  FatalErrorException(const std::string&, const Array& backtrace);
+  FatalErrorException(const std::string&, const Array& backtrace,
+                      bool isRecoverable = false);
 
   EXCEPTION_COMMON_IMPL(FatalErrorException);
+
+  bool isRecoverable() const { return m_recoverable; }
+
+private:
+  bool m_recoverable{false};
 };
 
 //////////////////////////////////////////////////////////////////////
@@ -111,6 +110,13 @@ struct RequestTimeoutException : ResourceExceededException {
   EXCEPTION_COMMON_IMPL(RequestTimeoutException);
 };
 
+struct RequestCPUTimeoutException : ResourceExceededException {
+  RequestCPUTimeoutException(const std::string& msg, const Array& backtrace)
+    : ResourceExceededException(msg, backtrace)
+  {}
+  EXCEPTION_COMMON_IMPL(RequestCPUTimeoutException);
+};
+
 struct RequestMemoryExceededException : ResourceExceededException {
   RequestMemoryExceededException(const std::string& msg,
                                  const Array& backtrace)
@@ -120,19 +126,6 @@ struct RequestMemoryExceededException : ResourceExceededException {
 };
 
 //////////////////////////////////////////////////////////////////////
-
-class ParseTimeFatalException : public Exception {
-public:
-  ParseTimeFatalException(const char* file, int line,
-                          const char* msg, ...) ATTRIBUTE_PRINTF(4,5);
-  EXCEPTION_COMMON_IMPL(ParseTimeFatalException);
-
-  void setParseFatal(bool b = true) { m_parseFatal = b; }
-
-  std::string m_file;
-  int m_line;
-  bool m_parseFatal;
-};
 
 class ExitException : public ExtendedException {
 public:

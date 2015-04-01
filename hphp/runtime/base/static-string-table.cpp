@@ -22,7 +22,7 @@
 
 #include "hphp/runtime/server/memory-stats.h"
 
-#include "folly/AtomicHashMap.h"
+#include <folly/AtomicHashMap.h>
 
 namespace HPHP {
 
@@ -33,7 +33,7 @@ namespace {
 // Pointer to StringData, or pointer to StringSlice.
 typedef intptr_t StrInternKey;
 
-constexpr intptr_t kAhmMagicThreshold = -3;
+DEBUG_ONLY constexpr intptr_t kAhmMagicThreshold = -3;
 
 StrInternKey make_intern_key(const StringData* sd) {
   auto const ret = reinterpret_cast<StrInternKey>(sd);
@@ -57,17 +57,6 @@ const StringSlice* to_sslice(StrInternKey key) {
   return reinterpret_cast<const StringSlice*>(-key);
 }
 
-// To avoid extra instructions in strintern_eq, we currently are
-// making use of the fact that StringSlice and StringData have the
-// same initial layout.  See the static_asserts in checkSane.
-const StringSlice* to_sslice_punned(StrInternKey key) {
-  if (UNLIKELY(key < 0)) {
-    return reinterpret_cast<const StringSlice*>(-key);
-  }
-  // Actually a StringData*, but same layout.
-  return reinterpret_cast<const StringSlice*>(key);
-}
-
 struct strintern_eq {
   bool operator()(StrInternKey k1, StrInternKey k2) const {
     if (k1 < 0) {
@@ -77,9 +66,18 @@ struct strintern_eq {
     }
     assert(k2 >= 0 || k2 < kAhmMagicThreshold);
     auto const sd1 = to_sdata(k1);
-    auto const s2 = to_sslice_punned(k2);
-    return sd1->size() == s2->len &&
-           wordsame(sd1->data(), s2->ptr, s2->len);
+    auto const len1 = sd1->size();
+    const char* const* ptr2;
+    if (UNLIKELY(k2 < 0)) {
+      auto slice2 = to_sslice(k2);
+      if (len1 != slice2->len) return false;
+      ptr2 = reinterpret_cast<const char* const*>(slice2);
+    } else {
+      auto string2 = to_sdata(k2);
+      if (len1 != string2->size()) return false;
+      ptr2 = reinterpret_cast<const char* const*>(string2);
+    }
+    return wordsame(sd1->data(), *ptr2, len1);
   }
 };
 
@@ -90,14 +88,14 @@ struct strintern_hash {
       return to_sdata(k)->hash();
     }
     auto const slice = *to_sslice(k);
-    return hash_string_inline(slice.ptr, slice.len);
+    return hash_string(slice.ptr, slice.len);
   }
 };
 
 // The uint32_t is used to hold RDS offsets for constants
 typedef folly::AtomicHashMap<
   StrInternKey,
-  RDS::Link<TypedValue>,
+  rds::Link<TypedValue>,
   strintern_hash,
   strintern_eq
 > StringDataMap;
@@ -127,7 +125,7 @@ StringData** precomputed_chars = precompute_chars();
 StringData* insertStaticString(StringData* sd) {
   auto pair = s_stringDataMap->insert(
     make_intern_key(sd),
-    RDS::Link<TypedValue>(RDS::kInvalidHandle)
+    rds::Link<TypedValue>(rds::kInvalidHandle)
   );
 
   if (!pair.second) {
@@ -230,7 +228,7 @@ StringData* makeStaticString(char c) {
   return precomputed_chars[(uint8_t)c];
 }
 
-RDS::Handle lookupCnsHandle(const StringData* cnsName) {
+rds::Handle lookupCnsHandle(const StringData* cnsName) {
   assert(s_stringDataMap);
   auto const it = s_stringDataMap->find(make_intern_key(cnsName));
   if (it != s_stringDataMap->end()) {
@@ -239,22 +237,22 @@ RDS::Handle lookupCnsHandle(const StringData* cnsName) {
   return 0;
 }
 
-RDS::Handle makeCnsHandle(const StringData* cnsName, bool persistent) {
+rds::Handle makeCnsHandle(const StringData* cnsName, bool persistent) {
   auto const val = lookupCnsHandle(cnsName);
   if (val) return val;
   if (!cnsName->isStatic()) {
     // Its a dynamic constant, that doesn't correspond to
     // an already allocated handle. We'll allocate it in
-    // the request local RDS::s_constants instead.
+    // the request local rds::s_constants instead.
     return 0;
   }
   auto const it = s_stringDataMap->find(make_intern_key(cnsName));
   assert(it != s_stringDataMap->end());
   if (!it->second.bound()) {
-    it->second.bind<kTVSimdAlign>(persistent ? RDS::Mode::Persistent
-                                             : RDS::Mode::Normal);
+    it->second.bind<kTVSimdAlign>(persistent ? rds::Mode::Persistent
+                                             : rds::Mode::Normal);
 
-    RDS::recordRds(it->second.handle(), sizeof(TypedValue),
+    rds::recordRds(it->second.handle(), sizeof(TypedValue),
                    "Cns", cnsName->data());
   }
   return it->second.handle();
@@ -265,14 +263,14 @@ const StaticString s_Core("Core");
 
 Array lookupDefinedConstants(bool categorize /*= false */) {
   assert(s_stringDataMap);
-  Array usr(RDS::s_constants());
+  Array usr(rds::s_constants());
   Array sys;
 
   for (auto it = s_stringDataMap->begin();
        it != s_stringDataMap->end(); ++it) {
     if (it->second.bound()) {
       Array *tbl = (categorize &&
-                    RDS::isPersistentHandle(it->second.handle()))
+                    rds::isPersistentHandle(it->second.handle()))
                  ? &sys : &usr;
       auto& tv = *it->second;
       if (tv.m_type != KindOfUninit) {

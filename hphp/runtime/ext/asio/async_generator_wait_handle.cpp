@@ -64,7 +64,7 @@ c_AsyncGeneratorWaitHandle::Create(c_AsyncGenerator* gen,
   assert(!child->isFinished());
 
   checkCreateErrors(child);
-  auto const waitHandle = NEWOBJ(c_AsyncGeneratorWaitHandle)();
+  auto const waitHandle = newobj<c_AsyncGeneratorWaitHandle>();
   waitHandle->incRefCount();
   waitHandle->initialize(gen, child);
   return waitHandle;
@@ -112,10 +112,7 @@ void c_AsyncGeneratorWaitHandle::prepareChild(c_WaitableWaitHandle* child) {
   child->enterContext(getContextIdx());
 
   // detect cycles
-  if (UNLIKELY(isDescendantOf(child))) {
-    Object e(createCycleException(child));
-    throw e;
-  }
+  detectCycle(child);
 }
 
 void c_AsyncGeneratorWaitHandle::onUnblocked() {

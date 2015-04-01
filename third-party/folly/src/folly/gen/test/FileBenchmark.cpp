@@ -25,7 +25,7 @@ using namespace folly::gen;
 
 BENCHMARK(ByLine_Pipes, iters) {
   std::thread thread;
-  int rfd;
+  int rfd = -1;
   int wfd;
   BENCHMARK_SUSPEND {
     int p[2];
@@ -37,8 +37,8 @@ BENCHMARK(ByLine_Pipes, iters) {
       PCHECK(::write(wfd, &x, 1) == 1);  // signal startup
       FILE* f = fdopen(wfd, "w");
       PCHECK(f);
-      for (int i = 1; i <= iters; ++i) {
-        fprintf(f, "%d\n", i);
+      for (size_t i = 1; i <= iters; ++i) {
+        fprintf(f, "%zu\n", i);
       }
       fclose(f);
     });
@@ -46,6 +46,7 @@ BENCHMARK(ByLine_Pipes, iters) {
     PCHECK(::read(rfd, &buf, 1) == 1);  // wait for startup
   }
 
+  CHECK_ERR(rfd);
   auto s = byLine(folly::File(rfd)) | eachTo<int64_t>() | sum;
   folly::doNotOptimizeAway(s);
 

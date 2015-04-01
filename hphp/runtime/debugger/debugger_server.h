@@ -17,25 +17,26 @@
 #ifndef incl_HPHP_EVAL_DEBUGGER_SERVER_H_
 #define incl_HPHP_EVAL_DEBUGGER_SERVER_H_
 
-#include "hphp/util/async-func.h"
 #include <vector>
+
 #include "hphp/runtime/base/socket.h"
+#include "hphp/util/async-func.h"
 
 namespace HPHP { namespace Eval {
 ///////////////////////////////////////////////////////////////////////////////
 
-/**
+/*
  * Only needed for accepting remote debugger client's connection requests.
  */
-class DebuggerServer {
-public:
-  /**
+struct DebuggerServer {
+  /*
    * Start/stop for remote debugging.
    */
   static bool Start();
   static void Stop();
 
-public:
+  /////////////////////////////////////////////////////////////////////////////
+
   DebuggerServer();
   ~DebuggerServer();
 
@@ -48,9 +49,13 @@ public:
 private:
   static DebuggerServer s_debugger_server;
 
+  SmartPtr<Socket> nthSocket(unsigned i) const {
+    return makeSmartPtr<Socket>(m_socks[i]);
+  }
+
   AsyncFunc<DebuggerServer> m_serverThread;
   bool m_stopped;
-  std::vector<SmartPtr<Socket>> m_socks;
+  std::vector<std::shared_ptr<SocketData>> m_socks;
 };
 
 ///////////////////////////////////////////////////////////////////////////////

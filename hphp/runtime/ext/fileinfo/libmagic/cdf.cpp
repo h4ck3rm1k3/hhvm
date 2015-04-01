@@ -78,7 +78,7 @@ static union {
   uint32_t u;
 } cdf_bo;
 
-#define NEED_SWAP  (cdf_bo.u == (uint32_t)0x01020304)
+#define NEED_SWAP  bool(cdf_bo.u == (uint32_t)0x01020304)
 
 #define CDF_TOLE8(x)  ((uint64_t)(NEED_SWAP ? _cdf_tole8(x) : (uint64_t)(x)))
 #define CDF_TOLE4(x)  ((uint32_t)(NEED_SWAP ? _cdf_tole4(x) : (uint32_t)(x)))
@@ -277,13 +277,15 @@ cdf_check_stream_offset(const cdf_stream_t *sst, const cdf_header_t *h,
 {
   const char *b = (const char *)sst->sst_tab;
   const char *e = ((const char *)p) + tail;
+  size_t ss = sst->sst_dirlen < h->h_min_size_standard_stream ?
+    CDF_SHORT_SEC_SIZE(h) : CDF_SEC_SIZE(h);
   (void)&line;
-  if (e >= b && (size_t)(e - b) <= CDF_SEC_SIZE(h) * sst->sst_len)
+  if (e >= b && (size_t)(e - b) <= ss * sst->sst_len)
     return 0;
   DPRINTF(("%d: offset begin %p < end %p || %" SIZE_T_FORMAT "u"
       " > %" SIZE_T_FORMAT "u [%" SIZE_T_FORMAT "u %"
       SIZE_T_FORMAT "u]\n", line, b, e, (size_t)(e - b),
-      CDF_SEC_SIZE(h) * sst->sst_len, CDF_SEC_SIZE(h), sst->sst_len));
+      ss * sst->sst_len, ss, sst->sst_len));
   errno = EFTYPE;
   return -1;
 }
@@ -298,7 +300,7 @@ cdf_read(const cdf_info_t *info, off_t off, void *buf, size_t len)
     return -1;
   }
 
-  if (info->i_buf != NULL && info->i_len >= siz) {
+  if (info->i_buf != nullptr && info->i_len >= siz) {
     (void)memcpy(buf, &info->i_buf[off], len);
     return (ssize_t)len;
   }
@@ -365,10 +367,10 @@ cdf_read_short_sector(const cdf_stream_t *sst, void *buf, size_t offs,
   DEBUG_ONLY size_t ss = CDF_SHORT_SEC_SIZE(h);
   size_t pos = CDF_SHORT_SEC_POS(h, id);
   assert(ss == len);
-  if (pos > CDF_SEC_SIZE(h) * sst->sst_len) {
+  if (pos + len > CDF_SEC_SIZE(h) * sst->sst_len) {
     DPRINTF(("Out of bounds read %" SIZE_T_FORMAT "u > %"
         SIZE_T_FORMAT "u\n",
-        pos, CDF_SEC_SIZE(h) * sst->sst_len));
+        pos + len, CDF_SEC_SIZE(h) * sst->sst_len));
     return -1;
   }
   (void)memcpy(((char *)buf) + offs,
@@ -405,7 +407,7 @@ cdf_read_sat(const cdf_info_t *info, cdf_header_t *h, cdf_sat_t *sat)
   DPRINTF(("sat_len = %" SIZE_T_FORMAT "u ss = %" SIZE_T_FORMAT "u\n",
       sat->sat_len, ss));
   if ((sat->sat_tab = CAST(cdf_secid_t *, calloc(sat->sat_len, ss)))
-      == NULL)
+      == nullptr)
     return -1;
 
   for (i = 0; i < __arraycount(h->h_master_sat); i++) {
@@ -418,7 +420,7 @@ cdf_read_sat(const cdf_info_t *info, cdf_header_t *h, cdf_sat_t *sat)
     }
   }
 
-  if ((msa = CAST(cdf_secid_t *, calloc(1, ss))) == NULL)
+  if ((msa = CAST(cdf_secid_t *, calloc(1, ss))) == nullptr)
     goto out1;
 
   mid = h->h_secid_first_sector_in_master_sat;
@@ -468,7 +470,8 @@ size_t
 cdf_count_chain(const cdf_sat_t *sat, cdf_secid_t sid, size_t size)
 {
   size_t i, j;
-  cdf_secid_t maxsector = (cdf_secid_t)(sat->sat_len * size);
+  cdf_secid_t maxsector = (cdf_secid_t)(
+      (sat->sat_len * size) / sizeof(maxsector));
 
   DPRINTF(("Chain:"));
   for (j = i = 0; sid >= 0; i++, j++) {
@@ -478,8 +481,8 @@ cdf_count_chain(const cdf_sat_t *sat, cdf_secid_t sid, size_t size)
       errno = EFTYPE;
       return (size_t)-1;
     }
-    if (sid > maxsector) {
-      DPRINTF(("Sector %d > %d\n", sid, maxsector));
+    if (sid >= maxsector) {
+      DPRINTF(("Sector %d >= %d\n", sid, maxsector));
       errno = EFTYPE;
       return (size_t)-1;
     }
@@ -502,7 +505,7 @@ cdf_read_long_sector_chain(const cdf_info_t *info, const cdf_header_t *h,
     return -1;
 
   scn->sst_tab = calloc(scn->sst_len, ss);
-  if (scn->sst_tab == NULL)
+  if (scn->sst_tab == nullptr)
     return -1;
 
   for (j = i = 0; sid >= 0; i++, j++) {
@@ -544,11 +547,11 @@ cdf_read_short_sector_chain(const cdf_header_t *h,
   scn->sst_len = cdf_count_chain(ssat, sid, CDF_SEC_SIZE(h));
   scn->sst_dirlen = len;
 
-  if (sst->sst_tab == NULL || scn->sst_len == (size_t)-1)
+  if (sst->sst_tab == nullptr || scn->sst_len == (size_t)-1)
     return -1;
 
   scn->sst_tab = calloc(scn->sst_len, ss);
-  if (scn->sst_tab == NULL)
+  if (scn->sst_tab == nullptr)
     return -1;
 
   for (j = i = 0; sid >= 0; i++, j++) {
@@ -583,7 +586,7 @@ cdf_read_sector_chain(const cdf_info_t *info, const cdf_header_t *h,
     cdf_secid_t sid, size_t len, cdf_stream_t *scn)
 {
 
-  if (len < h->h_min_size_standard_stream && sst->sst_tab != NULL)
+  if (len < h->h_min_size_standard_stream && sst->sst_tab != nullptr)
     return cdf_read_short_sector_chain(h, ssat, sst, sid, len,
         scn);
   else
@@ -608,10 +611,10 @@ cdf_read_dir(const cdf_info_t *info, const cdf_header_t *h,
   dir->dir_len = ns * nd;
   dir->dir_tab = CAST(cdf_directory_t *,
       calloc(dir->dir_len, sizeof(dir->dir_tab[0])));
-  if (dir->dir_tab == NULL)
+  if (dir->dir_tab == nullptr)
     return -1;
 
-  if ((buf = CAST(char *, malloc(ss))) == NULL) {
+  if ((buf = CAST(char *, malloc(ss))) == nullptr) {
     free(dir->dir_tab);
     return -1;
   }
@@ -657,7 +660,7 @@ cdf_read_ssat(const cdf_info_t *info, const cdf_header_t *h,
     return -1;
 
   ssat->sat_tab = CAST(cdf_secid_t *, calloc(ssat->sat_len, ss));
-  if (ssat->sat_tab == NULL)
+  if (ssat->sat_tab == nullptr)
     return -1;
 
   for (j = i = 0; sid >= 0; i++, j++) {
@@ -688,11 +691,13 @@ out:
 
 int
 cdf_read_short_stream(const cdf_info_t *info, const cdf_header_t *h,
-    const cdf_sat_t *sat, const cdf_dir_t *dir, cdf_stream_t *scn)
+    const cdf_sat_t *sat, const cdf_dir_t *dir, cdf_stream_t *scn,
+    const cdf_directory_t **root)
 {
   size_t i;
   const cdf_directory_t *d;
 
+  *root = nullptr;
   for (i = 0; i < dir->dir_len; i++)
     if (dir->dir_tab[i].d_type == CDF_DIR_TYPE_ROOT_STORAGE)
       break;
@@ -701,6 +706,7 @@ cdf_read_short_stream(const cdf_info_t *info, const cdf_header_t *h,
   if (i == dir->dir_len)
     goto out;
   d = &dir->dir_tab[i];
+  *root = d;
 
   /* If the it is not there, just fake it; some docs don't have it */
   if (d->d_stream_first_sector < 0)
@@ -709,7 +715,7 @@ cdf_read_short_stream(const cdf_info_t *info, const cdf_header_t *h,
   return  cdf_read_long_sector_chain(info, h, sat,
       d->d_stream_first_sector, d->d_size, scn);
 out:
-  scn->sst_tab = NULL;
+  scn->sst_tab = nullptr;
   scn->sst_len = 0;
   scn->sst_dirlen = 0;
   return 0;
@@ -796,7 +802,7 @@ cdf_read_property_info(const cdf_stream_t *sst, const cdf_header_t *h,
     inp = CAST(cdf_property_info_t *,
         malloc(*maxcount * sizeof(*inp)));
   }
-  if (inp == NULL)
+  if (inp == nullptr)
     goto out;
   *info = inp;
   inp += *count;
@@ -809,10 +815,18 @@ cdf_read_property_info(const cdf_stream_t *sst, const cdf_header_t *h,
   if (cdf_check_stream_offset(sst, h, e, 0, __LINE__) == -1)
     goto out;
   for (i = 0; i < sh.sh_properties; i++) {
-    size_t ofs = CDF_GETUINT32(p, (i << 1) + 1);
+    size_t tail = (i << 1) + 1;
+    if (cdf_check_stream_offset(sst, h, p, tail * sizeof(uint32_t),
+            __LINE__) == -1)
+      goto out;
+    size_t ofs = CDF_GETUINT32(p, tail);
     q = (const uint8_t *)(const void *)
         ((const char *)(const void *)p + ofs
         - 2 * sizeof(uint32_t));
+    if (q < p) {
+      DPRINTF(("Wrapped around %p < %p\n", q, p));
+      goto out;
+    }
     if (q > e) {
       DPRINTF(("Ran of the end %p > %p\n", q, e));
       goto out;
@@ -823,6 +837,10 @@ cdf_read_property_info(const cdf_stream_t *sst, const cdf_header_t *h,
         i, inp[i].pi_id, inp[i].pi_type, q - p, offs));
     if (inp[i].pi_type & CDF_VECTOR) {
       nelements = CDF_GETUINT32(q, 1);
+      if (nelements == 0) {
+        DPRINTF(("CDF_VECTOR with nelements == 0\n"));
+        goto out;
+      }
       o = 2;
     } else {
       nelements = 1;
@@ -890,14 +908,15 @@ cdf_read_property_info(const cdf_stream_t *sst, const cdf_header_t *h,
         *maxcount += nelements;
         inp = CAST(cdf_property_info_t *,
             realloc(*info, *maxcount * sizeof(*inp)));
-        if (inp == NULL)
+        if (inp == nullptr)
           goto out;
         *info = inp;
         inp = *info + nelem;
       }
       DPRINTF(("nelements = %" SIZE_T_FORMAT "u\n",
           nelements));
-      for (j = 0; j < nelements; j++, i++) {
+      for (j = 0; j < nelements && i < sh.sh_properties;
+          j++, i++) {
         uint32_t l = CDF_GETUINT32(q, o);
         inp[i].pi_str.s_len = l;
         inp[i].pi_str.s_buf = (const char *)
@@ -942,7 +961,7 @@ int
 cdf_unpack_summary_info(const cdf_stream_t *sst, const cdf_header_t *h,
     cdf_summary_info_header_t *ssi, cdf_property_info_t **info, size_t *count)
 {
-  size_t i, maxcount;
+  size_t maxcount;
   const cdf_summary_info_header_t *si =
       CAST(const cdf_summary_info_header_t *, sst->sst_tab);
   const cdf_section_declaration_t *sd =
@@ -957,20 +976,13 @@ cdf_unpack_summary_info(const cdf_stream_t *sst, const cdf_header_t *h,
   ssi->si_os = CDF_TOLE2(si->si_os);
   ssi->si_class = si->si_class;
   cdf_swap_class(&ssi->si_class);
-  ssi->si_count = CDF_TOLE2(si->si_count);
+  ssi->si_count = CDF_TOLE4(si->si_count);
   *count = 0;
   maxcount = 0;
-  *info = NULL;
-  for (i = 0; i < CDF_TOLE4(si->si_count); i++) {
-    if (i >= CDF_LOOP_LIMIT) {
-      DPRINTF(("Unpack summary info loop limit"));
-      errno = EFTYPE;
-      return -1;
-    }
-    if (cdf_read_property_info(sst, h, CDF_TOLE4(sd->sd_offset),
-        info, count, &maxcount) == -1) {
-      return -1;
-    }
+  *info = nullptr;
+  if (cdf_read_property_info(sst, h, CDF_TOLE4(sd->sd_offset),
+      info, count, &maxcount) == -1) {
+    return -1;
   }
   return 0;
 }
@@ -1176,7 +1188,7 @@ cdf_dump_dir(const cdf_info_t *info, const cdf_header_t *h,
       (void)fprintf(stderr, "Storage: %d\n", d->d_storage);
       break;
     case CDF_DIR_TYPE_USER_STREAM:
-      if (sst == NULL)
+      if (sst == nullptr)
         break;
       if (cdf_read_sector_chain(info, h, sat, ssat, sst,
           d->d_stream_first_sector, d->d_size, &scn) == -1) {
@@ -1307,7 +1319,7 @@ main(int argc, char *argv[])
     return -1;
   }
 
-  info.i_buf = NULL;
+  info.i_buf = nullptr;
   info.i_len = 0;
   for (i = 1; i < argc; i++) {
     if ((info.i_fd = open(argv[1], O_RDONLY)) == -1)

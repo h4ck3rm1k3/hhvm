@@ -71,7 +71,6 @@ StatementPtr CatchStatement::clone() {
 // static analysis functions
 
 void CatchStatement::analyzeProgram(AnalysisResultPtr ar) {
-  addUserClass(ar, m_className);
   m_variable->analyzeProgram(ar);
   (void)resolveClass();
   if (m_stmt) m_stmt->analyzeProgram(ar);
@@ -117,20 +116,6 @@ void CatchStatement::setNthKid(int n, ConstructPtr cp) {
       assert(false);
       break;
   }
-}
-
-void CatchStatement::inferTypes(AnalysisResultPtr ar) {
-  ClassScopePtr cls = resolveClassWithChecks();
-  TypePtr type;
-  m_valid = cls || isRedeclared();
-
-  // This can never be a specific exception type, because a future exception
-  // class may be re-declaring, then generated code like this won't work with
-  // DynamicObjectData: p_exception v_e = e;
-  type = Type::Object;
-
-  m_variable->inferAndCheck(ar, type, true);
-  if (m_stmt) m_stmt->inferTypes(ar);
 }
 
 ///////////////////////////////////////////////////////////////////////////////

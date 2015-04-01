@@ -18,12 +18,13 @@
 #define incl_HPHP_UNARY_OP_EXPRESSION_H_
 
 #include "hphp/compiler/expression/expression.h"
-#include "hphp/runtime/base/complex-types.h"
 
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
 
 DECLARE_BOOST_TYPES(UnaryOpExpression);
+
+struct Variant;
 
 class UnaryOpExpression : public Expression,
                           public LocalEffectsContainer {
@@ -40,7 +41,6 @@ public:
   DECL_AND_IMPL_LOCAL_EFFECTS_METHODS;
 
   ExpressionPtr preOptimize(AnalysisResultConstPtr ar);
-  ExpressionPtr postOptimize(AnalysisResultConstPtr ar);
   virtual void onParse(AnalysisResultConstPtr ar, FileScopePtr scope);
   virtual bool isTemporary() const;
   virtual bool isRefable(bool checkError = false) const;
@@ -69,8 +69,6 @@ protected:
 private:
   bool preCompute(const Variant& value, Variant &result);
   void setExistContext();
-  static void SetExpTypeForExistsContext(AnalysisResultPtr ar,
-                                         ExpressionPtr e, bool allowPrimitives);
 };
 
 ///////////////////////////////////////////////////////////////////////////////

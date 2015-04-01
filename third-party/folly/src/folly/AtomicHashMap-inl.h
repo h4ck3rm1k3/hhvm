@@ -78,7 +78,7 @@ typename AtomicHashMap<KeyT, ValueT, HashFcn, EqualFcn, Allocator>::SimpleRetT
 AtomicHashMap<KeyT, ValueT, HashFcn, EqualFcn, Allocator>::
 insertInternal(key_type key, T&& value) {
  beginInsertInternal:
-  int nextMapIdx = // this maintains our state
+  auto nextMapIdx = // this maintains our state
     numMapsAllocated_.load(std::memory_order_acquire);
   typename SubMap::SimpleRetT ret;
   FOR_EACH_RANGE(i, 0, nextMapIdx) {
@@ -370,9 +370,7 @@ struct AtomicHashMap<KeyT, ValueT, HashFcn, EqualFcn, Allocator>::ahm_iterator
       : ahm_(ahm)
       , subMap_(subMap)
       , subIt_(subIt)
-  {
-    checkAdvanceToNextSubmap();
-  }
+  {}
 
   friend class boost::iterator_core_access;
 
@@ -408,7 +406,7 @@ struct AtomicHashMap<KeyT, ValueT, HashFcn, EqualFcn, Allocator>::ahm_iterator
 
     SubMap* thisMap = ahm_->subMaps_[subMap_].
       load(std::memory_order_relaxed);
-    if (subIt_ == thisMap->end()) {
+    while (subIt_ == thisMap->end()) {
       // This sub iterator is done, advance to next one
       if (subMap_ + 1 <
           ahm_->numMapsAllocated_.load(std::memory_order_acquire)) {
@@ -417,6 +415,7 @@ struct AtomicHashMap<KeyT, ValueT, HashFcn, EqualFcn, Allocator>::ahm_iterator
         subIt_ = thisMap->begin();
       } else {
         ahm_ = nullptr;
+        return;
       }
     }
   }

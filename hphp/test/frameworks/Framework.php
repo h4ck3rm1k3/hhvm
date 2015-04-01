@@ -428,7 +428,7 @@ class Framework {
                                  "Skipped" => 0, "Incomplete" => 0 };
           foreach ($results_arr as $result) {
             // Strip spaces, then look for the : separator
-            $res_arr = split(":", str_replace(" ", "", $result));
+            $res_arr = explode(":", str_replace(" ", "", $result));
             // Remove any possible periods.
             $parsed_results[$res_arr[0]] =
                           (int)(str_replace(".", "", $res_arr[1]));
@@ -520,14 +520,14 @@ class Framework {
 
   public function clean(): void {
     // Get rid of any old data, except the expect file and test info, of course.
-    unlink($this->out_file);
-    unlink($this->diff_file);
-    unlink($this->errors_file);
-    unlink($this->stats_file);
-    unlink($this->fatals_file);
+    delete_file($this->out_file);
+    delete_file($this->diff_file);
+    delete_file($this->errors_file);
+    delete_file($this->stats_file);
+    delete_file($this->fatals_file);
 
     if (Options::$generate_new_expect_file) {
-      unlink($this->expect_file);
+      delete_file($this->expect_file);
       human("Resetting the expect file for ".$this->name.". ".
             "Establishing new baseline with gray dots...\n");
     }
@@ -566,21 +566,106 @@ class Framework {
   // delete the framework from your repo). The proxy could make things a bit
   // adventurous, so we will see how this works out after some time to test it
   // out
-  protected function install(): void {
+  final private function install(): void {
     human("Installing ".$this->name.
           ". You will see white dots during install.....\n");
     // Get rid of any test file and test information. Why? Well, for example,
     // just in case the frameworks are being installed in a different directory
     // path. The tests files file would have the wrong path information then.
-    unlink($this->tests_file);
-    unlink($this->test_files_file);
+    delete_file($this->tests_file);
+    delete_file($this->test_files_file);
+
+    $cache_tarball = null;
+    if (Options::$cache_directory) {
+      $cache_tarball = Options::$cache_directory.'/'.
+        $this->name.'-'.$this->git_commit.'.tar.bz2';
+      if (file_exists($cache_tarball)) {
+        $pd = new PharData($cache_tarball);
+        $pd->extractTo(dirname($this->install_root));
+        $this->disableTestFiles();
+        return;
+      }
+    }
+
+    if (Options::$local_source_only) {
+      error_and_exit(
+        '--local-source-only specified, but no local source for '.
+        $this->name,
+        'aborted'
+      );
+    }
+
     $this->installCode();
-    $this->installDependencies();
+
+    if ($cache_tarball !== null) {
+      // Remove data we don't need as otherwise the caches get huge.
+      // We switch to the shallow clone first so that generated files like
+      // vendor/ go into the new checkout, not the original one.
+      rename($this->install_root, $this->install_root.'-orig');
+      // prepend file:// as git refuses to do a shallow clone of 'local' repos
+      run_install(
+        'git clone --depth 1 '.
+        'file://'.$this->install_root.'-orig '.
+        $this->install_root,
+        __DIR__
+      );
+      remove_dir_recursive(nullthrows($this->install_root).'-orig');
+    }
+
     if ($this->pull_requests != null) {
       $this->installPullRequests();
     }
+    $this->extraPreComposer();
+    $this->installDependencies();
+    $this->extraPostComposer();
+
+    if ($cache_tarball !== null) {
+      if (file_exists($this->install_root.'/vendor')) {
+        $rdi = new RecursiveDirectoryIterator(
+          $this->install_root.'/vendor'
+        );
+        $rii = new RecursiveIteratorIterator(
+          $rdi,
+          RecursiveIteratorIterator::CHILD_FIRST
+        );
+        foreach ($rii as $path => $info) {
+          $path = $info->getRealPath();
+          if (!$info->isDir()) {
+            // submodules end up with a file called .git. Directory
+            // iterators don't work so well on them :p
+            continue;
+          }
+          $basename = basename($path); // $info->getBasename() will be '.'
+          if ($basename === '.git') {
+            remove_dir_recursive($path);
+          }
+        }
+      }
+      run_install(
+        'tar jcf '.$cache_tarball.' '.basename($this->install_root),
+        dirname($this->install_root)
+      );
+    }
+
     $this->disableTestFiles();
   }
+
+  /** Extension point for subclasses to execute code before Composer.
+   *
+   * The main code (and any pull requests) are already fetched, but no
+   * dependencies have been yet; any code that should affect the
+   * autoload map should be done here.
+   */
+  protected function extraPreComposer(): void {
+  }
+  /** Extension point for subclasses to execute code after Composer.
+   *
+   * The main code, pull requests, and dependencies have been fetched
+   * at this point, and the autoload map will have been generated.
+   */
+  protected function extraPostComposer(): void {
+  }
+
 
   protected function isInstalled(): bool {
     /*****************************************
@@ -708,8 +793,8 @@ class Framework {
         proc_close($proc);
         if (!pcntl_wifexited($child_status) ||
             pcntl_wexitstatus($child_status) !== 0) {
-          unlink($this->tests_file);
-          unlink($this->test_files_file);
+          delete_file($this->tests_file);
+          delete_file($this->test_files_file);
           error_and_exit("Could not get tests for ".$this->name);
         }
       } else {
@@ -792,7 +877,10 @@ class Framework {
     return $updated_tests;
   }
 
-  protected function installDependencies(): void {
+  /* If you think you need to override this, look at extraPreComposer() and
+   * extraPostComposer() instead.
+   */
+  final private function installDependencies(): void {
     $composer_json_path = find_first_file_recursive(
       Set {"composer.json"},
       nullthrows($this->install_root),
@@ -801,31 +889,6 @@ class Framework {
     verbose("composer.json found in: $composer_json_path\n");
     // Check to see if composer dependencies are necessary to run the test
     if ($composer_json_path !== null) {
-      if (Options::$toran_proxy !== null) {
-        verbose("Modifying composer.json to use Toran Proxy");
-        $composer_config = json_decode(
-          file_get_contents($composer_json_path.'/composer.json'),
-          /* assoc = */ true,
-        );
-        $repos = [
-          ['packagist' => false],
-          ['type' => 'composer', 'url' => Options::$toran_proxy],
-        ];
-        foreach ($composer_config['repositories'] as $repo) {
-          if (array_key_exists('packagist', $repo)) {
-            continue;
-          }
-          if (isset($repo['type']) && $repo['type'] === 'composer') {
-            continue;
-          }
-          $repos[] = $repo;
-        }
-        $composer_config['repositories'] = $repos;
-        file_put_contents(
-          $composer_json_path.'/composer.json',
-          json_encode($composer_config)
-        );
-      }
       verbose("Retrieving dependencies for framework ".$this->name.".....\n");
       // Use the timeout to avoid curl SlowTimer timeouts and problems
       $dependencies_install_cmd = get_runtime_build();

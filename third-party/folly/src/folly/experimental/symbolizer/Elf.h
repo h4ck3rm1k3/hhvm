@@ -193,7 +193,7 @@ class ElfFile {
 
  private:
   bool init(const char** msg);
-  void destroy();
+  void reset();
   ElfFile(const ElfFile&) = delete;
   ElfFile& operator=(const ElfFile&) = delete;
 
@@ -243,4 +243,3 @@ class ElfFile {
 #include <folly/experimental/symbolizer/Elf-inl.h>
 
 #endif /* FOLLY_EXPERIMENTAL_SYMBOLIZER_ELF_H_ */
-

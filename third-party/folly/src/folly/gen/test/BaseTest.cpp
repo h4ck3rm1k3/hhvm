@@ -124,7 +124,7 @@ TEST(Gen, Member) {
           | sum);
   EXPECT_EQ(10 * (1 + 10) / 2,
             from(counters)
-          | mapped([](const Counter& c) { return &c; })
+          | indirect
           | member(&Counter::count)
           | sum);
   EXPECT_EQ(10 * (2 + 11) / 2,
@@ -133,7 +133,7 @@ TEST(Gen, Member) {
           | sum);
   EXPECT_EQ(10 * (3 + 12) / 2,
             from(counters)
-          | mapped([](Counter& c) { return &c; })
+          | indirect
           | member(&Counter::incr)
           | sum);
   EXPECT_EQ(10 * (3 + 12) / 2,
@@ -1010,6 +1010,11 @@ TEST(Gen, Dereference) {
   }
 }
 
+TEST(Gen, Indirect) {
+  vector<int> vs{1};
+  EXPECT_EQ(&vs[0], from(vs) | indirect | first);
+}
+
 TEST(Gen, Guard) {
   using std::runtime_error;
   EXPECT_THROW(from({"1", "a", "3"})
@@ -1066,6 +1071,31 @@ TEST(Gen, BatchMove) {
       })
     | as<vector>();
   EXPECT_EQ(expected, actual);
+}
+
+TEST(Gen, Just) {
+  {
+    int x = 3;
+    auto j = just(x);
+    EXPECT_EQ(&x, j | indirect | first);
+    x = 4;
+    EXPECT_EQ(4, j | first);
+  }
+  {
+    int x = 3;
+    const int& cx = x;
+    auto j = just(cx);
+    EXPECT_EQ(&x, j | indirect | first);
+    x = 5;
+    EXPECT_EQ(5, j | first);
+  }
+  {
+    int x = 3;
+    auto j = just(std::move(x));
+    EXPECT_NE(&x, j | indirect | first);
+    x = 5;
+    EXPECT_EQ(3, j | first);
+  }
 }
 
 int main(int argc, char *argv[]) {

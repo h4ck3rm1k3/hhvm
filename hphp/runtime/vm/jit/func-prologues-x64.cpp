@@ -16,6 +16,7 @@
 #include "hphp/runtime/vm/jit/func-prologues-x64.h"
 
 #include "hphp/util/asm-x64.h"
+#include "hphp/util/ringbuffer.h"
 
 #include "hphp/runtime/ext/ext_closure.h"
 #include "hphp/runtime/vm/func.h"
@@ -68,24 +69,19 @@ TCA emitFuncGuard(X64Assembler& a, const Func* func) {
   assert(kScratchCrossTraceRegs.contains(rdx));
 
   auto funcImm = Immed64(func);
-  const int kAlignMask = kCacheLineMask;
-  int loBits = uintptr_t(a.frontier()) & kAlignMask;
-  int delta, size;
+  int nBytes, offset;
 
   // Ensure the immediate is safely smashable
   // the immediate must not cross a qword boundary,
   if (!funcImm.fits(sz::dword)) {
-    size = 8;
-    delta = loBits + kFuncMovImm;
+    nBytes = kFuncGuardLen;
+    offset = kFuncMovImm;
   } else {
-    size = 4;
-    delta = loBits + kFuncCmpImm;
+    nBytes = kFuncGuardShortLen;
+    offset = kFuncCmpImm;
   }
 
-  delta = (delta + size - 1) & kAlignMask;
-  if (delta < size - 1) {
-    a.emitNop(size - 1 - delta);
-  }
+  mcg->backEnd().prepareForSmash(a.code(), nBytes, offset);
 
   TCA aStart DEBUG_ONLY = a.frontier();
   if (!funcImm.fits(sz::dword)) {
@@ -131,7 +127,7 @@ SrcKey emitPrologueWork(Func* func, int nPassed) {
   Asm a { mcg->code.main() };
 
   if (mcg->tx().mode() == TransKind::Proflogue) {
-    assert(func->shouldPGO());
+    assert(shouldPGOFunc(*func));
     TransID transId  = mcg->tx().profData()->curTransID();
     auto counterAddr = mcg->tx().profData()->transCounterAddr(transId);
     a.movq(counterAddr, rAsm);
@@ -331,7 +327,7 @@ SrcKey emitPrologueWork(Func* func, int nPassed) {
   // Check surprise flags in the same place as the interpreter: after
   // setting up the callee's frame but before executing any of its
   // code
-  emitCheckSurpriseFlagsEnter(mcg->code.main(), mcg->code.cold(), fixup);
+  emitCheckSurpriseFlagsEnter(mcg->code.main(), mcg->code.cold(), rVmTl, fixup);
 
   if (func->isClosureBody() && func->cls()) {
     int entry = nPassed <= numNonVariadicParams
@@ -342,7 +338,7 @@ SrcKey emitPrologueWork(Func* func, int nPassed) {
                    rax);
     a.    jmp     (rax);
   } else {
-    emitBindJmp(mcg->code.main(), mcg->code.frozen(), funcBody);
+    emitBindJ(mcg->code.main(), mcg->code.frozen(), CC_None, funcBody);
   }
   return funcBody;
 }
@@ -359,17 +355,16 @@ TCA emitCallArrayPrologue(Func* func, DVFuncletsVec& dvs) {
   assert(mcg->cgFixups().empty());
   if (dvs.size() == 1) {
     a.  cmpl  (dvs[0].first, rVmFp[AROFF(m_numArgsAndFlags)]);
-    emitBindJcc(mainCode, frozenCode, CC_LE,
-                SrcKey(func, dvs[0].second, false));
-    emitBindJmp(mainCode, frozenCode, SrcKey(func, func->base(), false));
+    emitBindJ(mainCode, frozenCode, CC_LE, SrcKey(func, dvs[0].second, false));
+    emitBindJ(mainCode, frozenCode, CC_None, SrcKey(func, func->base(), false));
   } else {
     a.    loadl  (rVmFp[AROFF(m_numArgsAndFlags)], reg::eax);
     for (unsigned i = 0; i < dvs.size(); i++) {
       a.  cmpl   (dvs[i].first, reg::eax);
-      emitBindJcc(mainCode, frozenCode, CC_LE,
-                  SrcKey(func, dvs[i].second, false));
+      emitBindJ(mainCode, frozenCode, CC_LE,
+                SrcKey(func, dvs[i].second, false));
     }
-    emitBindJmp(mainCode, frozenCode, SrcKey(func, func->base(), false));
+    emitBindJ(mainCode, frozenCode, CC_None, SrcKey(func, func->base(), false));
   }
   mcg->cgFixups().process(nullptr);
   return start;
@@ -380,6 +375,15 @@ SrcKey emitFuncPrologue(Func* func, int nPassed, TCA& start) {
   Asm a { mcg->code.main() };
 
   start = emitFuncGuard(a, func);
+  if (Trace::moduleEnabledRelease(Trace::ringbuffer)) {
+    auto arg = 0;
+    auto name = func->fullName()->data();
+    a.  movq   (reinterpret_cast<uintptr_t>(name), argNumToRegName[arg++]);
+    a.  movq   (strlen(name), argNumToRegName[arg++]);
+    a.  movq   (Trace::RBTypeFuncPrologue, argNumToRegName[arg++]);
+    a.  call   (TCA(Trace::ringbufferMsg));
+  }
+
   if (RuntimeOption::EvalJitTransCounters) emitTransCounterInc(a);
   a.    pop    (rStashedAR[AROFF(m_savedRip)]);
   maybeEmitStackCheck(a, func);
@@ -396,7 +400,7 @@ SrcKey emitMagicFuncPrologue(Func* func, uint32_t nPassed, TCA& start) {
   Asm a { mcg->code.main() };
   Label not_magic_call;
   auto const rInvName = r13;
-  assert(!kSpecialCrossTraceRegs.contains(r13));
+  assert(!kCrossCallRegs.contains(r13));
 
   auto skFuncBody = SrcKey {};
   auto callFixup  = TCA { nullptr };

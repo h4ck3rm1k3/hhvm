@@ -58,6 +58,11 @@ AC_CHECK_LIB([glog],[openlog],[],[AC_MSG_ERROR(
 AC_CHECK_LIB([gflags],[getenv],[],[AC_MSG_ERROR(
              [Please install google-gflags library])])
 
+AC_CHECK_LIB(ssl,
+        SSL_ctrl,
+        [],
+        [AC_MSG_ERROR(["Error: libssl required"])])
+
 # check for boost libs
 AX_BOOST_BASE([1.20.0], [], [AC_MSG_ERROR(
               [Please install boost >= 1.20.0 (thread, regex, and system)])])
@@ -72,13 +77,13 @@ AC_CHECK_HEADERS([fcntl.h features.h inttypes.h limits.h stdint.h stdlib.h strin
 
 AC_CHECK_HEADER(double-conversion/double-conversion.h, [], [AC_MSG_ERROR(
                 [Couldn't find double-conversion.h, please download from \
-                http://code.google.com/p/double-conversion/])], [])
+                 https://github.com/floitsch/double-conversion/])], [])
 AC_CHECK_LIB([double-conversion],[ceil],[],[AC_MSG_ERROR(
              [Please install double-conversion library])])
 
 AC_CHECK_LIB([event], [event_set], [], [AC_MSG_ERROR([Unable to find libevent])])
 
-AC_CHECK_LIB([jemalloc], [rallocm])
+AC_CHECK_LIB([jemalloc], [xallocx])
 
 # Checks for typedefs, structures, and compiler characteristics.
 AC_HEADER_STDBOOL
@@ -87,10 +92,8 @@ AC_C_INLINE
 AC_TYPE_SIZE_T
 AC_HEADER_TIME
 AC_C_VOLATILE
-AC_CHECK_TYPE([__int128],
-  [AC_DEFINE([HAVE_INT128_T], [1], [Define if __int128 exists])],
-  [AC_DEFINE([HAVE_INT128_T], [0], [Define if __int128 does not exist])])
-AC_CHECK_TYPES([ptrdiff_t])
+AC_CHECK_TYPE([__int128], AC_DEFINE([HAVE_INT128_T], [1], [Define if we have __int128]))
+AC_CHECK_TYPES([ptrdiff_t, pthread_spinlock_t])
 
 AC_CACHE_CHECK(
   [for ifunc support],
@@ -261,6 +264,23 @@ AC_SEARCH_LIBS([clock_gettime], [rt],
     [Define to 1 if we support clock_gettime(2).]),
   [])
 
+# Check for pthread_atfork(3). This is not in an AC_CHECK_FUNCS() because we
+# want to include pthread.h if necessary.
+AC_CACHE_CHECK(
+  [for pthread_atfork support],
+  [folly_cv_prog_cc_pthread_atfork],
+  [AC_COMPILE_IFELSE(
+    [AC_LANG_SOURCE[
+      #include <pthread.h>
+      void func() {pthread_atfork(NULL, NULL, NULL);}]
+    ],
+    [folly_cv_prog_cc_pthread_atfork=yes],
+    [folly_cv_prog_cc_pthread_atfork=no])])
+
+if test "$folly_cv_prog_cc_pthread_atfork" = "yes"; then
+  AC_DEFINE([HAVE_PTHREAD_ATFORK], [1], [Define to 1 if the compiler supports pthread_atfork])
+fi
+
 # Checks for library functions.
 AC_CHECK_FUNCS([getdelim \
                 gettimeofday \
@@ -269,7 +289,6 @@ AC_CHECK_FUNCS([getdelim \
                 pow \
                 strerror \
                 pthread_yield \
-                rallocm \
                 malloc_size \
                 malloc_usable_size \
                 memrchr \
@@ -299,7 +318,7 @@ AM_CONDITIONAL([HAVE_X86_64], [test "$build_cpu" = "x86_64"])
 AM_CONDITIONAL([HAVE_LINUX], [test "$build_os" == "linux-gnu"])
 AM_CONDITIONAL([HAVE_WEAK_SYMBOLS],
                [test "$folly_cv_prog_cc_weak_symbols" = "yes"])
-AM_CONDITIONAL([HAVE_BITS_FUNCTEXCEPT], [test "$ac_cv_header_bits_functexcept" = "yes"])
+AM_CONDITIONAL([HAVE_BITS_FUNCTEXCEPT], [test "$ac_cv_header_bits_functexcept_h" = "yes"])
 
 # Output
 AC_CONFIG_FILES([Makefile

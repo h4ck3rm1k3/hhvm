@@ -25,10 +25,12 @@ namespace HPHP {
 class Array;
 struct Func;
 struct Class;
+class StreamContext;
 
 class UserFSNode {
 public:
-  explicit UserFSNode(Class* cls, const Variant& context = uninit_null());
+  explicit UserFSNode(Class* cls,
+                      const SmartPtr<StreamContext>& context = nullptr);
 
 protected:
   Variant invoke(const Func* func, const String& name, const Array& args,
@@ -42,8 +44,6 @@ protected:
 protected:
   const Func* m_Call;
   LowClassPtr m_cls;
-
-private:
   Object m_obj;
 };
 

@@ -183,9 +183,18 @@ class AtomicHashArray : boost::noncopyable {
 
   bool empty() const { return size() == 0; }
 
-  iterator begin()             { return iterator(this, 0); }
+  iterator begin() {
+    iterator it(this, 0);
+    it.advancePastEmpty();
+    return it;
+  }
+  const_iterator begin() const {
+    const_iterator it(this, 0);
+    it.advancePastEmpty();
+    return it;
+  }
+
   iterator end()               { return iterator(this, capacity_); }
-  const_iterator begin() const { return const_iterator(this, 0); }
   const_iterator end() const   { return const_iterator(this, capacity_); }
 
   // See AtomicHashMap::findAt - access elements directly
@@ -256,8 +265,8 @@ class AtomicHashArray : boost::noncopyable {
   // reading the value, so be careful of calling size() too frequently.  This
   // increases insertion throughput several times over while keeping the count
   // accurate.
-  ThreadCachedInt<int64_t> numEntries_;  // Successful key inserts
-  ThreadCachedInt<int64_t> numPendingEntries_; // Used by insertInternal
+  ThreadCachedInt<uint64_t> numEntries_;  // Successful key inserts
+  ThreadCachedInt<uint64_t> numPendingEntries_; // Used by insertInternal
   std::atomic<int64_t> isFull_; // Used by insertInternal
   std::atomic<int64_t> numErases_;   // Successful key erases
 
@@ -296,6 +305,6 @@ class AtomicHashArray : boost::noncopyable {
 
 } // namespace folly
 
-#include "AtomicHashArray-inl.h"
+#include <folly/AtomicHashArray-inl.h>
 
 #endif // FOLLY_ATOMICHASHARRAY_H_

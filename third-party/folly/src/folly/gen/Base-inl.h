@@ -328,13 +328,32 @@ class Empty : public GenImpl<Value, Empty<Value>> {
   void foreach(Body&&) const {}
 };
 
-template<class Value>
-class Just : public GenImpl<const Value&, Just<Value>> {
+template <class Value>
+class SingleReference : public GenImpl<Value&, SingleReference<Value>> {
   static_assert(!std::is_reference<Value>::value,
-                "Just requires non-ref types");
-  const Value value_;
+                "SingleReference requires non-ref types");
+  Value* ptr_;
  public:
-  explicit Just(Value value) : value_(std::forward<Value>(value)) {}
+  explicit SingleReference(Value& ref) : ptr_(&ref) {}
+
+  template <class Handler>
+  bool apply(Handler&& handler) const {
+    return handler(*ptr_);
+  }
+
+  template <class Body>
+  void foreach(Body&& body) const {
+    body(*ptr_);
+  }
+};
+
+template <class Value>
+class SingleCopy : public GenImpl<const Value&, SingleCopy<Value>> {
+  static_assert(!std::is_reference<Value>::value,
+                "SingleCopy requires non-ref types");
+  Value value_;
+ public:
+  explicit SingleCopy(Value value) : value_(std::forward<Value>(value)) {}
 
   template <class Handler>
   bool apply(Handler&& handler) const {
@@ -1854,6 +1873,58 @@ class Dereference : public Operator<Dereference> {
   }
 };
 
+/**
+ * Indirect - For producing a sequence of the addresses of the values in the
+ * input.
+ *
+ * This type is usually used through the 'indirect' static value, like:
+ *
+ *   auto ptrs = from(refs) | indirect;
+ */
+class Indirect : public Operator<Indirect> {
+ public:
+  Indirect() {}
+
+  template <class Value,
+            class Source,
+            class Result = typename std::remove_reference<Value>::type*>
+  class Generator : public GenImpl<Result, Generator<Value, Source, Result>> {
+    Source source_;
+    static_assert(!std::is_rvalue_reference<Value>::value,
+                  "Cannot use indirect on an rvalue");
+
+   public:
+    explicit Generator(Source source) : source_(std::move(source)) {}
+
+    template <class Body>
+    void foreach (Body&& body) const {
+      source_.foreach([&](Value value) {
+        return body(&value);
+      });
+    }
+
+    template <class Handler>
+    bool apply(Handler&& handler) const {
+      return source_.apply([&](Value value) -> bool {
+        return handler(&value);
+      });
+    }
+
+    // not actually infinite, since an empty generator will end the cycles.
+    static constexpr bool infinite = Source::infinite;
+  };
+
+  template <class Source, class Value, class Gen = Generator<Value, Source>>
+  Gen compose(GenImpl<Value, Source>&& source) const {
+    return Gen(std::move(source.self()));
+  }
+
+  template <class Source, class Value, class Gen = Generator<Value, Source>>
+  Gen compose(const GenImpl<Value, Source>& source) const {
+    return Gen(source.self());
+  }
+};
+
 } //::detail
 
 /**
@@ -1964,6 +2035,8 @@ static const detail::RangeConcat rconcat;
 static const detail::Cycle cycle;
 
 static const detail::Dereference dereference;
+
+static const detail::Indirect indirect;
 
 inline detail::Take take(size_t count) {
   return detail::Take(count);

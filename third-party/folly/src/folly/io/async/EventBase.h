@@ -19,6 +19,9 @@
 #include <glog/logging.h>
 #include <folly/io/async/AsyncTimeout.h>
 #include <folly/io/async/TimeoutManager.h>
+#include <folly/io/async/Request.h>
+#include <folly/Executor.h>
+#include <folly/futures/DrivableExecutor.h>
 #include <memory>
 #include <stack>
 #include <list>
@@ -50,6 +53,31 @@ class EventBaseObserver {
     int64_t busyTime, int64_t idleTime) = 0;
 };
 
+// Helper class that sets and retrieves the EventBase associated with a given
+// request via RequestContext. See Request.h for that mechanism.
+class RequestEventBase : public RequestData {
+ public:
+  static EventBase* get() {
+    auto data = dynamic_cast<RequestEventBase*>(
+        RequestContext::get()->getContextData(kContextDataName));
+    if (!data) {
+      return nullptr;
+    }
+    return data->eb_;
+  }
+
+  static void set(EventBase* eb) {
+    RequestContext::get()->setContextData(
+        kContextDataName,
+        std::unique_ptr<RequestEventBase>(new RequestEventBase(eb)));
+  }
+
+ private:
+  explicit RequestEventBase(EventBase* eb) : eb_(eb) {}
+  EventBase* eb_;
+  static constexpr const char* kContextDataName{"EventBase"};
+};
+
 /**
  * This class is a wrapper for all asynchronous I/O processing functionality
  *
@@ -68,7 +96,9 @@ class EventBaseObserver {
  * EventBase from other threads.  When it is safe to call a method from
  * another thread it is explicitly listed in the method comments.
  */
-class EventBase : private boost::noncopyable, public TimeoutManager {
+class EventBase : private boost::noncopyable,
+                  public TimeoutManager,
+                  public DrivableExecutor {
  public:
   /**
    * A callback interface to use with runInLoop()
@@ -260,6 +290,13 @@ class EventBase : private boost::noncopyable, public TimeoutManager {
   void runOnDestruction(LoopCallback* callback);
 
   /**
+   * Adds a callback that will run immediately *before* the event loop.
+   * This is very similar to runInLoop(), but will not cause the loop to break:
+   * For example, this callback could be used to get loop times.
+   */
+  void runBeforeLoop(LoopCallback* callback);
+
+  /**
    * Run the specified function in the EventBase's thread.
    *
    * This method is thread-safe, and may be called from another thread.
@@ -271,9 +308,7 @@ class EventBase : private boost::noncopyable, public TimeoutManager {
    * If runInEventBaseThread() returns true the function has successfully been
    * scheduled to run in the loop thread.  However, if the loop is terminated
    * (and never later restarted) before it has a chance to run the requested
-   * function, the function may never be run at all.  The caller is responsible
-   * for handling this situation correctly if they may terminate the loop with
-   * outstanding runInEventBaseThread() calls pending.
+   * function, the function will be run upon the EventBase's destruction.
    *
    * If two calls to runInEventBaseThread() are made from the same thread, the
    * functions will always be run in the order that they were scheduled.
@@ -303,14 +338,37 @@ class EventBase : private boost::noncopyable, public TimeoutManager {
    * function pointer and void* argument, as it has to allocate memory to copy
    * the std::function object.
    *
-   * If the EventBase loop is terminated before it has a chance to run this
-   * function, the allocated memory will be leaked.  The caller is responsible
-   * for ensuring that the EventBase loop is not terminated before this
-   * function can run.
+   * If the loop is terminated (and never later restarted) before it has a
+   * chance to run the requested function, the function will be run upon the
+   * EventBase's destruction.
    *
    * The function must not throw any exceptions.
    */
   bool runInEventBaseThread(const Cob& fn);
+
+  /*
+   * Like runInEventBaseThread, but the caller waits for the callback to be
+   * executed.
+   */
+  template<typename T>
+  bool runInEventBaseThreadAndWait(void (*fn)(T*), T* arg) {
+    return runInEventBaseThreadAndWait(reinterpret_cast<void (*)(void*)>(fn),
+                                       reinterpret_cast<void*>(arg));
+  }
+
+  /*
+   * Like runInEventBaseThread, but the caller waits for the callback to be
+   * executed.
+   */
+  bool runInEventBaseThreadAndWait(void (*fn)(void*), void* arg) {
+    return runInEventBaseThreadAndWait(std::bind(fn, arg));
+  }
+
+  /*
+   * Like runInEventBaseThread, but the caller waits for the callback to be
+   * executed.
+   */
+  bool runInEventBaseThreadAndWait(const Cob& fn);
 
   /**
    * Runs the given Cob at some time after the specified number of
@@ -385,8 +443,8 @@ class EventBase : private boost::noncopyable, public TimeoutManager {
   // guaranteed to always be present if we ever provide alternative EventBase
   // implementations that do not use libevent internally.
   event_base* getLibeventBase() const { return evb_; }
-  static const char* getLibeventVersion() { return event_get_version(); }
-  static const char* getLibeventMethod() { return event_get_method(); }
+  static const char* getLibeventVersion();
+  static const char* getLibeventMethod();
 
   /**
    * only EventHandler/AsyncTimeout subclasses and ourselves should
@@ -444,6 +502,18 @@ class EventBase : private boost::noncopyable, public TimeoutManager {
    * Returns the name of the thread that runs this event base.
    */
   const std::string& getName();
+
+  /// Implements the Executor interface
+  void add(Cob fn) override {
+    // runInEventBaseThread() takes a const&,
+    // so no point in doing std::move here.
+    runInEventBaseThread(fn);
+  }
+
+  /// Implements the DrivableExecutor interface
+  void drive() override {
+    loopOnce();
+  }
 
  private:
 
@@ -519,6 +589,7 @@ class EventBase : private boost::noncopyable, public TimeoutManager {
   CobTimeout::List pendingCobTimeouts_;
 
   LoopCallbackList loopCallbacks_;
+  LoopCallbackList runBeforeLoopCallbacks_;
   LoopCallbackList onDestructionCallbacks_;
 
   // This will be null most of the time, but point to currentCallbacks

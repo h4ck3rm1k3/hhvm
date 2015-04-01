@@ -24,6 +24,7 @@
 
 #include <boost/operators.hpp>
 
+#include <folly/Conv.h>
 #include <folly/Format.h>
 #include <folly/Range.h>
 #include <folly/IPAddressException.h>
@@ -98,7 +99,7 @@ class IPAddress : boost::totally_ordered<IPAddress> {
    * @return string representing the netblock
    */
   static std::string networkToString(const CIDRNetwork& network) {
-    return network.first.str() + "/" + std::to_string(network.second);
+    return network.first.str() + "/" + folly::to<std::string>(network.second);
   }
 
   /**
@@ -206,6 +207,7 @@ class IPAddress : boost::totally_ordered<IPAddress> {
       sockaddr_in6 *sin = reinterpret_cast<sockaddr_in6*>(dest);
       sin->sin6_addr = asV6().toAddr();
       sin->sin6_port = port;
+      sin->sin6_scope_id = asV6().getScopeId();
       return sizeof(*sin);
     } else {
       throw InvalidAddressFamilyException(family());
@@ -314,6 +316,12 @@ class IPAddress : boost::totally_ordered<IPAddress> {
   bool isLoopback() const {
     return isV4() ? asV4().isLoopback()
                   : asV6().isLoopback();
+  }
+
+  // Return true if the address qualifies as link local
+  bool isLinkLocal() const {
+    return isV4() ? asV4().isLinkLocal()
+                  : asV6().isLinkLocal();
   }
 
   // Return true if the address qualifies as broadcast.

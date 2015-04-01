@@ -187,6 +187,16 @@ std::string& stringAppendf(std::string* output,
   FOLLY_PRINTF_FORMAT_ATTR(2, 3);
 
 /**
+ * Similar to stringPrintf, but accepts a va_list argument.
+ *
+ * As with vsnprintf() itself, the value of ap is undefined after the call.
+ * These functions do not call va_end() on ap.
+ */
+std::string stringVPrintf(const char* format, va_list ap);
+void stringVPrintf(std::string* out, const char* format, va_list ap);
+std::string& stringVAppendf(std::string* out, const char* format, va_list ap);
+
+/**
  * Backslashify a string, that is, replace non-printable characters
  * with C-style (but NOT C compliant) "\xHH" encoding.  If hex_style
  * is false, then shorthand notations like "\0" will be used instead
@@ -349,7 +359,8 @@ std::string hexDump(const void* ptr, size_t size);
 fbstring errnoStr(int err);
 
 /**
- * Debug string for an exception: include type and what().
+ * Debug string for an exception: include type and what(), if
+ * defined.
  */
 inline fbstring exceptionStr(const std::exception& e) {
   return folly::to<fbstring>(demangle(typeid(e)), ": ", e.what());
@@ -363,6 +374,14 @@ inline fbstring exceptionStr(std::exception_ptr ep) {
   } catch (...) {
     return "<unknown exception>";
   }
+}
+
+template<typename E>
+auto exceptionStr(const E& e)
+  -> typename std::enable_if<!std::is_base_of<std::exception, E>::value,
+                             fbstring>::type
+{
+  return folly::to<fbstring>(demangle(typeid(e)));
 }
 
 /*
@@ -501,6 +520,17 @@ std::string join(const Delim& delimiter,
                  const std::initializer_list<Value>& values) {
   std::string output;
   join(delimiter, values.begin(), values.end(), output);
+  return output;
+}
+
+template <class Delim,
+          class Iterator,
+          typename std::enable_if<std::is_same<
+              typename std::iterator_traits<Iterator>::iterator_category,
+              std::random_access_iterator_tag>::value>::type* = nullptr>
+std::string join(const Delim& delimiter, Iterator begin, Iterator end) {
+  std::string output;
+  join(delimiter, begin, end, output);
   return output;
 }
 

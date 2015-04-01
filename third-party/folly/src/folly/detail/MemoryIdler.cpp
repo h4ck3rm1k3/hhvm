@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-#include "MemoryIdler.h"
+#include <folly/detail/MemoryIdler.h>
 #include <folly/Logging.h>
 #include <folly/Malloc.h>
 #include <folly/ScopeGuard.h>
@@ -26,13 +26,6 @@
 #include <unistd.h>
 #include <sys/mman.h>
 #include <utility>
-
-
-// weak linking means the symbol will be null if not available, instead
-// of a link failure
-extern "C" int mallctl(const char *name, void *oldp, size_t *oldlenp,
-                       void *newp, size_t newlen)
-    __attribute__((weak));
 
 
 namespace folly { namespace detail {

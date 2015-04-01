@@ -15,6 +15,7 @@
 */
 
 #include "hphp/compiler/analysis/function_scope.h"
+#include <folly/Conv.h>
 #include <utility>
 #include <vector>
 #include "hphp/compiler/analysis/analysis_result.h"
@@ -60,7 +61,7 @@ FunctionScope::FunctionScope(AnalysisResultConstPtr ar, bool method,
       m_minParam(minParam), m_numDeclParams(numDeclParam),
       m_attribute(attribute), m_modifiers(modifiers), m_hasVoid(false),
       m_method(method), m_refReturn(reference), m_virtual(false),
-      m_hasOverride(false), m_perfectVirtual(false), m_overriding(false),
+      m_hasOverride(false), m_overriding(false),
       m_volatile(false), m_persistent(false), m_pseudoMain(inPseudoMain),
       m_magicMethod(false), m_system(false), m_inlineable(false),
       m_containsThis(false), m_containsBareThis(0), m_nrvoFix(true),
@@ -123,7 +124,6 @@ FunctionScope::FunctionScope(FunctionScopePtr orig,
       m_userAttributes(orig->m_userAttributes), m_hasVoid(orig->m_hasVoid),
       m_method(orig->m_method), m_refReturn(orig->m_refReturn),
       m_virtual(orig->m_virtual), m_hasOverride(orig->m_hasOverride),
-      m_perfectVirtual(orig->m_perfectVirtual),
       m_overriding(orig->m_overriding), m_volatile(orig->m_volatile),
       m_persistent(orig->m_persistent),
       m_pseudoMain(orig->m_pseudoMain), m_magicMethod(orig->m_magicMethod),
@@ -175,6 +175,9 @@ void FunctionScope::init(AnalysisResultConstPtr ar) {
   }
   if (m_attribute & FileScope::ContainsExtract) {
     m_variables->setAttribute(VariableTable::ContainsExtract);
+  }
+  if (m_attribute & FileScope::ContainsAssert) {
+    m_variables->setAttribute(VariableTable::ContainsAssert);
   }
   if (m_attribute & FileScope::ContainsCompact) {
     m_variables->setAttribute(VariableTable::ContainsCompact);
@@ -228,7 +231,7 @@ FunctionScope::FunctionScope(bool method, const std::string &name,
       m_minParam(0), m_numDeclParams(0), m_attribute(0),
       m_modifiers(ModifierExpressionPtr()), m_hasVoid(false),
       m_method(method), m_refReturn(reference), m_virtual(false),
-      m_hasOverride(false), m_perfectVirtual(false), m_overriding(false),
+      m_hasOverride(false), m_overriding(false),
       m_volatile(false), m_persistent(false), m_pseudoMain(false),
       m_magicMethod(false), m_system(true), m_inlineable(false),
       m_containsThis(false), m_containsBareThis(0), m_nrvoFix(true),
@@ -268,9 +271,6 @@ void FunctionScope::setParamCounts(AnalysisResultConstPtr ar, int minParam,
   if (m_numDeclParams > 0) {
     m_paramNames.resize(m_numDeclParams);
     m_paramTypes.resize(m_numDeclParams);
-    m_paramTypeSpecs.resize(m_numDeclParams);
-    m_paramDefaults.resize(m_numDeclParams);
-    m_paramDefaultTexts.resize(m_numDeclParams);
     m_refs.resize(m_numDeclParams);
 
     if (m_stmt) {
@@ -285,28 +285,6 @@ void FunctionScope::setParamCounts(AnalysisResultConstPtr ar, int minParam,
         m_paramNames[i] = param->getName();
       }
       assert(m_paramNames.size() == m_numDeclParams);
-    }
-  }
-}
-
-void FunctionScope::setParamSpecs(AnalysisResultPtr ar) {
-  if (m_numDeclParams > 0 && m_stmt) {
-    MethodStatementPtr stmt = dynamic_pointer_cast<MethodStatement>(m_stmt);
-    ExpressionListPtr params = stmt->getParams();
-
-    for (int i = 0; i < m_numDeclParams; i++) {
-      ParameterExpressionPtr param =
-        dynamic_pointer_cast<ParameterExpression>((*params)[i]);
-      TypePtr specType = param->getTypeSpec(ar, false);
-      if (specType &&
-          !specType->is(Type::KindOfSome) &&
-          !specType->is(Type::KindOfVariant)) {
-        m_paramTypeSpecs[i] = specType;
-      }
-      ExpressionPtr exp = param->defaultValue();
-      if (exp) {
-        m_paramDefaults[i] = exp->getText(false, false, ar);
-      }
     }
   }
 }
@@ -374,14 +352,6 @@ bool FunctionScope::isReferenceVariableArgument() const {
   return res;
 }
 
-bool FunctionScope::isMixedVariableArgument() const {
-  bool res = (m_attribute & FileScope::MixedVariableArgument) && !m_overriding;
-  // If this method returns true, then isReferenceVariableArgument()
-  // must also return true.
-  assert(!res || isReferenceVariableArgument());
-  return res;
-}
-
 bool FunctionScope::noFCallBuiltin() const {
   bool res = (m_attribute & FileScope::NoFCallBuiltin);
   return res;
@@ -405,9 +375,6 @@ void FunctionScope::setVariableArgument(int reference) {
   m_attribute |= FileScope::VariableArgument;
   if (reference) {
     m_attribute |= FileScope::ReferenceVariableArgument;
-    if (reference < 0) {
-      m_attribute |= FileScope::MixedVariableArgument;
-    }
   }
 }
 
@@ -565,54 +532,11 @@ bool FunctionScope::mayUseVV() const {
      usesVariableArgumentFunc() ||
      variables->getAttribute(VariableTable::ContainsDynamicVariable) ||
      variables->getAttribute(VariableTable::ContainsExtract) ||
+     variables->getAttribute(VariableTable::ContainsAssert) ||
      variables->getAttribute(VariableTable::ContainsCompact) ||
      variables->getAttribute(VariableTable::ContainsGetDefinedVars) ||
      (!Option::EnableHipHopSyntax &&
       variables->getAttribute(VariableTable::ContainsDynamicFunctionCall)));
-}
-
-bool FunctionScope::matchParams(FunctionScopePtr func) {
-  // leaving them alone for now
-  if (m_overriding || func->m_overriding) return false;
-  if (isStatic() || func->isStatic()) return false;
-
-  // conservative here, as we could normalize them into same counts.
-  if (m_minParam != func->m_minParam || m_numDeclParams != func->m_numDeclParams) {
-    return false;
-  }
-  if (hasVariadicParam() != func->hasVariadicParam() ||
-      usesVariableArgumentFunc() != func->usesVariableArgumentFunc() ||
-      isReferenceVariableArgument() != func->isReferenceVariableArgument() ||
-      isMixedVariableArgument() != func->isMixedVariableArgument()) {
-    return false;
-  }
-
-  // needs perfect match for ref, hint and defaults
-  for (int i = 0; i < m_numDeclParams; i++) {
-    if (m_refs[i] != func->m_refs[i]) return false;
-
-    TypePtr type1 = m_paramTypeSpecs[i];
-    TypePtr type2 = func->m_paramTypeSpecs[i];
-    if ((type1 && !type2) || (!type1 && type2) ||
-        (type1 && type2 && !Type::SameType(type1, type2))) return false;
-
-    if (m_paramDefaults[i] != func->m_paramDefaults[i]) return false;
-  }
-
-  return true;
-}
-
-void FunctionScope::setPerfectVirtual() {
-  m_virtual = true;
-  m_perfectVirtual = true;
-
-  // conservative here, as we could still try to infer types THEN only
-  // force variants on non-matching parameters
-  m_returnType = Type::Variant;
-  for (unsigned int i = 0; i < m_paramTypes.size(); i++) {
-    m_paramTypes[i] = Type::Variant;
-    m_variables->addLvalParam(m_paramNames[i]);
-  }
 }
 
 bool FunctionScope::needsClassParam() {
@@ -622,136 +546,6 @@ bool FunctionScope::needsClassParam() {
     return false;
   }
   return getVariables()->hasStatic();
-}
-
-int FunctionScope::inferParamTypes(AnalysisResultPtr ar, ConstructPtr exp,
-                                   ExpressionListPtr params, bool &valid) {
-  if (!params) {
-    if (m_minParam > 0) {
-      if (exp->getScope()->isFirstPass()) {
-        Compiler::Error(Compiler::TooFewArgument, exp, m_stmt);
-      }
-      valid = false;
-      if (!Option::AllDynamic) setDynamic();
-    }
-    return 0;
-  }
-
-  int ret = 0;
-  if (params->getCount() < m_minParam) {
-    if (exp->getScope()->isFirstPass()) {
-      Compiler::Error(Compiler::TooFewArgument, exp, m_stmt);
-    }
-    valid = false;
-    if (!Option::AllDynamic) setDynamic();
-  }
-  if (params->getCount() > getDeclParamCount()) {
-    if (allowsVariableArguments()) {
-      ret = params->getCount() - getMaxParamCount();
-    } else {
-      if (exp->getScope()->isFirstPass()) {
-        Compiler::Error(Compiler::TooManyArgument, exp, m_stmt);
-      }
-      valid = false;
-      if (!Option::AllDynamic) setDynamic();
-    }
-  }
-
-  bool canSetParamType = isUserFunction() && !m_overriding && !m_perfectVirtual;
-  auto const numNonVariadicParams = getMaxParamCount();
-  for (int i = 0; i < params->getCount(); i++) {
-    ExpressionPtr param = (*params)[i];
-    if (i < numNonVariadicParams &&
-        param->hasContext(Expression::RefParameter)) {
-      /**
-       * This should be very un-likely, since call time pass by ref is a
-       * deprecated, not very widely used (at least in FB codebase) feature.
-       */
-      TRY_LOCK_THIS();
-      Symbol *sym = getVariables()->addSymbol(m_paramNames[i]);
-      sym->setLvalParam();
-      sym->setCallTimeRef();
-    }
-    if (valid && param->hasContext(Expression::InvokeArgument)) {
-      param->clearContext(Expression::InvokeArgument);
-      param->clearContext(Expression::RefValue);
-      param->clearContext(Expression::NoRefWrapper);
-    }
-    bool isRefVararg =
-      (i >= numNonVariadicParams && isReferenceVariableArgument());
-    if ((i < numNonVariadicParams && isRefParam(i)) || isRefVararg) {
-      param->setContext(Expression::LValue);
-      param->setContext(Expression::RefValue);
-      param->inferAndCheck(ar, Type::Variant, true);
-    } else if (!(param->getContext() & Expression::RefParameter)) {
-      param->clearContext(Expression::LValue);
-      param->clearContext(Expression::RefValue);
-      param->clearContext(Expression::InvokeArgument);
-      param->clearContext(Expression::NoRefWrapper);
-    }
-    TypePtr expType;
-    /**
-     * Duplicate the logic of getParamType(i), w/o the mutation
-     */
-    TypePtr paramType(i < numNonVariadicParams && !isParamCoerceMode() ?
-                      m_paramTypes[i] : TypePtr());
-    if (!paramType) paramType = Type::Some;
-    if (valid && !canSetParamType && i < numNonVariadicParams &&
-        (!Option::HardTypeHints || !m_paramTypeSpecs[i])) {
-      /**
-       * What is this magic, you might ask?
-       *
-       * Here, we take advantage of implicit conversion from every type to
-       * Variant. Essentially, we don't really care what type comes out of this
-       * expression since it'll just get converted anyways. Doing it this way
-       * allows us to generate less temporaries along the way.
-       */
-      TypePtr optParamType(paramType->is(Type::KindOfVariant) ?
-                           Type::Some : paramType);
-      expType = param->inferAndCheck(ar, optParamType, false);
-    } else {
-      expType = param->inferAndCheck(ar, Type::Some, false);
-    }
-    if (i < numNonVariadicParams) {
-      if (!Option::HardTypeHints || !m_paramTypeSpecs[i]) {
-        if (canSetParamType) {
-          if (!Type::SameType(paramType, expType) &&
-              !paramType->is(Type::KindOfVariant)) {
-            TRY_LOCK_THIS();
-            paramType = setParamType(ar, i, expType);
-          } else {
-            // do nothing - how is this safe?  well, if we ever observe
-            // paramType == expType, then this means at some point in the past,
-            // somebody called setParamType() with expType.  thus, by calling
-            // setParamType() again with expType, we contribute no "new"
-            // information. this argument also still applies in the face of
-            // concurrency
-          }
-        }
-        // See note above. If we have an implemented type, however, we
-        // should set the paramType to the implemented type to avoid an
-        // un-necessary cast
-        if (paramType->is(Type::KindOfVariant)) {
-          TypePtr it(param->getImplementedType());
-          paramType = it ? it : expType;
-        }
-        if (valid) {
-          if (!Type::IsLegalCast(ar, expType, paramType) &&
-              paramType->isNonConvertibleType()) {
-            param->inferAndCheck(ar, paramType, true);
-          }
-          param->setExpectedType(paramType);
-        }
-      }
-    }
-    // we do a best-effort check for bad pass-by-reference and do not report
-    // error for some vararg case (e.g., array_multisort can have either ref
-    // or value for the same vararg).
-    if (!isRefVararg || !isMixedVariableArgument()) {
-      Expression::CheckPassByReference(ar, param);
-    }
-  }
-  return ret;
 }
 
 TypePtr FunctionScope::setParamType(AnalysisResultConstPtr ar, int index,
@@ -811,13 +605,6 @@ void FunctionScope::setParamName(int index, const std::string &name) {
   m_paramNames[index] = name;
 }
 
-void FunctionScope::setParamDefault(int index, const char* value, int64_t len,
-                                    const std::string &text) {
-  assert(index >= 0 && index < (int)m_paramNames.size());
-  m_paramDefaults[index] = std::string(value, len);
-  m_paramDefaultTexts[index] = text;
-}
-
 void FunctionScope::addModifier(int mod) {
   if (!m_modifiers) {
     m_modifiers =
@@ -846,74 +633,6 @@ void FunctionScope::setReturnType(AnalysisResultConstPtr ar, TypePtr type) {
   }
   m_returnType = type;
   assert(m_returnType);
-}
-
-void FunctionScope::pushReturnType() {
-  getInferTypesMutex().assertOwnedBySelf();
-  m_prevReturn = m_returnType;
-  m_hasVoid = false;
-  if (m_overriding || m_dynamicInvoke || m_perfectVirtual || m_pseudoMain) {
-    return;
-  }
-  m_returnType.reset();
-}
-
-bool FunctionScope::popReturnType() {
-  getInferTypesMutex().assertOwnedBySelf();
-  if (m_overriding || m_dynamicInvoke || m_perfectVirtual || m_pseudoMain) {
-    return false;
-  }
-
-  if (m_returnType) {
-    if (m_prevReturn) {
-      if (Type::SameType(m_returnType, m_prevReturn)) {
-        m_prevReturn.reset();
-        return false;
-      }
-      Logger::Verbose("Corrected %s's return type %s -> %s",
-                      getFullName().c_str(),
-                      m_prevReturn->toString().c_str(),
-                      m_returnType->toString().c_str());
-    } else {
-      Logger::Verbose("Set %s's return type %s",
-                      getFullName().c_str(),
-                      m_returnType->toString().c_str());
-    }
-  } else if (!m_prevReturn) {
-    return false;
-  }
-
-  m_prevReturn.reset();
-  addUpdates(UseKindCallerReturn);
-#ifdef HPHP_INSTRUMENT_TYPE_INF
-  ++RescheduleException::s_NumRetTypesChanged;
-#endif /* HPHP_INSTRUMENT_TYPE_INF */
-  return true;
-}
-
-void FunctionScope::resetReturnType() {
-  getInferTypesMutex().assertOwnedBySelf();
-  if (m_overriding || m_dynamicInvoke || m_perfectVirtual || m_pseudoMain) {
-    return;
-  }
-  m_returnType = m_prevReturn;
-  m_prevReturn.reset();
-}
-
-void FunctionScope::addRetExprToFix(ExpressionPtr e) {
-  m_retExprsToFix.push_back(e);
-}
-
-void FunctionScope::clearRetExprs() {
-  m_retExprsToFix.clear();
-}
-
-void FunctionScope::fixRetExprs() {
-  for (ExpressionPtrVec::iterator it = m_retExprsToFix.begin(),
-         end = m_retExprsToFix.end(); it != end; ++it) {
-    (*it)->setExpectedType(m_returnType);
-  }
-  m_retExprsToFix.clear();
 }
 
 void FunctionScope::setOverriding(TypePtr returnType,
@@ -969,8 +688,7 @@ std::string FunctionScope::getDocName() const {
   if (m_redeclaring < 0) {
     return name;
   }
-  return name + Option::IdPrefix +
-    boost::lexical_cast<std::string>(m_redeclaring);
+  return name + Option::IdPrefix + folly::to<std::string>(m_redeclaring);
 }
 
 std::string FunctionScope::getDocFullName() const {
@@ -985,10 +703,6 @@ std::string FunctionScope::getDocFullName() const {
 ///////////////////////////////////////////////////////////////////////////////
 
 void FunctionScope::outputPHP(CodeGenerator &cg, AnalysisResultPtr ar) {
-  if (Option::GenerateInferredTypes && m_returnType) {
-    cg_printf("// @return %s\n", m_returnType->toString().c_str());
-  }
-
   BlockScope::outputPHP(cg, ar);
 }
 

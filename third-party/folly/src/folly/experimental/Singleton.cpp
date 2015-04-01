@@ -20,35 +20,77 @@
 
 namespace folly {
 
+namespace detail {
+
+constexpr std::chrono::seconds SingletonHolderBase::kDestroyWaitTime;
+
+}
+
 SingletonVault::~SingletonVault() { destroyInstances(); }
 
 void SingletonVault::destroyInstances() {
-  std::lock_guard<std::mutex> guard(mutex_);
-  CHECK_GE(singletons_.size(), creation_order_.size());
+  RWSpinLock::WriteHolder state_wh(&stateMutex_);
 
-  for (auto type_iter = creation_order_.rbegin();
-       type_iter != creation_order_.rend();
-       ++type_iter) {
-    auto type = *type_iter;
-    auto it = singletons_.find(type);
-    CHECK(it != singletons_.end());
-    auto& entry = it->second;
-    std::lock_guard<std::mutex> entry_guard(entry->mutex_);
-    if (entry->instance.use_count() > 1) {
-      LOG(ERROR) << "Singleton of type " << type.name() << " has a living "
-                 << "reference at destroyInstances time; beware!  Raw pointer "
-                 << "is " << entry->instance.get() << " with use_count of "
-                 << entry->instance.use_count();
+  if (state_ == SingletonVaultState::Quiescing) {
+    return;
+  }
+  state_ = SingletonVaultState::Quiescing;
+
+  RWSpinLock::ReadHolder state_rh(std::move(state_wh));
+
+  {
+    RWSpinLock::ReadHolder rh(&mutex_);
+
+    CHECK_GE(singletons_.size(), creation_order_.size());
+
+    for (auto type_iter = creation_order_.rbegin();
+         type_iter != creation_order_.rend();
+         ++type_iter) {
+      singletons_[*type_iter]->destroyInstance();
     }
-    entry->instance.reset();
-    entry->state = SingletonEntryState::Dead;
+
+    for (auto& singleton_type: creation_order_) {
+      auto singleton = singletons_[singleton_type];
+      if (!singleton->hasLiveInstance()) {
+        continue;
+      }
+
+      LOG(DFATAL) << "Singleton of type " << singleton->type().name() << " has "
+                  << "a living reference after destroyInstances was finished;"
+                  << "beware! It is very likely that this singleton instance "
+                  << "will be leaked.";
+    }
   }
 
-  creation_order_.clear();
+  {
+    RWSpinLock::WriteHolder wh(&mutex_);
+    creation_order_.clear();
+  }
 }
 
-SingletonVault* SingletonVault::singleton() {
-  static SingletonVault vault;
-  return &vault;
+void SingletonVault::reenableInstances() {
+  RWSpinLock::WriteHolder state_wh(&stateMutex_);
+
+  stateCheck(SingletonVaultState::Quiescing);
+
+  state_ = SingletonVaultState::Running;
 }
+
+void SingletonVault::scheduleDestroyInstances() {
+  RequestContext::getStaticContext();
+
+  class SingletonVaultDestructor {
+   public:
+    ~SingletonVaultDestructor() {
+      SingletonVault::singleton()->destroyInstances();
+    }
+  };
+
+  // Here we intialize a singleton, which calls destroyInstances in its
+  // destructor. Because of singleton destruction order - it will be destroyed
+  // before all the singletons, which were initialized before it and after all
+  // the singletons initialized after it.
+  static SingletonVaultDestructor singletonVaultDestructor;
+}
+
 }

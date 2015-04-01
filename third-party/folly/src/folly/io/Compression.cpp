@@ -155,12 +155,19 @@ void encodeVarintToIOBuf(uint64_t val, folly::IOBuf* out) {
   out->append(encodeVarint(val, out->writableTail()));
 }
 
-uint64_t decodeVarintFromCursor(folly::io::Cursor& cursor) {
-  // Must have enough room in *this* buffer.
-  auto p = cursor.peek();
-  folly::ByteRange range(p.first, p.second);
-  uint64_t val = decodeVarint(range);
-  cursor.skip(range.data() - p.first);
+inline uint64_t decodeVarintFromCursor(folly::io::Cursor& cursor) {
+  uint64_t val = 0;
+  int8_t b = 0;
+  for (int shift = 0; shift <= 63; shift += 7) {
+    b = cursor.read<int8_t>();
+    val |= static_cast<uint64_t>(b & 0x7f) << shift;
+    if (b >= 0) {
+      break;
+    }
+  }
+  if (b < 0) {
+    throw std::invalid_argument("Invalid varint value. Too big.");
+  }
   return val;
 }
 
@@ -295,7 +302,7 @@ std::unique_ptr<IOBuf> LZ4Codec::doUncompress(
                               p.second,
                               actualUncompressedLength);
 
-  if (n != actualUncompressedLength) {
+  if (n < 0 || uint64_t(n) != actualUncompressedLength) {
     throw std::runtime_error(to<std::string>(
         "LZ4 decompression returned invalid value ", n));
   }
@@ -553,21 +560,25 @@ std::unique_ptr<IOBuf> ZlibCodec::doCompress(const IOBuf* data) {
        defaultBufferLength));
 
   for (auto& range : *data) {
-    if (range.empty()) {
-      continue;
-    }
+    uint64_t remaining = range.size();
+    uint64_t written = 0;
+    while (remaining) {
+      uint32_t step = (remaining > maxSingleStepLength ?
+                       maxSingleStepLength : remaining);
+      stream.next_in = const_cast<uint8_t*>(range.data() + written);
+      stream.avail_in = step;
+      remaining -= step;
+      written += step;
 
-    stream.next_in = const_cast<uint8_t*>(range.data());
-    stream.avail_in = range.size();
+      while (stream.avail_in != 0) {
+        if (stream.avail_out == 0) {
+          out->prependChain(addOutputBuffer(&stream, defaultBufferLength));
+        }
 
-    while (stream.avail_in != 0) {
-      if (stream.avail_out == 0) {
-        out->prependChain(addOutputBuffer(&stream, defaultBufferLength));
+        rc = deflate(&stream, Z_NO_FLUSH);
+
+        CHECK_EQ(rc, Z_OK) << stream.msg;
       }
-
-      rc = deflate(&stream, Z_NO_FLUSH);
-
-      CHECK_EQ(rc, Z_OK) << stream.msg;
     }
   }
 
@@ -963,4 +974,3 @@ std::unique_ptr<Codec> getCodec(CodecType type, int level) {
 }
 
 }}  // namespaces
-

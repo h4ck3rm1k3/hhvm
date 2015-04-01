@@ -15,19 +15,20 @@
 */
 #include "hphp/runtime/debugger/debugger_client.h"
 
-#include <boost/lexical_cast.hpp>
 #include <signal.h>
 #include <fstream>
 
 #include "hphp/runtime/debugger/debugger_command.h"
 #include "hphp/runtime/debugger/cmd/all.h"
-#include "hphp/runtime/base/complex-types.h"
-#include "hphp/runtime/base/variable-serializer.h"
+#include "hphp/runtime/base/array-init.h"
+#include "hphp/runtime/base/builtin-functions.h"
 #include "hphp/runtime/base/string-util.h"
 #include "hphp/runtime/base/preg.h"
-#include "hphp/runtime/ext/ext_socket.h"
+#include "hphp/runtime/base/program-functions.h"
+#include "hphp/runtime/base/variable-serializer.h"
+#include "hphp/runtime/ext/sockets/ext_sockets.h"
 #include "hphp/runtime/ext/std/ext_std_network.h"
-#include "hphp/runtime/ext/ext_string.h"
+#include "hphp/runtime/ext/string/ext_string.h"
 #include "hphp/util/text-color.h"
 #include "hphp/util/text-art.h"
 #include "hphp/util/logger.h"
@@ -35,6 +36,7 @@
 #include "hphp/util/string-vsnprintf.h"
 #include "hphp/runtime/base/config.h"
 #include <boost/scoped_ptr.hpp>
+#include <folly/Conv.h>
 
 #define USE_VARARGS
 #define PREFER_STDARG
@@ -61,8 +63,6 @@ namespace HPHP { namespace Eval {
 
 TRACE_SET_MOD(debugger);
 
-using std::string;
-
 static boost::scoped_ptr<DebuggerClient> debugger_client;
 
 const StaticString
@@ -81,7 +81,7 @@ static String wordwrap(const String& str, int width /* = 75 */,
   return vm_call_user_func("wordwrap", args);
 }
 
-class DebuggerExtension : public Extension {
+class DebuggerExtension final : public Extension {
  public:
   DebuggerExtension() : Extension("hhvm.debugger", NO_EXTENSION_VERSION_YET) {}
 } s_debugger_extension;
@@ -335,7 +335,7 @@ void DebuggerClient::LoadCodeColor(CodeColor index, const IniSetting::Map& ini,
 
 SmartPtr<Socket> DebuggerClient::Start(const DebuggerClientOptions &options) {
   TRACE(2, "DebuggerClient::Start\n");
-  SmartPtr<Socket> ret = getStaticDebuggerClient().connectLocal();
+  auto ret = getStaticDebuggerClient().connectLocal();
   getStaticDebuggerClient().start(options);
   return ret;
 }
@@ -431,7 +431,7 @@ String DebuggerClient::FormatInfoVec(const IDebuggable::InfoVec &info,
 
 String DebuggerClient::FormatTitle(const char *title) {
   TRACE(2, "DebuggerClient::FormatTitle\n");
-  String dash = f_str_repeat(BOX_H, (LineWidth - strlen(title)) / 2 - 4);
+  String dash = HHVM_FN(str_repeat)(BOX_H, (LineWidth - strlen(title)) / 2 - 4);
 
   StringBuffer sb;
   sb.append("\n");
@@ -546,8 +546,8 @@ SmartPtr<Socket> DebuggerClient::connectLocal() {
   if (socketpair(AF_UNIX, SOCK_STREAM, 0, fds) != 0) {
     throw Exception("unable to create socket pair for local debugging");
   }
-  SmartPtr<Socket> socket1(new Socket(fds[0], AF_UNIX));
-  SmartPtr<Socket> socket2(new Socket(fds[1], AF_UNIX));
+  auto socket1 = makeSmartPtr<Socket>(fds[0], AF_UNIX);
+  auto socket2 = makeSmartPtr<Socket>(fds[1], AF_UNIX);
 
   socket1->unregister();
   socket2->unregister();
@@ -578,7 +578,7 @@ bool DebuggerClient::connectRemote(const std::string &host, int port) {
 bool DebuggerClient::reconnect() {
   TRACE(2, "DebuggerClient::reconnect\n");
   assert(m_machine);
-  string &host = m_machine->m_name;
+  auto& host = m_machine->m_name;
   int port = m_machine->m_port;
   if (port <= 0) {
     return false;
@@ -617,11 +617,14 @@ bool DebuggerClient::tryConnect(const std::string &host, int port,
   /* try possible families (v4, v6) until we get a connection */
   struct addrinfo *cur;
   for (cur = ai; cur; cur = ai->ai_next) {
-    Socket *sock = new Socket(socket(cur->ai_family, cur->ai_socktype, 0),
-                              cur->ai_family, cur->ai_addr->sa_data, port);
+    auto sock = makeSmartPtr<Socket>(
+      socket(cur->ai_family, cur->ai_socktype, 0),
+      cur->ai_family,
+      cur->ai_addr->sa_data,
+      port
+    );
     sock->unregister();
-    Resource obj(sock); // Destroy sock if we don't connect.
-    if (f_socket_connect(sock, String(host), port)) {
+    if (HHVM_FN(socket_connect)(Resource(sock), String(host), port)) {
       if (clearmachines) {
         for (unsigned int i = 0; i < m_machines.size(); i++) {
           if (m_machines[i] == m_machine) {
@@ -633,7 +636,7 @@ bool DebuggerClient::tryConnect(const std::string &host, int port,
       auto machine = std::make_shared<DMachineInfo>();
       machine->m_name = host;
       machine->m_port = port;
-      machine->m_thrift.create(SmartPtr<Socket>(sock));
+      machine->m_thrift.create(sock);
       m_machines.push_back(machine);
       switchMachine(machine);
       return true;
@@ -647,13 +650,13 @@ std::string DebuggerClient::getPrompt() {
   if (NoPrompt || !RuntimeOption::EnableDebuggerPrompt) {
     return "";
   }
-  string *name = &m_machine->m_name;
+  auto name = &m_machine->m_name;
   if (!m_rpcHost.empty()) {
     name = &m_rpcHost;
   }
   if (m_inputState == TakingCode) {
-    string prompt = " ";
-    for (unsigned int i = 2; i < name->size() + 2; i++) {
+    std::string prompt = " ";
+    for (unsigned i = 2; i < name->size() + 2; i++) {
       prompt += '.';
     }
     prompt += ' ';
@@ -804,13 +807,13 @@ void DebuggerClient::promptFunctionPrototype() {
   while (p >= p0 && (isalnum(*p) || *p == '_')) --p;
   if (p == pLast) return;
 
-  string cls;
-  string func(p + 1, pLast - p);
+  std::string cls;
+  std::string func(p + 1, pLast - p);
   if (p > p0 && *p-- == ':' && *p-- == ':') {
     pLast = p;
     while (p >= p0 && (isalnum(*p) || *p == '_')) --p;
     if (pLast > p) {
-      cls = string(p + 1, pLast - p);
+      cls = std::string(p + 1, pLast - p);
     }
   }
 
@@ -1091,7 +1094,7 @@ DebuggerCommandPtr DebuggerClient::eventLoop(EventLoopKind loopKind,
           cmd->is((DebuggerCommand::Type)expectedCmd)) {
         // For the nested cases, the caller has sent a cmd to the server and is
         // expecting a specific response. When we get it, return it.
-        usageLogEvent("command done", boost::lexical_cast<string>(expectedCmd));
+        usageLogEvent("command done", folly::to<std::string>(expectedCmd));
         m_machine->m_interrupting = true; // Machine is stopped
         m_inputState = TakingCommand;
         return cmd;
@@ -1145,7 +1148,7 @@ void DebuggerClient::console() {
   while (true) {
     const char *line = nullptr;
 
-    string holder;
+    std::string holder;
     if (m_macroPlaying) {
       if (m_macroPlaying->m_index < m_macroPlaying->m_cmds.size()) {
         holder = m_macroPlaying->m_cmds[m_macroPlaying->m_index++];
@@ -1175,7 +1178,18 @@ void DebuggerClient::console() {
         strcasecmp(line, "Q") != 0) {
       // even if line is bad command, we still want to remember it, so
       // people can go back and fix typos
-      add_history(line);
+      HIST_ENTRY *last_entry = nullptr;
+      if (history_length > 0 &&
+          (last_entry = history_get(history_length + history_base - 1))) {
+        // Make sure we aren't duplicating history entries
+        if (strcmp(line, last_entry->line)) {
+          add_history(line);
+        }
+      } else {
+        // Add history regardless, since we know that there are no
+        // duplicate entries.
+        add_history(line);
+      }
     }
 
     AdjustScreenMetrics();
@@ -1307,7 +1321,7 @@ bool DebuggerClient::code(const String& source, int line1 /*= 0*/,
 
 char DebuggerClient::ask(const char *fmt, ...) {
   TRACE(2, "DebuggerClient::ask\n");
-  string msg;
+  std::string msg;
   va_list ap;
   va_start(ap, fmt);
   string_vsnprintf(msg, fmt, ap); va_end(ap);
@@ -1339,7 +1353,7 @@ do {                                                                    \
 
 void DebuggerClient::print(const char *fmt, ...) {
   TRACE(2, "DebuggerClient::print(const char *fmt, ...)\n");
-  string msg;
+  std::string msg;
   va_list ap;
   va_start(ap, fmt);
   string_vsnprintf(msg, fmt, ap); va_end(ap);
@@ -1373,7 +1387,7 @@ void DebuggerClient::print(const String& msg) {
     fflush(where);                                                      \
   }                                                                     \
   void DebuggerClient::name(const char *fmt, ...) {                     \
-    string msg;                                                         \
+    std::string msg;                                                    \
     va_list ap;                                                         \
     va_start(ap, fmt);                                                  \
     string_vsnprintf(msg, fmt, ap); va_end(ap);                         \
@@ -1391,11 +1405,11 @@ IMPLEMENT_COLOR_OUTPUT(error,    stderr,  ErrorColor);
 #undef DWRITE
 #undef IMPLEMENT_COLOR_OUTPUT
 
-string DebuggerClient::wrap(const std::string &s) {
+std::string DebuggerClient::wrap(const std::string &s) {
   TRACE(2, "DebuggerClient::wrap\n");
   String ret = wordwrap(String(s.c_str(), s.size(), CopyString), LineWidth - 4,
                         "\n", true);
-  return string(ret.data(), ret.size());
+  return std::string(ret.data(), ret.size());
 }
 
 void DebuggerClient::helpTitle(const char *title) {
@@ -1465,7 +1479,7 @@ void DebuggerClient::helpCmds(const std::vector<const char *> &cmds) {
       line.append("  ");
       line.append(lines2[n].toString());
 
-      sb.append(f_rtrim(line.detach()));
+      sb.append(HHVM_FN(rtrim)(line.detach()));
       sb.append("\n");
     }
   }
@@ -1495,15 +1509,15 @@ void DebuggerClient::tutorial(const char *text) {
 
   StringBuffer sb;
   String header = "  Tutorial - '[h]elp [t]utorial off|auto' to turn off  ";
-  String hr = f_str_repeat(BOX_H, LineWidth - 2);
+  String hr = HHVM_FN(str_repeat)(BOX_H, LineWidth - 2);
 
   sb.append(BOX_UL); sb.append(hr); sb.append(BOX_UR); sb.append("\n");
 
   int wh = (LineWidth - 2 - header.size()) / 2;
   sb.append(BOX_V);
-  sb.append(f_str_repeat(" ", wh));
+  sb.append(HHVM_FN(str_repeat)(" ", wh));
   sb.append(header);
-  sb.append(f_str_repeat(" ", wh));
+  sb.append(HHVM_FN(str_repeat)(" ", wh));
   sb.append(BOX_V);
   sb.append("\n");
 
@@ -1633,7 +1647,7 @@ do {                                         \
 
 // Parses the current command string. If invalid return false.
 // Otherwise, carry out the command and return true.
-// NB: the command may throw a variety of exceptions derrived from
+// NB: the command may throw a variety of exceptions derived from
 // DebuggerClientException.
 bool DebuggerClient::process() {
   TRACE(2, "DebuggerClient::process\n");
@@ -1704,7 +1718,7 @@ void DebuggerClient::parseCommand(const char *line) {
   m_args.clear();
 
   char quote = 0;
-  string token;
+  std::string token;
   m_argIdx.clear();
   int i = 0;
   for (i = 0; line[i]; i++) {
@@ -1847,7 +1861,7 @@ void DebuggerClient::sendToServer(DebuggerCommand *cmd) {
 int DebuggerClient::checkEvalEnd() {
   TRACE(2, "DebuggerClient::checkEvalEnd\n");
   size_t pos = m_line.rfind("?>");
-  if (pos == string::npos) {
+  if (pos == std::string::npos) {
     return -1;
   }
 
@@ -1871,7 +1885,7 @@ void DebuggerClient::processTakeCode() {
   char first = m_line[0];
   if (first == '@') {
     usageLogCommand("@", m_line);
-    m_code = string("<?php ") + (m_line.c_str() + 1) + ";";
+    m_code = std::string("<?php ") + (m_line.c_str() + 1) + ";";
     processEval();
     return;
   } else if (first == '=') {
@@ -1880,7 +1894,7 @@ void DebuggerClient::processTakeCode() {
       // strip the trailing ;
       m_line = m_line.substr(0, m_line.size() - 1);
     }
-    m_code = string("<?php $_=(") + m_line.substr(1) + "); ";
+    m_code = std::string("<?php $_=(") + m_line.substr(1) + "); ";
     if (processEval()) CmdVariable::PrintVariable(*this, s_UNDERSCORE);
     return;
   } else if (first != '<') {
@@ -2320,22 +2334,22 @@ void DebuggerClient::loadConfig() {
 
   m_neverSaveConfigOverride = true; // Prevent saving config while reading it
 
-  s_use_utf8 = Config::GetBool(ini, config["UTF8"], true);
+  Config::Bind(s_use_utf8, ini, config["UTF8"], true);
   config["UTF8"] = s_use_utf8; // for starter
   BIND(utf8, &s_use_utf8);
 
   Hdf color = config["Color"];
-  UseColor = Config::GetBool(ini, color, true);
+  Config::Bind(UseColor, ini, color, true);
   color = UseColor; // for starter
   BIND(color, &UseColor);
   if (UseColor && RuntimeOption::EnableDebuggerColor) {
     LoadColors(ini, color);
   }
 
-  m_tutorial = Config::GetInt32(ini, config["Tutorial"], 0);
+  Config::Bind(m_tutorial, ini, config["Tutorial"], 0);
   BIND(tutorial, &m_tutorial);
 
-  m_scriptMode = Config::GetBool(ini, config["ScriptMode"]);
+  Config::Bind(m_scriptMode, ini, config["ScriptMode"]);
   BIND(script_mode, &m_scriptMode);
 
   setDebuggerClientSmallStep(Config::GetBool(ini, config["SmallStep"]));
@@ -2434,18 +2448,20 @@ void DebuggerClient::loadConfig() {
     }
   ));
 
-  m_sourceRoot = Config::GetString(ini, config["SourceRoot"]);
+  Config::Bind(m_sourceRoot, ini, config["SourceRoot"]);
   BIND(source_root, &m_sourceRoot);
 
-  m_zendExe = Config::GetString(ini, config["ZendExecutable"], "php");
+  Config::Bind(m_zendExe, ini, config["ZendExecutable"], "php");
   BIND(zend_executable, &m_zendExe);
 
-  m_neverSaveConfig = Config::GetBool(ini, config["NeverSaveConfig"], false);
+  Config::Bind(m_neverSaveConfig, ini, config["NeverSaveConfig"], false);
   BIND(never_save_config, &m_neverSaveConfig);
 
   IniSetting::s_pretendExtensionsHaveNotBeenLoaded = false;
 
-  process_ini_file(m_configFileName);
+  // We are guaranteed to have an ini file given how m_configFileName is set
+  // above
+  Config::ParseIniFile(m_configFileName);
 
   // Do this after the ini processing so we don't accidentally save the config
   // when we change one of the options
@@ -2472,9 +2488,8 @@ void DebuggerClient::saveConfig() {
   stream << "hhvm.never_save_config = " << m_neverSaveConfig << std::endl;
   stream << "hhvm.tutorial = " << m_tutorial << std::endl;
   unsigned int i = 0;
-  for (std::set<string>::const_iterator iter = m_tutorialVisited.begin();
-       iter != m_tutorialVisited.end(); ++iter) {
-    stream << "hhvm.tutorial.visited[" << i++ << "] = " << *iter << std::endl;
+  for (auto const& str : m_tutorialVisited) {
+    stream << "hhvm.tutorial.visited[" << i++ << "] = " << str << std::endl;
   }
 
   for (i = 0; i < m_macros.size(); i++) {

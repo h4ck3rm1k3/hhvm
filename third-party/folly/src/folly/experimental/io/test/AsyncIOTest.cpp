@@ -136,10 +136,11 @@ void testReadsSerially(const std::vector<TestSpec>& specs,
     ::close(fd);
   };
 
-  for (int i = 0; i < specs.size(); i++) {
+  for (size_t i = 0; i < specs.size(); i++) {
     auto buf = allocateAligned(specs[i].size);
     op.pread(fd, buf.get(), specs[i].size, specs[i].start);
     aioReader.submit(&op);
+    EXPECT_EQ((i + 1), aioReader.totalSubmits());
     EXPECT_EQ(aioReader.pending(), 1);
     auto ops = readerWait(&aioReader);
     EXPECT_EQ(1, ops.size());
@@ -170,14 +171,14 @@ void testReadsParallel(const std::vector<TestSpec>& specs,
   if (multithreaded) {
     threads.reserve(specs.size());
   }
-  for (int i = 0; i < specs.size(); i++) {
+  for (size_t i = 0; i < specs.size(); i++) {
     bufs.push_back(allocateAligned(specs[i].size));
   }
-  auto submit = [&] (int i) {
+  auto submit = [&] (size_t i) {
     ops[i].pread(fd, bufs[i].get(), specs[i].size, specs[i].start);
     aioReader.submit(&ops[i]);
   };
-  for (int i = 0; i < specs.size(); i++) {
+  for (size_t i = 0; i < specs.size(); i++) {
     if (multithreaded) {
       threads.emplace_back([&submit, i] { submit(i); });
     } else {
@@ -197,7 +198,7 @@ void testReadsParallel(const std::vector<TestSpec>& specs,
     EXPECT_NE(nrRead, 0);
     remaining -= nrRead;
 
-    for (int i = 0; i < nrRead; i++) {
+    for (size_t i = 0; i < nrRead; i++) {
       int id = completed[i] - ops.get();
       EXPECT_GE(id, 0);
       EXPECT_LT(id, specs.size());
@@ -208,8 +209,10 @@ void testReadsParallel(const std::vector<TestSpec>& specs,
       EXPECT_EQ(specs[id].size, res);
     }
   }
+  EXPECT_EQ(specs.size(), aioReader.totalSubmits());
+
   EXPECT_EQ(aioReader.pending(), 0);
-  for (int i = 0; i < pending.size(); i++) {
+  for (size_t i = 0; i < pending.size(); i++) {
     EXPECT_FALSE(pending[i]);
   }
 }
@@ -227,7 +230,7 @@ void testReadsQueued(const std::vector<TestSpec>& specs,
   SCOPE_EXIT {
     ::close(fd);
   };
-  for (int i = 0; i < specs.size(); i++) {
+  for (size_t i = 0; i < specs.size(); i++) {
     bufs.push_back(allocateAligned(specs[i].size));
     ops[i].pread(fd, bufs[i].get(), specs[i].size, specs[i].start);
     aioQueue.submit(&ops[i]);
@@ -248,7 +251,7 @@ void testReadsQueued(const std::vector<TestSpec>& specs,
     EXPECT_NE(nrRead, 0);
     remaining -= nrRead;
 
-    for (int i = 0; i < nrRead; i++) {
+    for (size_t i = 0; i < nrRead; i++) {
       int id = completed[i] - ops.get();
       EXPECT_GE(id, 0);
       EXPECT_LT(id, specs.size());
@@ -259,9 +262,10 @@ void testReadsQueued(const std::vector<TestSpec>& specs,
       EXPECT_EQ(specs[id].size, res);
     }
   }
+  EXPECT_EQ(specs.size(), aioReader.totalSubmits());
   EXPECT_EQ(aioReader.pending(), 0);
   EXPECT_EQ(aioQueue.queued(), 0);
-  for (int i = 0; i < pending.size(); i++) {
+  for (size_t i = 0; i < pending.size(); i++) {
     EXPECT_FALSE(pending[i]);
   }
 }
@@ -385,5 +389,3 @@ TEST(AsyncIO, NonBlockingWait) {
   EXPECT_EQ(size, res);
   EXPECT_EQ(aioReader.pending(), 0);
 }
-
-

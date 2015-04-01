@@ -11,9 +11,13 @@ add_custom_command(
        ${IDL_SRCS}
   COMMENT "Generating class_map.cpp and constants.h")
 
-set(CXX_SOURCES "class_map.cpp" "systemlib.cpp")
+set(CXX_SOURCES "${CMAKE_CURRENT_BINARY_DIR}/class_map.cpp"
+                "systemlib.cpp")
 
 add_library(hphp_system STATIC ${CXX_SOURCES})
+if (ENABLE_ASYNC_MYSQL)
+  add_dependencies(hphp_system webscalesqlclient)
+endif ()
 
 auto_sources(files "*.h" "${CMAKE_CURRENT_SOURCE_DIR}")
 HHVM_PUBLIC_HEADERS(system ${files})
@@ -34,7 +38,7 @@ foreach(cls ${SYSTEMLIB_CLASSES})
   STRING(REGEX REPLACE "[ \t]*#.*" "" cls "${cls}")
   if (NOT "${cls}" STREQUAL "")
     list(APPEND SYSTEMLIB_SRCS "../../${cls}")
-                set(SYSTEMLIB_SRCS_STR "${SYSTEMLIB_SRCS_STR} ${cls}")
+    set(SYSTEMLIB_SRCS_STR "${SYSTEMLIB_SRCS_STR} ${cls}")
   endif()
 endforeach()
 

@@ -24,7 +24,9 @@
 #include <folly/io/async/NotificationQueue.h>
 
 #include <boost/static_assert.hpp>
+#include <condition_variable>
 #include <fcntl.h>
+#include <mutex>
 #include <pthread.h>
 #include <unistd.h>
 
@@ -125,6 +127,16 @@ void EventBase::CobTimeout::timeoutExpired() noexcept {
   delete this;
 }
 
+
+// The interface used to libevent is not thread-safe.  Calls to
+// event_init() and event_base_free() directly modify an internal
+// global 'current_base', so a mutex is required to protect this.
+//
+// event_init() should only ever be called once.  Subsequent calls
+// should be made to event_base_new().  We can recognise that
+// event_init() has already been called by simply inspecting current_base.
+static std::mutex libevent_mutex_;
+
 /*
  * EventBase methods
  */
@@ -133,7 +145,6 @@ EventBase::EventBase()
   : runOnceCallbacks_(nullptr)
   , stop_(false)
   , loopThread_(0)
-  , evb_(static_cast<event_base*>(event_init()))
   , queue_(nullptr)
   , fnRunner_(nullptr)
   , maxLatency_(0)
@@ -144,6 +155,18 @@ EventBase::EventBase()
   , startWork_(0)
   , observer_(nullptr)
   , observerSampleCount_(0) {
+  {
+    std::lock_guard<std::mutex> lock(libevent_mutex_);
+
+    // The value 'current_base' (libevent 1) or
+    // 'event_global_current_base_' (libevent 2) is filled in by event_set(),
+    // allowing examination of its value without an explicit reference here.
+    // If ev.ev_base is NULL, then event_init() must be called, otherwise
+    // call event_base_new().
+    struct event ev;
+    event_set(&ev, 0, 0, nullptr, nullptr);
+    evb_ = (ev.ev_base) ? event_base_new() : event_init();
+  }
   if (UNLIKELY(evb_ == nullptr)) {
     LOG(ERROR) << "EventBase(): Failed to init event base.";
     folly::throwSystemError("error in EventBase::EventBase()");
@@ -185,7 +208,7 @@ EventBase::~EventBase() {
     callback->runLoopCallback();
   }
 
-  // Delete any unfired CobTimeout objects, so that we don't leak memory
+  // Delete any unfired callback objects, so that we don't leak memory
   // (Note that we don't fire them.  The caller is responsible for cleaning up
   // its own data structures if it destroys the EventBase with unfired events
   // remaining.)
@@ -194,11 +217,22 @@ EventBase::~EventBase() {
     delete timeout;
   }
 
+  while (!runBeforeLoopCallbacks_.empty()) {
+    delete &runBeforeLoopCallbacks_.front();
+  }
+
   (void) runLoopCallbacks(false);
+
+  if (!fnRunner_->consumeUntilDrained()) {
+    LOG(ERROR) << "~EventBase(): Unable to drain notification queue";
+  }
 
   // Stop consumer before deleting NotificationQueue
   fnRunner_->stopConsuming();
-  event_base_free(evb_);
+  {
+    std::lock_guard<std::mutex> lock(libevent_mutex_);
+    event_base_free(evb_);
+  }
   VLOG(5) << "EventBase(): Destroyed.";
 }
 
@@ -271,6 +305,16 @@ bool EventBase::loopBody(int flags) {
   while (!stop_) {
     ++nextLoopCnt_;
 
+    // Run the before loop callbacks
+    LoopCallbackList callbacks;
+    callbacks.swap(runBeforeLoopCallbacks_);
+
+    while(!callbacks.empty()) {
+      auto* item = &callbacks.front();
+      callbacks.pop_front();
+      item->runLoopCallback();
+    }
+
     // nobody can add loop callbacks from within this thread if
     // we don't have to handle anything to start with...
     if (blocking && loopCallbacks_.empty()) {
@@ -278,6 +322,7 @@ bool EventBase::loopBody(int flags) {
     } else {
       res = event_base_loop(evb_, EVLOOP_ONCE | EVLOOP_NONBLOCK);
     }
+
     ranLoopCallbacks = runLoopCallbacks();
 
     int64_t busy = std::chrono::duration_cast<std::chrono::microseconds>(
@@ -458,6 +503,12 @@ void EventBase::runOnDestruction(LoopCallback* callback) {
   onDestructionCallbacks_.push_back(*callback);
 }
 
+void EventBase::runBeforeLoop(LoopCallback* callback) {
+  DCHECK(isInEventBaseThread());
+  callback->cancelLoopCallback();
+  runBeforeLoopCallbacks_.push_back(*callback);
+}
+
 bool EventBase::runInEventBaseThread(void (*fn)(void*), void* arg) {
   // Send the message.
   // It will be received by the FunctionRunner in the EventBase's thread.
@@ -509,6 +560,31 @@ bool EventBase::runInEventBaseThread(const Cob& fn) {
     delete fnCopy;
     return false;
   }
+
+  return true;
+}
+
+bool EventBase::runInEventBaseThreadAndWait(const Cob& fn) {
+  if (inRunningEventBaseThread()) {
+    LOG(ERROR) << "EventBase " << this << ": Waiting in the event loop is not "
+               << "allowed";
+    return false;
+  }
+
+  bool ready = false;
+  std::mutex m;
+  std::condition_variable cv;
+  runInEventBaseThread([&] {
+      SCOPE_EXIT {
+        std::unique_lock<std::mutex> l(m);
+        ready = true;
+        l.unlock();
+        cv.notify_one();
+      };
+      fn();
+  });
+  std::unique_lock<std::mutex> l(m);
+  cv.wait(l, [&] { return ready; });
 
   return true;
 }
@@ -597,6 +673,8 @@ void EventBase::SmoothLoopTime::addSample(int64_t idle, int64_t busy) {
       LEFT = 2,   // busy sample placed at the beginning of the iteration
     };
 
+  // See http://en.wikipedia.org/wiki/Moving_average#Exponential_moving_average
+  // and D676020 for more info on this calculation.
   VLOG(11) << "idle " << idle << " oldBusyLeftover_ " << oldBusyLeftover_ <<
               " idle + oldBusyLeftover_ " << idle + oldBusyLeftover_ <<
               " busy " << busy << " " << __PRETTY_FUNCTION__;
@@ -703,5 +781,8 @@ const std::string& EventBase::getName() {
   assert(isInEventBaseThread());
   return name_;
 }
+
+const char* EventBase::getLibeventVersion() { return event_get_version(); }
+const char* EventBase::getLibeventMethod() { return event_get_method(); }
 
 } // folly

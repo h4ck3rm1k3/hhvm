@@ -16,7 +16,6 @@
 
 #include "hphp/compiler/expression/group_clause.h"
 #include "hphp/compiler/analysis/code_error.h"
-#include "hphp/runtime/base/complex-types.h"
 
 using namespace HPHP;
 
@@ -77,13 +76,6 @@ void GroupClause::setNthKid(int n, ConstructPtr cp) {
     default:
       break;
   }
-}
-
-TypePtr GroupClause::inferTypes(AnalysisResultPtr ar, TypePtr type,
-                                bool coerce) {
-  m_coll->inferAndCheck(ar, Type::Some, false);
-  m_key->inferAndCheck(ar, Type::Some, false);
-  return Type::Object;
 }
 
 ///////////////////////////////////////////////////////////////////////////////

@@ -16,7 +16,6 @@
 
 #include "hphp/compiler/expression/simple_query_clause.h"
 #include "hphp/compiler/analysis/code_error.h"
-#include "hphp/runtime/base/complex-types.h"
 
 using namespace HPHP;
 
@@ -69,12 +68,6 @@ void SimpleQueryClause::setNthKid(int n, ConstructPtr cp) {
     default:
       break;
   }
-}
-
-TypePtr SimpleQueryClause::inferTypes(AnalysisResultPtr ar,
-  TypePtr type, bool coerce) {
-  m_expression->inferAndCheck(ar, Type::Some, false);
-  return Type::Object;
 }
 
 ///////////////////////////////////////////////////////////////////////////////

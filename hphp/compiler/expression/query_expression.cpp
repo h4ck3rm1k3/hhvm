@@ -26,7 +26,6 @@
 #include "hphp/compiler/analysis/code_error.h"
 #include "hphp/compiler/analysis/file_scope.h"
 #include "hphp/compiler/analysis/select_rewriters.h"
-#include "hphp/runtime/base/complex-types.h"
 
 using namespace HPHP;
 
@@ -233,16 +232,6 @@ void QueryOrderby::setNthKid(int n, ConstructPtr cp) {
   } else {
     (*m_expressions)[n] = dynamic_pointer_cast<Expression>(cp);
   }
-}
-
-TypePtr QueryOrderby::inferTypes(AnalysisResultPtr ar, TypePtr type,
-                                  bool coerce) {
-  for (unsigned int i = 0; i < m_expressions->getCount(); i++) {
-    if (ExpressionPtr e = (*m_expressions)[i]) {
-      e->inferAndCheck(ar, Type::Some, false);
-    }
-  }
-  return Type::Object;
 }
 
 ///////////////////////////////////////////////////////////////////////////////

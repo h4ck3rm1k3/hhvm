@@ -1,0 +1,16 @@
+{
+  "pools": {
+    "A": {
+      "servers": [ "localhost:12345" ]
+    },
+    "B": {
+      "servers": [ "localhost:12346" ]
+    }
+  },
+  "route": {
+    "type": "WarmUpRoute",
+    "cold": "PoolRoute|A",
+    "warm": "PoolRoute|B",
+    "exptime": 0
+  }
+}

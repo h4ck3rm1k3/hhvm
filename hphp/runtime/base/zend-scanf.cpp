@@ -17,7 +17,6 @@
 
 #include "hphp/runtime/base/zend-scanf.h"
 
-#include "hphp/runtime/base/complex-types.h"
 #include "hphp/runtime/base/type-conversions.h"
 #include "hphp/runtime/base/builtin-functions.h"
 
@@ -569,7 +568,7 @@ int string_sscanf(const char *string, const char *format, int numVars,
                   Variant &return_value) {
   int  nconversions;
   int  totalVars = -1;
-  int  value;
+  int64_t value;
   char *end;
   const char *baseString;
   char op   = 0;
@@ -946,9 +945,9 @@ int string_sscanf(const char *string, const char *format, int numVars,
        */
       if (!(flags & SCAN_SUPPRESS)) {
         *end = '\0';
-        value = (int) (*fn)(buf, nullptr, base);
+        value = (int64_t) (*fn)(buf, nullptr, base);
         if ((flags & SCAN_UNSIGNED) && (value < 0)) {
-          snprintf(buf, sizeof(buf), "%u", value); /* INTL: ISO digit */
+          snprintf(buf, sizeof(buf), "%lu", (long)value); /* INTL: ISO digit */
           returnArray.append(String(buf, CopyString));
         } else {
           returnArray.append(value);

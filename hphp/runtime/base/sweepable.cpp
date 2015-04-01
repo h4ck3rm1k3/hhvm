@@ -17,11 +17,15 @@
 #include "hphp/runtime/base/sweepable.h"
 #include "hphp/runtime/base/memory-manager.h"
 #include "hphp/util/logger.h"
+#include <unordered_map>
 
 namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
 
+using SweepMap = std::unordered_map<ObjectData*,Sweeper>;
+
 static __thread Sweepable::Node t_sweep;
+static thread_local SweepMap t_objects;
 
 inline void Sweepable::Node::init() {
   next = prev = this;
@@ -39,32 +43,52 @@ void Sweepable::Node::delist() {
   p->next = n;
 }
 
-void Sweepable::InitSweepableList() {
+// Called once per thread initialization from ThreadInfo::init
+void Sweepable::InitList() {
   t_sweep.init();
+  t_objects.clear();
 }
 
-void Sweepable::SweepAll() {
-  Node persist;
-  persist.init();
-  while (t_sweep.next != &t_sweep) {
-    Node* n = t_sweep.next;
-    n->delist();
-    n->init();
-    auto s = reinterpret_cast<Sweepable*>(uintptr_t(n)
-                                          - offsetof(Sweepable, m_sweepNode));
-    if (s->m_persistentCount == 0) {
+// Called when a thread goes idle; free any book-keeping overhead.
+void Sweepable::FlushList() {
+  assert(t_sweep.next == &t_sweep && t_objects.empty());
+  t_objects = SweepMap();
+}
+
+unsigned Sweepable::SweepAll() {
+  unsigned count = 0;
+  // iterate until both sweep lists are empty. Entries can be added or removed
+  // from either list during sweeping, so we drain the lists without holding
+  // iterators across any sweep() callbacks.
+  do {
+    while (t_sweep.next != &t_sweep) {
+      count++;
+      auto n = t_sweep.next;
+      n->delist();
+      n->init();
+      auto s = reinterpret_cast<Sweepable*>(
+        uintptr_t(n) - offsetof(Sweepable, m_sweepNode)
+      );
       s->sweep();
-    } else {
-      n->enlist(persist);
     }
-  }
-  // copy persist list to t_sweep
-  assert(t_sweep.next == &t_sweep && t_sweep.prev == &t_sweep);
-  t_sweep.enlist(persist); // stick t_sweep in persist list
-  persist.delist(); // remove persist; now t_sweep is "head"
+    while (!t_objects.empty()) {
+      // drain each bucket before moving to the next, avoiding O(n) begin()
+      for (unsigned i = 0; i < t_objects.bucket_count(); i++) {
+        for (auto it = t_objects.begin(i); it != t_objects.end(i);
+             it = t_objects.begin(i)) {
+          count++;
+          auto obj = it->first;
+          auto sweeper = it->second;
+          t_objects.erase(obj);
+          sweeper(obj);
+        }
+      }
+    }
+  } while (t_sweep.next != &t_sweep);
+  return count;
 }
 
-Sweepable::Sweepable() : m_persistentCount(0) {
+Sweepable::Sweepable() {
   m_sweepNode.enlist(t_sweep);
 }
 
@@ -75,6 +99,14 @@ Sweepable::~Sweepable() {
 void Sweepable::unregister() {
   m_sweepNode.delist();
   m_sweepNode.init(); // in case destructor runs later.
+}
+
+void registerSweepableObj(ObjectData* obj, Sweeper f) {
+  t_objects[obj] = f;
+}
+
+void unregisterSweepableObj(ObjectData* obj) {
+  t_objects.erase(obj);
 }
 
 ///////////////////////////////////////////////////////////////////////////////

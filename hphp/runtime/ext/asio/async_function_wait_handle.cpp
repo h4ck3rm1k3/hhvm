@@ -31,11 +31,7 @@ namespace HPHP {
 ///////////////////////////////////////////////////////////////////////////////
 
 void delete_AsyncFunctionWaitHandle(ObjectData* od, const Class*) {
-  auto const waitHandle = static_cast<c_AsyncFunctionWaitHandle*>(od);
-  auto const size = waitHandle->resumable()->size();
-  auto const base = (char*)(waitHandle + 1) - size;
-  waitHandle->~c_AsyncFunctionWaitHandle();
-  MM().objFreeLogged(base, size);
+  Resumable::Destroy(static_cast<c_AsyncFunctionWaitHandle*>(od));
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -134,10 +130,7 @@ void c_AsyncFunctionWaitHandle::prepareChild(c_WaitableWaitHandle* child) {
   child->enterContext(getContextIdx());
 
   // detect cycles
-  if (UNLIKELY(isDescendantOf(child))) {
-    Object e(createCycleException(child));
-    throw e;
-  }
+  detectCycle(child);
 }
 
 void c_AsyncFunctionWaitHandle::onUnblocked() {

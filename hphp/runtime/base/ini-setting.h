@@ -19,7 +19,7 @@
 
 #include "hphp/runtime/base/type-variant.h"
 
-#include "folly/dynamic.h"
+#include <folly/dynamic.h>
 
 #include <cstdint>
 #include <functional>
@@ -48,6 +48,8 @@ bool ini_on_update(const folly::dynamic& value, String& p);
 bool ini_on_update(const folly::dynamic& value, Array& p);
 bool ini_on_update(const folly::dynamic& value, std::set<std::string>& p);
 bool ini_on_update(const folly::dynamic& value, std::vector<std::string>& p);
+bool ini_on_update(const folly::dynamic& value,
+                   std::map<std::string, std::string>& p);
 folly::dynamic ini_get(bool& p);
 folly::dynamic ini_get(double& p);
 folly::dynamic ini_get(char& p);
@@ -63,6 +65,35 @@ folly::dynamic ini_get(String& p);
 folly::dynamic ini_get(Array& p);
 folly::dynamic ini_get(std::set<std::string>& p);
 folly::dynamic ini_get(std::vector<std::string>& p);
+folly::dynamic ini_get(std::map<std::string, std::string>& p);
+
+/*
+ * Consult the private implementation details in ini-setting.cpp.
+ *
+ * There's one instance of an IniCallbackData for each initialization
+ * setting. Management of system and per-request (per-thread)
+ * mappings from names of ini settings to actual IniCallbackData
+ * is done privately with the statics s_user_callbacks and
+ * s_system_ini_callbacks.
+ *
+ * In addition, a unique instance of the class UserIniData can be
+ * associated with the IniCallbackData. The IniCallbackData instance
+ * is the point of ownership of the instance of UserIniData, and is
+ * responsible for firing the destructor.
+ *
+ * The class UserIniData should be subclassed to hold data specific
+ * to an initialization regime, such as the zend compatibility layer
+ * implementation of zend_ini_entry. That subclass is responsible for
+ * allocating/freeing its own internal data.
+ *
+ * There's a mechanism for registering an initter, which is a factory to
+ * produce UserIniData. This registration is done at the same time that
+ * the setter and getter are established; see the class SetAndGet
+ */
+class UserIniData {
+public:
+  virtual ~UserIniData() {}
+};
 
 class IniSetting {
   struct CallbackData {
@@ -162,7 +193,13 @@ public:
   static bool SetUser(const std::string& name, const folly::dynamic& value,
                       FollyDynamic);
   static bool SetUser(const String& name, const Variant& value);
-
+  /**
+   * Fill in constant that may not have been bound when an
+   * ini file was initially parsed
+   */
+   static bool FillInConstant(const std::string& name,
+                              const folly::dynamic& value,
+                              FollyDynamic);
   /**
    * Get the mode for a setting
    */
@@ -170,11 +207,19 @@ public:
 
   template<class T>
   struct SetAndGet {
-    explicit SetAndGet(std::function<bool (const T&)> a, std::function<T ()> b)
-      : setter(a), getter(b) {}
+    explicit SetAndGet(
+      std::function<bool (const T&)> setter,
+      std::function<T ()> getter,
+      std::function<class UserIniData *()>initter = nullptr)
+      : setter(setter),
+        getter(getter),
+        initter(initter) {}
+
     explicit SetAndGet() {}
+
     std::function<bool (const T&)> setter;
     std::function<T ()> getter;
+    std::function<class UserIniData *()> initter;
   };
 
   /**
@@ -222,18 +267,23 @@ public:
       }
       return ini_get(v);
     };
-    Bind(extension, mode, name, setter, getter);
+    auto initter = [callbacks, p]() {
+      return callbacks.initter ? callbacks.initter() : nullptr;
+    };
+    Bind(extension, mode, name, setter, getter, initter);
     auto hasSystemDefault = ResetSystemDefault(name);
     if (!hasSystemDefault && defaultValue) {
       setter(defaultValue);
     }
   }
+
   template<class T>
   static void Bind(const Extension* extension, const Mode mode,
                    const std::string& name, SetAndGet<T> callbacks,
                    T* p = nullptr) {
     Bind(extension, mode, name, nullptr, callbacks, p);
   }
+
   /**
    * Prefer to use this method whenever possible (the non-default one is ok
    * too). Use Config::Bind if immediate access to the ini setting is
@@ -246,6 +296,7 @@ public:
                    const std::string& name, const char *defaultValue, T *p) {
     Bind(extension, mode, name, defaultValue, SetAndGet<T>(), p);
   }
+
   template<class T>
   static void Bind(const Extension* extension, const Mode mode,
                    const std::string& name, T *p) {
@@ -265,12 +316,20 @@ public:
   // be refactored into registration before extensions are done.
   static bool s_pretendExtensionsHaveNotBeenLoaded;
 
+  // Used to help us late bind extension constants (e.g. E_ALL) that
+  // were incorrectly bound initially, and needed to be bound again after
+  // all was loaded.
+  static bool s_config_is_a_constant;
+  static std::set<std::string> config_names_that_use_constants;
+
 private:
-  static void Bind(const Extension* extension, const Mode mode,
-                   const std::string& name,
-                   std::function<bool(const folly::dynamic& value)>
-                     updateCallback,
-                   std::function<folly::dynamic()> getCallback);
+  static void Bind(
+    const Extension* extension,
+    const Mode mode,
+    const std::string& name,
+    std::function<bool(const folly::dynamic&)>updateCallback,
+    std::function<folly::dynamic()> getCallback,
+    std::function<UserIniData *(void)> userDataCallback = nullptr);
 };
 
 int64_t convert_bytes_to_long(const std::string& value);

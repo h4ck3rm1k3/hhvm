@@ -20,12 +20,17 @@
 #include <boost/random.hpp>
 #include <gtest/gtest.h>
 #include <folly/Benchmark.h>
+#include <folly/Format.h>
 #include <folly/Range.h>
 #include <folly/io/Cursor.h>
+#include <folly/io/Cursor-defs.h>
 
 DECLARE_bool(benchmark);
 
+using folly::ByteRange;
+using folly::format;
 using folly::IOBuf;
+using folly::StringPiece;
 using std::unique_ptr;
 using namespace folly::io;
 
@@ -174,8 +179,8 @@ void append(std::unique_ptr<IOBuf>& buf, folly::StringPiece data) {
   buf->append(data.size());
 }
 
-void append(Appender& appender, folly::StringPiece data) {
-  appender.push(reinterpret_cast<const uint8_t*>(data.data()), data.size());
+void append(Appender& appender, StringPiece data) {
+  appender.push(ByteRange(data));
 }
 
 std::string toString(const IOBuf& buf) {
@@ -242,6 +247,52 @@ TEST(IOBuf, PullAndPeek) {
     EXPECT_EQ(1, iobuf1->countChainElements());
     EXPECT_EQ(11, iobuf1->computeChainDataLength());
   }
+}
+
+TEST(IOBuf, pushCursorData) {
+  unique_ptr<IOBuf> iobuf1(IOBuf::create(20));
+  iobuf1->append(15);
+  iobuf1->trimStart(5);
+  unique_ptr<IOBuf> iobuf2(IOBuf::create(10));
+  unique_ptr<IOBuf> iobuf3(IOBuf::create(10));
+  iobuf3->append(10);
+
+  iobuf1->prependChain(std::move(iobuf2));
+  iobuf1->prependChain(std::move(iobuf3));
+  EXPECT_TRUE(iobuf1->isChained());
+
+  //write 20 bytes to the buffer chain
+  RWPrivateCursor wcursor(iobuf1.get());
+  wcursor.writeBE<uint64_t>(1);
+  wcursor.writeBE<uint64_t>(10);
+  wcursor.writeBE<uint32_t>(20);
+
+  // create a read buffer for the buffer chain
+  Cursor rcursor(iobuf1.get());
+  EXPECT_EQ(1, rcursor.readBE<uint64_t>());
+  EXPECT_EQ(10, rcursor.readBE<uint64_t>());
+  EXPECT_EQ(20, rcursor.readBE<uint32_t>());
+  EXPECT_EQ(0, rcursor.totalLength());
+  rcursor.reset(iobuf1.get());
+  EXPECT_EQ(20, rcursor.totalLength());
+
+  // create another write buffer
+  unique_ptr<IOBuf> iobuf4(IOBuf::create(30));
+  iobuf4->append(30);
+  RWPrivateCursor wcursor2(iobuf4.get());
+  // write buffer chain data into it, now wcursor2 should only
+  // have 10 bytes writable space
+  wcursor2.push(rcursor, 20);
+  EXPECT_EQ(wcursor2.totalLength(), 10);
+  // write again with not enough space in rcursor
+  EXPECT_THROW(wcursor2.push(rcursor, 20), std::out_of_range);
+
+  // create a read cursor to check iobuf3 data back
+  Cursor rcursor2(iobuf4.get());
+  EXPECT_EQ(1, rcursor2.readBE<uint64_t>());
+  EXPECT_EQ(10, rcursor2.readBE<uint64_t>());
+  EXPECT_EQ(20, rcursor2.readBE<uint32_t>());
+
 }
 
 TEST(IOBuf, Gather) {
@@ -376,6 +427,47 @@ TEST(IOBuf, Appender) {
 
   append(app, " world");
   EXPECT_EQ("hello world", toString(*head));
+}
+
+TEST(IOBuf, Printf) {
+  IOBuf head(IOBuf::CREATE, 24);
+  Appender app(&head, 32);
+
+  app.printf("%s", "test");
+  EXPECT_EQ(head.length(), 4);
+  EXPECT_EQ(0, memcmp(head.data(), "test\0", 5));
+
+  app.printf("%d%s %s%s %#x", 32, "this string is",
+             "longer than our original allocation size,",
+             "and will therefore require a new allocation", 0x12345678);
+  // The tailroom should start with a nul byte now.
+  EXPECT_GE(head.prev()->tailroom(), 1);
+  EXPECT_EQ(0, *head.prev()->tail());
+
+  EXPECT_EQ("test32this string is longer than our original "
+            "allocation size,and will therefore require a "
+            "new allocation 0x12345678",
+            head.moveToFbString().toStdString());
+}
+
+TEST(IOBuf, Format) {
+  IOBuf head(IOBuf::CREATE, 24);
+  Appender app(&head, 32);
+
+  format("{}", "test")(app);
+  EXPECT_EQ(head.length(), 4);
+  EXPECT_EQ(0, memcmp(head.data(), "test", 4));
+
+  auto fmt = format("{}{} {}{} {:#x}",
+                    32, "this string is",
+                    "longer than our original allocation size,",
+                    "and will therefore require a new allocation",
+                    0x12345678);
+  fmt(app);
+  EXPECT_EQ("test32this string is longer than our original "
+            "allocation size,and will therefore require a "
+            "new allocation 0x12345678",
+            head.moveToFbString().toStdString());
 }
 
 TEST(IOBuf, QueueAppender) {

@@ -20,7 +20,6 @@
 #include "hphp/runtime/base/type-conversions.h"
 #include "hphp/runtime/base/builtin-functions.h"
 #include "hphp/runtime/base/types.h"
-#include "hphp/runtime/base/complex-types.h"
 #include "hphp/runtime/base/runtime-error.h"
 #include "hphp/runtime/base/array-iterator.h"
 #include "hphp/runtime/base/comparisons.h"
@@ -554,7 +553,7 @@ static int collator_string_compare_descending(const Variant& v1, const Variant& 
 }
 
 static bool collator_sort_internal(bool renumber, Variant &array,
-                                   int sort_flags, bool ascending,
+                                   int sort_flags, bool ascending, bool byKey,
                                    UCollator *coll, Intl::IntlError *errcode) {
   assert(coll);
   errcode->clearError();
@@ -586,7 +585,7 @@ static bool collator_sort_internal(bool renumber, Variant &array,
   }
 
   /* Sort specified array. */
-  temp.sort(cmp_func, false, renumber, coll);
+  temp.sort(cmp_func, byKey, renumber, coll);
 
   /* Convert strings in the specified array back to UTF-8. */
   errcode->clearError();
@@ -603,16 +602,27 @@ static bool collator_sort_internal(bool renumber, Variant &array,
 bool collator_sort(Variant &array, int sort_flags, bool ascending,
                    UCollator *coll, Intl::IntlError *errcode) {
   assert(coll);
-  bool ret = collator_sort_internal(true, array, sort_flags, ascending, coll,
-                                    errcode);
+  bool byKey = false;
+  bool ret = collator_sort_internal(true, array, sort_flags, ascending, byKey,
+                                    coll, errcode);
   return ret;
 }
 
 bool collator_asort(Variant &array, int sort_flags, bool ascending,
                     UCollator *coll, Intl::IntlError *errcode) {
   assert(coll);
-  bool ret = collator_sort_internal(false, array, sort_flags, ascending, coll,
-                                    errcode);
+  bool byKey = false;
+  bool ret = collator_sort_internal(false, array, sort_flags, ascending, byKey,
+                                    coll, errcode);
+  return ret;
+}
+
+bool collator_ksort(Variant &array, int sort_flags, bool ascending,
+                    UCollator *coll, Intl::IntlError *errcode) {
+  assert(coll);
+  bool byKey = true;
+  bool ret = collator_sort_internal(false, array, sort_flags, ascending, byKey,
+                                    coll, errcode);
   return ret;
 }
 

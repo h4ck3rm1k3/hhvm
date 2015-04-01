@@ -84,7 +84,8 @@ class Arena {
     size = roundUp(size);
     bytesUsed_ += size;
 
-    if (LIKELY(end_ - ptr_ >= size)) {
+    assert(ptr_ <= end_);
+    if (LIKELY((size_t)(end_ - ptr_) >= size)) {
       // Fast path: there's enough room in the current block
       char* r = ptr_;
       ptr_ += size;
@@ -149,7 +150,7 @@ class Arena {
    private:
     Block() { }
     ~Block() { }
-  } __attribute__((aligned));
+  } __attribute__((__aligned__));
   // This should be alignas(std::max_align_t) but neither alignas nor
   // max_align_t are supported by gcc 4.6.2.
 
@@ -157,6 +158,7 @@ class Arena {
   static constexpr size_t kDefaultMinBlockSize = 4096 - sizeof(Block);
   static constexpr size_t kNoSizeLimit = 0;
   static constexpr size_t kDefaultMaxAlign = alignof(Block);
+  static constexpr size_t kBlockOverhead = sizeof(Block);
 
  private:
   bool isAligned(uintptr_t address) const {

@@ -34,6 +34,36 @@ static uint32_t u32;
 static int64_t s64;
 static uint64_t u64;
 
+// Test to<T>(T)
+TEST(Conv, Type2Type) {
+  int intV = 42;
+  EXPECT_EQ(to<int>(intV), 42);
+
+  float floatV = 4.2;
+  EXPECT_EQ(to<float>(floatV), 4.2f);
+
+  double doubleV = 0.42;
+  EXPECT_EQ(to<double>(doubleV), 0.42);
+
+  std::string stringV = "StdString";
+  EXPECT_EQ(to<std::string>(stringV), "StdString");
+
+  folly::fbstring fbStrV = "FBString";
+  EXPECT_EQ(to<folly::fbstring>(fbStrV), "FBString");
+
+  folly::StringPiece spV("StringPiece");
+  EXPECT_EQ(to<folly::StringPiece>(spV), "StringPiece");
+
+  // Rvalues
+  EXPECT_EQ(to<int>(42), 42);
+  EXPECT_EQ(to<float>(4.2f), 4.2f);
+  EXPECT_EQ(to<double>(.42), .42);
+  EXPECT_EQ(to<std::string>(std::string("Hello")), "Hello");
+  EXPECT_EQ(to<folly::fbstring>(folly::fbstring("hello")), "hello");
+  EXPECT_EQ(to<folly::StringPiece>(folly::StringPiece("Forty Two")),
+            "Forty Two");
+}
+
 TEST(Conv, Integral2Integral) {
   // Same size, different signs
   s64 = numeric_limits<uint8_t>::max();
@@ -748,6 +778,22 @@ TEST(Conv, NewUint64ToString) {
 #undef THE_GREAT_EXPECTATIONS
 }
 
+TEST(Conv, allocate_size) {
+  std::string str1 = "meh meh meh";
+  std::string str2 = "zdech zdech zdech";
+
+  auto res1 = folly::to<std::string>(str1, ".", str2);
+  EXPECT_EQ(res1, str1 + "." + str2);
+
+  std::string res2; //empty
+  toAppendFit(str1, str2, 1, &res2);
+  EXPECT_EQ(res2, str1 + str2 + "1");
+
+  std::string res3;
+  toAppendDelimFit(",", str1, str2, &res3);
+  EXPECT_EQ(res3, str1 + "," + str2);
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 // Benchmarks for ASCII to int conversion
 ////////////////////////////////////////////////////////////////////////////////
@@ -970,7 +1016,7 @@ static float fValue = 1.2355;
 static double dValue = 345345345.435;
 
 BENCHMARK(preallocateTestNoFloat, n) {
-  for (int i=0; i < n; ++i) {
+  for (size_t i = 0; i < n; ++i) {
     auto val1 = to<std::string>(bigInt, someString, stdString, otherString);
     auto val3 = to<std::string>(reallyShort, smallInt);
     auto val2 = to<std::string>(bigInt, stdString);
@@ -980,7 +1026,7 @@ BENCHMARK(preallocateTestNoFloat, n) {
 }
 
 BENCHMARK(preallocateTestFloat, n) {
-  for (int i=0; i < n; ++i) {
+  for (size_t i = 0; i < n; ++i) {
     auto val1 = to<std::string>(stdString, ',', fValue, dValue);
     auto val2 = to<std::string>(stdString, ',', dValue);
   }
