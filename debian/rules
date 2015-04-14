@@ -23,6 +23,7 @@ override_dh_auto_configure:
 		-DUSE_JSONC=ON \
 		-DFREETYPE_INCLUDE_DIRS=/usr/include/freetype2/ \
 		-DENABLE_MCROUTER=OFF \
+		-DENABLE_ASYNC_MYSQL=OFF \
 		-DCMAKE_INSTALL_PREFIX=/usr \
 		-DCMAKE_BUILD_TYPE=RelWithDebInfo
 

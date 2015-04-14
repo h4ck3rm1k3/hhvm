@@ -1,0 +1,5 @@
+# No man page provided upstream, and no docs.
+# Also, hphpize is supposed to be run without arguments.
+hhvm-dev: binary-without-manpage usr/bin/hphpize
+# This is just a php script that is ran by hphpize
+hhvm-dev: script-not-executable usr/lib/x86_64-linux-gnu/hhvm/hphpize/run

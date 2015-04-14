@@ -8,4 +8,6 @@ hhvm: embedded-library usr/bin/hhvm: file
 # HHVM reuses a lot of original PHP code (tests, for example, to be
 # able to mimic PHP).
 #E: hhvm source: license-problem-php-license LICENSE.PHP
-hhvm: binary-without-manpage usr/bin/hphpize
+# HHVM includes a file with the JSON license, but it's not linked in the executable
+hhvm source: license-problem-json-evil hphp/runtime/ext/json/JSON_parser.cpp
+
