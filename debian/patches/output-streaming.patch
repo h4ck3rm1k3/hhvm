@@ -36,18 +36,16 @@
  }
  
  ///////////////////////////////////////////////////////////////////////////////
-@@ -306,10 +315,6 @@
+@@ -306,7 +315,7 @@
  bool ExecutionContext::obFlush() {
    assert(m_protectedLevel >= 0);
  
 -  if ((int)m_buffers.size() <= m_protectedLevel) {
--    return false;
--  }
--
-   auto iter = m_buffers.end();
-   OutputBuffer& last = *(--iter);
++  if (m_buffers.empty()) {
+     return false;
+   }
  
-@@ -352,17 +357,19 @@
+@@ -352,17 +361,19 @@
        }
        str = tout.toString();
      } catch (...) {
@@ -70,7 +68,7 @@
  }
  
  bool ExecutionContext::obEnd() {
-@@ -431,20 +438,16 @@
+@@ -431,20 +442,16 @@
  }
  
  void ExecutionContext::flush() {
@@ -126,7 +124,7 @@
  }
 --- a/hphp/runtime/base/runtime-option.cpp
 +++ b/hphp/runtime/base/runtime-option.cpp
-@@ -178,6 +178,7 @@
+@@ -176,6 +176,7 @@
  std::string RuntimeOption::ForceCompressionURL;
  std::string RuntimeOption::ForceCompressionCookie;
  std::string RuntimeOption::ForceCompressionParam;
@@ -134,7 +132,7 @@
  bool RuntimeOption::EnableKeepAlive = true;
  bool RuntimeOption::ExposeHPHP = true;
  bool RuntimeOption::ExposeXFBServer = false;
-@@ -1126,6 +1127,8 @@
+@@ -1134,6 +1135,8 @@
      Config::Bind(ForceCompressionParam, ini,
                   server["ForceCompression"]["Param"]);
  
@@ -155,14 +153,16 @@
    static int PageletServerThreadDropCacheTimeoutSeconds;
 --- a/hphp/runtime/server/fastcgi/fastcgi-session.cpp
 +++ b/hphp/runtime/server/fastcgi/fastcgi-session.cpp
-@@ -323,12 +323,25 @@
+@@ -323,12 +323,27 @@
    ioStop();
  }
  
 -void FastCGISession::writeErr(size_t,
 -    const folly::AsyncSocketException&) noexcept {
-+void FastCGISession::WriteCallback::writeErr(size_t bytesWritten,
-+    const folly::AsyncSocketException& ex) noexcept {
++void FastCGISession::WriteCallback::writeErr(
++  size_t bytesWritten,
++  const folly::AsyncSocketException& ex
++) noexcept {
 +  m_session->writeErr(m_bufferSize, bytesWritten, ex);
 +  delete this;
 +}
@@ -184,7 +184,7 @@
    if (--m_eventCount == 0 && m_shutdown) {
      // If we were terminating and this was the last pending event then trigger
      // the delete.
-@@ -336,14 +349,43 @@
+@@ -336,16 +351,55 @@
    }
  }
  
@@ -206,6 +206,8 @@
  ////////////////////////////////////////////////////////////////////////////////
  
 -void FastCGISession::onStdOut(std::unique_ptr<IOBuf> chain) {
++const int k_maxEventQueueSize = 8;
++
 +void FastCGISession::blockingWriteStdOut(std::unique_ptr<IOBuf> chain) {
 +  long maxWait = RuntimeOption::ConnectionTimeoutSeconds;
 +  if (maxWait <= 0) {
@@ -221,17 +223,27 @@
 +
    // FastCGITransport doesn't run in the same event base. Calling into internal
    // functions here is unsafe from other threads so we enqueue the work for the
--  // event base.
-+  // event base. We have to wait for the work to be done, otherwise the event
-+  // queue can grow without bound, if the VM writes fast enough.
+   // event base.
 +
    folly::MoveWrapper<std::unique_ptr<IOBuf>> chain_wrapper(std::move(chain));
 -  m_eventBase->runInEventBaseThread([this, chain_wrapper]() mutable {
-+  m_eventBase->runInEventBaseThreadAndWait([this, chain_wrapper]() mutable {
++  auto callback = [this, chain_wrapper]() mutable {
      writeStream(fcgi::STDOUT, std::move(*chain_wrapper));
-   });
+-  });
++  };
++
++  // Queueing the work unconditionally can lead to the queue size growing to
++  // hundreds of thousands of entries, if events are not dequeued fast enough.
++  // So clear the queue periodically if it gets too large.
++  if (m_eventBase->getNotificationQueueSize() > k_maxEventQueueSize) {
++    m_eventBase->runInEventBaseThreadAndWait(callback);
++  } else {
++    m_eventBase->runInEventBaseThread(callback);
++  }
  }
-@@ -432,7 +474,16 @@
+ 
+ void FastCGISession::onComplete() {
+@@ -432,7 +486,16 @@
      return;
    }
    ++m_eventCount;
