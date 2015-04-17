@@ -1,0 +1,2 @@
+# HHVM includes a file with the JSON license, but it's not linked in the executable
+hhvm source: license-problem-json-evil hphp/runtime/ext/json/JSON_parser.cpp
