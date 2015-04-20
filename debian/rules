@@ -24,6 +24,7 @@ override_dh_auto_configure:
 		-DFREETYPE_INCLUDE_DIRS=/usr/include/freetype2/ \
 		-DENABLE_MCROUTER=OFF \
 		-DENABLE_ASYNC_MYSQL=OFF \
+		-DMYSQL_UNIX_SOCK_ADDR=/dev/null \
 		-DCMAKE_INSTALL_PREFIX=/usr \
 		-DCMAKE_BUILD_TYPE=RelWithDebInfo
 
