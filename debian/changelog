@@ -1,6 +1,12 @@
+hhvm (3.6.1+dfsg1-1+wm3) trusty-wikimedia; urgency=high
+
+  * Patch for CVE-2015-4024
+
+ -- Giuseppe Lavagetto <glavagetto@wikimedia.org>  Thu, 04 Jun 2015 06:54:47 +0000
+
 hhvm (3.6.1+dfsg1-1+wm2) trusty-wikimedia; urgency=medium
 
-  * Patch for CVE-2015-3413  
+  * Patch for CVE-2015-3413
 
  -- Giuseppe Lavagetto <glavagetto@wikimedia.org>  Thu, 04 Jun 2015 08:35:46 +0200
 
@@ -8,7 +14,7 @@ hhvm (3.6.1+dfsg1-1+wm1) trusty-wikimedia; urgency=medium
 
   [ Giuseppe Lavagetto ]
   * New upstream release (3.6.1)
-  * Added WMF patch to support streaming output in FastCGI 
+  * Added WMF patch to support streaming output in FastCGI
   * Added patches to build correctly
 
   [ Alexandros Kosiaris ]
