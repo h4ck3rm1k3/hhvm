@@ -9,3 +9,4 @@ fix-mysql-libraries.patch
 add-jemalloc-prof-status.patch
 output-streaming.patch
 expose-api-version.patch
+uniqify-eval-filename.patch

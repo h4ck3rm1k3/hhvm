@@ -1,3 +1,9 @@
+hhvm (3.6.1+dfsg1-1+wm4) trusty-wikimedia; urgency=medium
+
+  * Add a fix for multiple Closure's generated with the same internal name
+
+ -- Erik Bernhardson <ebernhardson@wikimedia.org>  Wed, 17 Jun 2015 22:29:27 -0700
+
 hhvm (3.6.1+dfsg1-1+wm3) trusty-wikimedia; urgency=high
 
   * Patch for CVE-2015-4024
