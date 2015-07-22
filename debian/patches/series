@@ -10,3 +10,4 @@ add-jemalloc-prof-status.patch
 output-streaming.patch
 expose-api-version.patch
 uniqify-eval-filename.patch
+preserve-user-handler-on-session_destroy.patch

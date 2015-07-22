@@ -1,0 +1,140 @@
+Description: Session: Preserve user save handler on session_destroy
+ User save handler should be preserved between `session_destroy` and further
+ `session_start`, and should be removed only on request shutdown. The
+ diff also cleans up some code duplicates which like were introduced
+ at migrating session module to HNI).
+Author: Dmitry Soshnikov <dmitrys@fb.com>
+Last-Update: 2015-07-22
+Origin: https://github.com/facebook/hhvm/commit/adc98c20d9c051c260faa2e0eedb8649e533f874
+
+---
+ hphp/runtime/ext/session/ext_session.cpp           | 30 ++++++------------
+ hphp/test/slow/ext_session/keep_save_handler.php   | 37 ++++++++++++++++++++++
+ .../slow/ext_session/keep_save_handler.php.expectf | 12 +++++++
+ 3 files changed, 59 insertions(+), 20 deletions(-)
+ create mode 100644 hphp/test/slow/ext_session/keep_save_handler.php
+ create mode 100644 hphp/test/slow/ext_session/keep_save_handler.php.expectf
+
+diff --git a/hphp/runtime/ext/session/ext_session.cpp b/hphp/runtime/ext/session/ext_session.cpp
+index 0615f46..74aaaa1 100644
+--- a/hphp/runtime/ext/session/ext_session.cpp
++++ b/hphp/runtime/ext/session/ext_session.cpp
+@@ -134,7 +134,9 @@ struct SessionRequestData final : Session {
+   void destroy() {
+     id.reset();
+     session_status = Session::None;
+-    ps_session_handler = nullptr;
++    // Note: we should not destroy user save handler here
++    // (if the session is restarted during request, the handler
++    // should be alive), it's destroyed only in the request shutdown.
+   }
+ 
+   void requestShutdownImpl();
+@@ -1217,8 +1219,8 @@ static bool ini_on_update_save_dir(const std::string& value) {
+ 
+ ///////////////////////////////////////////////////////////////////////////////
+ 
+-static int php_session_destroy() {
+-  int retval = true;
++static bool php_session_destroy() {
++  bool retval = true;
+ 
+   if (s_session->session_status != Session::Active) {
+     raise_warning("Trying to destroy uninitialized session");
+@@ -1230,7 +1232,10 @@ static int php_session_destroy() {
+     raise_warning("Session object destruction failed");
+   }
+ 
+-  s_session->requestShutdownImpl();
++  if (mod_is_open()) {
++    s_session->mod->close();
++  }
++
+   s_session->destroy();
+ 
+   return retval;
+@@ -1782,22 +1787,7 @@ static bool HHVM_FUNCTION(session_start) {
+ }
+ 
+ static bool HHVM_FUNCTION(session_destroy) {
+-  bool retval = true;
+-
+-  if (s_session->session_status != Session::Active) {
+-    raise_warning("Trying to destroy uninitialized session");
+-    return false;
+-  }
+-
+-  if (!s_session->mod->destroy(s_session->id.data())) {
+-    retval = false;
+-    raise_warning("Session object destruction failed");
+-  }
+-
+-  s_session->requestShutdownImpl();
+-  s_session->destroy();
+-
+-  return retval;
++  return php_session_destroy();
+ }
+ 
+ static void HHVM_FUNCTION(session_unset) {
+diff --git a/hphp/test/slow/ext_session/keep_save_handler.php b/hphp/test/slow/ext_session/keep_save_handler.php
+new file mode 100644
+index 0000000..37f9e36
+--- /dev/null
++++ b/hphp/test/slow/ext_session/keep_save_handler.php
+@@ -0,0 +1,37 @@
++<?php
++
++ob_start();
++
++function s_open($path, $name) { return true; }
++function s_close() { return true; }
++function s_read($id) { return ''; }
++function s_write($id, $data) {
++  var_dump('s_write');
++  var_dump($id);
++  var_dump($data);
++  return true;
++}
++function s_destroy($id) { return true; }
++function s_gc($t) { return true; }
++
++session_set_save_handler(
++  's_open',
++  's_close',
++  's_read',
++  's_write',
++  's_destroy',
++  's_gc'
++);
++
++session_start();
++
++$_SESSION['foo'] = 10;
++$_SESSION['bar'] = 20;
++
++var_dump($_SESSION);
++session_write_close();
++
++session_start();
++session_destroy();
++
++session_start();
+diff --git a/hphp/test/slow/ext_session/keep_save_handler.php.expectf b/hphp/test/slow/ext_session/keep_save_handler.php.expectf
+new file mode 100644
+index 0000000..b8d31b6
+--- /dev/null
++++ b/hphp/test/slow/ext_session/keep_save_handler.php.expectf
+@@ -0,0 +1,12 @@
++array(2) {
++  ["foo"]=>
++  int(10)
++  ["bar"]=>
++  int(20)
++}
++string(7) "s_write"
++string(32) "%s"
++string(18) "foo|i:10;bar|i:20;"
++string(7) "s_write"
++string(32) "%s"
++string(0) ""
