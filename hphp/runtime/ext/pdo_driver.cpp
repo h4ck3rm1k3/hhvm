@@ -37,11 +37,10 @@ PDODriver::PDODriver(const char *name) : m_name(name) {
   s_drivers[name] = this;
 }
 
-PDOResource* PDODriver::createResource(const String& datasource,
-                                       const String& username,
-                                       const String& password,
-                                       const Array& options) {
-  // This is a bare ResourceData*, so it needs to be freed on error.
+SmartPtr<PDOResource> PDODriver::createResource(const String& datasource,
+                                                const String& username,
+                                                const String& password,
+                                                const Array& options) {
   auto const rsrc = createResourceImpl();
   auto const& conn = rsrc->conn();
 
@@ -59,14 +58,18 @@ PDOResource* PDODriver::createResource(const String& datasource,
     Array err;
     bool hasError = conn->fetchErr(nullptr, err);
 
-    rsrc->release();
-
     if (hasError && !err.empty()) {
       throw_pdo_exception(s_general_error_code, uninit_null(), "[%ld]: %s",
                           err[0].toInt64(), err[1].toString().data());
     }
     return nullptr;
   }
+  return rsrc;
+}
+
+SmartPtr<PDOResource> PDODriver::createResource(const sp_PDOConnection& conn) {
+  auto const rsrc = createResourceImpl(conn);
+  rsrc->persistentRestore();
   return rsrc;
 }
 
@@ -124,7 +127,7 @@ String PDOConnection::lastId(const char *name) {
   return String();
 }
 
-bool PDOConnection::fetchErr(PDOStatement *stmt, Array &info) {
+bool PDOConnection::fetchErr(PDOStatement* stmt, Array &info) {
   throw_pdo_exception(uninit_null(), uninit_null(), "This driver doesn't support %s", __func__);
   return false;
 }
@@ -143,7 +146,6 @@ bool PDOConnection::checkLiveness() {
 // PDOResource
 
 void PDOResource::sweep() {
-  assert(!conn()->is_persistent);
   def_stmt_ctor_args.releaseForSweep();
   this->~PDOResource();
 }
@@ -202,7 +204,7 @@ PDOStatement::PDOStatement()
 }
 
 PDOStatement::~PDOStatement() {
-  if (dbh.get() && dbh->query_stmt == this) {
+  if (dbh && dbh->query_stmt == this) {
     dbh->query_stmt = NULL;
   }
 }
@@ -235,7 +237,7 @@ bool PDOStatement::getColumn(int colno, Variant &value) {
   return false;
 }
 
-bool PDOStatement::paramHook(PDOBoundParam *param, PDOParamEvent event_type) {
+bool PDOStatement::paramHook(PDOBoundParam* param, PDOParamEvent event_type) {
   throw_pdo_exception(uninit_null(), uninit_null(), "This driver doesn't support %s", __func__);
   return false;
 }

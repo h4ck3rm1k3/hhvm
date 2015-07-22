@@ -81,6 +81,7 @@ bool RuntimeOption::CheckSymLink = true;
 bool RuntimeOption::EnableArgsInBacktraces = true;
 bool RuntimeOption::EnableZendCompat = false;
 bool RuntimeOption::EnableZendSorting = false;
+bool RuntimeOption::EnableZendIniCompat = true;
 bool RuntimeOption::TimeoutsUseWallTime = true;
 bool RuntimeOption::CheckFlushOnUserClose = true;
 bool RuntimeOption::EvalAuthoritativeMode = false;
@@ -974,6 +975,12 @@ void RuntimeOption::Load(IniSetting::Map& ini, Hdf& config,
     Config::Bind(TimeoutsUseWallTime, ini, eval["TimeoutsUseWallTime"], true);
     Config::Bind(CheckFlushOnUserClose, ini, eval["CheckFlushOnUserClose"],
                  true);
+    // Enables the hotfixing of a bug that occurred with D1797805 where
+    // per request user settings (like upload_max_filesize) were not able to be
+    // accessed on a server request any longer. The longer term fix is in review
+    // D2099778, but we want that to simmer in Master for a while and we need
+    // a hotfix for our current 3.6 LTS (Github Issue #4993)
+    Config::Bind(EnableZendIniCompat, ini, eval["EnableZendIniCompat"], true);
 
     if (EnableHipHopSyntax) {
       // If EnableHipHopSyntax is true, it forces EnableXHP to true
