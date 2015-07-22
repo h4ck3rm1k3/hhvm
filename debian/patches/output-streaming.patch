@@ -124,7 +124,7 @@
  }
 --- a/hphp/runtime/base/runtime-option.cpp
 +++ b/hphp/runtime/base/runtime-option.cpp
-@@ -176,6 +176,7 @@
+@@ -177,6 +177,7 @@
  std::string RuntimeOption::ForceCompressionURL;
  std::string RuntimeOption::ForceCompressionCookie;
  std::string RuntimeOption::ForceCompressionParam;
@@ -132,7 +132,7 @@
  bool RuntimeOption::EnableKeepAlive = true;
  bool RuntimeOption::ExposeHPHP = true;
  bool RuntimeOption::ExposeXFBServer = false;
-@@ -1134,6 +1135,8 @@
+@@ -1141,6 +1142,8 @@
      Config::Bind(ForceCompressionParam, ini,
                   server["ForceCompression"]["Param"]);
  
