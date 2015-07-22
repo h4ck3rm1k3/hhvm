@@ -1,3 +1,10 @@
+hhvm (3.6.5+dfsg1-1+wm1) trusty-wikimedia; urgency=medium
+
+  * Upgrade to 3.6.5
+  * Session corruption handling patch
+
+ -- Giuseppe Lavagetto <glavagetto@wikimedia.org>  Wed, 22 Jul 2015 14:57:02 +0200
+
 hhvm (3.6.1+dfsg1-1+wm4) trusty-wikimedia; urgency=medium
 
   * Add a fix for multiple Closure's generated with the same internal name
