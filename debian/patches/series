@@ -12,3 +12,4 @@ expose-api-version.patch
 uniqify-eval-filename.patch
 preserve-user-handler-on-session_destroy.patch
 D40473-strtr.patch
+D45165-unserialize_ex.patch

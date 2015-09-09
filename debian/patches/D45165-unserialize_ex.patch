@@ -1,0 +1,53 @@
+From 5584084de9e2b0c9f1d58c078c89e19370a6fd65 Mon Sep 17 00:00:00 2001
+From: Bryan Davis <bd808@bd808.com>
+Date: Sat, 22 Aug 2015 15:37:39 -0700
+Subject: [PATCH] Limit log message length for unserialize failures
+
+Summary: Output a maximum of 1000 characters of the serialized string when
+logging an `unserialize` failure.
+
+Closes #4517
+Closes https://github.com/facebook/hhvm/pull/6094
+
+Reviewed By: @sgolemon
+
+Differential Revision: D2373233
+---
+ hphp/runtime/base/builtin-functions.cpp             | 2 +-
+ hphp/test/slow/unserialize_ex-log-limit.php         | 3 +++
+ hphp/test/slow/unserialize_ex-log-limit.php.expectf | 3 +++
+ 3 files changed, 7 insertions(+), 1 deletion(-)
+ create mode 100644 hphp/test/slow/unserialize_ex-log-limit.php
+ create mode 100644 hphp/test/slow/unserialize_ex-log-limit.php.expectf
+
+diff --git a/hphp/runtime/base/builtin-functions.cpp b/hphp/runtime/base/builtin-functions.cpp
+index bf69781..a243c3d 100644
+--- a/hphp/runtime/base/builtin-functions.cpp
++++ b/hphp/runtime/base/builtin-functions.cpp
+@@ -747,7 +747,7 @@ Variant unserialize_ex(const char* str, int len,
+   } catch (FatalErrorException &e) {
+     throw;
+   } catch (Exception &e) {
+-    raise_notice("Unable to unserialize: [%s]. %s.", str,
++    raise_notice("Unable to unserialize: [%.1000s]. %s.", str,
+                  e.getMessage().c_str());
+     return false;
+   }
+diff --git a/hphp/test/slow/unserialize_ex-log-limit.php b/hphp/test/slow/unserialize_ex-log-limit.php
+new file mode 100644
+index 0000000..fb3b04e
+--- /dev/null
++++ b/hphp/test/slow/unserialize_ex-log-limit.php
+@@ -0,0 +1,3 @@
++<?php
++unserialize(str_repeat('x', 5));
++unserialize(str_repeat('x', 50000));
+diff --git a/hphp/test/slow/unserialize_ex-log-limit.php.expectf b/hphp/test/slow/unserialize_ex-log-limit.php.expectf
+new file mode 100644
+index 0000000..4204356
+--- /dev/null
++++ b/hphp/test/slow/unserialize_ex-log-limit.php.expectf
+@@ -0,0 +1,3 @@
++Notice: Unable to unserialize: [xxxxx]. Expected ':' but got 'x'. in %s/unserialize_ex-log-limit.php on line 2
++
++Notice: Unable to unserialize: [xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx]. Expected ':' but got 'x'. in %s/unserialize_ex-log-limit.php on line 3
