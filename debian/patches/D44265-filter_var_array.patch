@@ -1,0 +1,118 @@
+From f2fb726fef23c082c220779d2831ec50bc0abf99 Mon Sep 17 00:00:00 2001
+From: Bryan Davis <bd808@wikimedia.org>
+Date: Fri, 21 Aug 2015 13:39:18 -0700
+Subject: [PATCH] filter_var_array: do not fall back to FILTER_DEFAULT
+
+Summary: Fallback to `FILTER_DEFAULT` for failed validations of individual
+elements was introduced in 2f48df4 while fixing a deeper bug where HHVM
+always fell back to FILTER_DEFAULT when any `filter_var()` validation
+failed. This fallback behavior is not compatible with the PHP5 engine which
+applies no special result processing for failed validations.
+
+Replaces #5837
+Fixes #5836
+Closes https://github.com/facebook/hhvm/pull/5939
+
+Reviewed By: @sgolemon
+
+Differential Revision: D2352105
+---
+ hphp/system/php/filter/filter_var_array.php | 20 ++++++++++++--------
+ hphp/test/slow/ext_filter/5836.php          | 25 +++++++++++++++++++++++++
+ hphp/test/slow/ext_filter/5836.php.expect   | 16 ++++++++++++++++
+ 3 files changed, 53 insertions(+), 8 deletions(-)
+ create mode 100644 hphp/test/slow/ext_filter/5836.php
+ create mode 100644 hphp/test/slow/ext_filter/5836.php.expect
+
+diff --git a/hphp/system/php/filter/filter_var_array.php b/hphp/system/php/filter/filter_var_array.php
+index 65a2249..1abfa74 100644
+--- a/hphp/system/php/filter/filter_var_array.php
++++ b/hphp/system/php/filter/filter_var_array.php
+@@ -1,12 +1,18 @@
+ <?php
++function _filter_var_array_is_valid_filter($filter) {
++  static $ids = null;
++  if ($ids === null) {
++    // A bit painful in php, exposing the IDs might be better if this is hot
++    $ids = array_fill_keys(array_map('filter_id', filter_list()), null);
++  }
++  return array_key_exists($filter, $ids);
++}
+ 
+ function _filter_var_array_single($value, $filter, $options = array()) {
+-  $ret = filter_var($value, (int) $filter, $options);
+-
+-  // Retry with default filter if failed.
+-  if ($ret === false) {
+-    $ret = filter_var($value, FILTER_DEFAULT, $options);
++  if (!_filter_var_array_is_valid_filter($filter)) {
++    $filter = FILTER_DEFAULT;
+   }
++  $ret = filter_var($value, (int) $filter, $options);
+ 
+   $flags = isset($options['flags']) ? $options['flags'] : 0;
+   if ($flags & FILTER_FORCE_ARRAY && !is_array($ret)) {
+@@ -63,9 +69,7 @@ function filter_var_array($data, $definition = null, $add_empty = true) {
+     if ($definition === null) {
+       $default_filter = FILTER_DEFAULT;
+     } else if (is_int($definition)) {
+-      // A bit painful in php, exposing the IDs might be better if this is hot
+-      $ids = array_fill_keys(array_map('filter_id', filter_list()), null);
+-      if (!array_key_exists($definition, $ids)) {
++      if (!_filter_var_array_is_valid_filter($definition)) {
+         return false;
+       }
+       $default_filter = $definition;
+diff --git a/hphp/test/slow/ext_filter/5836.php b/hphp/test/slow/ext_filter/5836.php
+new file mode 100644
+index 0000000..0569e99
+--- /dev/null
++++ b/hphp/test/slow/ext_filter/5836.php
+@@ -0,0 +1,25 @@
++<?php
++$data = array(
++  'true'     => '1',
++  'false'    => '0',
++  'badbool'  => 'xyzzy',
++  'bademail' => 'foo',
++  'badfloat' => 'idkfa',
++  'badint'   => '42.42',
++  'badip'    => '256.0.0.1',
++);
++
++$args = array(
++  'true'    => FILTER_VALIDATE_BOOLEAN,
++  'false'   => FILTER_VALIDATE_BOOLEAN,
++  'badbool' => array(
++    'filter' => FILTER_VALIDATE_BOOLEAN,
++    'flags'  => FILTER_NULL_ON_FAILURE,
++  ),
++  'bademail' => FILTER_VALIDATE_EMAIL,
++  'badfloat' => FILTER_VALIDATE_FLOAT,
++  'badint'   => FILTER_VALIDATE_INT,
++  'badip'    => FILTER_VALIDATE_IP,
++);
++
++var_dump(filter_var_array($data, $args));
+diff --git a/hphp/test/slow/ext_filter/5836.php.expect b/hphp/test/slow/ext_filter/5836.php.expect
+new file mode 100644
+index 0000000..04c7626
+--- /dev/null
++++ b/hphp/test/slow/ext_filter/5836.php.expect
+@@ -0,0 +1,16 @@
++array(7) {
++  ["true"]=>
++  bool(true)
++  ["false"]=>
++  bool(false)
++  ["badbool"]=>
++  NULL
++  ["bademail"]=>
++  bool(false)
++  ["badfloat"]=>
++  bool(false)
++  ["badint"]=>
++  bool(false)
++  ["badip"]=>
++  bool(false)
++}
