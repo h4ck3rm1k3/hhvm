@@ -13,4 +13,5 @@ preserve-user-handler-on-session_destroy.patch
 D40473-strtr.patch
 D45165-unserialize_ex.patch
 D44265-filter_var_array.patch
+D37899-ext_reflection.patch
 
