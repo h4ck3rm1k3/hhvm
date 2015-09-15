@@ -1,3 +1,12 @@
+hhvm (3.6.5+dfsg1-1+wm6) trusty-wikimedia; urgency=medium
+
+  * Fix ReflectionClass::getMethods filter 
+  * filter_var_array: do not fall back to FILTER_DEFAULT 
+  * Avoid including webscalesqlclient completely 
+  * Limit log message length for unserialize failures 
+
+ -- Giuseppe Lavagetto <glavagetto@wikimedia.org>  Tue, 15 Sep 2015 12:23:50 +0200
+
 hhvm (3.6.5+dfsg1-1+wm5) trusty-wikimedia; urgency=medium
 
   * Backport fix from https://github.com/facebook/hhvm/pull/6071 (take 3).
