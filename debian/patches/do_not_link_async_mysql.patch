@@ -1,0 +1,20 @@
+Description: Do not include async_mysql headers
+ We are building HHVM without async mysql support, so we have no
+ reason to include related headers. This patch can be removed once we
+ can properly include webscalesqlclient.
+Author: Giuseppe Lavagetto <glavagetto@wikimedia.org>
+Forwarded: no
+Last-Update: 2015-07-26
+
+Index: hhvm/hphp/runtime/ext/ext.h
+===================================================================
+--- hhvm.orig/hphp/runtime/ext/ext.h
++++ hhvm/hphp/runtime/ext/ext.h
+@@ -30,7 +30,6 @@
+ #endif
+ 
+ #include "hphp/runtime/ext/array/ext_array_idl.h"
+-#include "hphp/runtime/ext/async_mysql/ext_async_mysql.h"
+ #include "hphp/runtime/ext/ext_closure.h"
+ #include "hphp/runtime/ext/ext_collections.h"
+ #include "hphp/runtime/ext/ext_generator.h"

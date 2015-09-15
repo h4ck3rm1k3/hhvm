@@ -2,8 +2,7 @@ typos.patch
 link_libiconv_hook.patch
 pass-DNDEBUG-to-RelWithDebInfo.patch
 use_system_TZinfo.patch
-fix-webscalesql.patch
-fix-mysql-libraries.patch
+do_not_link_async_mysql.patch
 
 # WMF specific patches go here
 add-jemalloc-prof-status.patch
