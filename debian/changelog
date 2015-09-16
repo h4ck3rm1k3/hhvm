@@ -1,3 +1,21 @@
+hhvm (3.6.5+dfsg1-1+wm5) trusty-wikimedia; urgency=medium
+
+  * Backport fix from https://github.com/facebook/hhvm/pull/6071 (take 3).
+
+ -- Ori Livneh <ori@wikimedia.org>  Thu, 03 Sep 2015 18:09:11 +0000
+
+hhvm (3.6.5+dfsg1-1+wm4) trusty-wikimedia; urgency=medium
+
+  * Backport fix from https://github.com/facebook/hhvm/pull/6071 (take 2).
+
+ -- Ori Livneh <ori@wikimedia.org>  Fri, 21 Aug 2015 00:29:18 +0000
+
+hhvm (3.6.5+dfsg1-1+wm3) trusty-wikimedia; urgency=medium
+
+  * Backport fix from https://github.com/facebook/hhvm/pull/6071.
+
+ -- Ori Livneh <ori@wikimedia.org>  Wed, 19 Aug 2015 22:34:36 +0000
+
 hhvm (3.6.5+dfsg1-1+wm2) trusty-wikimedia; urgency=medium
 
   * Backport of D40473: Port strtr from zend 5.6.10 (ebernhardson)
