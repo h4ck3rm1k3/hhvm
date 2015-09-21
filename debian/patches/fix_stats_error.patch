@@ -1,0 +1,17 @@
+Description: correctly enclose PCRE when collecting statistics.
+Author: Giuseppe Lavagetto <glavagetto@wikimedia.org>
+Forwarded: no
+Last-Update: 2015-09-21
+
+-Index: hhvm/hphp/runtime/ext/mysql/mysql_common.cpp
+--- a/hphp/runtime/ext/mysql/mysql_common.cpp
++++ b/hphp/runtime/ext/mysql/mysql_common.cpp
+@@ -1376,7 +1376,7 @@ MySQLQueryReturn php_mysql_do_query(const String& query, const Variant& link_id,
+       if (RuntimeOption::EnableStats && RuntimeOption::EnableSQLTableStats) {
+         MySqlStats::Record(verb, rconn->m_xaction_count, table);
+         if (verb == "update") {
+-          HHVM_FN(preg_match)("([^\\s,]+)\\s*=\\s*([^\\s,]+)[\\+\\-]",
++          HHVM_FN(preg_match)("/([^\\s,]+)\\s*=\\s*([^\\s,]+)[\\+\\-]/",
+                               q, ref(matches));
+           size = matches.toArray().size();
+           if (size > 2 && same(matches.toArray()[1], matches.toArray()[2])) {
