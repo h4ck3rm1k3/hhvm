@@ -15,5 +15,6 @@ D40473-strtr.patch
 D45165-unserialize_ex.patch
 D44265-filter_var_array.patch
 D37899-ext_reflection.patch
-D2486378-compress_bzip2.patch
+#D2486378-compress_bzip2.patch
+D37821-allow-float-timeout-on-socket-connections.diff
 
