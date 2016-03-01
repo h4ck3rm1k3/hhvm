@@ -26,6 +26,8 @@ if [ "x$OS_TYPE" = "xLinux" ];then
         DISTRO=fedora
     elif grep -i ubuntu /etc/issue >/dev/null 2>&1;then
         DISTRO=ubuntu
+    elif lsb_release -i | grep Debian >/dev/null 2>&1;then
+	DISTRO=debian
     else
         DISTRO=unknown
     fi
@@ -98,6 +100,33 @@ case $DISTRO in
         # install the actual dependencies
         sudo apt-fast -y update
         sudo apt-fast -y install git-core cmake g++ boost1.55 libmysqlclient-dev \
+            libxml2-dev libmcrypt-dev libicu-dev openssl build-essential binutils-dev \
+            libcap-dev libgd2-xpm-dev zlib1g-dev libtbb-dev libonig-dev libpcre3-dev \
+            wget memcached libreadline-dev libncurses-dev libmemcached-dev libbz2-dev \
+            libc-client2007e-dev php5-mcrypt php5-imagick libgoogle-perftools-dev \
+            libcloog-ppl0 libelf-dev libdwarf-dev libunwind7-dev subversion \
+            autoconf libtool libcurl4-openssl-dev \
+            libmagickwand-dev libxslt1-dev &
+
+        git clone git://github.com/libevent/libevent.git --quiet &
+        git clone git://github.com/bagder/curl.git --quiet &
+        svn checkout http://google-glog.googlecode.com/svn/trunk/ google-glog --quiet &
+        wget -nc http://www.canonware.com/download/jemalloc/jemalloc-3.6.0.tar.bz2 --quiet &
+        ;;
+    debian)
+        # install python-software-properties before trying to add a PPA
+        sudo apt-get -y update
+        sudo apt-get install -y python-software-properties
+
+        # install apt-fast to speed up later dependency installation
+        #sudo add-apt-repository -y ppa:apt-fast/stable
+        #sudo add-apt-repository -y ppa:boost-latest/ppa
+        sudo apt-get -y update
+        #sudo apt-get -y install apt-fast
+
+        # install the actual dependencies
+        sudo apt-get -y update
+        sudo apt-get -y install git-core cmake g++ boost1.55 libmysqlclient-dev \
             libxml2-dev libmcrypt-dev libicu-dev openssl build-essential binutils-dev \
             libcap-dev libgd2-xpm-dev zlib1g-dev libtbb-dev libonig-dev libpcre3-dev \
             wget memcached libreadline-dev libncurses-dev libmemcached-dev libbz2-dev \
